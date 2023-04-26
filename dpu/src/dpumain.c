@@ -29,6 +29,7 @@ __mram_ptr void* getval;
 int main()
 {
     int tid = me();
+    // printf("[tasklet %d/%d] numreq:%d\n",tid, NR_TASKLETS, request_buffer[tid].num_req);
     // for(int i = 0; i < request_buffer[me()].num_req; i++){
     //     printf("[tasklet %d] key:%ld\n",tid, request_buffer[tid].key[i]);
     // }
@@ -42,8 +43,6 @@ int main()
         batch_num++;
     }
     barrier_wait(&my_barrier);
-    printf("[tasklet %d/%d] numreq:%d\n",tid, NR_TASKLETS, request_buffer[tid].num_req);
-
     if (batch_num == 1) {
         // printf("[tasklet %d] initializing BPTree\n",tid);
         init_BPTree(tid);
@@ -114,13 +113,13 @@ int main()
 #endif
 
 #endif
-#ifdef DEBUG_ON
+#ifdef PRINT_ON
     // sequential
     sem_take(&my_semaphore);
     printf("\n");
     printf("Printing Nodes of tasklet#%d...\n", tid);
     printf("===========================================\n");
-    //BPTreePrintAll(tid);
+    BPTreePrintAll(tid);
     printf("===========================================\n");
     sem_give(&my_semaphore);
     barrier_wait(&my_barrier);

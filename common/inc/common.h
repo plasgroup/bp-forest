@@ -28,8 +28,9 @@
 #define WRITE (0)
 
 //#define VARY_REQUESTNUM
-#define DEBUG_ON
+// #define DEBUG_ON
 // #define STATS_ON
+// #define PRINT_ON
 //#define WRITE_CSV
 
 #ifdef VARY_REQUESTNUM  // for experiment: xaxis is requestnum
