@@ -1,6 +1,7 @@
 #include "bplustree.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 //#define USE_LINEAR_SEARCH
 

@@ -25,7 +25,7 @@ extern "C" {
 #define ANSI_COLOR_RESET "\x1b[0m"
 
 #ifndef DPU_BINARY
-#define DPU_BINARY "../../build/dpu_task"
+#define DPU_BINARY "./build/dpu/dpu_program"
 #endif
 
 #ifndef FILE_NAME
@@ -408,7 +408,7 @@ int main(void)
         total_num_keys += num_keys;
         execute_one_batch(set, dpu);
 #ifdef DEBUG_ON
-        printf("results from DPUs: batch %d\n", i);
+        printf("results from DPUs: batch %d\n", total_num_keys / num_keys);
         DPU_FOREACH(set, dpu) { DPU_ASSERT(dpu_log_read(dpu, stdout)); }
 #endif
         free(dpu_requests);

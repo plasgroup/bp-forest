@@ -5,7 +5,7 @@
 #define NR_ELEMS_PER_TASKLET (RAND_MAX / NR_DPUS / NR_TASKLETS)
 
 #ifndef NR_DPUS
-#define NR_DPUS (50)
+#define NR_DPUS (4)
 #endif
 #ifndef NR_TASKLETS
 #define NR_TASKLETS (1)
@@ -28,8 +28,8 @@
 #define WRITE (0)
 
 //#define VARY_REQUESTNUM
-//#define DEBUG_ON
-//#define STATS_ON
+#define DEBUG_ON
+// #define STATS_ON
 //#define WRITE_CSV
 
 #ifdef VARY_REQUESTNUM  // for experiment: xaxis is requestnum

@@ -6,7 +6,6 @@
 #include <perfcounter.h>
 #include <sem.h>
 #include <stdio.h>
-
 BARRIER_INIT(my_barrier, NR_TASKLETS);
 
 #include <barrier.h>
@@ -30,11 +29,11 @@ __mram_ptr void* getval;
 int main()
 {
     int tid = me();
-    // printf("[tasklet %d] numreq:%d\n",tid, request_buffer[tid].num_req);
     // for(int i = 0; i < request_buffer[me()].num_req; i++){
     //     printf("[tasklet %d] key:%ld\n",tid, request_buffer[tid].key[i]);
     // }
     if (tid == 0) {
+
         // printf("size of request_buffer:%u\n", sizeof(request_buffer));
         // printf("using up to %d MB for value data, can store up to %d values per
         // tasklet\n", VALUE_DATA_SIZE, MAX_VALUE_NUM); printf("using up to %d MB for
@@ -43,6 +42,8 @@ int main()
         batch_num++;
     }
     barrier_wait(&my_barrier);
+    printf("[tasklet %d/%d] numreq:%d\n",tid, NR_TASKLETS, request_buffer[tid].num_req);
+
     if (batch_num == 1) {
         // printf("[tasklet %d] initializing BPTree\n",tid);
         init_BPTree(tid);
@@ -119,7 +120,7 @@ int main()
     printf("\n");
     printf("Printing Nodes of tasklet#%d...\n", tid);
     printf("===========================================\n");
-    BPTreePrintAll(tid);
+    //BPTreePrintAll(tid);
     printf("===========================================\n");
     sem_give(&my_semaphore);
     barrier_wait(&my_barrier);
