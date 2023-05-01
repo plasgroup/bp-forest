@@ -179,9 +179,9 @@ int generate_requests_fromfile(std::ifstream& fs)
         current_idx += num_keys_for_dpus[dpu_i];
     }
 #ifdef PRINT_DEBUG
-    for (key_int64_t x : num_keys) {
-        std::cout << x << std::endl;
-    }
+    // for (key_int64_t x : num_keys) {
+    //     std::cout << x << std::endl;
+    // }
 #endif
     return key_count;
 }
@@ -222,7 +222,7 @@ void show_requests(int i)
         printf("[invalid argment]i must be less than NR_DPUS");
         return;
     }
-    printf("[debug_info]DPU:%d\n");
+    printf("[debug_info]DPU:%d\n", i);
     for (int tree_i = 0; tree_i < NUM_BPTREE_IN_DPU; tree_i++) {
         printf("end_idx for tree %d = %d\n", tree_i, dpu_requests[i].end_idx[tree_i]);
         if (dpu_requests[i].end_idx[tree_i] != 0) {
@@ -241,7 +241,7 @@ void send_requests(struct dpu_set_t set, struct dpu_set_t dpu)
     DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_TO_DPU, "end_idx", 0,
         sizeof(int) * NUM_BPTREE_IN_DPU,
         DPU_XFER_DEFAULT));
-    printf("send_size: %d / buffer_size: %d\n", sizeof(each_request_t) * send_size, sizeof(each_request_t) * MAX_REQ_NUM_IN_A_DPU);
+    printf("send_size: %ld / buffer_size: %ld\n", sizeof(each_request_t) * send_size, sizeof(each_request_t) * MAX_REQ_NUM_IN_A_DPU);
     DPU_FOREACH(set, dpu, each_dpu)
     {
         DPU_ASSERT(dpu_prepare_xfer(
@@ -323,7 +323,7 @@ void execute_cpu()
 void execute_one_batch(struct dpu_set_t set, struct dpu_set_t dpu)
 {
     // printf("\n");
-    // printf("======= batch %d =======\n",batch_num);
+    // printf("======= batch start=======\n");
     // show_requests(0);
     gettimeofday(&start_total, NULL);
     // CPU→DPU
@@ -332,6 +332,9 @@ void execute_one_batch(struct dpu_set_t set, struct dpu_set_t dpu)
     gettimeofday(&start, NULL);
     send_requests(set, dpu);
     gettimeofday(&end, NULL);
+#ifdef PRINT_DEBUG
+    printf("[2/4] send finished\n");
+#endif
     total_time += time_diff(&start, &end);
     total_time_sendrequests += time_diff(&start, &end);
 
@@ -342,7 +345,13 @@ void execute_one_batch(struct dpu_set_t set, struct dpu_set_t dpu)
     for (int i = 0; i < NUM_BPTREE_IN_CPU; i++) {
         pthread_join(threads[i], NULL);
     }
+#ifdef PRINT_DEBUG
+    printf("[3/4] CPU_finished\n");
+#endif
     dpu_sync(set);
+#ifdef PRINT_DEBUG
+    printf("[4/4] DPU_finished\n");
+#endif
     gettimeofday(&end, NULL);
 
     total_time += time_diff(&start, &end);
@@ -442,13 +451,18 @@ int main(void)
     }
     /* main routine */
     while (true && total_num_keys <= 2000000) {
-        // printf("%d\n", num_keys);
+#ifdef PRINT_DEBUG
+        printf("===== batch start =====\n %ld / 2000000...\n", total_num_keys);
+#endif
         int num_keys = generate_requests_fromfile(file_input);
         if (num_keys == 0)
             break;
         total_num_keys += num_keys;
+#ifdef PRINT_DEBUG
+        printf("[1/4] generated %d requests\n", num_keys);
+#endif
         execute_one_batch(set, dpu);
-        //DPU_FOREACH(set, dpu) { DPU_ASSERT(dpu_log_read(dpu, stdout)); }
+        DPU_FOREACH(set, dpu) { DPU_ASSERT(dpu_log_read(dpu, stdout)); }
 
 #ifdef DEBUG_ON
         printf("results from DPUs: batch %d\n", total_num_keys / num_keys);
