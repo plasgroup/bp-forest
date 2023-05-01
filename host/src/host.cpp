@@ -6,6 +6,7 @@ extern "C" {
 #include <dpu.h>
 #include <dpu_log.h>
 }
+#include <algorithm>
 #include <iostream>
 #include <limits>
 #include <math.h>
@@ -32,6 +33,7 @@ extern "C" {
 #define FILE_NAME "./workload/zipf_const_1.2.bin"
 #endif
 
+#define NUM_TOTAL_TREES(NR_DPUS* NR_TASKLETS + NUM_BPTREE_IN_CPU)
 #define GET_AND_PRINT_TIME(CODES, LABEL) \
     gettimeofday(&start, NULL);          \
     CODES                                \
@@ -44,6 +46,7 @@ dpu_request_t* dpu_requests;
 dpu_experiment_var_t expvars;
 dpu_stats_t stats[NR_DPUS][NUM_VARS];
 #endif
+
 uint64_t nb_cycles_insert[NR_DPUS];
 uint64_t nb_cycles_get[NR_DPUS];
 uint64_t total_cycles_insert;
@@ -118,15 +121,47 @@ int generate_requests_fromfile(FILE* fp)
                "]heap size is not enough\n");
         return 0;
     }
+
+    std::ifstream fs("./workload/zipf_const_1.2.bin", std::ios_base::binary);
+    //FILE* fp = fopen("./workload/zipf_const_1.2.bin", "rb");
+    // if (!fs) {
+
+    //     // ファイルがオープンできなかった
+    //     std::cout << L"ファイルオープン失敗" << std::endl;
+    //     return (-1);
+    // }
+    intkey_t batch_keys[NUM_REQUESTS_PER_BATCH];
+    int key_count = 12;
+    int total_num_keys = 0;
+    for (int j = 0; j < 5; j++) {
+        std::cout << "batch" << j << std::endl;
+        fs.read(reinterpret_cast<char*>(&batch_keys), sizeof(batch_keys));
+        key_count = fs.tellg() / sizeof(intkey_t) - total_num_keys;
+        std::cout << "key_count: " << key_count << std::endl;
+        //key_count = fread(&batch_keys, sizeof(intkey_t), NUM_REQUESTS_PER_BATCH, fp);
+        std::sort(batch_keys, batch_keys + key_count, [](auto a, auto b) { return a / RANGE < b / RANGE; });
+        int num_keys[NUM_TOTAL_TREES] = {};
+        for (int i = 0; i < key_count; i++) {
+            //std::cout << batch_keys[i] << std::endl;
+            num_keys[(batch_keys[i] - 1) / RANGE]++;
+        }
+        for (intkey_t x : num_keys) {
+            std::cout << x << std::endl;
+        }
+        total_num_keys += key_count;
+    }
+
     for (int i = 0; i < NR_DPUS * NR_TASKLETS + NUM_BPTREE_IN_CPU; i++) {
         dpu_requests[i].num_req = 0;
     }
     // int range = NR_ELEMS_PER_TASKLET;
     // printf("%d\n",i);
-    intkey_t key;
-    int key_count = 0;
-    uint64_t range = std::numeric_limits<uint64_t>::max() / (NR_DPUS * NR_TASKLETS + NUM_BPTREE_IN_CPU);
-    while (fread(&key, sizeof(intkey_t), 1, fp) == 1 && key_count < NUM_REQUESTS_PER_BATCH) {
+    intkey_t batch_keys[NUM_REQUESTS_PER_BATCH];
+
+    uint64_t range = std::numeric_limits<uint64_t>::max() / (NUM_TOTAL_TREES);
+    int key_count = fread(&batch_keys, sizeof(intkey_t), NUM_REQUESTS_PER_BATCH, fp);
+    std::sort(batch_keys, batch_keys + sizeof(batch_keys) / sizeof(batch_keys[0]), comp);
+    for (int i = 0; i < key_count; i++) {
         int which_tasklet = key / range;
         // printf("%d\n", which_tasklet);
         // printf("key:%ld,DPU:%d,tasklet:%d\n", key, which_DPU, which_tasklet);
@@ -144,7 +179,6 @@ int generate_requests_fromfile(FILE* fp)
                 key_count);
             assert(false);
         }
-        key_count++;
     }
     for (int i = NUM_BPTREE_IN_CPU; i < NR_DPUS * NR_TASKLETS + NUM_BPTREE_IN_CPU;
          i++) {
@@ -363,7 +397,7 @@ int main(void)
     // requests:%ld\n",(uint64_t)NUM_REQUESTS);
     struct dpu_set_t set, dpu;
     const char* file_name = FILE_NAME;
-    FILE* fp = fopen(file_name, "rb");
+    std::ifstream fs("./workload/zipf_const_1.2.bin", std::ios_base::binary);
     if (!fp) {
         printf("cannot open file\n");
         return 1;
