@@ -130,9 +130,10 @@ int generate_requests_fromfile(std::ifstream& fs)
         return 0;
     }
     /* read workload file */
-    key_int64_t batch_keys[NUM_REQUESTS_PER_BATCH];
+    key_int64_t* batch_keys = (key_int64_t*)malloc(
+        NUM_REQUESTS_PER_BATCH * sizeof(key_int64_t));
     int key_count = 0;
-    fs.read(reinterpret_cast<char*>(&batch_keys), sizeof(batch_keys));
+    fs.read(reinterpret_cast<char*>(batch_keys), sizeof(batch_keys) * NUM_REQUESTS_PER_BATCH);
     key_count = fs.tellg() / sizeof(key_int64_t) - total_num_keys;
     std::cout << "key_count: " << key_count << std::endl;
     /* sort by which tree the requests should be processed */
@@ -240,6 +241,7 @@ void send_requests(struct dpu_set_t set, struct dpu_set_t dpu)
     DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_TO_DPU, "end_idx", 0,
         sizeof(int) * NUM_BPTREE_IN_DPU,
         DPU_XFER_DEFAULT));
+    printf("send_size: %d / buffer_size: %d\n", sizeof(each_request_t) * send_size, sizeof(each_request_t) * MAX_REQ_NUM_IN_A_DPU);
     DPU_FOREACH(set, dpu, each_dpu)
     {
         DPU_ASSERT(dpu_prepare_xfer(
@@ -439,16 +441,17 @@ int main(void)
         return 1;
     }
     /* main routine */
-    while (true) {
+    while (true && total_num_keys <= 2000000) {
         // printf("%d\n", num_keys);
         int num_keys = generate_requests_fromfile(file_input);
         if (num_keys == 0)
             break;
         total_num_keys += num_keys;
         execute_one_batch(set, dpu);
+        //DPU_FOREACH(set, dpu) { DPU_ASSERT(dpu_log_read(dpu, stdout)); }
+
 #ifdef DEBUG_ON
         printf("results from DPUs: batch %d\n", total_num_keys / num_keys);
-        DPU_FOREACH(set, dpu) { DPU_ASSERT(dpu_log_read(dpu, stdout)); }
 #endif
         free(dpu_requests);
     }
