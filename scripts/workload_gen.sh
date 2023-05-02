@@ -1,8 +1,6 @@
 #!/bin/bash
 cd $(dirname $0)/..
-echo $(pwd)
-cmake -S . -B ./build
-cmake --build ./build
+echo cd $(pwd)
 mkdir -p workload
 for i in 0 0.5 0.99 1.2
 do

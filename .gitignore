@@ -35,3 +35,4 @@
 # Additinal
 build/
 workload/
+.vscode/

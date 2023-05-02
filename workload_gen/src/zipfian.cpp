@@ -19,7 +19,7 @@ int main(int argc, char* argv[])
     a.add<uint64_t>("elementnum", 'e', "num of elements of zipfian dist.", false, 2048);
     a.add("scramble", 's', "whether scramble or not");
     a.parse_check(argc, argv);
-    //a.add<int>("elementnum", 'e', "num of elements of zipfian dist.", true, (1ULL << 31) - 1;); // 32bit zipfian dist.
+    // a.add<int>("elementnum", 'e', "num of elements of zipfian dist.", true, (1ULL << 31) - 1;); // 32bit zipfian dist.
 
     double zipfian_const = a.get<double>("zipfianconst");
     int key_num = a.get<int>("keynum");
@@ -32,7 +32,7 @@ int main(int argc, char* argv[])
     } else
         generator = new ycsbc::ZipfianGenerator(min, num_devide, zipfian_const);
 
-    intkey_t* generated_keys = (intkey_t*)malloc(sizeof(intkey_t) * key_num);
+    key_int64_t* generated_keys = (key_int64_t*)malloc(sizeof(key_int64_t) * key_num);
     if (generated_keys == NULL) {
         std::cerr << "Memory cannot be allocated." << std::endl;
         return 1;
@@ -56,7 +56,7 @@ int main(int argc, char* argv[])
         std::cerr << "cannot open file " << filename << std::endl;
         return 1;
     }
-    writing_file.write((const char*)generated_keys, sizeof(intkey_t) * key_num);
+    writing_file.write((const char*)generated_keys, sizeof(key_int64_t) * key_num);
     free(generated_keys);
     return 0;
 }

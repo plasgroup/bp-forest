@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-//#define USE_LINEAR_SEARCH
+// #define USE_LINEAR_SEARCH
 
 // nodes(keys and pointers)
 __mram BPTreeNode nodes[NR_TASKLETS][MAX_NODE_NUM];
@@ -81,7 +81,7 @@ MBPTptr newBPTreeNode(uint32_t tasklet_id)
 
 // binary search
 #ifndef USE_LINEAR_SEARCH
-int findKeyPos(MBPTptr n, intkey_t key)
+int findKeyPos(MBPTptr n, key_int64_t key)
 {
     int l = 0, r = n->numKeys;
     if (key < n->key[l])
@@ -101,7 +101,7 @@ int findKeyPos(MBPTptr n, intkey_t key)
 
 #ifdef USE_LINEAR_SEARCH
 // linear search
-int findKeyPos(MBPTptr n, intkey_t key)
+int findKeyPos(MBPTptr n, key_int64_t key)
 {
     int ret = 0;
     for (int ret = 0; ret < n->numKeys; ret++) {
@@ -111,7 +111,7 @@ int findKeyPos(MBPTptr n, intkey_t key)
     return ret;
 }
 #endif
-MBPTptr findLeaf(intkey_t key, uint32_t tasklet_id)
+MBPTptr findLeaf(key_int64_t key, uint32_t tasklet_id)
 {
     MBPTptr n = root[tasklet_id];
     while (true) {
@@ -129,7 +129,7 @@ MBPTptr findLeaf(intkey_t key, uint32_t tasklet_id)
     }
     return n;
 }
-void insert(MBPTptr cur, intkey_t, value_ptr_t, MBPTptr, uint32_t);
+void insert(MBPTptr cur, key_int64_t, value_ptr_t, MBPTptr, uint32_t);
 void split(MBPTptr cur, uint32_t tasklet_id)
 {
     // cur splits into cur and n
@@ -184,7 +184,7 @@ void split(MBPTptr cur, uint32_t tasklet_id)
     }
 }
 
-void insert(MBPTptr cur, intkey_t key, value_ptr_t value, MBPTptr n,
+void insert(MBPTptr cur, key_int64_t key, value_ptr_t value, MBPTptr n,
     uint32_t tasklet_id)
 {
     int i, ins;
@@ -250,7 +250,7 @@ void init_BPTree(uint32_t tasklet_id)
     root[tasklet_id]->ptrs.lf.value[0] = 0;
 }
 
-int BPTreeInsert(intkey_t key, value_ptr_t value, uint32_t tasklet_id)
+int BPTreeInsert(key_int64_t key, value_ptr_t value, uint32_t tasklet_id)
 {
     if (root[tasklet_id]->numKeys == 0) {  // if the tree is empty
         root[tasklet_id]->key[0] = key;
@@ -266,7 +266,7 @@ int BPTreeInsert(intkey_t key, value_ptr_t value, uint32_t tasklet_id)
     return true;
 }
 
-value_ptr_t BPTreeGet(intkey_t key, uint32_t tasklet_id)
+value_ptr_t BPTreeGet(key_int64_t key, uint32_t tasklet_id)
 {
     MBPTptr Leaf = findLeaf(key, tasklet_id);
     int i;

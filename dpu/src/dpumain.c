@@ -11,7 +11,8 @@ BARRIER_INIT(my_barrier, NR_TASKLETS);
 #include <barrier.h>
 SEMAPHORE_INIT(my_semaphore, 1);
 
-__mram dpu_request_t request_buffer[NR_TASKLETS];
+__mram each_request_t request_buffer[MAX_REQ_NUM_IN_A_DPU];
+__mram int end_idx[NUM_BPTREE_IN_DPU];
 __mram int batch_num;
 #ifdef VARY_REQUESTNUM
 __mram dpu_experiment_var_t expvars;
@@ -100,9 +101,9 @@ int main()
 #ifdef STATS_ON
     perfcounter_config(COUNT_CYCLES, true);
 #endif
-    for (int index = 0; index < request_buffer[tid].num_req; index++) {
-        BPTreeInsert(request_buffer[tid].key[index],
-            request_buffer[tid].write_val_ptr[index], tid);
+    for (int index = tid == 0 ? 0 : end_idx[tid - 1]; index < end_idx[tid]; index++) {
+        BPTreeInsert(request_buffer[index].key,
+            request_buffer[index].write_val_ptr, tid);
     }
 #ifdef STATS_ON
     nb_cycles_insert = perfcounter_get();
@@ -130,9 +131,8 @@ int main()
     barrier_wait(&my_barrier);
     perfcounter_config(COUNT_CYCLES, true);
 #endif
-
-    for (index = 0; index < request_buffer[tid].num_req; index++) {
-        res[tid] = BPTreeGet(request_buffer[tid].key[index], tid);
+    for (int index = tid == 0 ? 0 : end_idx[tid - 1]; index < end_idx[tid]; index++) {
+        res[tid] = BPTreeGet(request_buffer[index].key, tid);
     }
 #ifdef STATS_ON
     nb_cycles_get = perfcounter_get();

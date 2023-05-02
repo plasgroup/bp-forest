@@ -27,7 +27,7 @@ typedef struct BPTreeNode {
     int isRoot : 8;
     int isLeaf : 8;
     int numKeys : 16;
-    intkey_t key[MAX_CHILD];
+    key_int64_t key[MAX_CHILD];
     MBPTptr parent;
     union {
         InternalNodePtrs inl;
@@ -42,13 +42,13 @@ extern void init_BPTree();
  *    @param pos pos
  *    @param value value to insert
  **/
-extern int BPTreeInsert(intkey_t, value_ptr_t, uint32_t);
+extern int BPTreeInsert(key_int64_t, value_ptr_t, uint32_t);
 /**
  *    @param key key to search
  **/
-extern value_ptr_t BPTreeGet(intkey_t, uint32_t);
-extern void BPTreeGetRange(intkey_t, int);
-extern void BPTreeDelete(intkey_t);
+extern value_ptr_t BPTreeGet(key_int64_t, uint32_t);
+extern void BPTreeGetRange(key_int64_t, int);
+extern void BPTreeDelete(key_int64_t);
 extern int BPTree_GetNumOfNodes();
 extern void BPTreePrintLeaves();
 extern void BPTreePrintRoot();
