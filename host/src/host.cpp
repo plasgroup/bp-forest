@@ -122,6 +122,7 @@ uint64_t generate_requests()
 
 int generate_requests_fromfile(std::ifstream& fs)
 {
+    std::cout << NUM_BPTREE_IN_CPU << std::endl;
     dpu_requests = (dpu_requests_t*)malloc(
         (NR_DPUS) * sizeof(dpu_requests_t));
     if (dpu_requests == NULL) {
@@ -129,9 +130,15 @@ int generate_requests_fromfile(std::ifstream& fs)
                "] heap size is not enough\n");
         return 0;
     }
+
     /* read workload file */
-    key_int64_t* batch_keys = (key_int64_t*)malloc(
-        NUM_REQUESTS_PER_BATCH * sizeof(key_int64_t));
+    key_int64_t* batch_keys = (key_int64_t*)malloc(NUM_REQUESTS_PER_BATCH * sizeof(key_int64_t));
+    if (dpu_requests == NULL) {
+    printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET
+            "] heap size is not enough\n");
+    return 0;
+    }
+    std::cout << "malloc batch_keys" << std::endl;
     int key_count = 0;
     fs.read(reinterpret_cast<char*>(batch_keys), sizeof(batch_keys) * NUM_REQUESTS_PER_BATCH);
     key_count = fs.tellg() / sizeof(key_int64_t) - total_num_keys;
@@ -183,6 +190,7 @@ int generate_requests_fromfile(std::ifstream& fs)
         std::cout << x << std::endl;
     }
 #endif
+    free(batch_keys);
     return key_count;
 }
 
@@ -441,7 +449,7 @@ int main(void)
         return 1;
     }
     /* main routine */
-    while (true && total_num_keys <= 2000000) {
+    while (true && total_num_keys < 20000000) {
         // printf("%d\n", num_keys);
         int num_keys = generate_requests_fromfile(file_input);
         if (num_keys == 0)
