@@ -361,6 +361,7 @@ int main(void)
     // printf("size of dpu_request_t:%lu,%lu\n", sizeof(dpu_request_t),
     // sizeof(dpu_requests[0])); printf("total num of
     // requests:%ld\n",(uint64_t)NUM_REQUESTS);
+    printf("CPU: %d TREES, DPU: %d TREES\n", NUM_BPTREE_IN_CPU, NR_DPUS*NUM_BPTREE_IN_DPU);
     struct dpu_set_t set, dpu;
     const char* file_name = FILE_NAME;
     FILE* fp = fopen(file_name, "rb");
@@ -402,10 +403,10 @@ int main(void)
     // free(dpu_requests);
     // printf("initialization finished\n");
     int num_keys = 1;
-    while (num_keys != 0 && total_num_keys < 1000000) {
-        // printf("%d\n", num_keys);
+    while (num_keys != 0 && total_num_keys < 20000000) {
         num_keys = generate_requests_fromfile(fp);
         total_num_keys += num_keys;
+        printf("%d/20000000\n", total_num_keys);
         execute_one_batch(set, dpu);
 #ifdef DEBUG_ON
         printf("results from DPUs: batch %d\n", total_num_keys / num_keys);
