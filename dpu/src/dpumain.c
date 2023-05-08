@@ -30,7 +30,7 @@ __mram_ptr void* getval;
 int main()
 {
     int tid = me();
-    // printf("[tasklet %d/%d] numreq:%d\n",tid, NR_TASKLETS, request_buffer[tid].num_req);
+    printf("[tasklet %d/%d] start_index:%d\n",tid, NR_TASKLETS, end_idx[tid]);
     // for(int i = 0; i < request_buffer[me()].num_req; i++){
     //     printf("[tasklet %d] key:%ld\n",tid, request_buffer[tid].key[i]);
     // }

@@ -220,7 +220,7 @@ void insert(BPlusTree* bpt, BPTptr cur, key_t_ key, value_ptr_t_ value,
 
 BPlusTree* init_BPTree()
 {
-    printf("taskletinit_BPTree\n");
+    //printf("taskletinit_BPTree\n");
     BPlusTree* bpt = (BPlusTree*)malloc(sizeof(BPlusTree));
     bpt->root = (BPTptr)malloc(sizeof(BPTreeNode));
     bpt->NumOfNodes = 1;
