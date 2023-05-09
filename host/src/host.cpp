@@ -53,14 +53,16 @@ uint64_t nb_cycles_get[NR_DPUS];
 uint64_t total_cycles_insert;
 float total_time_sendrequests;
 float total_time_execution;
-float total_time;
+float total_time, cpu_time;
 int each_dpu;
 int send_size;
 uint64_t num_requests[NR_DPUS];
 int num_reqs_for_cpus[NUM_BPTREE_IN_CPU];
 uint64_t total_num_keys;
+uint64_t total_num_keys_cpu;
+uint64_t total_num_keys_dpu;
 uint32_t nr_of_dpus;
-struct timeval start, end, start_total;
+struct timeval start, end, start_total, end_total, end_cpu;
 
 BPlusTree* bplustrees[NUM_BPTREE_IN_CPU];
 pthread_t threads[NUM_BPTREE_IN_CPU];
@@ -117,7 +119,7 @@ uint64_t generate_requests()
 }
 #endif
 
-int generate_requests_fromfile(std::ifstream& fs)
+int generate_requests_fromfile(std::ifstream& fs, int n)
 {
     dpu_requests = (dpu_requests_t*)malloc(
         (NR_DPUS) * sizeof(dpu_requests_t));
@@ -128,17 +130,17 @@ int generate_requests_fromfile(std::ifstream& fs)
     }
 
     /* read workload file */
-    key_int64_t* batch_keys = (key_int64_t*)malloc(NUM_REQUESTS_PER_BATCH * sizeof(key_int64_t));
+    key_int64_t* batch_keys = (key_int64_t*)malloc(n * sizeof(key_int64_t));
     if (dpu_requests == NULL) {
-    printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET
-            "] heap size is not enough\n");
-    return 0;
+        printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET
+               "] heap size is not enough\n");
+        return 0;
     }
     // std::cout << "malloc batch_keys" << std::endl;
     int key_count = 0;
-    fs.read(reinterpret_cast<char*>(batch_keys), sizeof(batch_keys) * NUM_REQUESTS_PER_BATCH);
+    fs.read(reinterpret_cast<char*>(batch_keys), sizeof(batch_keys) * n);
     key_count = fs.tellg() / sizeof(key_int64_t) - total_num_keys;
-    //std::cout << "key_count: " << key_count << std::endl;
+    // std::cout << "key_count: " << key_count << std::endl;
     /* sort by which tree the requests should be processed */
     std::sort(batch_keys, batch_keys + key_count, [](auto a, auto b) { return a / RANGE < b / RANGE; });
     /* count the number of requests for each tree */
@@ -151,20 +153,28 @@ int generate_requests_fromfile(std::ifstream& fs)
     send_size = 0;
     for (int dpu_i = 0; dpu_i < NR_DPUS; dpu_i++) {
         for (int tree_i = 0; tree_i < NUM_BPTREE_IN_DPU; tree_i++) {
+            num_keys_for_each_dpu[dpu_i]
+                += num_keys[NUM_BPTREE_IN_CPU + dpu_i * NUM_BPTREE_IN_DPU + tree_i];
             dpu_requests[dpu_i].end_idx[tree_i] = num_keys_for_each_dpu[dpu_i];
-            num_keys_for_each_dpu[dpu_i] += num_keys[NUM_BPTREE_IN_CPU + dpu_i * NUM_BPTREE_IN_DPU + tree_i];
+#ifdef PRINT_DEBUG
+            printf("dpu_%d's end_idx of tree%d = %d\n", dpu_i, tree_i, dpu_requests[dpu_i].end_idx[tree_i]);
+#endif
         }
+        total_num_keys_dpu += num_keys_for_each_dpu[dpu_i];
+        /* send size: maximum number of requests to a DPU */
         if (num_keys_for_each_dpu[dpu_i] > send_size)
             send_size = num_keys_for_each_dpu[dpu_i];
     }
     int current_idx = 0;
     /* make cpu requests */
     for (int cpu_i = 0; cpu_i < NUM_BPTREE_IN_CPU; cpu_i++) {
+        cpu_requests.at(cpu_i).clear();
         for (int i = 0; i < num_keys[cpu_i]; i++) {
             cpu_requests.at(cpu_i).push_back({batch_keys[current_idx + i], batch_keys[current_idx + i], WRITE});
         }
         current_idx += num_keys[cpu_i];
         num_reqs_for_cpus[cpu_i] = num_keys[cpu_i];
+        total_num_keys_cpu += num_reqs_for_cpus[cpu_i];
     }
     /* make dpu requests */
     for (int dpu_i = 0; dpu_i < NR_DPUS; dpu_i++) {
@@ -228,7 +238,6 @@ void show_requests(int i)
     }
     printf("[debug_info]DPU:%d\n", i);
     for (int tree_i = 0; tree_i < NUM_BPTREE_IN_DPU; tree_i++) {
-        printf("end_idx for tree %d = %d\n", tree_i, dpu_requests[i].end_idx[tree_i]);
         if (dpu_requests[i].end_idx[tree_i] != 0) {
             printf("tree %d first req:%ld,WRITE\n", tree_i, dpu_requests[i].requests[0].key);
         }
@@ -245,7 +254,9 @@ void send_requests(struct dpu_set_t set, struct dpu_set_t dpu)
     DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_TO_DPU, "end_idx", 0,
         sizeof(int) * NUM_BPTREE_IN_DPU,
         DPU_XFER_DEFAULT));
+#ifdef PRINT_DEBUG
     printf("send_size: %ld / buffer_size: %ld\n", sizeof(each_request_t) * send_size, sizeof(each_request_t) * MAX_REQ_NUM_IN_A_DPU);
+#endif
     DPU_FOREACH(set, dpu, each_dpu)
     {
         DPU_ASSERT(dpu_prepare_xfer(
@@ -289,12 +300,12 @@ void* execute_queries(void* thread_id)
         getval = BPTreeGet(bplustrees[tid], cpu_requests.at(tid).at(i).key);
     }
     getval++;
-    #ifdef PRINT_DEBUG
-    if(tid == 0 || tid == 10){
-    printf("CPU thread %d: num of nodes = %d, height = %d\n", tid,
-    BPTree_GetNumOfNodes(bplustrees[tid]) ,BPTree_GetHeight(bplustrees[tid]));
+#ifdef PRINT_DEBUG
+    if (tid == 0 || tid == 10) {
+        printf("CPU thread %d: num of nodes = %d, height = %d\n", tid,
+            BPTree_GetNumOfNodes(bplustrees[tid]), BPTree_GetHeight(bplustrees[tid]));
     }
-    #endif
+#endif
     return NULL;
 }
 
@@ -315,6 +326,9 @@ void execute_cpu()
     for (int i = 0; i < NUM_BPTREE_IN_CPU; i++) {
         pthread_create(&threads[i], NULL, execute_queries, thread_ids + i);
     }
+    for (int i = 0; i < NUM_BPTREE_IN_CPU; i++) {
+        pthread_join(threads[i], NULL);
+    }
 }
 
 void execute_one_batch(struct dpu_set_t set, struct dpu_set_t dpu)
@@ -322,7 +336,7 @@ void execute_one_batch(struct dpu_set_t set, struct dpu_set_t dpu)
     // printf("\n");
     // printf("======= batch start=======\n");
     // show_requests(0);
-    gettimeofday(&start_total, NULL);
+    // gettimeofday(&start_total, NULL);
     // CPU→DPU
     // printf("sending %d requests for %d DPUS...\n", NUM_REQUESTS_IN_BATCH,
     // nr_of_dpus);
@@ -335,22 +349,22 @@ void execute_one_batch(struct dpu_set_t set, struct dpu_set_t dpu)
     total_time += time_diff(&start, &end);
     total_time_sendrequests += time_diff(&start, &end);
 
-    // DPU execution
+    /* execution */
     gettimeofday(&start, NULL);
     DPU_ASSERT(dpu_launch(set, DPU_ASYNCHRONOUS));
     execute_cpu();
-    for (int i = 0; i < NUM_BPTREE_IN_CPU; i++) {
-        pthread_join(threads[i], NULL);
-    }
-    gettimeofday(&end, NULL);
-    printf("[3/4]cpu finished: %0.5fsec\n", time_diff(&start, &end));
-    dpu_sync(set);
-    gettimeofday(&end, NULL);
+    gettimeofday(&end_cpu, NULL);
 #ifdef PRINT_DEBUG
-    printf("[4/4]cpu and all dpus finished: %0.5fsec\n", time_diff(&start, &end));
+    printf("[3/4]cpu finished: %0.5fsec\n", time_diff(&start, &end_cpu));
 #endif
-    total_time += time_diff(&start, &end);
-    total_time_execution += time_diff(&start, &end);
+    dpu_sync(set);
+    gettimeofday(&end_total, NULL);
+#ifdef PRINT_DEBUG
+    printf("[4/4]cpu and all dpus finished: %0.5fsec\n", time_diff(&start, &end_total));
+#endif
+    cpu_time += time_diff(&start, &end_cpu);
+    total_time += time_diff(&start, &end_total);
+    total_time_execution += time_diff(&start, &end_total);
 
 // DPU→CPU
 #ifdef STATS_ON
@@ -406,24 +420,25 @@ int main(int argc, char* argv[])
     // requests:%ld\n",(uint64_t)NUM_REQUESTS);
 
     cmdline::parser a;
-    a.add<int>("keynum", 'n', "num of generated_keys to generate", false, 100000000);
+    a.add<int>("keynum", 'n', "maximum num of keys for the experiment", false, 1000000);
     a.add<std::string>("zipfianconst", 'a', "zipfianconst", false, "1.2");
     a.parse_check(argc, argv);
     std::string zipfian_const = a.get<std::string>("zipfianconst");
-    int key_num = a.get<int>("keynum");
-    std::string file_name = ("./workload/zipf_const_" + zipfian_const +  ".bin");
+    int max_key_num = a.get<int>("keynum");
+    std::string file_name = ("./workload/zipf_const_" + zipfian_const + ".bin");
+#ifdef PRINT_DEBUG
     std::cout << "zipf_const:" << zipfian_const << ", file:" << file_name << std::endl;
-    
+#endif
     struct dpu_set_t set, dpu;
     DPU_ASSERT(dpu_alloc(NR_DPUS, NULL, &set));
     DPU_ASSERT(dpu_load(set, DPU_BINARY, NULL));
     DPU_ASSERT(dpu_get_nr_dpus(set, &nr_of_dpus));
+#ifdef PRINT_DEBUG
     printf("Allocated %d DPU(s)\n", nr_of_dpus);
-    #ifdef PRINT_DEBUG
     std::cout << "num trees in CPU:" << NUM_BPTREE_IN_CPU << std::endl;
     std::cout << "num trees in DPU:" << NUM_BPTREE_IN_DPU << std::endl;
     std::cout << "num total trees:" << NUM_TOTAL_TREES << std::endl;
-    #endif
+#endif
 // set expvars
 #ifdef VARY_REQUESTNUM
     expvars.gap = 50;
@@ -459,21 +474,31 @@ int main(int argc, char* argv[])
     }
     /* main routine */
     int batch_num = 0;
-    while (true && total_num_keys < 20000000) {
+    int num_keys = 0;
+    while (total_num_keys < max_key_num) {
         // printf("%d\n", num_keys);
-        int num_keys = generate_requests_fromfile(file_input);
+        if (max_key_num - total_num_keys >= NUM_REQUESTS_PER_BATCH) {
+            num_keys = generate_requests_fromfile(file_input, NUM_REQUESTS_PER_BATCH);
+        } else {
+            num_keys = generate_requests_fromfile(file_input, max_key_num - total_num_keys);
+        }
         if (num_keys == 0)
             break;
         total_num_keys += num_keys;
-        #ifdef PRINT_DEBUG
-        std::cout << std::endl << "===== batch "<< batch_num << " =====" << std::endl;
+#ifdef PRINT_DEBUG
+        std::cout << std::endl
+                  << "===== batch " << batch_num << " =====" << std::endl;
         std::cout << "[1/4] " << num_keys << " requests generated" << std::endl;
-        #endif
-        std::cout << "executing "<< total_num_keys << "/20000000..." << std::endl;
+        std::cout << "executing " << total_num_keys << "/" << max_key_num << "..." << std::endl;
+#endif
         execute_one_batch(set, dpu);
-        #ifdef PRINT_DEBUG
-        DPU_FOREACH(set, dpu, each_dpu) { if(each_dpu==0)DPU_ASSERT(dpu_log_read(dpu, stdout)); }
-        #endif
+#ifdef PRINT_DEBUG
+        DPU_FOREACH(set, dpu, each_dpu)
+        {
+            if (each_dpu == 0)
+                DPU_ASSERT(dpu_log_read(dpu, stdout));
+        }
+#endif
 #ifdef DEBUG_ON
         printf("results from DPUs: batch %d\n", total_num_keys / num_keys);
 #endif
@@ -482,10 +507,12 @@ int main(int argc, char* argv[])
     }
 
     double throughput = 2 * total_num_keys / total_time_execution;
-    printf("dpus, tasklets, queries, send_time, execution_time, total_time, throughput\n");
-    printf("%d, %d, %ld, %0.8f, %0.8f, %0.8f, %0.0f\n", NR_DPUS , NR_TASKLETS,
-        (long int)2 * total_num_keys, total_time_sendrequests,
-        total_time_execution, total_time, throughput);
+#ifdef PRINT_DEBUG
+    printf("zipfian_const, num_dpus, num_tasklets, num_CPU_Trees, num_DPU_Trees, num_queries, num_reqs_for_cpu, num_reqs_for_dpu, num_reqs_{cpu/(cpu+dpu)}, send_time, execution_time_cpu, execution_time_cpu_and_dpu, exec_time_{cpu/(cpu&dpu)}[%], total_time, throughput\n");
+#endif
+    printf("%ld,%ld,%ld\n", total_num_keys_cpu, total_num_keys_dpu, total_num_keys_cpu + total_num_keys_dpu);
+    printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, total_time_sendrequests, cpu_time,
+        total_time_execution, 100 * cpu_time / total_time_execution, total_time, throughput);
     DPU_ASSERT(dpu_free(set));
 #ifdef WRITE_CSV
     // write results to a csv file

@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-//#define USE_LINEAR_SEARCH
+// #define USE_LINEAR_SEARCH
 
 #ifdef DEBUG_ON
 typedef struct Queue {  // queue for showing all nodes by BFS

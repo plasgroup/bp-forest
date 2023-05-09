@@ -30,7 +30,7 @@ __mram_ptr void* getval;
 int main()
 {
     int tid = me();
-    printf("[tasklet %d/%d] start_index:%d\n",tid, NR_TASKLETS, end_idx[tid]);
+    printf("[tasklet %d/%d] end_index:%d\n", tid, NR_TASKLETS, end_idx[tid]);
     // for(int i = 0; i < request_buffer[me()].num_req; i++){
     //     printf("[tasklet %d] key:%ld\n",tid, request_buffer[tid].key[i]);
     // }
@@ -102,6 +102,7 @@ int main()
 #ifdef STATS_ON
     perfcounter_config(COUNT_CYCLES, true);
 #endif
+    /* insertion */
     for (int index = tid == 0 ? 0 : end_idx[tid - 1]; index < end_idx[tid]; index++) {
         BPTreeInsert(request_buffer[index].key,
             request_buffer[index].write_val_ptr, tid);
