@@ -41,12 +41,12 @@ int main()
         // tasklet\n", VALUE_DATA_SIZE, MAX_VALUE_NUM); printf("using up to %d MB for
         // node data, node size = %u, can store up to %d nodes per tasklet\n",
         // NODE_DATA_SIZE,sizeof(BPTreeNode), MAX_NODE_NUM);
-        //printf("batch_num:%d\n", batch_num);
+        printf("batch_num:%d\n", batch_num);
         batch_num++;
     }
     barrier_wait(&my_barrier);
     if (batch_num == 1) {
-        // printf("[tasklet %d] initializing BPTree\n",tid);
+        printf("[tasklet %d] initializing BPTree\n", tid);
         init_BPTree(tid);
     }
     // printf("[tasklet %d] %d times insertion\n",tid,

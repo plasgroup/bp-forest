@@ -226,7 +226,7 @@ void show_requests(int i)
         printf("[invalid argment]i must be less than NR_DPUS");
         return;
     }
-    printf("[debug_info]DPU:%d\n");
+    printf("[debug_info]DPU:%d\n", i);
     for (int tree_i = 0; tree_i < NUM_BPTREE_IN_DPU; tree_i++) {
         printf("end_idx for tree %d = %d\n", tree_i, dpu_requests[i].end_idx[tree_i]);
         if (dpu_requests[i].end_idx[tree_i] != 0) {
@@ -245,7 +245,7 @@ void send_requests(struct dpu_set_t set, struct dpu_set_t dpu)
     DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_TO_DPU, "end_idx", 0,
         sizeof(int) * NUM_BPTREE_IN_DPU,
         DPU_XFER_DEFAULT));
-    printf("send_size: %d / buffer_size: %d\n", sizeof(each_request_t) * send_size, sizeof(each_request_t) * MAX_REQ_NUM_IN_A_DPU);
+    printf("send_size: %ld / buffer_size: %ld\n", sizeof(each_request_t) * send_size, sizeof(each_request_t) * MAX_REQ_NUM_IN_A_DPU);
     DPU_FOREACH(set, dpu, each_dpu)
     {
         DPU_ASSERT(dpu_prepare_xfer(
@@ -316,7 +316,7 @@ void execute_cpu()
 void execute_one_batch(struct dpu_set_t set, struct dpu_set_t dpu)
 {
     // printf("\n");
-    // printf("======= batch %d =======\n",batch_num);
+    // printf("======= batch start=======\n");
     // show_requests(0);
     gettimeofday(&start_total, NULL);
     // CPU→DPU
@@ -325,6 +325,9 @@ void execute_one_batch(struct dpu_set_t set, struct dpu_set_t dpu)
     gettimeofday(&start, NULL);
     send_requests(set, dpu);
     gettimeofday(&end, NULL);
+#ifdef PRINT_DEBUG
+    printf("[2/4] send finished\n");
+#endif
     total_time += time_diff(&start, &end);
     total_time_sendrequests += time_diff(&start, &end);
 
@@ -338,6 +341,9 @@ void execute_one_batch(struct dpu_set_t set, struct dpu_set_t dpu)
     gettimeofday(&end, NULL);
     printf("cpu finished: %0.5fsec\n", time_diff(&start, &end));
     dpu_sync(set);
+#ifdef PRINT_DEBUG
+    printf("[4/4] DPU_finished\n");
+#endif
     gettimeofday(&end, NULL);
     printf("cpu and all dpus finished: %0.5fsec\n", time_diff(&start, &end));
     total_time += time_diff(&start, &end);

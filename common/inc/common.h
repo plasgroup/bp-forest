@@ -31,6 +31,7 @@
 #define READ (1)
 #define WRITE (0)
 
+// #define PRINT_DEBUG
 // #define VARY_REQUESTNUM
 // #define DEBUG_ON
 // #define STATS_ON
