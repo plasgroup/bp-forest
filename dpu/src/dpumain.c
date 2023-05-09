@@ -41,12 +41,12 @@ int main()
         // tasklet\n", VALUE_DATA_SIZE, MAX_VALUE_NUM); printf("using up to %d MB for
         // node data, node size = %u, can store up to %d nodes per tasklet\n",
         // NODE_DATA_SIZE,sizeof(BPTreeNode), MAX_NODE_NUM);
-        printf("batch_num:%d\n", batch_num);
+        // printf("batch_num:%d\n", batch_num);
         batch_num++;
     }
     barrier_wait(&my_barrier);
     if (batch_num == 1) {
-        printf("[tasklet %d] initializing BPTree\n", tid);
+        // printf("[tasklet %d] initializing BPTree\n", tid);
         init_BPTree(tid);
     }
     // printf("[tasklet %d] %d times insertion\n",tid,
@@ -115,8 +115,16 @@ int main()
 #endif
 
 #endif
+#ifdef PRINT_DEBUG
+    /* sequential execution using semaphore */
+    sem_take(&my_semaphore);
+    printf("[tasklet %d] total num of nodes = %d\n", tid,
+        BPTree_GetNumOfNodes(tid));
+    printf("[tasklet %d] height = %d\n", tid, BPTree_GetHeight(tid));
+    sem_give(&my_semaphore);
+    barrier_wait(&my_barrier);
+#endif
 #ifdef PRINT_ON
-    // sequential
     sem_take(&my_semaphore);
     printf("\n");
     printf("Printing Nodes of tasklet#%d...\n", tid);
@@ -159,12 +167,6 @@ int main()
     // #endif
 
 #ifdef STATS_ON
-    sem_take(&my_semaphore);
-    printf("[tasklet %d] total num of nodes = %d\n", tid,
-        BPTree_GetNumOfNodes(tid));
-    printf("[tasklet %d] height = %d\n", tid, BPTree_GetHeight(tid));
-    sem_give(&my_semaphore);
-    barrier_wait(&my_barrier);
     if (tid == 0) {
         printf("nb_cycles_insert = %lu\n", nb_cycles_insert);
         // printf("cycles/insert = %d\n", nb_cycles_insert/request_buffer.num_req);

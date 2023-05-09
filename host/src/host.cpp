@@ -289,9 +289,13 @@ void* execute_queries(void* thread_id)
         getval = BPTreeGet(bplustrees[tid], cpu_requests.at(tid).at(i).key);
     }
     getval++;
+    #ifdef PRINT_DEBUG
+    if(tid == 0 || tid == 10){
+    printf("CPU thread %d: num of nodes = %d, height = %d\n", tid,
+    BPTree_GetNumOfNodes(bplustrees[tid]) ,BPTree_GetHeight(bplustrees[tid]));
+    }
+    #endif
     return NULL;
-    // printf("thread %d: num of nodes = %d, height = %d\n", tid,
-    // BPTree_GetNumOfNodes(bplustrees[tid]) ,BPTree_GetHeight(bplustrees[tid]));
 }
 
 void initialize_cpu()
@@ -339,13 +343,12 @@ void execute_one_batch(struct dpu_set_t set, struct dpu_set_t dpu)
         pthread_join(threads[i], NULL);
     }
     gettimeofday(&end, NULL);
-    printf("cpu finished: %0.5fsec\n", time_diff(&start, &end));
+    printf("[3/4]cpu finished: %0.5fsec\n", time_diff(&start, &end));
     dpu_sync(set);
-#ifdef PRINT_DEBUG
-    printf("[4/4] DPU_finished\n");
-#endif
     gettimeofday(&end, NULL);
-    printf("cpu and all dpus finished: %0.5fsec\n", time_diff(&start, &end));
+#ifdef PRINT_DEBUG
+    printf("[4/4]cpu and all dpus finished: %0.5fsec\n", time_diff(&start, &end));
+#endif
     total_time += time_diff(&start, &end);
     total_time_execution += time_diff(&start, &end);
 
@@ -417,9 +420,9 @@ int main(int argc, char* argv[])
     DPU_ASSERT(dpu_get_nr_dpus(set, &nr_of_dpus));
     printf("Allocated %d DPU(s)\n", nr_of_dpus);
     #ifdef PRINT_DEBUG
-    std::cout << num trees in CPU: << NUM_BPTREE_IN_CPU << std::endl;
-    std::cout << num trees in DPU: << NUM_BPTREE_IN_DPU << std::endl;
-    std::cout << num total trees: << NUM_TOTAL_TREES << std::endl;
+    std::cout << "num trees in CPU:" << NUM_BPTREE_IN_CPU << std::endl;
+    std::cout << "num trees in DPU:" << NUM_BPTREE_IN_DPU << std::endl;
+    std::cout << "num total trees:" << NUM_TOTAL_TREES << std::endl;
     #endif
 // set expvars
 #ifdef VARY_REQUESTNUM
@@ -455,13 +458,18 @@ int main(int argc, char* argv[])
         return 1;
     }
     /* main routine */
+    int batch_num = 0;
     while (true && total_num_keys < 20000000) {
         // printf("%d\n", num_keys);
         int num_keys = generate_requests_fromfile(file_input);
         if (num_keys == 0)
             break;
         total_num_keys += num_keys;
-        std::cout << "=== executing "<< total_num_keys << "/20000000 ===" << std::endl;
+        #ifdef PRINT_DEBUG
+        std::cout << std::endl << "===== batch "<< batch_num << " =====" << std::endl;
+        std::cout << "[1/4] " << num_keys << " requests generated" << std::endl;
+        #endif
+        std::cout << "executing "<< total_num_keys << "/20000000..." << std::endl;
         execute_one_batch(set, dpu);
         #ifdef PRINT_DEBUG
         DPU_FOREACH(set, dpu, each_dpu) { if(each_dpu==0)DPU_ASSERT(dpu_log_read(dpu, stdout)); }
@@ -470,6 +478,7 @@ int main(int argc, char* argv[])
         printf("results from DPUs: batch %d\n", total_num_keys / num_keys);
 #endif
         free(dpu_requests);
+        batch_num++;
     }
 
     double throughput = 2 * total_num_keys / total_time_execution;
