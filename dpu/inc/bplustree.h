@@ -5,7 +5,7 @@
 
 #define NODE_DATA_SIZE (40)  // maximum node data size, MB
 #define MAX_NODE_NUM \
-    ((NODE_DATA_SIZE << 20) / sizeof(BPTreeNode) / NR_TASKLETS)  // NODE_DATA_SIZE MB for Node data
+    ((NODE_DATA_SIZE << 20) / sizeof(BPTreeNode) / NUM_BPTREE_IN_DPU)  // NODE_DATA_SIZE MB for Node data
 #include "common.h"
 #include <mram.h>
 #include <string.h>
