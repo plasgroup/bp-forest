@@ -325,9 +325,13 @@ void* execute_queries(void* thread_id)
             cpu_requests.at(tid).at(i).write_val_ptr);
     }
     // printf("thread %d: search\n", tid);
-    for (int i = 0; i < num_reqs_for_cpus[tid]; i++) {
-        getval = BPTreeGet(bplustrees[tid], cpu_requests.at(tid).at(i).key);
+    /* read intensive */
+    for (int j = 0; j < 19; j++) {
+        for (int i = 0; i < num_reqs_for_cpus[tid]; i++) {
+            getval = BPTreeGet(bplustrees[tid], cpu_requests.at(tid).at(i).key);
+        }
     }
+
     getval++;
 #ifdef PRINT_DEBUG
     if (tid == 0 || tid == 10) {
@@ -463,13 +467,14 @@ int main(int argc, char* argv[])
 #endif
     struct dpu_set_t set1, set2, dpu1, dpu2;
     DPU_ASSERT(dpu_alloc(NR_DPUS - NR_DPUS_REDUNDANT, NULL, &set1));
-    DPU_ASSERT(dpu_alloc(NR_DPUS_REDUNDANT, NULL, &set1));
+    DPU_ASSERT(dpu_alloc(NR_DPUS_REDUNDANT, NULL, &set2));
     DPU_ASSERT(dpu_load(set1, DPU_BINARY1, NULL));
     DPU_ASSERT(dpu_load(set2, DPU_BINARY2, NULL));
     DPU_ASSERT(dpu_get_nr_dpus(set1, &nr_of_dpus1));
     DPU_ASSERT(dpu_get_nr_dpus(set2, &nr_of_dpus2));
 #ifdef PRINT_DEBUG
-    printf("Allocated %d DPU(s)\n", nr_of_dpus);
+    printf("Allocated %d DPU(s)\n", nr_of_dpus1);
+    printf("Allocated %d DPU(s)\n", nr_of_dpus2);
     std::cout << "num trees in CPU:" << NUM_BPTREE_IN_CPU << std::endl;
     std::cout << "num trees in DPU:" << NUM_BPTREE_IN_DPU << std::endl;
     std::cout << "num total trees:" << NUM_TOTAL_TREES << std::endl;
@@ -528,11 +533,16 @@ int main(int argc, char* argv[])
 #endif
         execute_one_batch(set1, set2, dpu1, dpu2);
 #ifdef PRINT_DEBUG
-        DPU_FOREACH(set, dpu, each_dpu)
-        {
-            if (each_dpu == 0)
-                DPU_ASSERT(dpu_log_read(dpu, stdout));
-        }
+        // DPU_FOREACH(set1, dpu1, each_dpu)
+        // {
+        //     if (each_dpu == 0)
+        //         DPU_ASSERT(dpu_log_read(dpu1, stdout));
+        // }
+        // DPU_FOREACH(set2, dpu2, each_dpu)
+        // {
+        //     if (each_dpu == 0)
+        //         DPU_ASSERT(dpu_log_read(dpu2, stdout));
+        // }
 #endif
 #ifdef DEBUG_ON
         printf("results from DPUs: batch %d\n", total_num_keys / num_keys);
@@ -541,12 +551,15 @@ int main(int argc, char* argv[])
         batch_num++;
     }
 
-    double throughput = 2 * total_num_keys / total_time_execution;
+    //double throughput = 2 * total_num_keys / total_time_execution;
+    double throughput = 20 * total_num_keys / total_time_execution;
 #ifdef PRINT_DEBUG
     printf("zipfian_const, num_dpus, num_tasklets, num_CPU_Trees, num_DPU_Trees, num_queries, num_reqs_for_cpu, num_reqs_for_dpu, num_reqs_{cpu/(cpu+dpu)}, send_time, execution_time_cpu, execution_time_cpu_and_dpu, exec_time_{cpu/(cpu&dpu)}[%], total_time, throughput\n");
 #endif
     //printf("%ld,%ld,%ld\n", total_num_keys_cpu, total_num_keys_dpu, total_num_keys_cpu + total_num_keys_dpu);
-    printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, total_time_sendrequests, cpu_time,
+    //printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, total_time_sendrequests, cpu_time,
+    //    total_time_execution, 100 * cpu_time / total_time_execution, total_time, throughput);
+    printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)20 * total_num_keys, 20 * total_num_keys_cpu, 20 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, total_time_sendrequests, cpu_time,
         total_time_execution, 100 * cpu_time / total_time_execution, total_time, throughput);
     DPU_ASSERT(dpu_free(set1));
     DPU_ASSERT(dpu_free(set2));

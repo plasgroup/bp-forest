@@ -1,12 +1,12 @@
 #include "bplustree.h"
 #include "common.h"
+#include <assert.h>
 #include <barrier.h>
 #include <defs.h>
 #include <mram.h>
 #include <perfcounter.h>
 #include <sem.h>
 #include <stdio.h>
-#include <assert.h>
 BARRIER_INIT(my_barrier, NR_TASKLETS);
 
 #include <barrier.h>
@@ -145,9 +145,13 @@ int main()
     barrier_wait(&my_barrier);
     perfcounter_config(COUNT_CYCLES, true);
 #endif
-    for (int index = tid == 0 ? 0 : end_idx[tid - 1]; index < end_idx[tid]; index++) {
-        res[tid] = BPTreeGet(request_buffer[index].key, tid);
+    /* read intensive */
+    for (int i = 0; i < 19; i++) {
+        for (int index = tid == 0 ? 0 : end_idx[tid - 1]; index < end_idx[tid]; index++) {
+            res[tid] = BPTreeGet(request_buffer[index].key, tid);
+        }
     }
+
 #ifdef STATS_ON
     nb_cycles_get = perfcounter_get();
 
