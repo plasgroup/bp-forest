@@ -36,8 +36,9 @@ extern "C" {
 #define DPU_BINARY2 "./build/dpu/dpu_program_redundant"
 #endif
 
-#define NR_DPUS_REDUNDANT (64)
-#define NUM_TOTAL_TREES ((NR_DPUS - NR_DPUS_REDUNDANT) * NUM_BPTREE_IN_DPU + NR_DPUS_REDUNDANT + NUM_BPTREE_IN_CPU)
+#define NR_DPUS_REDUNDANT (NR_DPUS / 4)
+#define NR_DPUS_MULTIPLE (NR_DPUS - NR_DPUS_REDUNDANT)
+#define NUM_TOTAL_TREES (NUM_BPTREE_IN_CPU + NR_DPUS_REDUNDANT + NR_DPUS_MULTIPLE * NUM_BPTREE_IN_DPU)
 #define GET_AND_PRINT_TIME(CODES, LABEL) \
     gettimeofday(&start, NULL);          \
     CODES                                \
@@ -125,6 +126,7 @@ uint64_t generate_requests()
 }
 #endif
 
+#ifdef CYCLIC_DIST
 int generate_requests_fromfile(std::ifstream& fs, int n)
 {
     dpu_requests = (dpu_requests_t*)malloc(
@@ -155,6 +157,134 @@ int generate_requests_fromfile(std::ifstream& fs, int n)
     for (int i = 0; i < key_count; i++) {
         num_keys[batch_keys[i] / RANGE]++;
     }
+#ifdef PRINT_DEBUG
+    int sum = 0;
+    for (int i = 0; i < NUM_TOTAL_TREES; i++) {
+        sum += num_keys[i];
+        printf("num_keys[%d] = %d\n", i, num_keys[i]);
+    }
+    printf("sum:%d\n", sum);
+
+#endif
+    /* count the number of requests for each DPU, determine the send size */
+    send_size = 0;
+    for (int dpu_i = 0; dpu_i < NR_DPUS; dpu_i++) {
+        if (dpu_i < NR_DPUS_REDUNDANT) {
+            num_keys_for_each_dpu[dpu_i]
+                += num_keys[NUM_BPTREE_IN_CPU + dpu_i];
+        } else {
+            for (int tree_i = 0; tree_i < NUM_BPTREE_IN_DPU; tree_i++) {
+/* cyclic */
+#ifdef PRINT_DEBUG
+                printf("range_index for dpu_%d, tree_%d: %d\n", dpu_i, tree_i, NUM_BPTREE_IN_CPU + NR_DPUS_REDUNDANT + (dpu_i - NR_DPUS_REDUNDANT) + NR_DPUS_MULTIPLE * tree_i);
+#endif
+                num_keys_for_each_dpu[dpu_i]
+                    += num_keys[NUM_BPTREE_IN_CPU + NR_DPUS_REDUNDANT + (dpu_i - NR_DPUS_REDUNDANT) + NR_DPUS_MULTIPLE * tree_i];
+                dpu_requests[dpu_i].end_idx[tree_i] = num_keys_for_each_dpu[dpu_i];
+#ifdef PRINT_DEBUG
+                printf("dpu_%d's end_idx of tree%d = %d\n", dpu_i, tree_i, dpu_requests[dpu_i].end_idx[tree_i]);
+#endif
+            }
+        }
+        total_num_keys_dpu += num_keys_for_each_dpu[dpu_i];
+        /* send size: maximum number of requests to a DPU */
+        if (num_keys_for_each_dpu[dpu_i] > send_size)
+            send_size = num_keys_for_each_dpu[dpu_i];
+    }
+    int current_idx = 0;
+    /* make cpu requests */
+    for (int cpu_i = 0; cpu_i < NUM_BPTREE_IN_CPU; cpu_i++) {
+        cpu_requests.at(cpu_i).clear();
+        for (int i = 0; i < num_keys[cpu_i]; i++) {
+            cpu_requests.at(cpu_i).push_back({batch_keys[current_idx + i], batch_keys[current_idx + i], WRITE});
+        }
+        current_idx += num_keys[cpu_i];
+        std::cout << "current idx: " << current_idx << std::endl;
+        num_reqs_for_cpus[cpu_i] = num_keys[cpu_i];
+        total_num_keys_cpu += num_reqs_for_cpus[cpu_i];
+    }
+    /* check num of requests */
+    for (int dpu_i = 0; dpu_i < NR_DPUS; dpu_i++) {
+        if (num_keys_for_each_dpu[dpu_i] >= MAX_REQ_NUM_IN_A_DPU) {
+            printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET
+                   "] request buffer size %d exceeds the limit %d because of skew\n",
+                num_keys_for_each_dpu[dpu_i], MAX_REQ_NUM_IN_A_DPU);
+            assert(false);
+        }
+    }
+    /* make dpu requests: redundant */
+    for (int dpu_i = 0; dpu_i < NR_DPUS_REDUNDANT; dpu_i++) {
+        for (int i = 0; i < num_keys_for_each_dpu[dpu_i]; i++) {
+            dpu_requests[dpu_i].requests[i].key = batch_keys[current_idx + i];
+            dpu_requests[dpu_i].requests[i].write_val_ptr = batch_keys[current_idx + i];
+            dpu_requests[dpu_i].requests[i].operation = WRITE;
+        }
+        current_idx += num_keys_for_each_dpu[dpu_i];
+        std::cout << "current idx: " << current_idx << std::endl;
+    }
+    /* make dpu requests: multiple */
+    for (int tree_i = 0; tree_i < NUM_BPTREE_IN_DPU; tree_i++) {
+        for (int dpu_i = NR_DPUS_REDUNDANT; dpu_i < NR_DPUS; dpu_i++) {
+            for (int i = 0; i < num_keys[NUM_BPTREE_IN_CPU + NR_DPUS_REDUNDANT + (dpu_i - NR_DPUS_REDUNDANT) + NR_DPUS_MULTIPLE * tree_i]; i++) {
+                int offset;
+                if (tree_i == 0) {
+                    offset = 0;
+                } else {
+                    offset = dpu_requests[dpu_i].end_idx[tree_i - 1];
+                }
+                dpu_requests[dpu_i].requests[offset + i].key = batch_keys[current_idx + i];
+                dpu_requests[dpu_i].requests[offset + i].write_val_ptr = batch_keys[current_idx + i];
+                dpu_requests[dpu_i].requests[offset + i].operation = WRITE;
+            }
+            current_idx += num_keys[NUM_BPTREE_IN_CPU + NR_DPUS_REDUNDANT + (dpu_i - NR_DPUS_REDUNDANT) + NR_DPUS_MULTIPLE * tree_i];
+            std::cout << "tree_i = " << tree_i << ", dpu_i = " << dpu_i << ", current idx: " << current_idx << std::endl;
+        }
+    }
+#ifdef PRINT_DEBUG
+    // for (key_int64_t x : num_keys) {
+    //     std::cout << x << std::endl;
+    // }
+#endif
+    free(batch_keys);
+    return key_count;
+}
+#endif
+
+#ifndef CYCLIC_DIST
+int generate_requests_fromfile(std::ifstream& fs, int n)
+{
+    dpu_requests = (dpu_requests_t*)malloc(
+        (NR_DPUS) * sizeof(dpu_requests_t));
+    if (dpu_requests == NULL) {
+        printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET
+               "] heap size is not enough\n");
+        return 0;
+    }
+
+    /* read workload file */
+    key_int64_t* batch_keys = (key_int64_t*)malloc(n * sizeof(key_int64_t));
+    if (dpu_requests == NULL) {
+        printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET
+               "] heap size is not enough\n");
+        return 0;
+    }
+    // std::cout << "malloc batch_keys" << std::endl;
+    int key_count = 0;
+    fs.read(reinterpret_cast<char*>(batch_keys), sizeof(batch_keys) * n);
+    key_count = fs.tellg() / sizeof(key_int64_t) - total_num_keys;
+    // std::cout << "key_count: " << key_count << std::endl;
+    /* sort by which tree the requests should be processed */
+    std::sort(batch_keys, batch_keys + key_count, [](auto a, auto b) { return a / RANGE < b / RANGE; });
+    /* count the number of requests for each tree */
+    int num_keys[NUM_TOTAL_TREES] = {};
+    int num_keys_for_each_dpu[NR_DPUS] = {};
+    for (int i = 0; i < key_count; i++) {
+        num_keys[batch_keys[i] / RANGE]++;
+    }
+#ifdef PRINT_DEBUG
+    for (int i = 0; i < NUM_TOTAL_TREES; i++)
+        printf("num_keys[%d] = %d\n", i, num_keys[i]);
+#endif
     /* count the number of requests for each DPU, determine the send size */
     send_size = 0;
     for (int dpu_i = 0; dpu_i < NR_DPUS; dpu_i++) {
@@ -164,13 +294,12 @@ int generate_requests_fromfile(std::ifstream& fs, int n)
         } else {
             for (int tree_i = 0; tree_i < NUM_BPTREE_IN_DPU; tree_i++) {
                 num_keys_for_each_dpu[dpu_i]
-                    += num_keys[NUM_BPTREE_IN_CPU + dpu_i * NUM_BPTREE_IN_DPU + tree_i];
+                    += num_keys[NUM_BPTREE_IN_CPU + NR_DPUS_REDUNDANT + (dpu_i - NR_DPUS_REDUNDANT) * NUM_BPTREE_IN_DPU + tree_i];
                 dpu_requests[dpu_i].end_idx[tree_i] = num_keys_for_each_dpu[dpu_i];
-            }
-
 #ifdef PRINT_DEBUG
-            printf("dpu_%d's end_idx of tree%d = %d\n", dpu_i, tree_i, dpu_requests[dpu_i].end_idx[tree_i]);
+                printf("dpu_%d's end_idx of tree%d = %d\n", dpu_i, tree_i, dpu_requests[dpu_i].end_idx[tree_i]);
 #endif
+            }
         }
         total_num_keys_dpu += num_keys_for_each_dpu[dpu_i];
         /* send size: maximum number of requests to a DPU */
@@ -211,6 +340,7 @@ int generate_requests_fromfile(std::ifstream& fs, int n)
     free(batch_keys);
     return key_count;
 }
+#endif
 
 // void generate_requests_same(){
 //   dpu_requests.num_req = 0;
@@ -460,7 +590,7 @@ int main(int argc, char* argv[])
     // printf("size of dpu_request_t:%lu,%lu\n", sizeof(dpu_request_t),
     // sizeof(dpu_requests[0])); printf("total num of
     // requests:%ld\n",(uint64_t)NUM_REQUESTS);
-
+    assert(NR_DPUS_REDUNDANT <= NR_DPUS);
     cmdline::parser a;
     a.add<int>("keynum", 'n', "maximum num of keys for the experiment", false, 1000000);
     a.add<std::string>("zipfianconst", 'a', "zipfianconst", false, "1.2");
@@ -472,7 +602,7 @@ int main(int argc, char* argv[])
     std::cout << "zipf_const:" << zipfian_const << ", file:" << file_name << std::endl;
 #endif
     struct dpu_set_t set1, set2, dpu1, dpu2;
-    DPU_ASSERT(dpu_alloc(NR_DPUS - NR_DPUS_REDUNDANT, NULL, &set1));
+    DPU_ASSERT(dpu_alloc(NR_DPUS_MULTIPLE, NULL, &set1));
     DPU_ASSERT(dpu_alloc(NR_DPUS_REDUNDANT, NULL, &set2));
     DPU_ASSERT(dpu_load(set1, DPU_BINARY1, NULL));
     DPU_ASSERT(dpu_load(set2, DPU_BINARY2, NULL));
@@ -560,7 +690,7 @@ int main(int argc, char* argv[])
     //double throughput = 2 * total_num_keys / total_time_execution;
     double throughput = 20 * total_num_keys / total_time_execution;
 #ifdef PRINT_DEBUG
-    printf("zipfian_const, num_dpus, num_tasklets, num_CPU_Trees, num_DPU_Trees, num_queries, num_reqs_for_cpu, num_reqs_for_dpu, num_reqs_{cpu/(cpu+dpu)}, send_time, execution_time_cpu, execution_time_cpu_and_dpu, exec_time_{cpu/(cpu&dpu)}[%], total_time, throughput\n");
+    printf("zipfian_const, num_dpus, num_tasklets, num_CPU_Trees, num_DPU_Trees, num_queries, num_reqs_for_cpu, num_reqs_for_dpu, num_reqs_{cpu/(cpu+dpu)}, send_time, execution_time_cpu, execution_time_cpu_and_dpu, exec_time_{cpu/(cpu&dpu)}[%%], total_time, throughput\n");
 #endif
     //printf("%ld,%ld,%ld\n", total_num_keys_cpu, total_num_keys_dpu, total_num_keys_cpu + total_num_keys_dpu);
     //printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, total_time_sendrequests, cpu_time,
