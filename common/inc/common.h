@@ -21,13 +21,13 @@
 #define REQUEST_SIZE (17)
 // buffer size for request in a DPU(default:20MB/64MB)
 #ifndef MRAM_REQUEST_BUFFER_SIZE
-#define MRAM_REQUEST_BUFFER_SIZE (10 * 1024 * 1024)
+#define MRAM_REQUEST_BUFFER_SIZE (20 * 1024 * 1024)
 #endif
 // default:1,233,618 requests / DPU / batch
 #ifndef MAX_REQ_NUM_IN_A_DPU
 #define MAX_REQ_NUM_IN_A_DPU (MRAM_REQUEST_BUFFER_SIZE / REQUEST_SIZE)
 #endif
-#define NUM_REQUESTS_PER_BATCH (10000000)
+#define NUM_REQUESTS_PER_BATCH (5000000)
 #define READ (1)
 #define WRITE (0)
 
