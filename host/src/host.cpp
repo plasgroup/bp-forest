@@ -36,8 +36,8 @@ extern "C" {
 #define DPU_BINARY2 "./build/dpu/dpu_program_redundant"
 #endif
 
-#define NUM_TOTAL_TREES (NR_DPUS * NUM_BPTREE_IN_DPU + NUM_BPTREE_IN_CPU)
 #define NR_DPUS_REDUNDANT (64)
+#define NUM_TOTAL_TREES ((NR_DPUS - NR_DPUS_REDUNDANT) * NUM_BPTREE_IN_DPU + NR_DPUS_REDUNDANT + NUM_BPTREE_IN_CPU)
 #define GET_AND_PRINT_TIME(CODES, LABEL) \
     gettimeofday(&start, NULL);          \
     CODES                                \
@@ -158,10 +158,16 @@ int generate_requests_fromfile(std::ifstream& fs, int n)
     /* count the number of requests for each DPU, determine the send size */
     send_size = 0;
     for (int dpu_i = 0; dpu_i < NR_DPUS; dpu_i++) {
-        for (int tree_i = 0; tree_i < NUM_BPTREE_IN_DPU; tree_i++) {
+        if (dpu_i < NR_DPUS_REDUNDANT) {
             num_keys_for_each_dpu[dpu_i]
-                += num_keys[NUM_BPTREE_IN_CPU + dpu_i * NUM_BPTREE_IN_DPU + tree_i];
-            dpu_requests[dpu_i].end_idx[tree_i] = num_keys_for_each_dpu[dpu_i];
+                += num_keys[NUM_BPTREE_IN_CPU + dpu_i];
+        } else {
+            for (int tree_i = 0; tree_i < NUM_BPTREE_IN_DPU; tree_i++) {
+                num_keys_for_each_dpu[dpu_i]
+                    += num_keys[NUM_BPTREE_IN_CPU + dpu_i * NUM_BPTREE_IN_DPU + tree_i];
+                dpu_requests[dpu_i].end_idx[tree_i] = num_keys_for_each_dpu[dpu_i];
+            }
+
 #ifdef PRINT_DEBUG
             printf("dpu_%d's end_idx of tree%d = %d\n", dpu_i, tree_i, dpu_requests[dpu_i].end_idx[tree_i]);
 #endif
