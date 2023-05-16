@@ -6,6 +6,7 @@
 #include <perfcounter.h>
 #include <sem.h>
 #include <stdio.h>
+#include <assert.h>
 BARRIER_INIT(my_barrier, NR_TASKLETS);
 
 #include <barrier.h>
@@ -107,6 +108,9 @@ int main()
         BPTreeInsert(request_buffer[index].key,
             request_buffer[index].write_val_ptr, tid);
     }
+    // if(BPTree_GetNumOfNodes(tid) > MAX_NODE_NUM-100){
+    //     assert(0);
+    // }
 #ifdef STATS_ON
     nb_cycles_insert = perfcounter_get();
     barrier_wait(&my_barrier);
