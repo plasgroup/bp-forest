@@ -74,12 +74,20 @@ int main()
     sem_give(&my_semaphore);
     barrier_wait(&my_barrier);
 #endif
-    /* read intensive */
+/* write intensive */
+#if WORKLOAD = W50R50
+    for (int index = tid == 0 ? 0 : end_idx[tid - 1]; index < end_idx[tid]; index++) {
+        res[tid] = BPTreeGet(request_buffer[index].key);
+    }
+#endif
+/* read intensive */
+#if WORKLOAD = W05R95
     for (int i = 0; i < 19; i++) {
         for (int index = tid == 0 ? 0 : end_idx[tid - 1]; index < end_idx[tid]; index++) {
             res[tid] = BPTreeGet(request_buffer[index].key);
         }
     }
+#endif
     barrier_wait(&my_barrier);
     return 0;
 }

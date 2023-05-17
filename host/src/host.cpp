@@ -790,7 +790,13 @@ int main(int argc, char* argv[])
     }
 
     //double throughput = 2 * total_num_keys / total_time_execution;
-    double throughput = 20 * total_num_keys / total_time_execution;
+#if WORKLOAD = R50W50
+    int workloadnum_coefficient = 2;
+#endif
+#if WORKLOAD = R95W05
+    int workloadnum_coefficient = 20;
+#endif
+    double throughput = workloadnum_coefficient * total_num_keys / total_time_execution;
 #ifdef PRINT_DEBUG
     printf("zipfian_const, num_dpus_redundant, num_dpus_multiple, num_tasklets, num_CPU_Trees, num_DPU_Trees, num_queries, num_reqs_for_cpu, num_reqs_for_dpu, num_reqs_{cpu/(cpu+dpu)}, send_time, execution_time_cpu, execution_time_cpu_and_dpu, exec_time_{cpu/(cpu&dpu)}[%%], total_time, throughput\n");
 #endif
