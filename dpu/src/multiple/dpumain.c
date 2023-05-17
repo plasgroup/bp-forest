@@ -145,13 +145,13 @@ int main()
     barrier_wait(&my_barrier);
     perfcounter_config(COUNT_CYCLES, true);
 #endif
-#if WORKLOAD = W50R50
+#if WORKLOAD == W50R50
     /* write intensive */
     for (int index = tid == 0 ? 0 : end_idx[tid - 1]; index < end_idx[tid]; index++) {
         res[tid] = BPTreeGet(request_buffer[index].key, tid);
     }
 #endif
-#if WORKLOAD = W05R95
+#if WORKLOAD == W05R95
     /* read intensive */
     for (int i = 0; i < 19; i++) {
         for (int index = tid == 0 ? 0 : end_idx[tid - 1]; index < end_idx[tid]; index++) {

@@ -30,10 +30,10 @@
 #define NUM_REQUESTS_PER_BATCH (1000000)
 #define READ (1)
 #define WRITE (0)
-#define W50R50 1
-#define W05R95 2
+#define W50R50 (1)
+#define W05R95 (2)
 #ifndef WORKLOAD
-#define WORKLOAD W50_R50
+#define WORKLOAD (W50R50)
 #endif
 // #define PRINT_DEBUG
 // #define VARY_REQUESTNUM

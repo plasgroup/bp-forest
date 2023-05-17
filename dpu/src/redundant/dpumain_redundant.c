@@ -75,13 +75,13 @@ int main()
     barrier_wait(&my_barrier);
 #endif
 /* write intensive */
-#if WORKLOAD = W50R50
+#if WORKLOAD == W50R50
     for (int index = tid == 0 ? 0 : end_idx[tid - 1]; index < end_idx[tid]; index++) {
         res[tid] = BPTreeGet(request_buffer[index].key);
     }
 #endif
 /* read intensive */
-#if WORKLOAD = W05R95
+#if WORKLOAD == W05R95
     for (int i = 0; i < 19; i++) {
         for (int index = tid == 0 ? 0 : end_idx[tid - 1]; index < end_idx[tid]; index++) {
             res[tid] = BPTreeGet(request_buffer[index].key);

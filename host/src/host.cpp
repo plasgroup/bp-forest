@@ -59,9 +59,9 @@ dpu_stats_t stats[NR_DPUS][NUM_VARS];
 uint64_t nb_cycles_insert[NR_DPUS];
 uint64_t nb_cycles_get[NR_DPUS];
 uint64_t total_cycles_insert;
-float total_time_sendrequests;
-float total_time_execution;
-float total_time, cpu_time;
+float send_time;
+float execution_time;
+float send_and_execution_time, total_time, cpu_time;
 int each_dpu;
 int send_size;
 uint64_t num_requests[NR_DPUS];
@@ -72,7 +72,6 @@ uint64_t total_num_keys_dpu;
 uint32_t nr_of_dpus1;
 uint32_t nr_of_dpus2;
 struct timeval start, end, start_total, end_total, end_cpu;
-
 BPlusTree* bplustrees[NUM_BPTREE_IN_CPU];
 pthread_t threads[NUM_BPTREE_IN_CPU];
 int thread_ids[NUM_BPTREE_IN_CPU];
@@ -475,12 +474,20 @@ void* execute_queries(void* thread_id)
             cpu_requests.at(tid).at(i).write_val_ptr);
     }
     // printf("thread %d: search\n", tid);
+    #if WORKLOAD == W05R95
     /* read intensive */
     for (int j = 0; j < 19; j++) {
         for (int i = 0; i < num_reqs_for_cpus[tid]; i++) {
             getval = BPTreeGet(bplustrees[tid], cpu_requests.at(tid).at(i).key);
         }
     }
+    #endif
+    #if WORKLOAD == W50R50
+    /* write intensive */
+    for (int i = 0; i < num_reqs_for_cpus[tid]; i++) {
+        getval = BPTreeGet(bplustrees[tid], cpu_requests.at(tid).at(i).key);
+    }
+    #endif
 
     getval++;
 #ifdef PRINT_DEBUG
@@ -530,8 +537,8 @@ void execute_one_batch(struct dpu_set_t set1, struct dpu_set_t set2, struct dpu_
 #ifdef PRINT_DEBUG
     printf("[2/4] send finished\n");
 #endif
-    total_time += time_diff(&start, &end);
-    total_time_sendrequests += time_diff(&start, &end);
+    send_and_execution_time += time_diff(&start, &end);
+    send_time += time_diff(&start, &end);
 
     /* execution */
     gettimeofday(&start, NULL);
@@ -549,8 +556,8 @@ void execute_one_batch(struct dpu_set_t set1, struct dpu_set_t set2, struct dpu_
     printf("[4/4]cpu and all dpus finished: %0.5fsec\n", time_diff(&start, &end_total));
 #endif
     cpu_time += time_diff(&start, &end_cpu);
-    total_time += time_diff(&start, &end_total);
-    total_time_execution += time_diff(&start, &end_total);
+    send_and_execution_time += time_diff(&start, &end_total);
+    execution_time += time_diff(&start, &end_total);
 
 // DPU→CPU
 #ifdef STATS_ON
@@ -613,8 +620,8 @@ void execute_one_batch(struct dpu_set_t set1, struct dpu_set_t dpu1)
 #ifdef PRINT_DEBUG
     printf("[2/4] send finished\n");
 #endif
-    total_time += time_diff(&start, &end);
-    total_time_sendrequests += time_diff(&start, &end);
+    send_and_execution_time += time_diff(&start, &end);
+    send_time += time_diff(&start, &end);
 
     /* execution */
     gettimeofday(&start, NULL);
@@ -630,8 +637,8 @@ void execute_one_batch(struct dpu_set_t set1, struct dpu_set_t dpu1)
     printf("[4/4]cpu and all dpus finished: %0.5fsec\n", time_diff(&start, &end_total));
 #endif
     cpu_time += time_diff(&start, &end_cpu);
-    total_time += time_diff(&start, &end_total);
-    total_time_execution += time_diff(&start, &end_total);
+    send_and_execution_time += time_diff(&start, &end_total);
+    execution_time += time_diff(&start, &end_total);
 
 // DPU→CPU
 #ifdef STATS_ON
@@ -693,8 +700,15 @@ int main(int argc, char* argv[])
     std::string zipfian_const = a.get<std::string>("zipfianconst");
     int max_key_num = a.get<int>("keynum");
     std::string file_name = ("./workload/zipf_const_" + zipfian_const + ".bin");
+    int query_num_coefficient;
+#if WORKLOAD == (W50R50)
+    query_num_coefficient = 2;
+#endif
+#if WORKLOAD == (W05R95)
+    query_num_coefficient = 20;
+#endif
 #ifdef PRINT_DEBUG
-    std::cout << "zipf_const:" << zipfian_const << ", file:" << file_name << std::endl;
+    std::cout << "zipf_const:" << zipfian_const << ", file:" << file_name << ", WORKLOAD:" << WORKLOAD << ", coefficient:" << query_num_coefficient << std::endl;
 #endif
     struct dpu_set_t set1, set2, dpu1, dpu2;
     DPU_ASSERT(dpu_alloc(NR_DPUS_MULTIPLE, NULL, &set1));
@@ -749,12 +763,13 @@ int main(int argc, char* argv[])
     /* main routine */
     int batch_num = 0;
     int num_keys = 0;
+    gettimeofday(&start_total, NULL);
     while (total_num_keys < max_key_num) {
         // printf("%d\n", num_keys);
         if (max_key_num - total_num_keys >= NUM_REQUESTS_PER_BATCH) {
-            num_keys = generate_requests_fromfile(file_input, NUM_REQUESTS_PER_BATCH);
+            num_keys = query_num_coefficient * generate_requests_fromfile(file_input, NUM_REQUESTS_PER_BATCH / query_num_coefficient);
         } else {
-            num_keys = generate_requests_fromfile(file_input, max_key_num - total_num_keys);
+            num_keys = query_num_coefficient * generate_requests_fromfile(file_input, (max_key_num - total_num_keys) / query_num_coefficient);
         }
         if (num_keys == 0)
             break;
@@ -788,47 +803,24 @@ int main(int argc, char* argv[])
         free(dpu_requests);
         batch_num++;
     }
+    gettimeofday(&end_total, NULL);
+    total_time = time_diff(&start_total, &end_total);
 
-    //double throughput = 2 * total_num_keys / total_time_execution;
-#if WORKLOAD = R50W50
-    int workloadnum_coefficient = 2;
-#endif
-#if WORKLOAD = R95W05
-    int workloadnum_coefficient = 20;
-#endif
-    double throughput = workloadnum_coefficient * total_num_keys / total_time_execution;
+    double throughput = total_num_keys / execution_time;
 #ifdef PRINT_DEBUG
-    printf("zipfian_const, num_dpus_redundant, num_dpus_multiple, num_tasklets, num_CPU_Trees, num_DPU_Trees, num_queries, num_reqs_for_cpu, num_reqs_for_dpu, num_reqs_{cpu/(cpu+dpu)}, send_time, execution_time_cpu, execution_time_cpu_and_dpu, exec_time_{cpu/(cpu&dpu)}[%%], total_time, throughput\n");
+    printf("zipfian_const, num_dpus_redundant, num_dpus_multiple, num_tasklets, num_CPU_Trees, num_DPU_Trees, num_queries, num_reqs_for_cpu, num_reqs_for_dpu, num_reqs_{cpu/(cpu+dpu)}, send_time, execution_time_cpu, execution_time_cpu_and_dpu, exec_time_{cpu/(cpu&dpu)}[%%], send_and_execution_time, total_time, throughput\n");
 #endif
     //printf("%ld,%ld,%ld\n", total_num_keys_cpu, total_num_keys_dpu, total_num_keys_cpu + total_num_keys_dpu);
-    //printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, total_time_sendrequests, cpu_time,
-    //    total_time_execution, 100 * cpu_time / total_time_execution, total_time, throughput);
-    printf("%s, %d, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.2f, %0.5f, %0.0f\n",
+    //printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, send_time, cpu_time,
+    //    execution_time, 100 * cpu_time / execution_time, send_and_execution_time, total_time, throughput);
+    printf("%s, %d, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.2f, %0.5f, %0.5f, %0.0f\n",
         zipfian_const.c_str(), NR_DPUS_REDUNDANT, NR_DPUS_MULTIPLE, NR_TASKLETS,
-        NUM_BPTREE_IN_CPU, NUM_TOTAL_TREES - NUM_BPTREE_IN_CPU, (long int)20 * total_num_keys, 20 * total_num_keys_cpu,
-        20 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, total_time_sendrequests, cpu_time,
-        total_time_execution, 100 * cpu_time / total_time_execution, total_time, throughput);
+        NUM_BPTREE_IN_CPU, NUM_TOTAL_TREES - NUM_BPTREE_IN_CPU, total_num_keys, query_num_coefficient * total_num_keys_cpu,
+        query_num_coefficient * total_num_keys_dpu, 100 * query_num_coefficient * total_num_keys_cpu / total_num_keys, send_time, cpu_time,
+        execution_time, 100 * cpu_time / execution_time, send_and_execution_time, total_time, throughput);
     DPU_ASSERT(dpu_free(set1));
 #if (NR_DPUS_REDUNDANT)
     DPU_ASSERT(dpu_free(set2));
-#endif
-#ifdef WRITE_CSV
-    // write results to a csv file
-    char* fname = "data/taskletnum_upmem_pointerdram_1thread.csv";
-    FILE* fp;
-    fp = fopen(fname, "a");
-    if (fp == NULL) {
-        printf("file %s cannot be open¥n", fname);
-        return -1;
-    }
-    if (NR_TASKLETS == 1) {
-        fprintf(fp, "num of tasklets, total_num_requests[s], time_sendrequests[s], "
-                    "time_dpu_execution[s], total_time[s], throughput[OPS/s]\n");
-    }
-    fprintf(fp, "%d, %ld, %0.8f, %0.8f, %0.8f, %0.0f\n", NR_TASKLETS,
-        2 * total_num_keys, total_time_sendrequests, total_time_execution,
-        total_time, throughput);
-    fclose(fp);
 #endif
     return 0;
 }
