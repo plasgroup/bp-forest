@@ -10,7 +10,10 @@ find_package(Threads REQUIRED)
 
 add_executable(host_app ${HOST_SOURCE})
 target_include_directories(host_app PRIVATE ${CMAKE_CURRENT_LIST_DIR}/inc)
+
 if (${CYCLIC_DIST})
-target_compile_options(host_app PRIVATE -DCYCLIC_DIST=${CYCLIC_DIST} -DNR_DPUS_REDUNDANT=${NR_DPUS_REDUNDANT})
+target_compile_options(host_app PRIVATE -DCYCLIC_DIST -DNR_DPUS_REDUNDANT=${NR_DPUS_REDUNDANT})
+else(${CYCLIC_DIST})
+target_compile_options(host_app PRIVATE -DNR_DPUS_REDUNDANT=${NR_DPUS_REDUNDANT})
 endif()
 target_link_libraries(host_app common cmdline Threads::Threads PkgConfig::DPU_CONFIG)

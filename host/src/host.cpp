@@ -36,7 +36,9 @@ extern "C" {
 #define DPU_BINARY2 "./build/dpu/dpu_program_redundant"
 #endif
 
+#ifndef NR_DPUS_REDUNDANT
 #define NR_DPUS_REDUNDANT (NR_DPUS / 4)
+#endif
 #define NR_DPUS_MULTIPLE (NR_DPUS - NR_DPUS_REDUNDANT)
 #define NUM_TOTAL_TREES (NUM_BPTREE_IN_CPU + NR_DPUS_REDUNDANT + NR_DPUS_MULTIPLE * NUM_BPTREE_IN_DPU)
 #define GET_AND_PRINT_TIME(CODES, LABEL) \
@@ -129,6 +131,9 @@ uint64_t generate_requests()
 #ifdef CYCLIC_DIST
 int generate_requests_fromfile(std::ifstream& fs, int n)
 {
+#ifdef PRINT_DEBUG
+    std::cout << "cyclic" << std::endl;
+#endif
     dpu_requests = (dpu_requests_t*)malloc(
         (NR_DPUS) * sizeof(dpu_requests_t));
     if (dpu_requests == NULL) {
@@ -199,7 +204,9 @@ int generate_requests_fromfile(std::ifstream& fs, int n)
             cpu_requests.at(cpu_i).push_back({batch_keys[current_idx + i], batch_keys[current_idx + i], WRITE});
         }
         current_idx += num_keys[cpu_i];
+#ifdef DEBUG_ON
         std::cout << "current idx: " << current_idx << std::endl;
+#endif
         num_reqs_for_cpus[cpu_i] = num_keys[cpu_i];
         total_num_keys_cpu += num_reqs_for_cpus[cpu_i];
     }
@@ -220,7 +227,9 @@ int generate_requests_fromfile(std::ifstream& fs, int n)
             dpu_requests[dpu_i].requests[i].operation = WRITE;
         }
         current_idx += num_keys_for_each_dpu[dpu_i];
+#ifdef DEBUG_ON
         std::cout << "current idx: " << current_idx << std::endl;
+#endif
     }
     /* make dpu requests: multiple */
     for (int tree_i = 0; tree_i < NUM_BPTREE_IN_DPU; tree_i++) {
@@ -237,7 +246,9 @@ int generate_requests_fromfile(std::ifstream& fs, int n)
                 dpu_requests[dpu_i].requests[offset + i].operation = WRITE;
             }
             current_idx += num_keys[NUM_BPTREE_IN_CPU + NR_DPUS_REDUNDANT + (dpu_i - NR_DPUS_REDUNDANT) + NR_DPUS_MULTIPLE * tree_i];
+#ifdef DEBUG_ON
             std::cout << "tree_i = " << tree_i << ", dpu_i = " << dpu_i << ", current idx: " << current_idx << std::endl;
+#endif
         }
     }
 #ifdef PRINT_DEBUG
@@ -253,6 +264,9 @@ int generate_requests_fromfile(std::ifstream& fs, int n)
 #ifndef CYCLIC_DIST
 int generate_requests_fromfile(std::ifstream& fs, int n)
 {
+#ifdef PRINT_DEBUG
+    std::cout << "not cyclic" << std::endl;
+#endif
     dpu_requests = (dpu_requests_t*)malloc(
         (NR_DPUS) * sizeof(dpu_requests_t));
     if (dpu_requests == NULL) {
@@ -584,6 +598,87 @@ void execute_one_batch(struct dpu_set_t set1, struct dpu_set_t set2, struct dpu_
     // printf("total time spent: %0.8f sec\n", time_diff(&start_total,&end));
 }
 
+void execute_one_batch(struct dpu_set_t set1, struct dpu_set_t dpu1)
+{
+    // printf("\n");
+    // printf("======= batch start=======\n");
+    // show_requests(0);
+    // gettimeofday(&start_total, NULL);
+    // CPU→DPU
+    // printf("sending %d requests for %d DPUS...\n", NUM_REQUESTS_IN_BATCH,
+    // nr_of_dpus);
+    gettimeofday(&start, NULL);
+    send_requests(set1, dpu1);
+    gettimeofday(&end, NULL);
+#ifdef PRINT_DEBUG
+    printf("[2/4] send finished\n");
+#endif
+    total_time += time_diff(&start, &end);
+    total_time_sendrequests += time_diff(&start, &end);
+
+    /* execution */
+    gettimeofday(&start, NULL);
+    DPU_ASSERT(dpu_launch(set1, DPU_ASYNCHRONOUS));
+    execute_cpu();
+    gettimeofday(&end_cpu, NULL);
+#ifdef PRINT_DEBUG
+    printf("[3/4]cpu finished: %0.5fsec\n", time_diff(&start, &end_cpu));
+#endif
+    dpu_sync(set1);
+    gettimeofday(&end_total, NULL);
+#ifdef PRINT_DEBUG
+    printf("[4/4]cpu and all dpus finished: %0.5fsec\n", time_diff(&start, &end_total));
+#endif
+    cpu_time += time_diff(&start, &end_cpu);
+    total_time += time_diff(&start, &end_total);
+    total_time_execution += time_diff(&start, &end_total);
+
+// DPU→CPU
+#ifdef STATS_ON
+    GET_AND_PRINT_TIME(
+        {
+#ifdef VARY_REQUESTNUM
+            each_dpu = 0;
+            receive_stats(set);
+#endif
+            each_dpu = 0;
+            DPU_FOREACH(set, dpu, each_dpu)
+            {
+                DPU_ASSERT(dpu_prepare_xfer(dpu, &nb_cycles_get[each_dpu]));
+            }
+            DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_FROM_DPU, "nb_cycles_get", 0,
+                sizeof(uint64_t), DPU_XFER_DEFAULT));
+            DPU_FOREACH(set, dpu, each_dpu)
+            {
+                DPU_ASSERT(dpu_prepare_xfer(dpu, &nb_cycles_insert[each_dpu]));
+            }
+            DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_FROM_DPU, "nb_cycles_insert", 0,
+                sizeof(uint64_t), DPU_XFER_DEFAULT));
+        },
+        receive results)
+    for (int each_dpu = 0; each_dpu < NR_DPUS; each_dpu++) {
+#ifdef VARY_REQUESTNUM
+        for (int x = 0; x < NUM_VARS; x++) {
+            printf("[DPU#%u]requestnum:around_%d cycles/request:[insert:%dcycles, "
+                   "get:%dcycles]\n",
+                each_dpu, stats[each_dpu][x].x,
+                stats[each_dpu][x].cycle_insert / (expvars.gap * 2),
+                stats[each_dpu][x].cycle_get / (expvars.gap * 2));
+        }
+#endif
+        printf("[DPU#%u]nb_cycles_insert=%ld(average %ld cycles)\n", each_dpu,
+            nb_cycles_insert[each_dpu],
+            nb_cycles_insert[each_dpu] / num_requests[each_dpu]);
+        printf("[DPU#%u]nb_cycles_get=%ld(average %ld cycles)\n", each_dpu,
+            nb_cycles_get[each_dpu],
+            nb_cycles_get[each_dpu] / num_requests[each_dpu]);
+        printf("\n");
+    }
+#endif
+    // print results
+    // printf("total time spent: %0.8f sec\n", time_diff(&start_total,&end));
+}
+
 int main(int argc, char* argv[])
 {
     // printf("\n");
@@ -603,11 +698,14 @@ int main(int argc, char* argv[])
 #endif
     struct dpu_set_t set1, set2, dpu1, dpu2;
     DPU_ASSERT(dpu_alloc(NR_DPUS_MULTIPLE, NULL, &set1));
-    DPU_ASSERT(dpu_alloc(NR_DPUS_REDUNDANT, NULL, &set2));
     DPU_ASSERT(dpu_load(set1, DPU_BINARY1, NULL));
-    DPU_ASSERT(dpu_load(set2, DPU_BINARY2, NULL));
     DPU_ASSERT(dpu_get_nr_dpus(set1, &nr_of_dpus1));
+#if (NR_DPUS_REDUNDANT)
+    DPU_ASSERT(dpu_alloc(NR_DPUS_REDUNDANT, NULL, &set2));
+    DPU_ASSERT(dpu_load(set2, DPU_BINARY2, NULL));
     DPU_ASSERT(dpu_get_nr_dpus(set2, &nr_of_dpus2));
+#endif
+
 #ifdef PRINT_DEBUG
     printf("Allocated %d DPU(s)\n", nr_of_dpus1);
     printf("Allocated %d DPU(s)\n", nr_of_dpus2);
@@ -667,7 +765,11 @@ int main(int argc, char* argv[])
         std::cout << "[1/4] " << num_keys << " requests generated" << std::endl;
         std::cout << "executing " << total_num_keys << "/" << max_key_num << "..." << std::endl;
 #endif
+#if (NR_DPUS_REDUNDANT)
         execute_one_batch(set1, set2, dpu1, dpu2);
+#else
+        execute_one_batch(set1, dpu1);
+#endif
 #ifdef PRINT_DEBUG
         // DPU_FOREACH(set1, dpu1, each_dpu)
         // {
@@ -695,10 +797,15 @@ int main(int argc, char* argv[])
     //printf("%ld,%ld,%ld\n", total_num_keys_cpu, total_num_keys_dpu, total_num_keys_cpu + total_num_keys_dpu);
     //printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, total_time_sendrequests, cpu_time,
     //    total_time_execution, 100 * cpu_time / total_time_execution, total_time, throughput);
-    printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", zipfian_const.c_str(), NR_DPUS_REDUNDANT, NR_DPUS_MULTIPLE, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_TOTAL_TREES - NUM_BPTREE_IN_CPU, (long int)20 * total_num_keys, 20 * total_num_keys_cpu, 20 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, total_time_sendrequests, cpu_time,
+    printf("%s, %d, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.2f, %0.5f, %0.0f\n",
+        zipfian_const.c_str(), NR_DPUS_REDUNDANT, NR_DPUS_MULTIPLE, NR_TASKLETS,
+        NUM_BPTREE_IN_CPU, NUM_TOTAL_TREES - NUM_BPTREE_IN_CPU, (long int)20 * total_num_keys, 20 * total_num_keys_cpu,
+        20 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, total_time_sendrequests, cpu_time,
         total_time_execution, 100 * cpu_time / total_time_execution, total_time, throughput);
     DPU_ASSERT(dpu_free(set1));
+#if (NR_DPUS_REDUNDANT)
     DPU_ASSERT(dpu_free(set2));
+#endif
 #ifdef WRITE_CSV
     // write results to a csv file
     char* fname = "data/taskletnum_upmem_pointerdram_1thread.csv";

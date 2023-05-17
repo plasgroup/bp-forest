@@ -21,6 +21,8 @@ if(DEFINED NR_DPUS_REDUNDANT)
 else(DEFINED NR_DPUS_REDUNDANT)
     set(NR_DPUS_REDUNDANT 2)
 endif(DEFINED NR_DPUS_REDUNDANT)
+set(CYCLIC_DIST OFF)
+option(CYCLIC_DIST "using cyclic distribution for DPUs" ON)
 
 message(NR_TASKLETS=${NR_TASKLETS})
 message(NR_DPUS=${NR_DPUS})
