@@ -1,12 +1,13 @@
 #!/bin/bash
 cd $(dirname $0)/..
 alphas=(0 0.6 0.99 1.2)
-NUM_BPTREE_IN_CPUs=(1 4 16 64 256 512 1024)
+NUM_BPTREE_IN_CPUs=(16 32 64 256 512 1024)
 NUM_BPTREE_REDUNDANTs=(1 16 64 256 512 1024 1536 2047)
 echo cd $(pwd)
 echo "1/4 non_cyclic, w50r50"
 for i in "${!alphas[@]}"
 do
+    # if [ $i -ne 0 ] && [ $i -ne 1 ] && [ $i -ne 2 ]; then
     echo "zipfian_const, num_dpus_redundant, num_dpus_multiple, num_tasklets, num_CPU_Trees, num_DPU_Trees, num_queries, num_reqs_for_cpu, num_reqs_for_dpu, num_reqs_{cpu/(cpu+dpu)}[%], send_time, execution_time_cpu, execution_time_cpu_and_dpu, exec_time_{cpu/(cpu&dpu)}[%], send_and_execution_time, total_time, throughput" | tee ./data/redundant_num_bptree_in_cpu_alpha${alphas[$i]}.csv
     for j in "${!NUM_BPTREE_IN_CPUs[@]}"
     do
@@ -18,6 +19,7 @@ do
             ./build/host/host_app -n 100000000 -a ${alphas[$i]} | tee -a ./data/redundant_num_bptree_in_cpu_alpha${alphas[$i]}_w50r50.csv
         done
     done
+    # fi
 done
 echo "2/4 non_cyclic, w05r95"
 for i in "${!alphas[@]}"
@@ -38,7 +40,7 @@ done
 echo "3/4 cyclic, w50r50"
 for i in "${!alphas[@]}"
 do
-    echo "zipfian_const, num_dpus_redundant, num_dpus_multiple, num_tasklets, num_CPU_Trees, num_DPU_Trees, num_queries, num_reqs_for_cpu, num_reqs_for_dpu, num_reqs_{cpu/(cpu+dpu)}[%], send_time, execution_time_cpu, execution_time_cpu_and_dpu, exec_time_{cpu/(cpu&dpu)}[%], send_and_execution_time, total_time, throughput" | tee ./data/cyclic_redundant_num_bptree_in_cpu_alpha${alphas[$i]}.csv
+    echo "zipfian_const, num_dpus_redundant, num_dpus_multiple, num_tasklets, num_CPU_Trees, num_DPU_Trees, num_queries, num_reqs_for_cpu, num_reqs_for_dpu, num_reqs_{cpu/(cpu+dpu)}[%], send_time, execution_time_cpu, execution_time_cpu_and_dpu, exec_time_{cpu/(cpu&dpu)}[%], send_and_execution_time, total_time, throughput" | tee ./data/cyclic_redundant_num_bptree_in_cpu_alpha${alphas[$i]}_w50r50.csv
     for j in "${!NUM_BPTREE_IN_CPUs[@]}"
     do
         for k in "${!NUM_BPTREE_REDUNDANTs[@]}"
@@ -53,7 +55,7 @@ done
 echo "4/4 cyclic, w05r95"
 for i in "${!alphas[@]}"
 do
-    echo "zipfian_const, num_dpus_redundant, num_dpus_multiple, num_tasklets, num_CPU_Trees, num_DPU_Trees, num_queries, num_reqs_for_cpu, num_reqs_for_dpu, num_reqs_{cpu/(cpu+dpu)}[%], send_time, execution_time_cpu, execution_time_cpu_and_dpu, exec_time_{cpu/(cpu&dpu)}[%], send_and_execution_time, total_time, throughput" | tee ./data/redundant_num_bptree_in_cpu_alpha${alphas[$i]}.csv
+    echo "zipfian_const, num_dpus_redundant, num_dpus_multiple, num_tasklets, num_CPU_Trees, num_DPU_Trees, num_queries, num_reqs_for_cpu, num_reqs_for_dpu, num_reqs_{cpu/(cpu+dpu)}[%], send_time, execution_time_cpu, execution_time_cpu_and_dpu, exec_time_{cpu/(cpu&dpu)}[%], send_and_execution_time, total_time, throughput" | tee ./data/cyclic_redundant_num_bptree_in_cpu_alpha${alphas[$i]}_w05r95.csv
     for j in "${!NUM_BPTREE_IN_CPUs[@]}"
     do
         for k in "${!NUM_BPTREE_REDUNDANTs[@]}"
