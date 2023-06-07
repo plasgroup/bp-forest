@@ -76,6 +76,7 @@ BPlusTree* bplustrees[NUM_BPTREE_IN_CPU];
 pthread_t threads[NUM_BPTREE_IN_CPU];
 int thread_ids[NUM_BPTREE_IN_CPU];
 constexpr key_int64_t RANGE = std::numeric_limits<uint64_t>::max() / (NUM_TOTAL_TREES);
+int query_num_coefficient;
 #ifdef GENERATE_DATA
 uint64_t generate_requests()
 {
@@ -151,7 +152,7 @@ int generate_requests_fromfile(std::ifstream& fs, int n)
     // std::cout << "malloc batch_keys" << std::endl;
     int key_count = 0;
     fs.read(reinterpret_cast<char*>(batch_keys), sizeof(batch_keys) * n);
-    key_count = fs.tellg() / sizeof(key_int64_t) - total_num_keys;
+    key_count = fs.tellg() / sizeof(key_int64_t) - total_num_keys / query_num_coefficient;
     // std::cout << "key_count: " << key_count << std::endl;
     /* sort by which tree the requests should be processed */
     std::sort(batch_keys, batch_keys + key_count, [](auto a, auto b) { return a / RANGE < b / RANGE; });
@@ -284,7 +285,7 @@ int generate_requests_fromfile(std::ifstream& fs, int n)
     // std::cout << "malloc batch_keys" << std::endl;
     int key_count = 0;
     fs.read(reinterpret_cast<char*>(batch_keys), sizeof(batch_keys) * n);
-    key_count = fs.tellg() / sizeof(key_int64_t) - total_num_keys;
+    key_count = fs.tellg() / sizeof(key_int64_t) - total_num_keys / query_num_coefficient;
     // std::cout << "key_count: " << key_count << std::endl;
     /* sort by which tree the requests should be processed */
     std::sort(batch_keys, batch_keys + key_count, [](auto a, auto b) { return a / RANGE < b / RANGE; });
@@ -473,21 +474,21 @@ void* execute_queries(void* thread_id)
         BPTreeInsert(bplustrees[tid], cpu_requests.at(tid).at(i).key,
             cpu_requests.at(tid).at(i).write_val_ptr);
     }
-    // printf("thread %d: search\n", tid);
-    #if WORKLOAD == W05R95
+// printf("thread %d: search\n", tid);
+#if WORKLOAD == W05R95
     /* read intensive */
     for (int j = 0; j < 19; j++) {
         for (int i = 0; i < num_reqs_for_cpus[tid]; i++) {
             getval = BPTreeGet(bplustrees[tid], cpu_requests.at(tid).at(i).key);
         }
     }
-    #endif
-    #if WORKLOAD == W50R50
+#endif
+#if WORKLOAD == W50R50
     /* write intensive */
     for (int i = 0; i < num_reqs_for_cpus[tid]; i++) {
         getval = BPTreeGet(bplustrees[tid], cpu_requests.at(tid).at(i).key);
     }
-    #endif
+#endif
 
     getval++;
 #ifdef PRINT_DEBUG
@@ -700,7 +701,6 @@ int main(int argc, char* argv[])
     std::string zipfian_const = a.get<std::string>("zipfianconst");
     int max_key_num = a.get<int>("keynum");
     std::string file_name = ("./workload/zipf_const_" + zipfian_const + ".bin");
-    int query_num_coefficient;
 #if WORKLOAD == (W50R50)
     query_num_coefficient = 2;
 #endif
