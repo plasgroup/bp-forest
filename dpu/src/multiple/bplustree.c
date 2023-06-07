@@ -129,6 +129,12 @@ MBPTptr findLeaf(key_int64_t key, uint32_t tasklet_id)
     }
     return n;
 }
+int iskeyExist(MBPTptr Leaf, key_int64_t key)
+{
+    if (n->key[findKeyPos(n, key)] == key)
+        return true;
+    return false;
+}
 void insert(MBPTptr cur, key_int64_t, value_ptr_t, MBPTptr, uint32_t);
 void split(MBPTptr cur, uint32_t tasklet_id)
 {
@@ -237,6 +243,100 @@ void insert(MBPTptr cur, key_int64_t key, value_ptr_t value, MBPTptr n,
         split(cur, tasklet_id);  // key is full
 }
 
+void delete(MBPTptr cur, key_int64_t, MBPTptr, uint32_t);
+void merge(MBPTptr cur, uint32_t tasklet_id)
+{
+    // cur splits into cur and n
+    // copy cur[Mid+1 .. MAX_CHILD] to n[0 .. n->key_num-1]
+    MBPTptr n = newBPTreeNode(tasklet_id);
+    int Mid = (MAX_CHILD + 1) >> 1;
+    n->isLeaf = cur->isLeaf;
+    n->numKeys = MAX_CHILD - Mid;
+    if (!n->isLeaf) {  // n is InternalNode
+        for (int i = Mid; i < MAX_CHILD; i++) {
+            n->ptrs.inl.children[i - Mid] = cur->ptrs.inl.children[i];
+            n->key[i - Mid] = cur->key[i];
+            n->ptrs.inl.children[i - Mid]->parent = n;
+            cur->numKeys = Mid - 1;
+        }
+        n->ptrs.inl.children[MAX_CHILD - Mid] = cur->ptrs.inl.children[MAX_CHILD];
+        n->ptrs.inl.children[MAX_CHILD - Mid]->parent = n;
+    } else {  // n is LeafNode
+        n->ptrs.lf.right = NULL;
+        n->ptrs.lf.left = NULL;
+        for (int i = Mid; i < MAX_CHILD; i++) {
+            n->ptrs.lf.value[i - Mid] = cur->ptrs.lf.value[i];
+            n->key[i - Mid] = cur->key[i];
+            cur->numKeys = Mid;
+        }
+    }
+    if (cur->isRoot) {  // root Node splits
+        // Create a new root
+        root[tasklet_id] = newBPTreeNode(tasklet_id);
+        root[tasklet_id]->isRoot = true;
+        root[tasklet_id]->isLeaf = false;
+        root[tasklet_id]->numKeys = 1;
+        root[tasklet_id]->ptrs.inl.children[0] = cur;
+        root[tasklet_id]->ptrs.inl.children[1] = n;
+        cur->parent = n->parent = root[tasklet_id];
+        cur->isRoot = false;
+        if (cur->isLeaf) {
+            cur->ptrs.lf.right = n;
+            n->ptrs.lf.left = cur;
+            root[tasklet_id]->key[0] = n->key[0];
+        } else {
+            root[tasklet_id]->key[0] = cur->key[Mid - 1];
+        }
+        height[tasklet_id]++;
+    } else {  // insert n to cur->parent
+        n->parent = cur->parent;
+        if (cur->isLeaf) {
+            insert(n->parent, n->key[0], 0, n, tasklet_id);
+        } else {
+            insert(cur->parent, cur->key[Mid - 1], 0, n, tasklet_id);
+        }
+    }
+}
+
+void delete(MBPTptr cur, key_int64_t key, MBPTptr n,
+    uint32_t tasklet_id)
+{
+    int i, idx;
+    idx = findKeyPos(cur, key);
+    if (cur->isLeaf == true) {  // if it is a Leaf node
+        for (i = cur->idx; i < cur->numKeys - 1; i++) {
+            cur->key[i] = cur->key[i + 1];
+            cur->ptrs.lf.value[i] = cur->ptrs.lf.value[i + 1];
+        }
+        cur->numKeys--;
+        if (cur->numKeys >= MIN_CHILD)
+            return;
+        if (cur->ptrs.lf.right != NULL && cur->ptrs.lf.right->numKeys >= MIN_CHILD + 1)
+            supplement(cur, cur->ptrs.lf.right);
+        else if (cur->ptrs.lf.left != NULL && cur->ptrs.lf.left->numKeys >= MIN_CHILD + 1)
+            supplement(cur, cur->ptrs.lf.left);
+        else
+            merge(cur, cur->ptrs.lf.right);
+    } else {  // if it is an internal node by merge
+        for (i = cur->idx; i < cur->numKeys - 1; i++) {
+            cur->key[i] = cur->key[i + 1];
+            cur->ptrs.inl.children[i] = cur->ptrs.inl.children[i + 1];
+        }
+        cur->ptrs.inl.children[cur->numKeys - 1] = cur->ptrs.inl.children[cur->numKeys];
+        cur->numKeys--;
+        MBPTptr right = cur->parent->children[findKeyPos(cur->parent, cur->key[0]) + 1];
+        MBPTptr left = cur->parent->children[findKeyPos(cur->parent, cur->key[0]) - 1];
+        if (cur->numKeys >= MIN_CHILD)
+            return;
+        if (right != NULL && right->numKeys >= MIN_CHILD + 1)
+            supplement(cur, right);
+        else if (left != NULL && left->numKeys >= MIN_CHILD + 1)
+            supplement(cur, left);
+        else
+            merge(cur, right);
+    }
+}
+
 void init_BPTree(uint32_t tasklet_id)
 {
     NumOfNodes[tasklet_id] = 0;
@@ -263,6 +363,19 @@ int BPTreeInsert(key_int64_t key, value_ptr_t value, uint32_t tasklet_id)
     // printf("key:%ld,pos:%d\n",key,i);
     insert(Leaf, key, value, NULL, tasklet_id);
     // printf("inserted {key %d, value '%s'}.\n",key,(char*)value);
+    return true;
+}
+
+int BPTreeDelete(key_int64_t key, uint32_t tasklet_id)
+{
+    if (root[tasklet_id]->numKeys == 0) {  // if the tree is empty
+        return true;
+    }
+    MBPTptr Leaf = findLeaf(key, tasklet_id);
+    if (!iskeyExist(Leaf, key)) {
+        return false;
+    }
+    delete (Leaf, key, NULL, tasklet_id);
     return true;
 }
 

@@ -2,7 +2,7 @@
 #define __bplustree_H__
 
 #define MAX_CHILD (18)  // split occurs if numKeys >= MAX_CHILD
-
+#define MIN_CHILD (MAX_CHILD >> 2)  // merge occurs if numKeys <= MAX_CHILD
 #define NODE_DATA_SIZE (40)  // maximum node data size, MB
 #define MAX_NODE_NUM \
     ((NODE_DATA_SIZE << 20) / sizeof(BPTreeNode) / NUM_BPTREE_IN_DPU)  // NODE_DATA_SIZE MB for Node data
