@@ -1,11 +1,12 @@
 #include "bplustree.h"
+#include "simulation_by_host.hpp"
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 // #define USE_LINEAR_SEARCH
 
-#ifdef DEBUG_ON
+
 typedef struct Queue {  // queue for showing all nodes by BFS
     int tail;
     int head;
@@ -45,19 +46,59 @@ BPTptr dequeue(Queue_t* queue)
     // printf("%p is dequeued\n",ret);
     return ret;
 }
-
+#ifdef DEBUG_ON
 void showNode(BPTptr, int);
 #endif
+BPlusTree* bptrees[MAX_NUM_BPTREE_IN_DPU];
+int num_trees;
+BPTreeNode nodes[MAX_NUM_BPTREE_IN_DPU][MAX_NODE_NUM];
+int free_node_index_stack_head[MAX_NUM_BPTREE_IN_DPU] = {-1};
+int free_node_index_stack[MAX_NUM_BPTREE_IN_DPU][MAX_NODE_NUM];
+int max_node_index[MAX_NUM_BPTREE_IN_DPU] = {-1};
 
-BPTptr newBPTreeNode(BPlusTree* bpt)
+int free_tree_index_stack_head = -1;
+int free_tree_index_stack[MAX_NUM_BPTREE_IN_DPU];
+int max_tree_index = -1;
+
+split_phase_context_t split_ctx;
+
+BPTptr newBPTreeNode(int tree_id)
 {
-    BPTptr p = (BPTptr)malloc(sizeof(BPTreeNode));
+    BPTptr p;
+    if (free_node_index_stack_head[tree_id] >= 0) {  // if there is gap in nodes array
+        p = &nodes[tree_id]
+                  [free_node_index_stack[tree_id]
+                                        [free_node_index_stack_head[tree_id]--]];
+    } else
+        p = &nodes[tree_id][++max_node_index[tree_id]];
     p->parent = NULL;
     p->isRoot = false;
     p->isLeaf = false;
     p->numKeys = 0;
-    bpt->NumOfNodes++;
+    bptrees[tree_id]->NumOfNodes++;
     return p;
+}
+
+BPlusTree* new_BPTree()
+{
+    BPlusTree* bpt;
+    int tree_index;
+    if (free_tree_index_stack_head >= 0) {  // if there is gap in nodes array
+        tree_index = free_tree_index_stack[free_tree_index_stack_head--];
+    } else tree_index = ++max_tree_index;
+    if (num_trees > MAX_NUM_BPTREE_IN_DPU) {printf("ERROR: num of trees exceed the limit\n"); return NULL;}
+    bpt = bptrees[tree_index];
+    bpt->NumOfNodes = 1;
+    bpt->height = 1;
+    bpt->tree_index = tree_index;
+    bpt->root = newBPTreeNode(tree_index);
+    bpt->root->isRoot = true;
+    bpt->root->isLeaf = true;
+    bpt->root->ptrs.lf.right = NULL;
+    bpt->root->ptrs.lf.left = NULL;
+    bpt->root->ptrs.lf.value[0] = (value_ptr_t_)NULL;
+    num_trees++;
+    return bpt;
 }
 
 // binary search
@@ -115,7 +156,7 @@ void split(BPlusTree* bpt, BPTptr cur)
 {
     // cur splits into cur and n
     // copy cur[Mid+1 .. MAX_CHILD] to n[0 .. n->key_num-1]
-    BPTptr n = newBPTreeNode(bpt);
+    BPTptr n = newBPTreeNode(bpt->tree_index);
     int Mid = (MAX_CHILD + 1) >> 1;
     n->isLeaf = cur->isLeaf;
     n->numKeys = MAX_CHILD - Mid;
@@ -139,7 +180,7 @@ void split(BPlusTree* bpt, BPTptr cur)
     }
     if (cur->isRoot) {  // bpt->root Node splits
         // Create a new bpt->root
-        bpt->root = newBPTreeNode(bpt);
+        bpt->root = newBPTreeNode(bpt->tree_index);
         bpt->root->isRoot = true;
         bpt->root->isLeaf = false;
         bpt->root->numKeys = 1;
@@ -216,22 +257,6 @@ void insert(BPlusTree* bpt, BPTptr cur, key_t_ key, value_ptr_t_ value,
     }
     if (cur->numKeys == MAX_CHILD)
         split(bpt, cur);  // key is full
-}
-
-BPlusTree* init_BPTree()
-{
-    //printf("taskletinit_BPTree\n");
-    BPlusTree* bpt = (BPlusTree*)malloc(sizeof(BPlusTree));
-    bpt->root = (BPTptr)malloc(sizeof(BPTreeNode));
-    bpt->NumOfNodes = 1;
-    bpt->height = 1;
-    bpt->root = newBPTreeNode(bpt);
-    bpt->root->isRoot = true;
-    bpt->root->isLeaf = true;
-    bpt->root->ptrs.lf.right = NULL;
-    bpt->root->ptrs.lf.left = NULL;
-    bpt->root->ptrs.lf.value[0] = (value_ptr_t_)NULL;
-    return bpt;
 }
 
 int BPTreeInsert(BPlusTree* bpt, key_t_ key, value_ptr_t_ value)
@@ -349,3 +374,72 @@ int BPTree_GetNumOfNodes(BPlusTree* bpt)
 }
 
 int BPTree_GetHeight(BPlusTree* bpt) { return bpt->height; }
+
+int traverse_and_count_elems(BPlusTree* bpt) {
+    int num_elems = 0;
+    queue = initQueue();
+    enqueue(queue, bpt->root);
+    while ((queue->tail + 1) % MAX_NODE_NUM != queue->head) {
+        BPTptr cur = dequeue(queue);
+        num_elems += cur->numKeys;
+        if (!cur->isLeaf) {
+            for (int i = 0; i <= cur->numKeys; i++) {
+                enqueue(queue, cur->ptrs.inl.children[i]);
+            }
+        }
+    }
+    return num_elems;
+}
+bool do_split_phase(BPlusTree* bpt){
+    /* firstly, clear the former split_context */
+    for (int i = 0; i < MAX_NUM_BPTREE_IN_DPU; i++){
+        split_ctx.split_info[i].new_tree_index=-1;
+        split_ctx.num_elems[i] = 0;
+    }
+    /* split if the size exceed the threshold */
+    if (traverse_and_count_elems(bpt) > SPLIT_THRESHOLD) {
+        split_tree(bpt);
+        return true;
+    }
+    return false;
+}
+void split_tree(BPlusTree* bpt){
+    key_t_ split_key;
+    BPTptr cur = bpt->root;
+    BPlusTree* new_tree = new_BPTree();
+    BPTptr n = new_tree->root;
+    int Mid = (cur->numKeys + 1) >> 1;
+    n->isLeaf = cur->isLeaf;
+    n->numKeys = cur->numKeys - Mid;
+
+    if (!n->isLeaf) {  // n is InternalNode
+        for (int i = Mid; i < cur->numKeys; i++) {
+            n->ptrs.inl.children[i - Mid] = cur->ptrs.inl.children[i];
+            n->key[i - Mid] = cur->key[i];
+            n->ptrs.inl.children[i - Mid]->parent = n;
+            cur->numKeys = Mid - 1;
+        }
+        n->ptrs.inl.children[cur->numKeys - Mid] = cur->ptrs.inl.children[cur->numKeys];
+        n->ptrs.inl.children[cur->numKeys - Mid]->parent = n;
+    } else {  // n is LeafNode
+        n->ptrs.lf.right = NULL;
+        n->ptrs.lf.left = NULL;
+        for (int i = Mid; i < cur->numKeys; i++) {
+            n->ptrs.lf.value[i - Mid] = cur->ptrs.lf.value[i];
+            n->key[i - Mid] = cur->key[i];
+            cur->numKeys = Mid;
+        }
+    }
+    if (cur->isLeaf) {
+        cur->ptrs.lf.right = n;
+        n->ptrs.lf.left = cur;
+        split_key = n->key[0];
+    } else {
+        split_key = cur->key[Mid - 1];
+    }
+    split_ctx.num_elems[new_tree->tree_index] = traverse_and_count_elems(bpt);
+    split_ctx.num_elems[bpt->tree_index] -= split_ctx.num_elems[new_tree->tree_index];
+    split_ctx.split_info[bpt->tree_index].split_key = split_key;
+    split_ctx.split_info[bpt->tree_index].new_tree_index = new_tree->tree_index;
+    return;
+}
