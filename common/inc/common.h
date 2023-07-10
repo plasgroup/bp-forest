@@ -64,6 +64,17 @@ typedef struct {
     each_request_t requests[MAX_REQ_NUM_IN_A_DPU];
 } dpu_requests_t;
 
+typedef struct {
+    /*  num_elems: number of elements(k-v pair) in the tree
+    new_tree_index: the tree_index of the new tree made by split
+    split_key: the border key of the split  */
+    int num_elems;
+    key_int64_t split_key;
+    int new_tree_index;
+} split_info_t;
+
+extern split_info_t split_result[MAX_NUM_BPTREE_IN_DPU];
+
 #ifdef VARY_REQUESTNUM
 typedef struct {  // for returning the result of the experiment
     int x;

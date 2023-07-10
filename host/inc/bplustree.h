@@ -14,8 +14,9 @@
 #endif
 #define READ (1)
 #define WRITE (0)
-#include <stdint.h>
+#define MAX_NUM_SPLIT (10)
 #include <stdbool.h>
+#include <stdint.h>
 #include <string.h>
 typedef uint64_t key_t_;
 typedef uint64_t value_ptr_t_;
@@ -50,6 +51,15 @@ typedef struct BPlusTree {
     int tree_index;
 } BPlusTree;
 
+typedef struct {
+    /*  num_elems: number of elements(k-v pair) in the tree
+    new_tree_index: the tree_index of the new tree made by split
+    split_key: the border key of the split  */
+    int num_elems[MAX_NUM_SPLIT];
+    key_int64_t split_key[MAX_NUM_SPLIT];
+    int new_tree_index[MAX_NUM_SPLIT];
+} split_info_t;
+
 extern BPlusTree* init_BPTree();
 
 /**
@@ -69,7 +79,7 @@ extern void BPTreePrintAll(BPlusTree*);
 extern int BPTree_GetHeight(BPlusTree*);
 extern BPlusTree* new_BPTree();
 /* for load balancing */
-extern int traverse_and_count_elems(BPlusTree*);
+extern int traverse_and_count_elems(BPTptr);
 extern bool do_split_phase(BPlusTree*);
 extern void split_tree(BPlusTree*);
 

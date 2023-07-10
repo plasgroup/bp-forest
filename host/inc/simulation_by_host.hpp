@@ -1,8 +1,8 @@
 #pragma once
 #include "bplustree.h"
 #include <stdint.h>
-#include <vector>
 #include <string>
+#include <vector>
 
 #define DPU_ASSERT(func) func
 #define DPU_ASYNCHRONOUS 1
@@ -11,24 +11,23 @@
 #define NR_DPUS (1)
 
 #define NUM_TOTAL_TREES (NR_DPUS * MAX_NUM_BPTREE_IN_DPU)
+#define MAX_NUM_SPLIT (10)
 
 /* Structure used by both the host and the dpu to communicate information */
 typedef uint64_t key_int64_t;
 typedef uint64_t value_ptr_t;
 typedef struct {
-    key_int64_t split_key;
-    int new_tree_index;
+    /*  num_elems: number of elements(k-v pair) in the tree
+    new_tree_index: the tree_index of the new tree made by split
+    split_key: the border key of the split  */
+    int num_elems[MAX_NUM_SPLIT];
+    key_int64_t split_key[MAX_NUM_SPLIT];
+    int new_tree_index[MAX_NUM_SPLIT];
 } split_info_t;
-typedef struct {
-    int num_elems[MAX_NUM_BPTREE_IN_DPU];
-    /*        index: the tree_index of before split
-       new_tree_num: the tree_index of the new tree made by split
-          split_key: the border key of the split */
-    split_info_t split_info[MAX_NUM_BPTREE_IN_DPU];
-} split_phase_context_t;
 
+extern split_info_t split_result[MAX_NUM_BPTREE_IN_DPU];
 // one request
-typedef struct each_request_t{
+typedef struct each_request_t {
     key_int64_t key;            // key of each request
     value_ptr_t write_val_ptr;  // write pointer to the value if request is write
     uint8_t operation;          // 1→read or 0→write
@@ -37,7 +36,7 @@ typedef struct each_request_t{
 typedef std::vector<std::vector<each_request_t>> dpu_requests_t;
 
 
-typedef struct dpu_set_t{
+typedef struct dpu_set_t {
     int dummy;
 } dpu_set_t;
 

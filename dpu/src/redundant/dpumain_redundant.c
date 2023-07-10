@@ -27,6 +27,61 @@ __mram uint64_t nb_cycles_insert;
 #ifdef DEBUG_ON
 __mram_ptr void* getval;
 #endif
+
+int traverse_and_print_nodes(MBPTptr node)
+{
+    int elems = node->numKeys;
+    if (!node->isLeaf) {
+        for (int i = 0; i <= node->numKeys; i++) {
+            elems += traverse_and_print_nodes(node->ptrs.inl.children[i]);
+        }
+    }
+    showNode(node, 0);
+    return elems;
+}
+
+__mram BPTreeNode nodes_transfer_buffer[MAX_NODE_NUM];
+__mram uint64_t nodes_transfer_num;
+__mram uint64_t task_no;
+
+void traverse_and_copy_nodes(MBPTptr node)
+{
+    showNode(node, nodes_transfer_num);
+    memcpy(&nodes_transfer_buffer[nodes_transfer_num++], node, sizeof(BPTreeNode));
+    if (!node->isLeaf) {
+        for (int i = 0; i <= node->numKeys; i++) {
+            traverse_and_copy_nodes(node->ptrs.inl.children[i]);
+        }
+    }
+    return;
+}
+
+void serialize(MBPTptr root)
+{
+    nodes_transfer_num = 0;
+    traverse_and_copy_nodes(root);
+    return;
+}
+
+MBPTptr deserialize_node()
+{
+    MBPTptr node = newBPTreeNode();
+    memcpy(node, &nodes_transfer_buffer[nodes_transfer_num++], sizeof(BPTreeNode));
+    if (!node->isLeaf) {
+        for (int i = 0; i <= node->numKeys; i++) {
+            node->ptrs.inl.children[i] = deserialize_node();
+            node->ptrs.inl.children[i]->parent = node;
+        }
+    }
+    return node;
+}
+
+MBPTptr deserialize()
+{
+    nodes_transfer_num = 0;
+    return deserialize_node();
+}
+
 int main()
 {
     int tid = me();

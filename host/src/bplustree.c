@@ -60,7 +60,7 @@ int free_tree_index_stack_head = -1;
 int free_tree_index_stack[MAX_NUM_BPTREE_IN_DPU];
 int max_tree_index = -1;
 
-split_phase_context_t split_ctx;
+split_info_t split_result[MAX_NUM_BPTREE_IN_DPU];
 
 BPTptr newBPTreeNode(int tree_id)
 {
@@ -79,26 +79,56 @@ BPTptr newBPTreeNode(int tree_id)
     return p;
 }
 
+int freeBPTreeNode(int tree_id, BPTptr p)
+{
+    free_node_index_stack[tree_id][++free_node_index_stack_head[tree_id]] = (p - &nodes[tree_id]) / sizeof(BPTreeNode);
+    bptrees[tree_id]->NumOfNodes--;
+    return 0;
+}
+
+int freeBPTreeNode_recursive(int tree_id, BPTptr p)
+{
+    freeBPTreeNode(tree_id, p);
+    if (!p->isLeaf) {
+        for (int i = 0; i <= p->numKeys; i++) {
+            freeBPTreeNode(tree_id, p->children[i]);
+        }
+    }
+    return 0;
+}
+
 BPlusTree* new_BPTree()
 {
     BPlusTree* bpt;
     int tree_index;
-    if (free_tree_index_stack_head >= 0) {  // if there is gap in nodes array
+    if (free_tree_index_stack_head >= 0) {  // if there is gap in the array
         tree_index = free_tree_index_stack[free_tree_index_stack_head--];
-    } else tree_index = ++max_tree_index;
-    if (num_trees > MAX_NUM_BPTREE_IN_DPU) {printf("ERROR: num of trees exceed the limit\n"); return NULL;}
+    } else
+        tree_index = ++max_tree_index;
+    if (num_trees > MAX_NUM_BPTREE_IN_DPU) {
+        printf("ERROR: num of trees exceed the limit\n");
+        return NULL;
+    }
     bpt = bptrees[tree_index];
     bpt->NumOfNodes = 1;
     bpt->height = 1;
     bpt->tree_index = tree_index;
     bpt->root = newBPTreeNode(tree_index);
     bpt->root->isRoot = true;
-    bpt->root->isLeaf = true;
+    // bpt->root->isLeaf = true;
     bpt->root->ptrs.lf.right = NULL;
     bpt->root->ptrs.lf.left = NULL;
     bpt->root->ptrs.lf.value[0] = (value_ptr_t_)NULL;
     num_trees++;
     return bpt;
+}
+
+int free_BPTree(int tree_id, BPlusTree* bpt)
+{
+    free_tree_index_stack[++free_tree_index_stack_head] = bpt->tree_index;
+    bptrees[tree_id]->NumOfNodes--;
+    freeBPTreeNode_recursive(tree_id, bpt->root);
+    return 0;
 }
 
 // binary search
@@ -375,44 +405,54 @@ int BPTree_GetNumOfNodes(BPlusTree* bpt)
 
 int BPTree_GetHeight(BPlusTree* bpt) { return bpt->height; }
 
-int traverse_and_count_elems(BPlusTree* bpt) {
-    int num_elems = 0;
-    queue = initQueue();
-    enqueue(queue, bpt->root);
-    while ((queue->tail + 1) % MAX_NODE_NUM != queue->head) {
-        BPTptr cur = dequeue(queue);
-        num_elems += cur->numKeys;
-        if (!cur->isLeaf) {
-            for (int i = 0; i <= cur->numKeys; i++) {
-                enqueue(queue, cur->ptrs.inl.children[i]);
-            }
+int traverse_and_count_elems(BPTptr node)
+{
+    int elems = node->numKeys;
+    if (!node->isLeaf) {
+        for (int i = 0; i <= node->numKeys; i++) {
+            elems += count_elems_recursive(node->ptrs.inl.children[i]);
         }
     }
-    return num_elems;
+    return elems;
 }
-bool do_split_phase(BPlusTree* bpt){
+bool do_split_phase(BPlusTree* bpt)
+{
     /* firstly, clear the former split_context */
-    for (int i = 0; i < MAX_NUM_BPTREE_IN_DPU; i++){
-        split_ctx.split_info[i].new_tree_index=-1;
-        split_ctx.num_elems[i] = 0;
+    for (int i = 0; i < MAX_NUM_BPTREE_IN_DPU; i++) {
+        for (int j = 0; j < MAX_NUM_SPLIT; j++) {
+            split_result[i].new_tree_index[j] = 0;
+            split_result[i].num_elems[j] = 0;
+            split_result[i].split_key[j] = 0;
+        }
     }
     /* split if the size exceed the threshold */
-    if (traverse_and_count_elems(bpt) > SPLIT_THRESHOLD) {
+    if (traverse_and_count_elems(bpt->root) > SPLIT_THRESHOLD) {
         split_tree(bpt);
         return true;
     }
     return false;
 }
-void split_tree(BPlusTree* bpt){
-    key_t_ split_key;
-    BPTptr cur = bpt->root;
-    BPlusTree* new_tree = new_BPTree();
-    BPTptr n = new_tree->root;
-    int Mid = (cur->numKeys + 1) >> 1;
-    n->isLeaf = cur->isLeaf;
-    n->numKeys = cur->numKeys - Mid;
-
-    if (!n->isLeaf) {  // n is InternalNode
+void split_tree(BPlusTree* bpt)
+{
+    int num_trees = (traverse_and_count_elems(bpt->root) + SPLIT_THRESHOLD - 1) / SPLIT_THRESHOLD;
+    int num_elems_per_tree = traverse_and_count_elems(bpt->root) / num_trees;
+    BPTptr cur, n;
+    n = bpt;
+    for (int i = 0; i < num_trees - 1; i++) {
+        int num_elems = 0;
+        cur = n;
+        int j = 0;
+        while (num_elems < num_elems_per_tree) {
+            num_elems += traverse_and_count_elems(cur->ptrs.inl.children[j]);
+            j++;  // divide 0~j-1, j~num_children
+        }
+        key_t_ split_key;
+        BPlusTree* new_tree = new_BPTree();
+        n = new_tree->root;
+        int Mid = j;
+        n->isLeaf = cur->isLeaf;
+        n->numKeys = cur->numKeys - Mid;
+        // n is InternalNode
         for (int i = Mid; i < cur->numKeys; i++) {
             n->ptrs.inl.children[i - Mid] = cur->ptrs.inl.children[i];
             n->key[i - Mid] = cur->key[i];
@@ -421,25 +461,11 @@ void split_tree(BPlusTree* bpt){
         }
         n->ptrs.inl.children[cur->numKeys - Mid] = cur->ptrs.inl.children[cur->numKeys];
         n->ptrs.inl.children[cur->numKeys - Mid]->parent = n;
-    } else {  // n is LeafNode
-        n->ptrs.lf.right = NULL;
-        n->ptrs.lf.left = NULL;
-        for (int i = Mid; i < cur->numKeys; i++) {
-            n->ptrs.lf.value[i - Mid] = cur->ptrs.lf.value[i];
-            n->key[i - Mid] = cur->key[i];
-            cur->numKeys = Mid;
-        }
-    }
-    if (cur->isLeaf) {
-        cur->ptrs.lf.right = n;
-        n->ptrs.lf.left = cur;
-        split_key = n->key[0];
-    } else {
         split_key = cur->key[Mid - 1];
+        split_result[new_tree->tree_index].num_elems[i] = num_elems;
+        split_result[bpt->tree_index].num_elems[i] -= split_result.num_elems[new_tree->tree_index];
+        split_result[bpt->tree_index].split_key[i] = split_key;
+        split_result.split_info[bpt->tree_index].new_tree_index = new_tree->tree_index;
     }
-    split_ctx.num_elems[new_tree->tree_index] = traverse_and_count_elems(bpt);
-    split_ctx.num_elems[bpt->tree_index] -= split_ctx.num_elems[new_tree->tree_index];
-    split_ctx.split_info[bpt->tree_index].split_key = split_key;
-    split_ctx.split_info[bpt->tree_index].new_tree_index = new_tree->tree_index;
     return;
 }
