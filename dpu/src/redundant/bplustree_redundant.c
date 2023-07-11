@@ -1,4 +1,3 @@
-#pragma once
 #include "bplustree_redundant.h"
 #include "common.h"
 #include "mutex.h"
@@ -7,9 +6,9 @@ MUTEX_INIT(node_alloc_mutex);
 #define true 1
 #define false 0
 // #define USE_LINEAR_SEARCH
-__mram BPTreeNode nodes[MAX_NODE_NUM];
+__mram BPTreeNode nodes[MAX_NODE_NUM_IN_DPU];
 int free_node_index_stack_head = -1;
-__mram int free_node_index_stack[MAX_NODE_NUM];
+__mram int free_node_index_stack[MAX_NODE_NUM_IN_DPU];
 int free_tree_index_stack_head = -1;
 int free_tree_index_stack[MAX_NUM_BPTREE_IN_DPU];
 int max_tree_index = -1;
@@ -18,7 +17,7 @@ int max_tree_index = -1;
 typedef struct Queue {  // queue for showing all nodes by BFS
     int tail;
     int head;
-    MBPTptr ptrs[MAX_NODE_NUM];
+    MBPTptr ptrs[MAX_NODE_NUM_IN_DPU];
 } Queue_t;
 
 __mram_ptr Queue_t* queue;
@@ -32,24 +31,24 @@ void initQueue(__mram_ptr Queue_t* queue)
 
 void enqueue(__mram_ptr Queue_t* queue, MBPTptr input)
 {
-    if ((queue->tail + 2) % MAX_NODE_NUM == queue->head) {
+    if ((queue->tail + 2) % MAX_NODE_NUM_IN_DPU == queue->head) {
         printf("queue is full\n");
         return;
     }
-    queue->ptrs[(queue->tail + 1) % MAX_NODE_NUM] = input;
-    queue->tail = (queue->tail + 1) % MAX_NODE_NUM;
+    queue->ptrs[(queue->tail + 1) % MAX_NODE_NUM_IN_DPU] = input;
+    queue->tail = (queue->tail + 1) % MAX_NODE_NUM_IN_DPU;
     //printf("%p is enqueued\n",input);
 }
 
 MBPTptr dequeue(__mram_ptr Queue_t* queue)
 {
     MBPTptr ret;
-    if ((queue->tail + 1) % MAX_NODE_NUM == queue->head) {
+    if ((queue->tail + 1) % MAX_NODE_NUM_IN_DPU == queue->head) {
         printf("queue is empty\n");
         return NULL;
     }
     ret = queue->ptrs[queue->head];
-    queue->head = (queue->head + 1) % MAX_NODE_NUM;
+    queue->head = (queue->head + 1) % MAX_NODE_NUM_IN_DPU;
     //printf("%p is dequeued\n",ret);
     return ret;
 }
@@ -80,7 +79,7 @@ MBPTptr newBPTreeNode()
 int freeBPTreeNode(MBPTptr p)
 {
     mutex_lock(node_alloc_mutex);
-    free_node_index_stack[++free_node_index_stack_head] = (p - &nodes) / sizeof(BPTreeNode);
+    free_node_index_stack[++free_node_index_stack_head] = (p - nodes) / sizeof(BPTreeNode);
     mutex_unlock(node_alloc_mutex);
     return 0;
 }
@@ -128,9 +127,9 @@ int findKeyPos(MBPTptr n, key_int64_t key)
     return ret;
 }
 #endif
-MBPTptr findLeaf(key_int64_t key)
+MBPTptr findLeaf(key_int64_t key, int tree_index)
 {
-    MBPTptr n = root;
+    MBPTptr n = root[tree_index];
     while (true) {
         if (n->isLeaf == true)
             break;
@@ -175,7 +174,7 @@ void split(MBPTptr cur)
     }
     if (cur->isRoot) {  // root Node splits
         // Create a new root
-        __mram_ptr MBPTptr* root_ptr = &cur;
+        MBPTptr* root_ptr = &cur;
         *root_ptr = newBPTreeNode();
         MBPTptr root = *root_ptr;
         root->isLeaf = false;
@@ -270,7 +269,7 @@ int new_BPTree()
         tree_index = ++max_tree_index;
     if (max_tree_index > MAX_NUM_BPTREE_IN_DPU) {
         printf("ERROR: num of trees exceed the limit\n");
-        return NULL;
+        return -1;
     }
     init_BPTree(tree_index);
     return tree_index;
@@ -284,7 +283,7 @@ int BPTreeInsert(key_int64_t key, value_ptr_t value, int tree_id)
         root[tree_id]->ptrs.lf.value[0] = value;
         return true;
     }
-    MBPTptr Leaf = findLeaf(key);
+    MBPTptr Leaf = findLeaf(key,tree_id);
     // int i = findKeyPos(Leaf, key);
     //printf("key:%ld,pos:%d\n",key,i);
     insert(Leaf, key, value, NULL);
@@ -292,9 +291,9 @@ int BPTreeInsert(key_int64_t key, value_ptr_t value, int tree_id)
     return true;
 }
 
-value_ptr_t BPTreeGet(key_int64_t key)
+value_ptr_t BPTreeGet(key_int64_t key, int tree_id)
 {
-    MBPTptr Leaf = findLeaf(key);
+    MBPTptr Leaf = findLeaf(key, tree_id);
     int i;
     for (i = 0; i < Leaf->numKeys; i++) {
         if (Leaf->key[i] == key) {
@@ -371,7 +370,7 @@ void BPTreePrintAll()
     int nodeNo = 0;
     initQueue(queue);
     enqueue(queue, root);
-    while ((queue->tail + 1) % MAX_NODE_NUM != queue->head) {
+    while ((queue->tail + 1) % MAX_NODE_NUM_IN_DPU != queue->head) {
         MBPTptr cur = dequeue(queue);
         showNode(cur, nodeNo);
         nodeNo++;

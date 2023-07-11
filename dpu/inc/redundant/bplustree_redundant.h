@@ -1,10 +1,8 @@
-#ifndef __bplustree_H__
-#define __bplustree_H__
+#pragma once
 
 #define MAX_CHILD (126)  // split occurs if numKeys >= MAX_CHILD
 
-#define NODE_DATA_SIZE (40)                                         // maximum node data size, MB
-#define MAX_NODE_NUM ((NODE_DATA_SIZE << 20) / sizeof(BPTreeNode))  // NODE_DATA_SIZE MB for Node data
+
 #define MAX_NUM_BPTREE_IN_DPU (100)
 #include "../../../common/inc/common.h"
 #include <mram.h>
@@ -49,7 +47,7 @@ extern int BPTreeInsert(key_int64_t, value_ptr_t, int);
 /**
  *    @param key key to search
  **/
-extern value_ptr_t BPTreeGet(key_int64_t);
+extern value_ptr_t BPTreeGet(key_int64_t, int);
 extern void BPTreeGetRange(key_int64_t, int);
 extern void BPTreeDelete(key_int64_t);
 extern int BPTree_GetNumOfNodes();
@@ -57,5 +55,6 @@ extern void BPTreePrintLeaves();
 extern void BPTreePrintRoot();
 extern void BPTreePrintAll();
 extern int BPTree_GetHeight();
-
-#endif
+extern void showNode(MBPTptr, int);
+extern int freeBPTreeNode_recursive();
+extern MBPTptr newBPTreeNode();

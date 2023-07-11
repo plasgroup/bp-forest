@@ -1,5 +1,4 @@
-#ifndef __COMMON_H__
-#define __COMMON_H__
+#pragma once
 
 #define NR_ELEMS_PER_DPU (RAND_MAX / NR_DPUS)
 #define NR_ELEMS_PER_TASKLET (RAND_MAX / NR_DPUS / NR_TASKLETS)
@@ -11,12 +10,13 @@
 #ifndef NR_TASKLETS
 #define NR_TASKLETS (1)
 #endif
-#ifndef NUM_BPTREE_IN_DPU
-#define NUM_BPTREE_IN_DPU (NR_TASKLETS)
-#endif
-#ifndef NUM_BPTREE_IN_CPU
-#define NUM_BPTREE_IN_CPU (2)
-#endif
+#define MAX_NUM_BPTREE_IN_DPU (100)
+#define MAX_NUM_BPTREE_IN_CPU (50)
+#define MAX_NUM_SPLIT (10)
+// #define NODE_DATA_SIZE (40)  // maximum node data size, MB
+// #define MAX_NODE_NUM \
+//     ((NODE_DATA_SIZE << 20) / sizeof(BPTreeNode) / MAX_NUM_BPTREE_IN_DPU)  // the maximum number of nodes in a tree
+// #define DEBUG_ON
 // the size for a request(default:17B)
 #define REQUEST_SIZE (17)
 // buffer size for request in a DPU(default:20MB/64MB)
@@ -27,6 +27,10 @@
 #ifndef MAX_REQ_NUM_IN_A_DPU
 #define MAX_REQ_NUM_IN_A_DPU (MRAM_REQUEST_BUFFER_SIZE / REQUEST_SIZE)
 #endif
+#define NODE_DATA_SIZE (40)                                         // maximum node data size, MB
+#define MAX_NODE_NUM_IN_DPU ((NODE_DATA_SIZE << 20) / sizeof(BPTreeNode))  // NODE_DATA_SIZE MB for Node data
+#define MAX_NODE_NUM_TRANSFER (MAX_NODE_NUM_IN_DPU / MAX_NUM_BPTREE_IN_DPU)
+#define SPLIT_THRESHOLD (MAX_CHILD * MAX_CHILD)
 #define NUM_REQUESTS_PER_BATCH (1000000)
 #define READ (1)
 #define WRITE (0)
@@ -68,10 +72,11 @@ typedef struct {
     /*  num_elems: number of elements(k-v pair) in the tree
     new_tree_index: the tree_index of the new tree made by split
     split_key: the border key of the split  */
-    int num_elems;
-    key_int64_t split_key;
-    int new_tree_index;
+    int num_elems[MAX_NUM_SPLIT];
+    key_int64_t split_key[MAX_NUM_SPLIT];
+    int new_tree_index[MAX_NUM_SPLIT];
 } split_info_t;
+
 
 extern split_info_t split_result[MAX_NUM_BPTREE_IN_DPU];
 
@@ -96,4 +101,3 @@ typedef union {
 
 /* Structure used by both the host and the dpu to communicate information */
 
-#endif /* __COMMON_H__ */

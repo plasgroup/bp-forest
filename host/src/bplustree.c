@@ -6,11 +6,11 @@
 
 // #define USE_LINEAR_SEARCH
 
-
+#ifdef PRINT_DEBUG
 typedef struct Queue {  // queue for showing all nodes by BFS
     int tail;
     int head;
-    BPTptr ptrs[MAX_NODE_NUM];
+    BPTptr ptrs[MAX_NODE_NUM_IN_DPU];
 } Queue_t;
 
 Queue_t* queue;
@@ -25,35 +25,36 @@ Queue_t* initQueue()
 
 void enqueue(Queue_t* queue, BPTptr input)
 {
-    if ((queue->tail + 2) % MAX_NODE_NUM == queue->head) {
+    if ((queue->tail + 2) % MAX_NODE_NUM_IN_DPU == queue->head) {
         printf("queue is full\n");
         return;
     }
-    queue->ptrs[(queue->tail + 1) % MAX_NODE_NUM] = input;
-    queue->tail = (queue->tail + 1) % MAX_NODE_NUM;
+    queue->ptrs[(queue->tail + 1) % MAX_NODE_NUM_IN_DPU] = input;
+    queue->tail = (queue->tail + 1) % MAX_NODE_NUM_IN_DPU;
     // printf("%p is enqueued\n",input);
 }
 
 BPTptr dequeue(Queue_t* queue)
 {
     BPTptr ret;
-    if ((queue->tail + 1) % MAX_NODE_NUM == queue->head) {
+    if ((queue->tail + 1) % MAX_NODE_NUM_IN_DPU == queue->head) {
         printf("queue is empty\n");
         return NULL;
     }
     ret = queue->ptrs[queue->head];
-    queue->head = (queue->head + 1) % MAX_NODE_NUM;
+    queue->head = (queue->head + 1) % MAX_NODE_NUM_IN_DPU;
     // printf("%p is dequeued\n",ret);
     return ret;
 }
+#endif
 #ifdef DEBUG_ON
 void showNode(BPTptr, int);
 #endif
-extern BPlusTree* bptrees[MAX_NUM_BPTREE_IN_CPU];
+extern BPlusTree* bplustrees[MAX_NUM_BPTREE_IN_CPU];
 int num_trees;
-BPTreeNode nodes[MAX_NUM_BPTREE_IN_DPU][MAX_NODE_NUM];
+BPTreeNode nodes[MAX_NUM_BPTREE_IN_CPU][MAX_NODE_NUM_IN_DPU];
 int free_node_index_stack_head[MAX_NUM_BPTREE_IN_CPU] = {-1};
-int free_node_index_stack[MAX_NUM_BPTREE_IN_CPU][MAX_NODE_NUM];
+int free_node_index_stack[MAX_NUM_BPTREE_IN_CPU][MAX_NODE_NUM_IN_DPU];
 int max_node_index[MAX_NUM_BPTREE_IN_CPU] = {-1};
 
 int free_tree_index_stack_head = -1;
@@ -75,14 +76,14 @@ BPTptr newBPTreeNode(int tree_id)
     p->isRoot = false;
     p->isLeaf = false;
     p->numKeys = 0;
-    bptrees[tree_id]->NumOfNodes++;
+    bplustrees[tree_id]->NumOfNodes++;
     return p;
 }
 
 int freeBPTreeNode(int tree_id, BPTptr p)
 {
-    free_node_index_stack[tree_id][++free_node_index_stack_head[tree_id]] = (p - &nodes[tree_id]);
-    bptrees[tree_id]->NumOfNodes--;
+    free_node_index_stack[tree_id][++free_node_index_stack_head[tree_id]] = (p - nodes[tree_id]);
+    bplustrees[tree_id]->NumOfNodes--;
     return 0;
 }
 
@@ -98,18 +99,24 @@ int freeBPTreeNode_recursive(int tree_id, BPTptr p)
 }
 
 BPlusTree* new_BPTree()
-{
+{   
+    printf("new_BPtree\n");
     BPlusTree* bpt;
     int tree_index;
     if (free_tree_index_stack_head >= 0) {  // if there is gap in the array
         tree_index = free_tree_index_stack[free_tree_index_stack_head--];
     } else
+        printf("%d\n", max_tree_index);
         tree_index = ++max_tree_index;
+        printf("%d\n", max_tree_index);
+        printf("%d\n", tree_index);
     if (num_trees > MAX_NUM_BPTREE_IN_DPU) {
         printf("ERROR: num of trees exceed the limit\n");
         return NULL;
     }
-    bpt = bptrees[tree_index];
+    printf("%d\n", tree_index);
+    bplustrees[tree_index] = (BPlusTree*)malloc(sizeof(BPlusTree));
+    bpt = bplustrees[tree_index];
     bpt->NumOfNodes = 1;
     bpt->height = 1;
     bpt->tree_index = tree_index;
@@ -127,6 +134,7 @@ int free_BPTree(int tree_id, BPlusTree* bpt)
 {
     free_tree_index_stack[++free_tree_index_stack_head] = bpt->tree_index;
     freeBPTreeNode_recursive(tree_id, bpt->root);
+    free(bpt);
     return 0;
 }
 
@@ -406,12 +414,12 @@ int BPTree_GetHeight(BPlusTree* bpt) { return bpt->height; }
 
 int traverse_and_count_elems(BPTptr node)
 {
-    int elems = node->numKeys;
+    int elems = 0;
     if (!node->isLeaf) {
         for (int i = 0; i <= node->numKeys; i++) {
-            elems += count_elems_recursive(node->ptrs.inl.children[i]);
+            elems += traverse_and_count_elems(node->ptrs.inl.children[i]);
         }
-    }
+    } else elems += node->numKeys;
     return elems;
 }
 bool do_split_phase(BPlusTree* bpt)
@@ -436,7 +444,7 @@ void split_tree(BPlusTree* bpt)
     int num_trees = (traverse_and_count_elems(bpt->root) + SPLIT_THRESHOLD - 1) / SPLIT_THRESHOLD;
     int num_elems_per_tree = traverse_and_count_elems(bpt->root) / num_trees;
     BPTptr cur, n;
-    n = bpt;
+    n = bpt->root;
     for (int i = 0; i < num_trees - 1; i++) {
         int num_elems = 0;
         cur = n;
@@ -462,9 +470,9 @@ void split_tree(BPlusTree* bpt)
         n->ptrs.inl.children[cur->numKeys - Mid]->parent = n;
         split_key = cur->key[Mid - 1];
         split_result[new_tree->tree_index].num_elems[i] = num_elems;
-        split_result[bpt->tree_index].num_elems[i] -= split_result.num_elems[new_tree->tree_index];
+        split_result[bpt->tree_index].num_elems[i] -= num_elems;
         split_result[bpt->tree_index].split_key[i] = split_key;
-        split_result.split_info[bpt->tree_index].new_tree_index = new_tree->tree_index;
+        split_result[bpt->tree_index].new_tree_index[i] = new_tree->tree_index;
     }
     return;
 }
@@ -504,7 +512,7 @@ BPTptr deserialize_node(int tree_id)
 BPlusTree* deserialize()
 {
     nodes_num = 0;
-    BPlusTree* bpt = nex_BPTree();
+    BPlusTree* bpt = new_BPTree();
     deserialize_node(bpt->tree_index);
     return bpt;
 }

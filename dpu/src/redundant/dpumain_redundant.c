@@ -41,14 +41,14 @@ int traverse_and_print_nodes(MBPTptr node)
     return elems;
 }
 
-__mram BPTreeNode nodes_transfer_buffer[MAX_NODE_NUM];
+__mram BPTreeNode nodes_transfer_buffer[MAX_NODE_NUM_TRANSFER];
 __mram uint64_t nodes_transfer_num;
 __mram uint64_t task_no;
 __mram uint64_t transfer_tree_index;
 
 void traverse_and_copy_nodes(MBPTptr node)
 {
-    showNode(node, nodes_transfer_num);
+    //showNode(node, nodes_transfer_num);
     memcpy(&nodes_transfer_buffer[nodes_transfer_num++], node, sizeof(BPTreeNode));
     if (!node->isLeaf) {
         for (int i = 0; i <= node->numKeys; i++) {
@@ -97,15 +97,16 @@ int main()
     int tid = me();
     switch (task_no) {
     case INIT_TASK: {
-        init_BPTree();
+        if (tid == 0) {
+            init_BPTree(0);
+        }
     }
     case SEARCH_TASK: {
 #ifdef PRINT_DEBUG
         /* sequential execution using semaphore */
         sem_take(&my_semaphore);
-        printf("total num of nodes = %d\n",
-            BPTree_GetNumOfNodes());
-        printf("height = %d\n", BPTree_GetHeight());
+        // printf("total num of nodes = %d\n", BPTree_GetNumOfNodes());
+        // printf("height = %d\n", BPTree_GetHeight());
         sem_give(&my_semaphore);
         barrier_wait(&my_barrier);
 #endif
@@ -125,7 +126,7 @@ int main()
         if (tid == 0) {
             for (int index = 0; index < end_idx[NUM_BPTREE_IN_DPU - 1]; index++) {
                 BPTreeInsert(request_buffer[index].key,
-                    request_buffer[index].write_val_ptr);
+                    request_buffer[index].write_val_ptr,index);
             }
         }
     }
@@ -145,7 +146,7 @@ int main()
     }
     default: {
         if (tid == 0)
-            fprintf(stderr, "unspecified task %d\n", task_no);
+            printf("unspecified task %lu\n", task_no);
         return -1;
     }
     }
@@ -171,7 +172,7 @@ int main()
 /* write intensive */
 #if WORKLOAD == W50R50
     for (int index = tid == 0 ? 0 : end_idx[tid - 1]; index < end_idx[tid]; index++) {
-        res[tid] = BPTreeGet(request_buffer[index].key);
+        res[tid] = BPTreeGet(request_buffer[index].key,index);
     }
 #endif
 /* read intensive */
