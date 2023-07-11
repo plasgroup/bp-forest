@@ -1,5 +1,5 @@
 #include "bplustree.h"
-#include "simulation_by_host.hpp"
+// #include "simulation_by_host.hpp"
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,15 +49,15 @@ BPTptr dequeue(Queue_t* queue)
 #ifdef DEBUG_ON
 void showNode(BPTptr, int);
 #endif
-BPlusTree* bptrees[MAX_NUM_BPTREE_IN_DPU];
+extern BPlusTree* bptrees[MAX_NUM_BPTREE_IN_CPU];
 int num_trees;
 BPTreeNode nodes[MAX_NUM_BPTREE_IN_DPU][MAX_NODE_NUM];
-int free_node_index_stack_head[MAX_NUM_BPTREE_IN_DPU] = {-1};
-int free_node_index_stack[MAX_NUM_BPTREE_IN_DPU][MAX_NODE_NUM];
-int max_node_index[MAX_NUM_BPTREE_IN_DPU] = {-1};
+int free_node_index_stack_head[MAX_NUM_BPTREE_IN_CPU] = {-1};
+int free_node_index_stack[MAX_NUM_BPTREE_IN_CPU][MAX_NODE_NUM];
+int max_node_index[MAX_NUM_BPTREE_IN_CPU] = {-1};
 
 int free_tree_index_stack_head = -1;
-int free_tree_index_stack[MAX_NUM_BPTREE_IN_DPU];
+int free_tree_index_stack[MAX_NUM_BPTREE_IN_CPU];
 int max_tree_index = -1;
 
 split_info_t split_result[MAX_NUM_BPTREE_IN_DPU];
@@ -81,7 +81,7 @@ BPTptr newBPTreeNode(int tree_id)
 
 int freeBPTreeNode(int tree_id, BPTptr p)
 {
-    free_node_index_stack[tree_id][++free_node_index_stack_head[tree_id]] = (p - &nodes[tree_id]) / sizeof(BPTreeNode);
+    free_node_index_stack[tree_id][++free_node_index_stack_head[tree_id]] = (p - &nodes[tree_id]);
     bptrees[tree_id]->NumOfNodes--;
     return 0;
 }
@@ -91,7 +91,7 @@ int freeBPTreeNode_recursive(int tree_id, BPTptr p)
     freeBPTreeNode(tree_id, p);
     if (!p->isLeaf) {
         for (int i = 0; i <= p->numKeys; i++) {
-            freeBPTreeNode(tree_id, p->children[i]);
+            freeBPTreeNode(tree_id, p->ptrs.inl.children[i]);
         }
     }
     return 0;
@@ -126,7 +126,6 @@ BPlusTree* new_BPTree()
 int free_BPTree(int tree_id, BPlusTree* bpt)
 {
     free_tree_index_stack[++free_tree_index_stack_head] = bpt->tree_index;
-    bptrees[tree_id]->NumOfNodes--;
     freeBPTreeNode_recursive(tree_id, bpt->root);
     return 0;
 }
@@ -468,4 +467,44 @@ void split_tree(BPlusTree* bpt)
         split_result.split_info[bpt->tree_index].new_tree_index = new_tree->tree_index;
     }
     return;
+}
+
+void traverse_and_copy_nodes(BPTptr node)
+{
+    memcpy(&nodes_buffer[nodes_num++], node, sizeof(BPTreeNode));
+    if (!node->isLeaf) {
+        for (int i = 0; i <= node->numKeys; i++) {
+            traverse_and_copy_nodes(node->ptrs.inl.children[i]);
+        }
+    }
+    return;
+}
+
+void serialize(BPlusTree* bpt)
+{
+    nodes_num = 0;
+    traverse_and_copy_nodes(bpt->root);
+    free_BPTree(bpt->tree_index, bpt);
+    return;
+}
+
+BPTptr deserialize_node(int tree_id)
+{
+    BPTptr node = newBPTreeNode(tree_id);
+    memcpy(node, &nodes_buffer[nodes_num++], sizeof(BPTreeNode));
+    if (!node->isLeaf) {
+        for (int i = 0; i <= node->numKeys; i++) {
+            node->ptrs.inl.children[i] = deserialize_node(tree_id);
+            node->ptrs.inl.children[i]->parent = node;
+        }
+    }
+    return node;
+}
+
+BPlusTree* deserialize()
+{
+    nodes_num = 0;
+    BPlusTree* bpt = nex_BPTree();
+    deserialize_node(bpt->tree_index);
+    return bpt;
 }

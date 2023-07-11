@@ -6,7 +6,7 @@
 
 #define DPU_ASSERT(func) func
 #define DPU_ASYNCHRONOUS 1
-#define NUM_REQUESTS_PER_BATCH (100000)
+#define NUM_REQUESTS_PER_BATCH (1000000)
 
 #define NR_DPUS (1)
 

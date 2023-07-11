@@ -1,14 +1,18 @@
+#pragma once
 #include "bplustree_redundant.h"
 #include "common.h"
+#include "mutex.h"
 #include <stdio.h>
-
+MUTEX_INIT(node_alloc_mutex);
 #define true 1
 #define false 0
 // #define USE_LINEAR_SEARCH
 __mram BPTreeNode nodes[MAX_NODE_NUM];
 int free_node_index_stack_head = -1;
 __mram int free_node_index_stack[MAX_NODE_NUM];
-int height = 1;
+int free_tree_index_stack_head = -1;
+int free_tree_index_stack[MAX_NUM_BPTREE_IN_DPU];
+int max_tree_index = -1;
 
 #ifdef DEBUG_ON
 typedef struct Queue {  // queue for showing all nodes by BFS
@@ -55,23 +59,41 @@ void showNode(MBPTptr, int);
 
 int max_node_index = -1;
 
-MBPTptr root;
-
-int NumOfNodes = 0;
+MBPTptr root[MAX_NUM_BPTREE_IN_DPU];
 
 MBPTptr newBPTreeNode()
 {
     MBPTptr p;
+    mutex_lock(node_alloc_mutex);
     if (free_node_index_stack_head >= 0) {  // if there is gap in nodes array
         p = &nodes[free_node_index_stack[free_node_index_stack_head--]];
     } else
         p = &nodes[++max_node_index];
+    mutex_unlock(node_alloc_mutex);
     p->parent = NULL;
     p->isRoot = false;
     p->isLeaf = false;
     p->numKeys = 0;
-    NumOfNodes++;
     return p;
+}
+
+int freeBPTreeNode(MBPTptr p)
+{
+    mutex_lock(node_alloc_mutex);
+    free_node_index_stack[++free_node_index_stack_head] = (p - &nodes) / sizeof(BPTreeNode);
+    mutex_unlock(node_alloc_mutex);
+    return 0;
+}
+
+int freeBPTreeNode_recursive(MBPTptr p)
+{
+    freeBPTreeNode(p);
+    if (!p->isLeaf) {
+        for (int i = 0; i <= p->numKeys; i++) {
+            freeBPTreeNode(p->ptrs.inl.children[i]);
+        }
+    }
+    return 0;
 }
 
 // binary search
@@ -153,8 +175,9 @@ void split(MBPTptr cur)
     }
     if (cur->isRoot) {  // root Node splits
         // Create a new root
-        root = newBPTreeNode();
-        root->isRoot = true;
+        __mram_ptr MBPTptr* root_ptr = &cur;
+        *root_ptr = newBPTreeNode();
+        MBPTptr root = *root_ptr;
         root->isLeaf = false;
         root->numKeys = 1;
         root->ptrs.inl.children[0] = cur;
@@ -168,7 +191,6 @@ void split(MBPTptr cur)
         } else {
             root->key[0] = cur->key[Mid - 1];
         }
-        height++;
     } else {  // insert n to cur->parent
         n->parent = cur->parent;
         if (cur->isLeaf) {
@@ -228,24 +250,38 @@ void insert(MBPTptr cur, key_int64_t key, value_ptr_t value, MBPTptr n)
         split(cur);  // key is full
 }
 
-void init_BPTree()
+void init_BPTree(int tree_id)
 {
-    NumOfNodes = 0;
-    height = 1;
-    root = newBPTreeNode();
-    root->isRoot = true;
-    root->isLeaf = true;
-    root->ptrs.lf.right = NULL;
-    root->ptrs.lf.left = NULL;
-    root->ptrs.lf.value[0] = 0;
+    root[tree_id] = newBPTreeNode();
+    root[tree_id]->isRoot = true;
+    root[tree_id]->isLeaf = true;
+    root[tree_id]->ptrs.lf.right = NULL;
+    root[tree_id]->ptrs.lf.left = NULL;
+    root[tree_id]->ptrs.lf.value[0] = 0;
 }
 
-int BPTreeInsert(key_int64_t key, value_ptr_t value)
+int new_BPTree()
 {
-    if (root->numKeys == 0) {  // if the tree is empty
-        root->key[0] = key;
-        root->numKeys++;
-        root->ptrs.lf.value[0] = value;
+    MBPTptr new_root;
+    int tree_index;
+    if (free_tree_index_stack_head >= 0) {  // if there is gap in the array
+        tree_index = free_tree_index_stack[free_tree_index_stack_head--];
+    } else
+        tree_index = ++max_tree_index;
+    if (max_tree_index > MAX_NUM_BPTREE_IN_DPU) {
+        printf("ERROR: num of trees exceed the limit\n");
+        return NULL;
+    }
+    init_BPTree(tree_index);
+    return tree_index;
+}
+
+int BPTreeInsert(key_int64_t key, value_ptr_t value, int tree_id)
+{
+    if (root[tree_id]->numKeys == 0) {  // if the tree is empty
+        root[tree_id]->key[0] = key;
+        root[tree_id]->numKeys++;
+        root[tree_id]->ptrs.lf.value[0] = value;
         return true;
     }
     MBPTptr Leaf = findLeaf(key);
@@ -348,12 +384,3 @@ void BPTreePrintAll()
 }
 
 #endif
-int BPTree_GetNumOfNodes()
-{
-    return NumOfNodes;
-}
-
-int BPTree_GetHeight()
-{
-    return height;
-}

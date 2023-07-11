@@ -1,9 +1,10 @@
 #pragma once
 
 #ifndef MAX_CHILD
-#define MAX_CHILD (127)  // split occurs if numKeys >= MAX_CHILD
+#define MAX_CHILD (126)  // split occurs if numKeys >= MAX_CHILD
 #endif
 #define MAX_NUM_BPTREE_IN_DPU (100)
+#define MAX_NUM_BPTREE_IN_CPU (1024)
 #define NODE_DATA_SIZE (40)  // maximum node data size, MB
 #define MAX_NODE_NUM \
     ((NODE_DATA_SIZE << 20) / sizeof(BPTreeNode) / MAX_NUM_BPTREE_IN_DPU)  // the maximum number of nodes in a tree
@@ -82,6 +83,10 @@ extern BPlusTree* new_BPTree();
 extern int traverse_and_count_elems(BPTptr);
 extern bool do_split_phase(BPlusTree*);
 extern void split_tree(BPlusTree*);
+extern void serialize(BPlusTree*);
+extern BPlusTree* deserialize();
+extern BPTreeNode nodes_buffer[MAX_NODE_NUM];
+extern uint64_t nodes_num;
 
 typedef struct request_t {  // number of requests
     key_t_ key;             // key of each request
