@@ -1,5 +1,5 @@
 #pragma once
-
+/* tasks */
 #define EMPTY_TASK 0
 #define INIT_TASK 1
 #define SEARCH_TASK 10

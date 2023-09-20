@@ -1,8 +1,6 @@
 #pragma once
 
 #define MAX_CHILD (126)  // split occurs if numKeys >= MAX_CHILD
-
-
 #define MAX_NUM_BPTREE_IN_DPU (100)
 #include "../../../common/inc/common.h"
 #include <mram.h>
