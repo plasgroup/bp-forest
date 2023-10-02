@@ -131,13 +131,13 @@ int main()
     }
 
 #ifdef PRINT_DEBUG
-    /* sequential execution using semaphore */
-    sem_take(&my_semaphore);
-    printf("[tasklet %d] total num of nodes = %d\n", tid,
-        BPTree_GetNumOfNodes(tid));
-    printf("[tasklet %d] height = %d\n", tid, BPTree_GetHeight(tid));
-    sem_give(&my_semaphore);
-    barrier_wait(&my_barrier);
+    // /* sequential execution using semaphore */
+    // sem_take(&my_semaphore);
+    // printf("[tasklet %d] total num of nodes = %d\n", tid,
+    //     BPTree_GetNumOfNodes(tid));
+    // printf("[tasklet %d] height = %d\n", tid, BPTree_GetHeight(tid));
+    // sem_give(&my_semaphore);
+    // barrier_wait(&my_barrier);
 #endif
 #ifdef PRINT_ON
     // sem_take(&my_semaphore);
