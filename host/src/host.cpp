@@ -36,6 +36,9 @@ extern "C" {
 #ifndef NUM_TREES_PER_DPU
 #define NUM_TREES_PER_DPU (10)
 #endif
+#ifndef NUM_INIT_REQS
+#define NUM_INIT_REQS (1000 * NUM_TOTAL_TREES)
+#endif
 #define NUM_TOTAL_TREES (NR_DPUS * NUM_TREES_PER_DPU)
 #define MAX_NUM_TREES_IN_DPU (NR_TASKLETS)
 #ifndef MAX_NODE_NUM
@@ -120,6 +123,9 @@ void send_requests(struct dpu_set_t set, struct dpu_set_t dpu, uint64_t* task)
     {
         DPU_ASSERT(dpu_prepare_xfer(
             dpu, &key_index[each_dpu]));
+        for (int i = 0; i < 10; i++) {
+            //printf("key_index[%d][%d] = %d\n", each_dpu, i, key_index[each_dpu][i]);
+        }
     }
     DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_TO_DPU, "end_idx", 0,
         sizeof(int) * (MAX_NUM_BPTREE_IN_DPU),
@@ -189,7 +195,7 @@ void initialize_dpus(int num_init_reqs, struct dpu_set_t set, struct dpu_set_t d
                "]heap size is not enough\n");
         return;
     }
-    key_int64_t keys[10 * NUM_TOTAL_TREES];
+    key_int64_t keys[NUM_INIT_REQS];
     key_int64_t interval = (key_int64_t)std::numeric_limits<uint64_t>::max() / num_init_reqs;
     printf("interval = %ld\n", interval);
     int num_keys_for_tree[NR_DPUS][MAX_NUM_TREES_IN_DPU] = {0};
@@ -260,11 +266,25 @@ void initialize_dpus(int num_init_reqs, struct dpu_set_t set, struct dpu_set_t d
     //     DPU_ASSERT(dpu_log_read(dpu, stdout));
     // }
     printf("initialized bptrees\n");
+#ifdef PRINT_DEBUG
+    DPU_FOREACH(set, dpu, each_dpu)
+    {
+        if (each_dpu == 0)
+            DPU_ASSERT(dpu_log_read(dpu, stdout));
+    }
+#endif
     /* insert initial keys for each tree */
     send_requests(set, dpu, &task_insert);
     printf("sent reqs\n");
     DPU_ASSERT(dpu_launch(set, DPU_SYNCHRONOUS));
     dpu_sync(set);
+#ifdef PRINT_DEBUG
+    DPU_FOREACH(set, dpu, each_dpu)
+    {
+        if (each_dpu == 0)
+            DPU_ASSERT(dpu_log_read(dpu, stdout));
+    }
+#endif
     free(dpu_requests);
     return;
 }
@@ -462,7 +482,7 @@ void execute_one_batch(struct dpu_set_t set, struct dpu_set_t dpu, uint64_t* tas
     dpu_sync(set);
     gettimeofday(&end_total, NULL);
 #ifdef PRINT_DEBUG
-    printf("[4/4]cpu and all dpus finished: %0.5fsec\n", time_diff(&start, &end_total));
+    printf("[4/4]all dpus finished: %0.5fsec\n", time_diff(&start, &end_total));
 #endif
     send_and_execution_time += time_diff(&start, &end_total);
     execution_time += time_diff(&start, &end);
@@ -491,7 +511,7 @@ int main(int argc, char* argv[])
     DPU_ASSERT(dpu_alloc(NR_DPUS, NULL, &set));
     DPU_ASSERT(dpu_load(set, DPU_BINARY, NULL));
     DPU_ASSERT(dpu_get_nr_dpus(set, &nr_of_dpus));
-    int num_init_reqs = 10 * NUM_TOTAL_TREES;
+    int num_init_reqs = NUM_INIT_REQS;
     printf("num_init_reqs=%d\n", num_init_reqs);
     std::cout << "NUM Trees per DPU(init):" << NUM_TREES_PER_DPU << ", NUM Trees per DPU(max):" << MAX_NUM_TREES_IN_DPU << ", num total trees:" << NUM_TOTAL_TREES << ", NR_DPUS:" << NR_DPUS << ", NR_TASKLETS:" << NR_TASKLETS << std::endl;
     initialize_dpus(num_init_reqs, set, dpu);
