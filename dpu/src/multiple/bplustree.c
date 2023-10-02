@@ -19,6 +19,8 @@ MBPTptr root[NR_TASKLETS];
 
 int NumOfNodes[NR_TASKLETS] = {0};
 
+int tree_bitmap = 0;
+
 #ifdef DEBUG_ON
 typedef struct Queue {  // queue for showing all nodes by BFS
     int tail;
@@ -77,6 +79,38 @@ MBPTptr newBPTreeNode(uint32_t tasklet_id)
     p->numKeys = 0;
     NumOfNodes[tasklet_id]++;
     return p;
+}
+
+void freeBPTree(MBPTptr p, int tasklet_id)
+{
+
+    free_node_index_stack[tasklet_id][++free_node_index_stack_head[tasklet_id]] = p - (MBPTptr)&nodes[tasklet_id];
+    NumOfNodes[tasklet_id]--;
+    for (int i = 0; i < p->numKeys; i++) {
+        freeBPTree(p->ptrs.inl.children[i], tasklet_id);
+    }
+    p = NULL;
+}
+MBPTptr malloc_tree()
+{
+    int tree_id;
+    MBPTptr p = NULL;
+    for (int i = 0; i < MAX_NUM_TREES_IN_DPU; i++) {
+        if (tree_bitmap & !((1 << i))) {  // 木が空いているかどうか
+            tree_id = i;
+            tree_bitmap |= (1 << i);
+        }
+        break;
+    }
+    p = root[tree_id];
+    return p;
+}
+
+void delete_tree(int tid)
+{
+    tree_bitmap &= ~(1 << tid);
+    freeBPTree(root[tid], tid);
+    return;
 }
 
 // binary search

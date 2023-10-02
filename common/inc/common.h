@@ -11,11 +11,8 @@
 #ifndef NR_TASKLETS
 #define NR_TASKLETS (1)
 #endif
-#ifndef NUM_BPTREE_IN_DPU
-#define NUM_BPTREE_IN_DPU (NR_TASKLETS)
-#endif
-#ifndef NUM_BPTREE_IN_CPU
-#define NUM_BPTREE_IN_CPU (2)
+#ifndef MAX_NUM_BPTREE_IN_DPU
+#define MAX_NUM_BPTREE_IN_DPU (NR_TASKLETS)
 #endif
 // the size for a request(default:17B)
 #define REQUEST_SIZE (17)
@@ -27,7 +24,8 @@
 #ifndef MAX_REQ_NUM_IN_A_DPU
 #define MAX_REQ_NUM_IN_A_DPU (MRAM_REQUEST_BUFFER_SIZE / REQUEST_SIZE)
 #endif
-#define NUM_REQUESTS_PER_BATCH (1000000)
+#define MAX_NUM_TREES_IN_DPU (NR_TASKLETS)
+#define NUM_REQUESTS_PER_BATCH (1000)
 #define READ (1)
 #define WRITE (0)
 #define W50R50 (1)
@@ -60,7 +58,6 @@ typedef struct {
 
 // requests for a DPU in a batch
 typedef struct {
-    int end_idx[NUM_BPTREE_IN_DPU];  // number of requests
     each_request_t requests[MAX_REQ_NUM_IN_A_DPU];
 } dpu_requests_t;
 
@@ -83,6 +80,10 @@ typedef union {
     uint32_t ifsuccsess;
 } dpu_result_t;
 
-/* Structure used by both the host and the dpu to communicate information */
-
+/* Tasks */
+#define TASK_INIT (0)
+#define TASK_GET (10)
+#define TASK_INSERT (11)
+#define TASK_FROM (100)
+#define TASK_TO (101)
 #endif /* __COMMON_H__ */

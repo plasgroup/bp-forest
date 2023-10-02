@@ -1,11 +1,11 @@
 #ifndef __bplustree_H__
 #define __bplustree_H__
 
-#define MAX_CHILD (18)  // split occurs if numKeys >= MAX_CHILD
+#define MAX_CHILD (127)  // split occurs if numKeys >= MAX_CHILD
 
-#define NODE_DATA_SIZE (40)  // maximum node data size, MB
+#define NODE_DATA_SIZE (30)  // maximum node data size, MB
 #define MAX_NODE_NUM \
-    ((NODE_DATA_SIZE << 20) / sizeof(BPTreeNode) / NUM_BPTREE_IN_DPU)  // NODE_DATA_SIZE MB for Node data
+    ((NODE_DATA_SIZE << 20) / sizeof(BPTreeNode) / MAX_NUM_BPTREE_IN_DPU)  // NODE_DATA_SIZE MB for Node data
 #include "common.h"
 #include <mram.h>
 #include <string.h>
@@ -54,5 +54,7 @@ extern void BPTreePrintLeaves();
 extern void BPTreePrintRoot();
 extern void BPTreePrintAll();
 extern int BPTree_GetHeight();
-
+extern MBPTptr newBPTreeNode(uint32_t);
+extern void freeBPTree(MBPTptr, int);
+extern MBPTptr malloc_tree();
 #endif
