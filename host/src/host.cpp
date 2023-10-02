@@ -31,7 +31,7 @@ extern "C" {
 #define ANSI_COLOR_RESET "\x1b[0m"
 
 #ifndef DPU_BINARY
-#define DPU_BINARY "./build/dpu/dpu_program"
+#define DPU_BINARY "./bp-forest/build/dpu/dpu_program"
 #endif
 #ifndef NUM_TREES_PER_DPU
 #define NUM_TREES_PER_DPU (10)
@@ -367,7 +367,7 @@ int batch_preprocess(std::ifstream& fs, int n, struct dpu_set_t set, struct dpu_
                 }
             }
             if (count >= NR_DPUS - 1 - (migration_per_batch - num_trees_to_be_migrated)) {
-                printf("migration limit because of NR_DPUS, %d migration done\n", migration_per_batch - num_trees_to_be_migrated);
+                //printf("migration limit because of NR_DPUS, %d migration done\n", migration_per_batch - num_trees_to_be_migrated);
                 break;
             }
             int to_DPU = idx[NR_DPUS - 1 - (migration_per_batch - num_trees_to_be_migrated)];
@@ -510,7 +510,7 @@ int main(int argc, char* argv[])
     std::string zipfian_const = a.get<std::string>("zipfianconst");
     int max_key_num = a.get<int>("keynum");
     migration_per_batch = a.get<int>("migration_num");
-    std::string file_name = ("./workload/zipf_const_" + zipfian_const + ".bin");
+    std::string file_name = ("./bp-forest/workload/zipf_const_" + zipfian_const + ".bin");
 
 #ifdef PRINT_DEBUG
     std::cout << "zipf_const:" << zipfian_const << ", file:" << file_name << std::endl;
@@ -552,7 +552,6 @@ int main(int argc, char* argv[])
         if (num_keys == 0)
             break;
         gettimeofday(&end, NULL);
-        preprocess_time = time_diff(&start, &end);
         total_num_keys += num_keys;
 #ifdef PRINT_DEBUG
 
