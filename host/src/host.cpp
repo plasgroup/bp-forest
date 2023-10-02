@@ -55,6 +55,8 @@ dpu_requests_t* dpu_requests;
 uint64_t nb_cycles_insert[NR_DPUS];
 uint64_t nb_cycles_get[NR_DPUS];
 uint64_t total_cycles_insert;
+float preprocess_time1;
+float preprocess_time2;
 float preprocess_time;
 float migration_time;
 float send_time;
@@ -347,7 +349,7 @@ int batch_preprocess(std::ifstream& fs, int n, struct dpu_set_t set, struct dpu_
         }
     }
     gettimeofday(&end, NULL);
-    preprocess_time = time_diff(&start, &end);
+    preprocess_time1 = time_diff(&start, &end);
     // 3.木のmigration
     gettimeofday(&start, NULL);
     int num_trees_to_be_migrated = migration_per_batch;  // 何個の木を移動するか
@@ -443,7 +445,8 @@ int batch_preprocess(std::ifstream& fs, int n, struct dpu_set_t set, struct dpu_
 #endif
     free(batch_keys);
     gettimeofday(&end, NULL);
-    preprocess_time += time_diff(&start, &end);
+    preprocess_time2 = time_diff(&start, &end);
+    preprocess_time = preprocess_time1 + preprocess_time2;
     return key_count;
 }
 
@@ -536,7 +539,7 @@ int main(int argc, char* argv[])
     int batch_num = 0;
     int num_keys = 0;
     gettimeofday(&start_total, NULL);
-    printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, preprocess_time, migration_time, send_time, execution_time, batch_time, throughput\n");
+    printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, preprocess_time1, preprocess_time2, preprocess_time, migration_time, send_time, execution_time, batch_time, throughput\n");
     while (total_num_keys < max_key_num) {
         //printf("%d\n", num_keys);
         // std::cout << std::endl
@@ -564,9 +567,9 @@ int main(int argc, char* argv[])
         total_execution_time += execution_time;
         total_batch_time += batch_time;
         double throughput = num_keys / batch_time;
-        printf("%s, %d, %d, %d, %d, %d, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
+        printf("%s, %d, %d, %d, %d, %d, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
             zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, batch_num,
-            num_keys, send_size, preprocess_time, migration_time, send_time,
+            num_keys, send_size, preprocess_time1, preprocess_time2, preprocess_time, migration_time, send_time,
             execution_time, batch_time, throughput);
 #ifdef PRINT_DEBUG
         DPU_FOREACH(set, dpu, each_dpu)
@@ -590,9 +593,9 @@ int main(int argc, char* argv[])
     //printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, send_time, cpu_time,
     //    execution_time, 100 * cpu_time / execution_time, send_and_execution_time, total_time, throughput);
     double throughput = total_num_keys / total_batch_time;
-    printf("%s, %d, %d, total, %d, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
+    printf("%s, %d, %d, total, %d, %0.5f, %0.5f, %0.5f,%0.5f,%0.5f, %0.5f, %0.5f, %0.0f\n",
         zipfian_const.c_str(), NR_DPUS, NR_TASKLETS,
-        total_num_keys, total_preprocess_time, send_size, total_migration_time, total_send_time,
+        total_num_keys, total_preprocess_time, total_preprocess_time, total_preprocess_time, send_size, total_migration_time, total_send_time,
         total_execution_time, total_batch_time, throughput);
     DPU_ASSERT(dpu_free(set));
     return 0;
