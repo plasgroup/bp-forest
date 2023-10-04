@@ -69,6 +69,7 @@ float total_execution_time = 0;
 float total_batch_time = 0;
 int each_dpu;
 int send_size;
+int batch_num = 0;
 uint64_t total_num_keys;
 uint32_t nr_of_dpus;
 struct timeval start, end, start_total, end_total;
@@ -211,7 +212,7 @@ void initialize_dpus(int num_init_reqs, struct dpu_set_t set, struct dpu_set_t d
     for (int i = 0; i < num_init_reqs; i++) {
         keys[i] = interval * i;
         //printf("keys[i] = %ld\n", keys[i]);
-        std::map<key_int64_t,std::pair<int,int>>::iterator it = key_to_tree_map.lower_bound(keys[i]);
+        std::map<key_int64_t, std::pair<int, int>>::iterator it = key_to_tree_map.lower_bound(keys[i]);
 
         //printf("%d,%d\n", it->second.first, it->second.second);
         if (it != key_to_tree_map.end()) {
@@ -356,26 +357,32 @@ int batch_preprocess(std::ifstream& fs, int n, struct dpu_set_t set, struct dpu_
     int num_trees_to_be_migrated = migration_per_batch;  // 何個の木を移動するか
     int count = 0;                                       // チェックしたDPUの数(移動しなかった場合も含む)
     while (num_trees_to_be_migrated) {
+        if (count >= NR_DPUS - 1 - (migration_per_batch - num_trees_to_be_migrated)) {
+            //printf("migration limit because of NR_DPUS, %d migration done\n", migration_per_batch - num_trees_to_be_migrated);
+            break;
+        }
         int from_DPU = idx[count];
-        if (__builtin_popcount(tree_bitmap[from_DPU]) != 1) {  // 木が1つだけだったら移動しない
+        int to_DPU = idx[NR_DPUS - 1 - (migration_per_batch - num_trees_to_be_migrated)];
+        int diff_before = num_keys_for_DPU[from_DPU] - num_keys_for_DPU[to_DPU];
+        if (diff_before < 100) {  // すでに負荷分散出来ているのでこの先のペアは移動不要
+            //printf("migration limit because the workload is already balanced, %d migration done\n", migration_per_batch - num_trees_to_be_migrated);
+            break;
+        }
+        if (__builtin_popcount(tree_bitmap[from_DPU]) > 1) {  // 木が1つだけだったら移動しない
             int from_tree = 0;
-            int max_num_keys = 0;
-            for (int i = 0; i < MAX_NUM_TREES_IN_DPU; i++) {  // 最もクエリが多い木を移動
+            int min_diff_after = 1 << 30;
+            for (int i = 0; i < MAX_NUM_TREES_IN_DPU; i++) {  // 最も負荷を分散出来る木を移動
                 //printf("from_DPU=%d,tree=%d\n", from_DPU, i);
-                if (num_keys_for_tree[from_DPU][i] > max_num_keys) {
-                    max_num_keys = num_keys_for_tree[from_DPU][i];
+                int diff_after = std::abs((num_keys_for_DPU[from_DPU] - num_keys_for_tree[from_DPU][from_tree]) - (num_keys_for_DPU[to_DPU] + num_keys_for_tree[from_DPU][from_tree]));  // 移動後のクエリ数の差
+                if (diff_after < min_diff_after) {
                     from_tree = i;
+                    min_diff_after = diff_after;
                 }
             }
-            if (count >= NR_DPUS - 1 - (migration_per_batch - num_trees_to_be_migrated)) {
-                //printf("migration limit because of NR_DPUS, %d migration done\n", migration_per_batch - num_trees_to_be_migrated);
-                break;
-            }
-            int to_DPU = idx[NR_DPUS - 1 - (migration_per_batch - num_trees_to_be_migrated)];
             int to_tree;
             for (int i = 0; i < MAX_NUM_TREES_IN_DPU; i++) {
-                if (!(tree_bitmap[to_DPU] & (1 << i))) {                                                                         // i番目の木が空いているかどうか
-                    if (num_keys_for_DPU[from_DPU] > num_keys_for_DPU[to_DPU] + 2 * (num_keys_for_tree[from_DPU][from_tree])) {  // 木を移動した結果、さらに偏ってしまう場合はのぞく
+                if (!(tree_bitmap[to_DPU] & (1 << i))) {  // i番目の木が空いているかどうか
+                    if (diff_before > min_diff_after) {   // 木を移動した結果、さらに偏ってしまう場合はのぞく
                         to_tree = i;
                         //printf("migration: (%d,%d)->(%d,%d)\n", from_DPU, from_tree, to_DPU, to_tree);
                         send_nodes_from_dpu_to_dpu(from_DPU, from_tree, to_DPU, to_tree, set, dpu);
@@ -444,10 +451,10 @@ int batch_preprocess(std::ifstream& fs, int n, struct dpu_set_t set, struct dpu_
 //     std::cout << x << std::endl;
 // }
 #endif
-    free(batch_keys);
     gettimeofday(&end, NULL);
     preprocess_time2 = time_diff(&start, &end);
     preprocess_time = preprocess_time1 + preprocess_time2;
+    free(batch_keys);
     return key_count;
 }
 
@@ -510,7 +517,6 @@ int main(int argc, char* argv[])
     a.parse_check(argc, argv);
     std::string zipfian_const = a.get<std::string>("zipfianconst");
     int max_key_num = a.get<int>("keynum");
-    migration_per_batch = a.get<int>("migration_num");
     std::string file_name = ("./workload/zipf_const_" + zipfian_const + ".bin");
 
 #ifdef PRINT_DEBUG
@@ -537,11 +543,14 @@ int main(int argc, char* argv[])
         return 1;
     }
     /* main routine */
-    int batch_num = 0;
     int num_keys = 0;
     gettimeofday(&start_total, NULL);
     printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, preprocess_time1, preprocess_time2, preprocess_time, migration_time, send_time, execution_time, batch_time, throughput\n");
     while (total_num_keys < max_key_num) {
+        if (batch_num == 0)
+            migration_per_batch = 0;  // batch 0: no migration
+        else
+            migration_per_batch = a.get<int>("migration_num");
         //printf("%d\n", num_keys);
         // std::cout << std::endl
         //           << "===== batch " << batch_num << " =====" << std::endl;
