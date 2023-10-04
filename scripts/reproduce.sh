@@ -1,9 +1,17 @@
 #!/bin/bash
 cd $(dirname $0)/..
+echo cd $(pwd)
+mkdir -p workload
+cmake . ./build -DNR_TASKLETS=10 -DNR_DPUS=2048 -DNUM_BPTREE_IN_DPU=10 -DCMAKE_BUILD_TYPE=Release > /dev/null 2>&1
+cmake --build ./build > /dev/null 2>&1
+for i in 0 0.5 0.99 1.2
+do
+    build/workload_gen/workload_gen -n 100000000 -a ${i} -e 2048
+    echo generated workload for zipf_const_${i}
+done
 alphas=(0 0.6 0.99 1.2)
 NUM_BPTREE_IN_CPUs=(1 4 16 64 256 512 1024)
 NUM_BPTREE_REDUNDANTs=(1 16 64 256 512 1024 1536 2047)
-echo cd $(pwd)
 mkdir ../data_reproduced
 echo "1/2 cyclic, w50r50"
 for i in "${!alphas[@]}"
