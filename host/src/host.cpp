@@ -31,7 +31,7 @@ extern "C" {
 #define ANSI_COLOR_RESET "\x1b[0m"
 
 #ifndef DPU_BINARY
-#define DPU_BINARY "./bp-forest/build/dpu/dpu_program"
+#define DPU_BINARY "./build/dpu/dpu_program"
 #endif
 #ifndef NUM_TREES_PER_DPU
 #define NUM_TREES_PER_DPU (10)
@@ -211,7 +211,8 @@ void initialize_dpus(int num_init_reqs, struct dpu_set_t set, struct dpu_set_t d
     for (int i = 0; i < num_init_reqs; i++) {
         keys[i] = interval * i;
         //printf("keys[i] = %ld\n", keys[i]);
-        auto it = key_to_tree_map.lower_bound(keys[i]);
+        std::map<key_int64_t,std::pair<int,int>>::iterator it = key_to_tree_map.lower_bound(keys[i]);
+
         //printf("%d,%d\n", it->second.first, it->second.second);
         if (it != key_to_tree_map.end()) {
             //printf("key:%ld,DPU:%d,tree:%d\n", keys[i], it->second.first, it->second.second);
@@ -356,7 +357,7 @@ int batch_preprocess(std::ifstream& fs, int n, struct dpu_set_t set, struct dpu_
     int count = 0;                                       // チェックしたDPUの数(移動しなかった場合も含む)
     while (num_trees_to_be_migrated) {
         int from_DPU = idx[count];
-        if (__builtin_popcount(tree_bitmap[from_DPU] != 1)) {  // 木が1つだけだったら移動しない
+        if (__builtin_popcount(tree_bitmap[from_DPU]) != 1) {  // 木が1つだけだったら移動しない
             int from_tree = 0;
             int max_num_keys = 0;
             for (int i = 0; i < MAX_NUM_TREES_IN_DPU; i++) {  // 最もクエリが多い木を移動
@@ -510,7 +511,7 @@ int main(int argc, char* argv[])
     std::string zipfian_const = a.get<std::string>("zipfianconst");
     int max_key_num = a.get<int>("keynum");
     migration_per_batch = a.get<int>("migration_num");
-    std::string file_name = ("./bp-forest/workload/zipf_const_" + zipfian_const + ".bin");
+    std::string file_name = ("./workload/zipf_const_" + zipfian_const + ".bin");
 
 #ifdef PRINT_DEBUG
     std::cout << "zipf_const:" << zipfian_const << ", file:" << file_name << std::endl;
@@ -592,9 +593,9 @@ int main(int argc, char* argv[])
     //printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, send_time, cpu_time,
     //    execution_time, 100 * cpu_time / execution_time, send_and_execution_time, total_time, throughput);
     double throughput = total_num_keys / total_batch_time;
-    printf("%s, %d, %d, total, %d, %0.5f, %0.5f, %0.5f,%0.5f,%0.5f, %0.5f, %0.5f, %0.0f\n",
+    printf("%s, %d, %d, total, %ld, %0.5f, %0.5f, %0.5f,%0.5f,%0.5f, %0.5f, %0.5f, %0.0f\n",
         zipfian_const.c_str(), NR_DPUS, NR_TASKLETS,
-        total_num_keys, total_preprocess_time, total_preprocess_time, total_preprocess_time, send_size, total_migration_time, total_send_time,
+        total_num_keys, total_preprocess_time, total_preprocess_time, total_preprocess_time, total_migration_time, total_send_time,
         total_execution_time, total_batch_time, throughput);
     DPU_ASSERT(dpu_free(set));
     return 0;

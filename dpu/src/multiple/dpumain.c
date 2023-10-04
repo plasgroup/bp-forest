@@ -104,6 +104,7 @@ int main()
     }
     case TASK_GET: {
         value_ptr_t volatile res;
+        // DPU側で負荷分散する
         for (int index = tid == 0 ? 0 : end_idx[tid - 1]; index < end_idx[tid]; index++) {
             res = BPTreeGet(request_buffer[index].key, tid);
         }
