@@ -1,0 +1,2 @@
+num of tasklets, total_num_requests[s], time_sendrequests[s], time_dpu_execution[s], total_time[s], throughput[OPS/s]
+1, 2900000, 0.00813600, 115.91403198, 115.92217255, 25017
