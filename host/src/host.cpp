@@ -382,10 +382,10 @@ int batch_preprocess(std::ifstream& fs, int n, struct dpu_set_t set, struct dpu_
             }
             int to_tree;
             for (int i = 0; i < MAX_NUM_TREES_IN_DPU; i++) {
-                if (!(tree_bitmap[to_DPU] & (1 << i))) {  // i番目の木が空いているかどうか
-                    if (diff_before > min_diff_after) {   // 木を移動した結果、さらに偏ってしまう場合はのぞく
+                if (!(tree_bitmap[to_DPU] & (1 << i))) {                                                                         // i番目の木が空いているかどうか
+                    if (num_keys_for_DPU[from_DPU] > num_keys_for_DPU[to_DPU] + 2 * (num_keys_for_tree[from_DPU][from_tree])) {  // 木を移動した結果、さらに偏ってしまう場合はのぞく
                         to_tree = i;
-                        printf("migration: (%d,%d)->(%d,%d)\n", from_DPU, from_tree, to_DPU, to_tree);
+                        //printf("migration: (%d,%d)->(%d,%d)\n", from_DPU, from_tree, to_DPU, to_tree);
                         send_nodes_from_dpu_to_dpu(from_DPU, from_tree, to_DPU, to_tree, set, dpu);
                         num_keys_for_DPU[from_DPU] -= num_keys_for_tree[from_DPU][from_tree];
                         num_keys_for_DPU[to_DPU] += num_keys_for_tree[from_DPU][from_tree];
