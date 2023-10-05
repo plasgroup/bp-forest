@@ -14,8 +14,8 @@
 #ifndef MAX_NUM_BPTREE_IN_DPU
 #define MAX_NUM_BPTREE_IN_DPU (NR_TASKLETS)
 #endif
-// the size for a request(default:17B)
-#define REQUEST_SIZE (17)
+// the size for a request(default:16B)
+#define REQUEST_SIZE (16)
 // buffer size for request in a DPU(default:20MB/64MB)
 #ifndef MRAM_REQUEST_BUFFER_SIZE
 #define MRAM_REQUEST_BUFFER_SIZE (10 * 1024 * 1024)
@@ -53,7 +53,6 @@ typedef uint64_t value_ptr_t;
 typedef struct {
     key_int64_t key;            // key of each request
     value_ptr_t write_val_ptr;  // write pointer to the value if request is write
-    uint8_t operation;          // 1→read or 0→write
 } each_request_t;
 
 // requests for a DPU in a batch

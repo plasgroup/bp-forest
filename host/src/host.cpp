@@ -30,9 +30,6 @@ extern "C" {
 #define ANSI_COLOR_GREEN "\x1b[32m"
 #define ANSI_COLOR_RESET "\x1b[0m"
 
-#ifndef DPU_BINARY
-#define DPU_BINARY "./build/dpu/dpu_program"
-#endif
 #ifndef NUM_TREES_PER_DPU
 #define NUM_TREES_PER_DPU (10)
 #endif
@@ -70,6 +67,7 @@ float total_batch_time = 0;
 int each_dpu;
 int send_size;
 int batch_num = 0;
+int migrated_tree_num = 0;
 uint64_t total_num_keys;
 uint32_t nr_of_dpus;
 struct timeval start, end, start_total, end_total;
@@ -353,6 +351,7 @@ int batch_preprocess(std::ifstream& fs, int n, struct dpu_set_t set, struct dpu_
     gettimeofday(&end, NULL);
     preprocess_time1 = time_diff(&start, &end);
     // 3.木のmigration
+    migrated_tree_num = 0;
     gettimeofday(&start, NULL);
     int num_trees_to_be_migrated = migration_per_batch;  // 何個の木を移動するか
     int count = 0;                                       // チェックしたDPUの数(移動しなかった場合も含む)
@@ -364,7 +363,8 @@ int batch_preprocess(std::ifstream& fs, int n, struct dpu_set_t set, struct dpu_
         int from_DPU = idx[count];
         int to_DPU = idx[NR_DPUS - 1 - (migration_per_batch - num_trees_to_be_migrated)];
         int diff_before = num_keys_for_DPU[from_DPU] - num_keys_for_DPU[to_DPU];
-        if (diff_before < 100) {  // すでに負荷分散出来ているのでこの先のペアは移動不要
+        //printf("from_DPU=%d,to_DPU=%d,diff_before=%d\n", from_DPU, to_DPU, diff_before);
+        if (diff_before < 200) {  // すでに負荷分散出来ているのでこの先のペアは移動不要
             //printf("migration limit because the workload is already balanced, %d migration done\n", migration_per_batch - num_trees_to_be_migrated);
             break;
         }
@@ -373,7 +373,8 @@ int batch_preprocess(std::ifstream& fs, int n, struct dpu_set_t set, struct dpu_
             int min_diff_after = 1 << 30;
             for (int i = 0; i < MAX_NUM_TREES_IN_DPU; i++) {  // 最も負荷を分散出来る木を移動
                 //printf("from_DPU=%d,tree=%d\n", from_DPU, i);
-                int diff_after = std::abs((num_keys_for_DPU[from_DPU] - num_keys_for_tree[from_DPU][from_tree]) - (num_keys_for_DPU[to_DPU] + num_keys_for_tree[from_DPU][from_tree]));  // 移動後のクエリ数の差
+                int diff_after = std::abs((num_keys_for_DPU[from_DPU] - num_keys_for_tree[from_DPU][i]) - (num_keys_for_DPU[to_DPU] + num_keys_for_tree[from_DPU][i]));  // 移動後のクエリ数の差
+                //printf("%d,%d,%d\n", i, diff_before, min_diff_after);
                 if (diff_after < min_diff_after) {
                     from_tree = i;
                     min_diff_after = diff_after;
@@ -384,13 +385,14 @@ int batch_preprocess(std::ifstream& fs, int n, struct dpu_set_t set, struct dpu_
                 if (!(tree_bitmap[to_DPU] & (1 << i))) {  // i番目の木が空いているかどうか
                     if (diff_before > min_diff_after) {   // 木を移動した結果、さらに偏ってしまう場合はのぞく
                         to_tree = i;
-                        //printf("migration: (%d,%d)->(%d,%d)\n", from_DPU, from_tree, to_DPU, to_tree);
+                        printf("migration: (%d,%d)->(%d,%d)\n", from_DPU, from_tree, to_DPU, to_tree);
                         send_nodes_from_dpu_to_dpu(from_DPU, from_tree, to_DPU, to_tree, set, dpu);
                         num_keys_for_DPU[from_DPU] -= num_keys_for_tree[from_DPU][from_tree];
                         num_keys_for_DPU[to_DPU] += num_keys_for_tree[from_DPU][from_tree];
                         num_keys_for_tree[to_DPU][to_tree] = num_keys_for_tree[from_DPU][from_tree];
                         num_keys_for_tree[from_DPU][from_tree] = 0;
                         num_trees_to_be_migrated--;
+                        migrated_tree_num++;
                         break;
                     }
                 }
@@ -512,19 +514,22 @@ int main(int argc, char* argv[])
     // requests:%ld\n",(uint64_t)NUM_REQUESTS);
     cmdline::parser a;
     a.add<int>("keynum", 'n', "maximum num of keys for the experiment", false, 1000000);
-    a.add<std::string>("zipfianconst", 'a', "zipfianconst", false, "1.2");
-    a.add<int>("migration_num", 'm', "migration_num per batch", false, 20);
+    a.add<std::string>("zipfianconst", 'a', "zipfian consttant", false, "0.99");
+    a.add<int>("migration_num", 'm', "migration_num per batch", false, 5);
+    a.add<std::string>("directory", 'd', "execution directory, ex)bp-forest-exp", false, ".");
     a.parse_check(argc, argv);
     std::string zipfian_const = a.get<std::string>("zipfianconst");
     int max_key_num = a.get<int>("keynum");
-    std::string file_name = ("./workload/zipf_const_" + zipfian_const + ".bin");
+    std::string file_name = (a.get<std::string>("directory") + "/workload/zipf_const_" + zipfian_const + ".bin");
+    std::string dpu_binary = (a.get<std::string>("directory") + "/build/dpu/dpu_program");
 
 #ifdef PRINT_DEBUG
     std::cout << "zipf_const:" << zipfian_const << ", file:" << file_name << std::endl;
 #endif
     struct dpu_set_t set, dpu;
     DPU_ASSERT(dpu_alloc(NR_DPUS, NULL, &set));
-    DPU_ASSERT(dpu_load(set, DPU_BINARY, NULL));
+    //printf("%s\n", dpu_binary.c_str());
+    DPU_ASSERT(dpu_load(set, dpu_binary.c_str(), NULL));
     DPU_ASSERT(dpu_get_nr_dpus(set, &nr_of_dpus));
     int num_init_reqs = NUM_INIT_REQS;
     //printf("num_init_reqs=%d\n", num_init_reqs);
@@ -545,7 +550,7 @@ int main(int argc, char* argv[])
     /* main routine */
     int num_keys = 0;
     gettimeofday(&start_total, NULL);
-    printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, preprocess_time1, preprocess_time2, preprocess_time, migration_time, send_time, execution_time, batch_time, throughput\n");
+    printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, migration_num, preprocess_time1, preprocess_time2, preprocess_time, migration_time, send_time, execution_time, batch_time, throughput\n");
     while (total_num_keys < max_key_num) {
         if (batch_num == 0)
             migration_per_batch = 0;  // batch 0: no migration
@@ -576,9 +581,9 @@ int main(int argc, char* argv[])
         total_execution_time += execution_time;
         total_batch_time += batch_time;
         double throughput = num_keys / batch_time;
-        printf("%s, %d, %d, %d, %d, %d, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
+        printf("%s, %d, %d, %d, %d, %d, %d, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
             zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, batch_num,
-            num_keys, send_size, preprocess_time1, preprocess_time2, preprocess_time, migration_time, send_time,
+            num_keys, send_size, migrated_tree_num, preprocess_time1, preprocess_time2, preprocess_time, migration_time, send_time,
             execution_time, batch_time, throughput);
 #ifdef PRINT_DEBUG
         DPU_FOREACH(set, dpu, each_dpu)
@@ -602,7 +607,7 @@ int main(int argc, char* argv[])
     //printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, send_time, cpu_time,
     //    execution_time, 100 * cpu_time / execution_time, send_and_execution_time, total_time, throughput);
     double throughput = total_num_keys / total_batch_time;
-    printf("%s, %d, %d, total, %ld, %0.5f, %0.5f, %0.5f,%0.5f,%0.5f, %0.5f, %0.5f, %0.0f\n",
+    printf("%s, %d, %d, total, %ld,, %0.5f, %0.5f, %0.5f,%0.5f,%0.5f, %0.5f, %0.5f, %0.0f\n",
         zipfian_const.c_str(), NR_DPUS, NR_TASKLETS,
         total_num_keys, total_preprocess_time, total_preprocess_time, total_preprocess_time, total_migration_time, total_send_time,
         total_execution_time, total_batch_time, throughput);

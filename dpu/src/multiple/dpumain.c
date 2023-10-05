@@ -19,6 +19,7 @@ __mram_ptr void* ptr;
 __mram BPTreeNode nodes_transfer_buffer[MAX_NODE_NUM];
 __mram uint64_t nodes_transfer_num;
 __host uint64_t task_no;
+int queries_per_tasklet;
 uint32_t task;
 
 #ifdef DEBUG_ON
@@ -103,10 +104,19 @@ int main()
         break;
     }
     case TASK_GET: {
+        if (tid == 0) {
+            queries_per_tasklet = end_idx[MAX_NUM_BPTREE_IN_DPU - 1] / NR_TASKLETS;
+        }
+        barrier_wait(&my_barrier);
         value_ptr_t volatile res;
         // DPU側で負荷分散する
-        for (int index = tid == 0 ? 0 : end_idx[tid - 1]; index < end_idx[tid]; index++) {
-            res = BPTreeGet(request_buffer[index].key, tid);
+        int start_index = queries_per_tasklet * tid;
+        int end_index = tid == NR_TASKLETS - 1 ? end_idx[tid] : queries_per_tasklet * (tid + 1);
+        int which_tree = 0;
+        for (int index = start_index; index < end_index; index++) {
+            while (end_idx[which_tree] <= index)
+                which_tree++;
+            res = BPTreeGet(request_buffer[index].key, which_tree);
         }
         break;
     }

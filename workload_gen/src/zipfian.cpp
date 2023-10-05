@@ -16,7 +16,7 @@ int main(int argc, char* argv[])
     a.add<std::string>("filename", 'f', "workload file name", false, "test");
     a.add<int>("keynum", 'n', "num of generated_keys to generate", false, 100000000);
     a.add<double>("zipfianconst", 'a', "zipfianconst", false, 0.99);
-    a.add<uint64_t>("elementnum", 'e', "num of elements of zipfian dist.", false, 2048);
+    a.add<uint64_t>("elementnum", 'e', "num of elements of zipfian dist.", false, 2500);
     a.add("scramble", 's', "whether scramble or not");
     a.add("nowrite", 'q', "don't generate file if true");
     a.add("showinfo", 'v', "show debug info if true");
