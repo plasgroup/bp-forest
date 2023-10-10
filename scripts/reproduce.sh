@@ -2,7 +2,7 @@
 cd $(dirname $0)/..
 echo cd $(pwd)
 mkdir -p workload
-cmake . ./build -DNR_TASKLETS=10 -DNR_DPUS=2048 -DNUM_BPTREE_IN_DPU=10 -DCMAKE_BUILD_TYPE=Release > /dev/null 2>&1
+cmake -S . -B ./build -DNR_TASKLETS=10 -DNR_DPUS=2048 -DNUM_BPTREE_IN_DPU=10 -DCMAKE_BUILD_TYPE=Release > /dev/null 2>&1
 cmake --build ./build > /dev/null 2>&1
 for i in 0 0.5 0.99 1.2
 do
