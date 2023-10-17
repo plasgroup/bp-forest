@@ -31,9 +31,9 @@ void traverse_and_copy_nodes(MBPTptr node)
 {
     // showNode(node, nodes_transfer_num);
     memcpy(&nodes_transfer_buffer[nodes_transfer_num++], node, sizeof(BPTreeNode));
-    if (!node->isLeaf) {
-        for (int i = 0; i <= node->numKeys; i++) {
-            traverse_and_copy_nodes(node->ptrs.inl.children[i]);
+    if (!node->node.isLeaf) {
+        for (int i = 0; i <= node->node.numKeys; i++) {
+            traverse_and_copy_nodes(node->node.ptrs.inl.children[i]);
         }
     }
     return;
@@ -50,10 +50,10 @@ MBPTptr deserialize_node(uint32_t tid)
 {
     MBPTptr node = newBPTreeNode(tid);
     memcpy(node, &nodes_transfer_buffer[nodes_transfer_num++], sizeof(BPTreeNode));
-    if (!node->isLeaf) {
-        for (int i = 0; i <= node->numKeys; i++) {
-            node->ptrs.inl.children[i] = deserialize_node(tid);
-            node->ptrs.inl.children[i]->parent = node;
+    if (!node->node.isLeaf) {
+        for (int i = 0; i <= node->node.numKeys; i++) {
+            node->node.ptrs.inl.children[i] = deserialize_node(tid);
+            node->node.ptrs.inl.children[i]->node.parent = node;
         }
     }
     return node;
@@ -86,6 +86,9 @@ int main()
 
     switch (task) {
     case TASK_INIT: {
+#ifdef ALLOC_WITH_FREE_LIST
+        init_free_list(tid);
+#endif
         init_BPTree(tid);
         break;
     }
