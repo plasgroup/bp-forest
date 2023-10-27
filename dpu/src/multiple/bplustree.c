@@ -1,25 +1,26 @@
 #include "bplustree.h"
 #include "common.h"
+#include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
 
 // #define USE_LINEAR_SEARCH
 
 // nodes(keys and pointers)
-__mram BPTreeNode nodes[NR_TASKLETS][MAX_NODE_NUM];
+__mram BPTreeNode nodes[MAX_NUM_BPTREE_IN_DPU][MAX_NODE_NUM];
 
 #ifndef ALLOC_WITH_BITMAP
 #ifndef ALLOC_WITH_FREE_LIST
-int free_node_index_stack_head[NR_TASKLETS] = {-1};
-__mram int free_node_index_stack[NR_TASKLETS][MAX_NODE_NUM];
-int max_node_index[NR_TASKLETS] = {-1};
+int free_node_index_stack_head[MAX_NUM_BPTREE_IN_DPU] = {-1};
+__mram int free_node_index_stack[MAX_NUM_BPTREE_IN_DPU][MAX_NODE_NUM];
+int max_node_index[MAX_NUM_BPTREE_IN_DPU] = {-1};
 #endif
 #endif
 #ifdef ALLOC_WITH_BITMAP
 #define BITMAP_NUM_ELEMS ((MAX_NODE_NUM_PER_TREE + 31) / 32)
-uint32_t node_bitmap[NR_TASKLETS][BITMAP_NUM_ELEMS];
+uint32_t node_bitmap[MAX_NUM_BPTREE_IN_DPU][BITMAP_NUM_ELEMS];
 // 初期化
-void init_free_list(uint32_t tasklet_id)
+void init_node_bitmap(uint32_t tasklet_id)
 {
     for (int i = 0; i < (MAX_NODE_NUM_PER_TREE + 31) / 32; i++) {
         node_bitmap[tasklet_id][i] = 0;
@@ -30,16 +31,18 @@ MBPTptr newBPTreeNode(uint32_t tasklet_id)
 {
     int i = 0;
     MBPTptr p;
-    while (node_bitmap[tasklet_id][i] == 0) {  // 空きが無い場合は次の32bitへ
+    while (node_bitmap[tasklet_id][i] == -1) {  // 空きが無い場合は次の32bitへ
         i++;
     }
-    // ビットが1つも立っていないときは次の32bitへ
+    assert(i != (MAX_NODE_NUM_PER_TREE + 31));
     for (int j = 0; j < 32; j++) {
         if (!(node_bitmap[tasklet_id][i] & (1 << j))) {
             p = &nodes[tasklet_id][32 * i + j];
             return p;
         }
     }
+    printf("error: nodes buffer is full\n");
+    return NULL;
 }
 // ノードの解放
 void freeBPTreeNode(MBPTptr p, int tasklet_id)
@@ -58,13 +61,13 @@ void freeBPTree(MBPTptr p, int tasklet_id)
 #endif
 
 #ifdef ALLOC_WITH_FREE_LIST
-MBPTptr free_list_head[NR_TASKLETS];
+MBPTptr free_list_head[MAX_NUM_BPTREE_IN_DPU];
 // 初期化
 void init_free_list(uint32_t tasklet_id)
 {
     free_list_head[tasklet_id] = &nodes[tasklet_id];
     for (int i = 0; i < MAX_NODE_NUM_FOR_A_TASKLET) {
-        nodes[NR_TASKLETS][i].offset_next = 0;
+        nodes[MAX_NUM_BPTREE_IN_DPU][i].offset_next = 0;
     }
 }
 // ノードの割り当て

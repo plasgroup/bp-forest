@@ -67,4 +67,7 @@ extern MBPTptr malloc_tree();
 #ifdef ALLOC_WITH_FREE_LIST
 extern void init_free_list(int);
 #endif
+#ifdef ALLOC_WITH_BITMAP
+extern void init_node_bitmap(uint32_t);
+#endif
 #endif
