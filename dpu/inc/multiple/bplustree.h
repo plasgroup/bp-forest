@@ -4,13 +4,16 @@
 #define MAX_CHILD (127)  // split occurs if numKeys >= MAX_CHILD
 
 #define NODE_DATA_SIZE (30)  // maximum node data size, MB
+#ifndef MAX_NODE_NUM_PER_TREE
+#define MAX_NODE_NUM_PER_TREE (NODE_DATA_SIZE / MAX_NUM_BPTREE_IN_DPU / sizeof(BPTreeNode))
+#endif
 #define MAX_NODE_NUM \
     ((NODE_DATA_SIZE << 20) / sizeof(BPTreeNode) / MAX_NUM_BPTREE_IN_DPU)  // NODE_DATA_SIZE MB for Node data
 #include "common.h"
 #include <mram.h>
 #include <string.h>
 
-typedef __mram_ptr struct BPTreeNode* MBPTptr;
+typedef __mram_ptr union BPTreeNode* MBPTptr;
 extern MBPTptr root[NR_TASKLETS];
 
 typedef struct InternalNodePtrs {
@@ -23,19 +26,23 @@ typedef struct LeafNodePtrs {
     MBPTptr left;
 } LeafNodePtrs;
 
-typedef struct BPTreeNode {
-    int isRoot : 8;
-    int isLeaf : 8;
-    int numKeys : 16;
-    key_int64_t key[MAX_CHILD];
-    MBPTptr parent;
-    union {
-        InternalNodePtrs inl;
-        LeafNodePtrs lf;
-    } ptrs;
+typedef union BPTreeNode {
+    struct Node {
+        int isRoot : 8;
+        int isLeaf : 8;
+        int numKeys : 16;
+        key_int64_t key[MAX_CHILD];
+        MBPTptr parent;
+        union {
+            InternalNodePtrs inl;
+            LeafNodePtrs lf;
+        } ptrs;
+    } node;
+    int offset_next;
 } BPTreeNode;
 
-extern void init_BPTree();
+extern void
+init_BPTree();
 
 /**
  *    @param key key to insert
@@ -57,4 +64,10 @@ extern int BPTree_GetHeight();
 extern MBPTptr newBPTreeNode(uint32_t);
 extern void freeBPTree(MBPTptr, int);
 extern MBPTptr malloc_tree();
+#ifdef ALLOC_WITH_FREE_LIST
+extern void init_free_list(int);
+#endif
+#ifdef ALLOC_WITH_BITMAP
+extern void init_node_bitmap(uint32_t);
+#endif
 #endif

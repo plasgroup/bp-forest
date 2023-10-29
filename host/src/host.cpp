@@ -61,6 +61,7 @@ float total_migration_time = 0;
 float total_send_time = 0;
 float total_execution_time = 0;
 float total_batch_time = 0;
+float init_time = 0;
 int each_dpu;
 int send_size;
 int batch_num = 0;
@@ -280,8 +281,12 @@ void initialize_dpus(int num_init_reqs, struct dpu_set_t set, struct dpu_set_t d
     /* insert initial keys for each tree */
     send_requests(set, dpu, &task_insert);
     //printf("sent reqs\n");
+    gettimeofday(&start, NULL);
     DPU_ASSERT(dpu_launch(set, DPU_SYNCHRONOUS));
     dpu_sync(set);
+    gettimeofday(&end, NULL);
+    init_time = time_diff(&start, &end);
+    printf("DPU initialization:%0.5f\n", init_time);
 #ifdef PRINT_DEBUG
     DPU_FOREACH(set, dpu, each_dpu)
     {

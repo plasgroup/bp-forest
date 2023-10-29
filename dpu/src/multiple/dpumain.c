@@ -20,6 +20,7 @@ __mram BPTreeNode nodes_transfer_buffer[MAX_NODE_NUM];
 __mram uint64_t nodes_transfer_num;
 __host uint64_t task_no;
 int queries_per_tasklet;
+int current_tree;
 uint32_t task;
 
 #ifdef DEBUG_ON
@@ -31,9 +32,9 @@ void traverse_and_copy_nodes(MBPTptr node)
 {
     // showNode(node, nodes_transfer_num);
     memcpy(&nodes_transfer_buffer[nodes_transfer_num++], node, sizeof(BPTreeNode));
-    if (!node->isLeaf) {
-        for (int i = 0; i <= node->numKeys; i++) {
-            traverse_and_copy_nodes(node->ptrs.inl.children[i]);
+    if (!node->node.isLeaf) {
+        for (int i = 0; i <= node->node.numKeys; i++) {
+            traverse_and_copy_nodes(node->node.ptrs.inl.children[i]);
         }
     }
     return;
@@ -50,10 +51,10 @@ MBPTptr deserialize_node(uint32_t tid)
 {
     MBPTptr node = newBPTreeNode(tid);
     memcpy(node, &nodes_transfer_buffer[nodes_transfer_num++], sizeof(BPTreeNode));
-    if (!node->isLeaf) {
-        for (int i = 0; i <= node->numKeys; i++) {
-            node->ptrs.inl.children[i] = deserialize_node(tid);
-            node->ptrs.inl.children[i]->parent = node;
+    if (!node->node.isLeaf) {
+        for (int i = 0; i <= node->node.numKeys; i++) {
+            node->node.ptrs.inl.children[i] = deserialize_node(tid);
+            node->node.ptrs.inl.children[i]->node.parent = node;
         }
     }
     return node;
@@ -86,13 +87,43 @@ int main()
 
     switch (task) {
     case TASK_INIT: {
+#ifdef ALLOC_WITH_FREE_LIST
+        init_free_list(tid);
+#endif
+#ifdef ALLOC_WITH_BITNAP
+        init_node_bitmap(tid);
+#endif
         init_BPTree(tid);
         break;
     }
     case TASK_INSERT: {
         /* insertion */
-        printf("insert task\n");
-        for (int index = tid == 0 ? 0 : end_idx[tid - 1]; index < end_idx[tid]; index++) {
+        if (tid == 0) {
+            queries_per_tasklet = end_idx[MAX_NUM_BPTREE_IN_DPU - 1] / NR_TASKLETS;
+            current_tree = 0;
+            printf("insert task\n");
+        }
+        barrier_wait(&my_barrier);
+        // DPU側で負荷分散する
+        int start_tree;
+        int end_tree;
+        int num_queries = 0;
+        for (int tasklet = 0; tasklet < NR_TASKLETS; tasklet++) {
+            if (tid == tasklet) {
+                start_tree = current_tree;
+                while (num_queries < queries_per_tasklet && current_tree < MAX_NUM_BPTREE_IN_DPU) {
+                    current_tree++;
+                    if (current_tree == 0)
+                        num_queries += end_idx[0];
+                    else
+                        num_queries += end_idx[current_tree] - end_idx[current_tree - 1];
+                }
+                end_tree = current_tree;
+            }
+            barrier_wait(&my_barrier);
+        }
+
+        for (int index = start_tree == 0 ? 0 : end_idx[start_tree - 1]; index < end_idx[end_tree]; index++) {
             if (tid == 0)
                 printf("[tasklet %d] insert (%ld, %ld)\n", tid, request_buffer[index].key, request_buffer[index].write_val_ptr);
             BPTreeInsert(request_buffer[index].key,
