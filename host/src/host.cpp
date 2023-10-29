@@ -38,9 +38,6 @@ extern "C" {
 #endif
 #define NUM_TOTAL_TREES (NR_DPUS * NUM_TREES_PER_DPU)
 #define MAX_NUM_TREES_IN_DPU (NR_TASKLETS)
-#ifndef MAX_NODE_NUM
-#define MAX_NODE_NUM 20000
-#endif
 #define GET_AND_PRINT_TIME(CODES, LABEL) \
     gettimeofday(&start, NULL);          \
     CODES                                \
@@ -78,9 +75,9 @@ uint64_t task_to = TASK_TO;
 uint64_t task_init = TASK_INIT;
 uint64_t task_get = TASK_GET;
 uint64_t task_insert = TASK_INSERT;
-uint64_t task_invalid = 999 + ((uint64_t)1 << 32);
+uint64_t task_invalid = 999 + ((uint64_t)1U << 32);
 int migration_per_batch;
-int tree_bitmap[NR_DPUS] = {0};
+uint32_t tree_bitmap[NR_DPUS] = {0};
 std::map<key_int64_t, std::pair<int, int>> key_to_tree_map;
 key_int64_t tree_to_key_map[NR_DPUS][MAX_NUM_TREES_IN_DPU];
 int key_index[NR_DPUS][MAX_NUM_TREES_IN_DPU + 1] = {0};

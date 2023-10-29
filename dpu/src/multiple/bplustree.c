@@ -20,6 +20,14 @@ MBPTptr root[NR_TASKLETS];
 int NumOfNodes[NR_TASKLETS] = {0};
 
 int tree_bitmap = 0;
+#ifndef MRAM_NODE_ARRAY_SIZE
+#define MRAM_NODE_ARRAY_SIZE (48 * 1024 * 1024)
+#endif
+#ifndef MAX_NODE_NUM_PER_TREE
+#define MAX_NODE_NUM_PER_TREE (MRAM_NODE_ARRAY_SIZE / MAX_NUM_BPTREE_IN_DPU / sizeof(BPTreeNode));
+#endif
+#define BITMAP_NUM_ELEMS (MAX_NODE_NUM_PER_TREE / 32)
+uint32_t node_bitmap[NR_TASKLETS][BITMAP_NUM_ELEMS];
 
 #ifdef DEBUG_ON
 typedef struct Queue {  // queue for showing all nodes by BFS
@@ -67,6 +75,9 @@ void showNode(MBPTptr, int);
 MBPTptr newBPTreeNode(uint32_t tasklet_id)
 {
     MBPTptr p;
+    for(int i = 0; i < BITMAP_NUM_ELEMS; i++)
+        if(node_bitmap[tasklet_id][i] & )
+    }
     if (free_node_index_stack_head[tasklet_id] >= 0) {  // if there is gap in nodes array
         p = &nodes[tasklet_id]
                   [free_node_index_stack[tasklet_id]
