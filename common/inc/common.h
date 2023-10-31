@@ -11,21 +11,21 @@
 #ifndef NR_TASKLETS
 #define NR_TASKLETS (2)
 #endif
-#ifndef MAX_NUM_BPTREE_IN_DPU
-#define MAX_NUM_BPTREE_IN_DPU (NR_TASKLETS)
+#ifndef NUM_SEAT_IN_A_DPU
+#define NUM_SEAT_IN_A_DPU (40)
 #endif
 // the size for a request(default:16B)
-#define REQUEST_SIZE (16)
+#define REQUEST_SIZE (sizeof(each_request_t))
 // buffer size for request in a DPU(default:20MB/64MB)
 #ifndef MRAM_REQUEST_BUFFER_SIZE
-#define MRAM_REQUEST_BUFFER_SIZE (10 * 1024 * 1024)
+#define MRAM_REQUEST_BUFFER_SIZE (15 * 1024 * 1024)
 #endif
 // default:1,233,618 requests / DPU / batch
 #ifndef MAX_REQ_NUM_IN_A_DPU
-#define MAX_REQ_NUM_IN_A_DPU (MRAM_REQUEST_BUFFER_SIZE / REQUEST_SIZE)
+#define MAX_REQ_NUM_IN_A_DPU (MRAM_REQUEST_BUFFER_SIZE / REQUEST_SIZE / 2)
 #endif
-#define MAX_NUM_TREES_IN_DPU (NR_TASKLETS)
-#define NUM_REQUESTS_PER_BATCH (1000)
+#define NUM_SEAT_IN_A_DPU (40)
+#define NUM_REQUESTS_PER_BATCH (10000)
 #define READ (1)
 #define WRITE (0)
 #define W50R50 (1)
@@ -33,6 +33,7 @@
 #ifndef WORKLOAD
 #define WORKLOAD (W50R50)
 #endif
+#define MAX_NUM_SPLIT (5)
 // #define PRINT_DEBUG
 // #define VARY_REQUESTNUM
 // #define DEBUG_ON
@@ -48,6 +49,7 @@
 #include <stdint.h>
 
 typedef uint64_t key_int64_t;
+#define KEY_MIN (0)
 typedef uint64_t value_ptr_t;
 // one request
 typedef struct {
@@ -74,15 +76,23 @@ typedef struct {  // for specifing the points of x in the experiment
 } dpu_experiment_var_t;
 #endif
 
-typedef union {
-    char val_ptr;
-    uint32_t ifsuccsess;
+typedef struct {
+    value_ptr_t val_ptr;
 } dpu_result_t;
 
+typedef struct {
+    /*  num_elems: number of elements(k-v pair) in the tree
+    new_tree_index: the tree_index of the new tree made by split
+    split_key: the border key of the split  */
+    int num_elems[MAX_NUM_SPLIT];
+    key_int64_t split_key[MAX_NUM_SPLIT];
+    int new_tree_index[MAX_NUM_SPLIT];
+} split_info_t;
+
 /* Tasks */
-#define TASK_INIT (0)
-#define TASK_GET (10)
-#define TASK_INSERT (11)
-#define TASK_FROM (100)
-#define TASK_TO (101)
+#define TASK_INIT (0ULL)
+#define TASK_GET (10ULL)
+#define TASK_INSERT (11ULL)
+#define TASK_FROM (100ULL)
+#define TASK_TO (101ULL)
 #endif /* __COMMON_H__ */

@@ -1,5 +1,6 @@
 #include "bplustree.h"
 #include "common.h"
+#include "split_phase.h"
 #include <assert.h>
 #include <barrier.h>
 #include <defs.h>
@@ -13,11 +14,12 @@ BARRIER_INIT(my_barrier, NR_TASKLETS);
 SEMAPHORE_INIT(my_semaphore, 1);
 
 __mram each_request_t request_buffer[MAX_REQ_NUM_IN_A_DPU];
-__mram int end_idx[MAX_NUM_BPTREE_IN_DPU];
-__mram dpu_result_t result;
+__mram int end_idx[NUM_SEAT_IN_A_DPU];
+__mram dpu_result_t result[MAX_REQ_NUM_IN_A_DPU];
 __mram_ptr void* ptr;
 __mram BPTreeNode nodes_transfer_buffer[MAX_NODE_NUM];
 __mram uint64_t nodes_transfer_num;
+__mram split_info_t split_result[NUM_SEAT_IN_A_DPU];
 __host uint64_t task_no;
 int queries_per_tasklet;
 int current_tree;
@@ -32,9 +34,9 @@ void traverse_and_copy_nodes(MBPTptr node)
 {
     // showNode(node, nodes_transfer_num);
     memcpy(&nodes_transfer_buffer[nodes_transfer_num++], node, sizeof(BPTreeNode));
-    if (!node->node.isLeaf) {
-        for (int i = 0; i <= node->node.numKeys; i++) {
-            traverse_and_copy_nodes(node->node.ptrs.inl.children[i]);
+    if (!node->isLeaf) {
+        for (int i = 0; i <= node->numKeys; i++) {
+            traverse_and_copy_nodes(node->ptrs.inl.children[i]);
         }
     }
     return;
@@ -51,10 +53,10 @@ MBPTptr deserialize_node(uint32_t tid)
 {
     MBPTptr node = newBPTreeNode(tid);
     memcpy(node, &nodes_transfer_buffer[nodes_transfer_num++], sizeof(BPTreeNode));
-    if (!node->node.isLeaf) {
-        for (int i = 0; i <= node->node.numKeys; i++) {
-            node->node.ptrs.inl.children[i] = deserialize_node(tid);
-            node->node.ptrs.inl.children[i]->node.parent = node;
+    if (!node->isLeaf) {
+        for (int i = 0; i <= node->numKeys; i++) {
+            node->ptrs.inl.children[i] = deserialize_node(tid);
+            node->ptrs.inl.children[i]->parent = node;
         }
     }
     return node;
@@ -79,7 +81,7 @@ int main()
         task = (uint32_t)task_no;
         printf("task = %d\n", task);
 
-        for (int t = 0; t < 10; t++) {
+        for (int t = 0; t < NUM_SEAT_IN_A_DPU; t++) {
             printf("end_idx[%d] = %d\n", t, end_idx[t]);
         }
     }
@@ -93,13 +95,17 @@ int main()
 #ifdef ALLOC_WITH_BITNAP
         init_node_bitmap(tid);
 #endif
-        init_BPTree(tid);
+    if(tid == 0){
+        for(int seat_id = 0; seat_id < NUM_SEAT_IN_A_DPU; seat_id++){
+            init_BPTree(seat_id);
+        }
+    }
         break;
     }
     case TASK_INSERT: {
         /* insertion */
         if (tid == 0) {
-            queries_per_tasklet = end_idx[MAX_NUM_BPTREE_IN_DPU - 1] / NR_TASKLETS;
+            queries_per_tasklet = end_idx[NUM_SEAT_IN_A_DPU - 1] / NR_TASKLETS;
             current_tree = 0;
             printf("insert task\n");
         }
@@ -111,7 +117,7 @@ int main()
         for (int tasklet = 0; tasklet < NR_TASKLETS; tasklet++) {
             if (tid == tasklet) {
                 start_tree = current_tree;
-                while (num_queries < queries_per_tasklet && current_tree < MAX_NUM_BPTREE_IN_DPU) {
+                while (num_queries < queries_per_tasklet && current_tree < NUM_SEAT_IN_A_DPU) {
                     current_tree++;
                     if (current_tree == 0)
                         num_queries += end_idx[0];
@@ -122,13 +128,43 @@ int main()
             }
             barrier_wait(&my_barrier);
         }
-
-        for (int index = start_tree == 0 ? 0 : end_idx[start_tree - 1]; index < end_idx[end_tree]; index++) {
-            if (tid == 0)
-                printf("[tasklet %d] insert (%ld, %ld)\n", tid, request_buffer[index].key, request_buffer[index].write_val_ptr);
-            BPTreeInsert(request_buffer[index].key,
-                request_buffer[index].write_val_ptr, tid);
+        for (int tree = start_tree; tree < end_tree; tree++) {
+            for (int index = tree == 0 ? 0 : end_idx[tree - 1]; index < end_idx[tree]; index++) {
+                if (tid == 0){
+                    //printf("[tasklet %d] insert (%ld, %ld)\n", tid, request_buffer[index].key, request_buffer[index].write_val_ptr);
+                }
+                BPTreeInsert(request_buffer[index].key, request_buffer[index].write_val_ptr, tree);
+            }
         }
+
+
+#ifdef DEBUG_ON        
+        barrier_wait(&my_barrier);
+        // DPU側で負荷分散する
+        int start_index = queries_per_tasklet * tid;
+        int end_index = tid == NR_TASKLETS - 1 ? end_idx[tid] : queries_per_tasklet * (tid + 1);
+        int tree = 0;
+        while (end_idx[tree] <= start_index) {
+            tree++;
+        }
+        int index = start_index;
+        while(true){
+            if(end_idx[tree] < end_index){ /* not last tree */
+                for(; index < end_idx[tree]; index++){
+                    result[index].val_ptr = BPTreeGet(request_buffer[index].key, tree);
+                }
+                tree++;
+            } else { /* last tree */
+                for(; index < end_index; index++){
+                    result[index].val_ptr = BPTreeGet(request_buffer[index].key, tree);
+                }
+                break;
+            }
+        }
+#endif
+        // for(int i = start_tree; i < end_tree;i++){
+        //     do_split_phase(root[i]);
+        // }
         // if(BPTree_GetNumOfNodes(tid) > MAX_NODE_NUM-100){
         //     assert(0);
         // }
@@ -136,18 +172,29 @@ int main()
     }
     case TASK_GET: {
         if (tid == 0) {
-            queries_per_tasklet = end_idx[MAX_NUM_BPTREE_IN_DPU - 1] / NR_TASKLETS;
+            queries_per_tasklet = end_idx[NUM_SEAT_IN_A_DPU - 1] / NR_TASKLETS;
         }
         barrier_wait(&my_barrier);
-        value_ptr_t volatile res;
         // DPU側で負荷分散する
         int start_index = queries_per_tasklet * tid;
         int end_index = tid == NR_TASKLETS - 1 ? end_idx[tid] : queries_per_tasklet * (tid + 1);
-        int which_tree = 0;
-        for (int index = start_index; index < end_index; index++) {
-            while (end_idx[which_tree] <= index)
-                which_tree++;
-            res = BPTreeGet(request_buffer[index].key, which_tree);
+        int tree = 0;
+        while (end_idx[tree] <= start_index) {
+            tree++;
+        }
+        int index = start_index;
+        while(true){
+            if(end_idx[tree] < end_index){ /* not last tree */
+                for(; index < end_idx[tree]; index++){
+                    result[index].val_ptr = BPTreeGet(request_buffer[index].key, tree);
+                }
+                tree++;
+            } else { /* last tree */
+                for(; index < end_index; index++){
+                    result[index].val_ptr = BPTreeGet(request_buffer[index].key, tree);
+                }
+                break;
+            }
         }
         break;
     }

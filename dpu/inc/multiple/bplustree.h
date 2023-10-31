@@ -5,16 +5,21 @@
 
 #define NODE_DATA_SIZE (30)  // maximum node data size, MB
 #ifndef MAX_NODE_NUM_PER_TREE
-#define MAX_NODE_NUM_PER_TREE (NODE_DATA_SIZE / MAX_NUM_BPTREE_IN_DPU / sizeof(BPTreeNode))
+#define MAX_NODE_NUM_PER_TREE (NODE_DATA_SIZE / NUM_SEAT_IN_A_DPU / sizeof(BPTreeNode))
 #endif
 #define MAX_NODE_NUM \
-    ((NODE_DATA_SIZE << 20) / sizeof(BPTreeNode) / MAX_NUM_BPTREE_IN_DPU)  // NODE_DATA_SIZE MB for Node data
+    ((NODE_DATA_SIZE << 20) / sizeof(BPTreeNode) / NUM_SEAT_IN_A_DPU)  // NODE_DATA_SIZE MB for Node data
 #include "common.h"
 #include <mram.h>
 #include <string.h>
 
-typedef __mram_ptr union BPTreeNode* MBPTptr;
-extern MBPTptr root[NR_TASKLETS];
+typedef __mram_ptr struct BPTreeNode* MBPTptr;
+typedef struct KVPair{
+    key_int64_t key;
+    value_ptr_t value;
+} KVPair;
+typedef __mram_ptr KVPair* KVPairPtr;
+extern MBPTptr root[NUM_SEAT_IN_A_DPU];
 
 typedef struct InternalNodePtrs {
     MBPTptr children[MAX_CHILD + 1];
@@ -26,34 +31,36 @@ typedef struct LeafNodePtrs {
     MBPTptr left;
 } LeafNodePtrs;
 
-typedef union BPTreeNode {
-    struct Node {
-        int isRoot : 8;
-        int isLeaf : 8;
-        int numKeys : 16;
-        key_int64_t key[MAX_CHILD];
-        MBPTptr parent;
-        union {
-            InternalNodePtrs inl;
-            LeafNodePtrs lf;
-        } ptrs;
-    } node;
-    int offset_next;
+typedef struct BPTreeNode {
+    int isRoot : 8;
+    int isLeaf : 8;
+    int numKeys : 16;
+    key_int64_t key[MAX_CHILD];
+    MBPTptr parent;
+    union {
+        InternalNodePtrs inl;
+        LeafNodePtrs lf;
+    } ptrs;
 } BPTreeNode;
 
-extern void
-init_BPTree();
+typedef union NodeOrOffset {
+    BPTreeNode node;
+    int offset;
+} NodeOrOffset;
+
+extern void init_BPTree(uint32_t seat_id);
 
 /**
  *    @param key key to insert
  *    @param pos pos
  *    @param value value to insert
  **/
-extern int BPTreeInsert(key_int64_t, value_ptr_t, uint32_t);
+extern int BPTreeInsert(key_int64_t key, value_ptr_t value , uint32_t seat_id);
+
 /**
  *    @param key key to search
  **/
-extern value_ptr_t BPTreeGet(key_int64_t, uint32_t);
+extern value_ptr_t BPTreeGet(key_int64_t key, uint32_t seat_id);
 extern void BPTreeGetRange(key_int64_t, int);
 extern void BPTreeDelete(key_int64_t);
 extern int BPTree_GetNumOfNodes();
@@ -64,6 +71,7 @@ extern int BPTree_GetHeight();
 extern MBPTptr newBPTreeNode(uint32_t);
 extern void freeBPTree(MBPTptr, int);
 extern MBPTptr malloc_tree();
+extern int BPTree_Serialize(uint32_t seat_id, KVPairPtr dest);
 #ifdef ALLOC_WITH_FREE_LIST
 extern void init_free_list(int);
 #endif

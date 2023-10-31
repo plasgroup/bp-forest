@@ -33,7 +33,7 @@
 
 
 # Additinal
-build/
+build*/
 workload/
 .vscode/
 data/
