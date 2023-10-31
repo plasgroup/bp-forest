@@ -1,29 +1,16 @@
-
+#include "mram.h"
 /* move this section to config.h */
 
 #define NR_SEATS_IN_DPU 20
 #define MAX_NODES_IN_SEAT (10 * 1000)
 
 /* move this section to config.h end */
-
-
+struct BPTreeNode;
+typedef BPTreeNode Node;
 typedef int seat_id_t;
 
 #define INVALID_SEAT_ID (-1)
 
-typedef char bitmap_word_t;
-#deinfe LOG_BITS_IN_BMPWD     5
-#define BITS_IN_BMPWD (1 << LOG_BITS_IN_BMPWD)
-
-struct Seat {
-  int in_use;
-  __mram Node* storage;
-  char bitmap[(MAX_NODES_IN_SEAT + BITS_IN_BMPWD - 1) >> LOG_BITS_IN_BMPWD];
-  int next_alloc;
-};
-
-#define ROOT_NODE_INDEX 0
-
-extern struct Seat cabin[NR_SEATS_IN_DPU];
-
-
+extern __mram_ptr Node* Seat_get_root(seat_id_t seat_id);
+extern __mram_ptr Node* Seat_allocate_node(seat_id_t seat_id);
+extern void Seat_free_node(seat_id_t seat_id, __mram_ptr Node* node);
