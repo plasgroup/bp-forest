@@ -22,7 +22,7 @@
 #endif
 // default:1,233,618 requests / DPU / batch
 #ifndef MAX_REQ_NUM_IN_A_DPU
-#define MAX_REQ_NUM_IN_A_DPU (MRAM_REQUEST_BUFFER_SIZE / REQUEST_SIZE / 2)
+#define MAX_REQ_NUM_IN_A_DPU (MRAM_REQUEST_BUFFER_SIZE / REQUEST_SIZE / 2 / 1000)
 #endif
 #define NUM_SEAT_IN_A_DPU (40)
 #define NUM_REQUESTS_PER_BATCH (10000)

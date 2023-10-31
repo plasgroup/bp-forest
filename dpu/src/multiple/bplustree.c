@@ -1,5 +1,6 @@
 #include "bplustree.h"
 #include "common.h"
+#include "cabin.h"
 #include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -7,95 +8,7 @@
 // #define USE_LINEAR_SEARCH
 
 /* nodes(keys and pointers) */
-__mram BPTreeNode nodes[NUM_SEAT_IN_A_DPU][MAX_NODE_NUM];
 
-#ifndef ALLOC_WITH_BITMAP
-#ifndef ALLOC_WITH_FREE_LIST
-int free_node_index_stack_head[NUM_SEAT_IN_A_DPU] = {-1};
-__mram int free_node_index_stack[NUM_SEAT_IN_A_DPU][MAX_NODE_NUM];
-int max_node_index[NUM_SEAT_IN_A_DPU] = {-1};
-#endif
-#endif
-#ifdef ALLOC_WITH_BITMAP
-#define BITMAP_NUM_ELEMS ((MAX_NODE_NUM_PER_TREE + 31) / 32)
-uint32_t node_bitmap[NUM_SEAT_IN_A_DPU][BITMAP_NUM_ELEMS];
-// 初期化
-void init_node_bitmap(uint32_t seat_id)
-{
-    for (int i = 0; i < (MAX_NODE_NUM_PER_TREE + 31) / 32; i++) {
-        node_bitmap[seat_id][i] = 0;
-    }
-}
-// ノードの割り当て
-MBPTptr newBPTreeNode(uint32_t seat_id)
-{
-    int i = 0;
-    MBPTptr p;
-    while (node_bitmap[seat_id][i] == -1) {  // 空きが無い場合は次の32bitへ
-        i++;
-    }
-    assert(i != (MAX_NODE_NUM_PER_TREE + 31));
-    for (int j = 0; j < 32; j++) {
-        if (!(node_bitmap[seat_id][i] & (1 << j))) {
-            p = &nodes[seat_id][32 * i + j];
-            return p;
-        }
-    }
-    printf("error: nodes buffer is full\n");
-    return NULL;
-}
-// ノードの解放
-void freeBPTreeNode(MBPTptr p, int seat_id)
-{
-    int index = p - (MBPTptr)&nodes[seat_id];
-    int i = index / 32;
-    int j = index % 32;
-    node_bitmap[seat_id][i] &= ~(1 << j);
-    return;
-}
-
-void freeBPTree(MBPTptr p, int seat_id)
-{
-    p = NULL;
-}
-#endif
-
-#ifdef ALLOC_WITH_FREE_LIST
-MBPTptr free_list_head[NUM_SEAT_IN_A_DPU];
-// 初期化
-void init_free_list(uint32_t seat_id)
-{
-    free_list_head[seat_id] = &nodes[seat_id];
-    for (int i = 0; i < MAX_NODE_NUM_FOR_A_TASKLET) {
-        nodes[NUM_SEAT_IN_A_DPU][i].offset_next = 0;
-    }
-}
-// ノードの割り当て
-MBPTptr newBPTreeNode(uint32_t seat_id)
-{
-    MBPTptr p = free_list_head[seat_id];
-    free_list_head[seat_id] = p + p.offset_next;
-    return p;
-}
-// ノードの解放
-void freeBPTreeNode(MBPTptr p, uint32_t seat_id)
-{
-    *p.offset_next = (free_list_head[seat_id] - p) - 1;
-    free_list_head[seat_id] = p;
-    return;
-}
-
-void freeBPTree(MBPTptr p, int seat_id)
-{
-    p = NULL;
-}
-#endif
-int height[NUM_SEAT_IN_A_DPU] = {1};
-MBPTptr root[NUM_SEAT_IN_A_DPU];
-
-int NumOfNodes[NUM_SEAT_IN_A_DPU] = {0};
-
-int tree_bitmap = 0;
 #ifndef MRAM_NODE_ARRAY_SIZE
 #define MRAM_NODE_ARRAY_SIZE (48 * 1024 * 1024)
 #endif
@@ -103,7 +16,6 @@ int tree_bitmap = 0;
 #define MAX_NODE_NUM_PER_TREE (MRAM_NODE_ARRAY_SIZE / NUM_SEAT_IN_A_DPU / sizeof(BPTreeNode));
 #endif
 #define BITMAP_NUM_ELEMS (MAX_NODE_NUM_PER_TREE / 32)
-uint32_t node_bitmap[NR_TASKLETS][BITMAP_NUM_ELEMS];
 
 #ifdef DEBUG_ON
 typedef struct Queue {  // queue for showing all nodes by BFS
@@ -147,58 +59,6 @@ MBPTptr dequeue(__mram_ptr Queue_t** queue, uint32_t seat_id)
 
 void showNode(MBPTptr, int);
 #endif
-#ifndef ALLOC_WITH_BITMAP
-#ifndef ALLOC_WITH_FREE_LIST
-MBPTptr newBPTreeNode(uint32_t seat_id)
-{
-    MBPTptr p;
-    if (free_node_index_stack_head[seat_id] >= 0) {  // if there is gap in nodes array
-        p = &nodes[seat_id]
-                  [free_node_index_stack[seat_id]
-                                        [free_node_index_stack_head[seat_id]--]];
-    } else
-        p = &nodes[seat_id][++max_node_index[seat_id]];
-    p->parent = NULL;
-    p->isRoot = false;
-    p->isLeaf = false;
-    p->numKeys = 0;
-    NumOfNodes[seat_id]++;
-    return p;
-}
-
-void freeBPTree(MBPTptr p, int seat_id)
-{
-
-    free_node_index_stack[seat_id][++free_node_index_stack_head[seat_id]] = p - (MBPTptr)&nodes[seat_id];
-    NumOfNodes[seat_id]--;
-    for (int i = 0; i < p->numKeys; i++) {
-        freeBPTree(p->ptrs.inl.children[i], seat_id);
-    }
-    p = NULL;
-}
-#endif
-#endif
-MBPTptr malloc_tree()
-{
-    int tree_id;
-    MBPTptr p = NULL;
-    for (int i = 0; i < NUM_SEAT_IN_A_DPU; i++) {
-        if (tree_bitmap & !((1 << i))) {  // 木が空いているかどうか
-            tree_id = i;
-            tree_bitmap |= (1 << i);
-        }
-        break;
-    }
-    p = root[tree_id];
-    return p;
-}
-
-void delete_tree(int tid)
-{
-    tree_bitmap &= ~(1 << tid);
-    freeBPTree(root[tid], tid);
-    return;
-}
 
 // binary search
 #ifndef USE_LINEAR_SEARCH
@@ -249,17 +109,17 @@ MBPTptr findLeafOfSubtree(key_int64_t key, MBPTptr subtree)
     }
     return subtree;
 }
-MBPTptr findLeaf(key_int64_t key, uint32_t seat_id)
+MBPTptr findLeaf(key_int64_t key, seat_id_t seat_id)
 {
-    return findLeafOfSubtree(key, root[seat_id]);
+    return findLeafOfSubtree(key, Seat_get_root(seat_id));
 }
 
-void insert(MBPTptr cur, key_int64_t, value_ptr_t, MBPTptr, uint32_t);
-void split(MBPTptr cur, uint32_t seat_id)
+void insert(MBPTptr cur, key_int64_t, value_ptr_t, MBPTptr, seat_id_t);
+void split(MBPTptr cur, seat_id_t seat_id)
 {
     // cur splits into cur and n
     // copy cur[Mid+1 .. MAX_CHILD] to n[0 .. n->key_num-1]
-    MBPTptr n = newBPTreeNode(seat_id);
+    MBPTptr n = Seat_allocate_node(seat_id);
     int Mid = (MAX_CHILD + 1) >> 1;
     n->isLeaf = cur->isLeaf;
     n->numKeys = MAX_CHILD - Mid;
@@ -283,22 +143,23 @@ void split(MBPTptr cur, uint32_t seat_id)
     }
     if (cur->isRoot) {  // root Node splits
         // Create a new root
-        root[seat_id] = newBPTreeNode(seat_id);
-        root[seat_id]->isRoot = true;
-        root[seat_id]->isLeaf = false;
-        root[seat_id]->numKeys = 1;
-        root[seat_id]->ptrs.inl.children[0] = cur;
-        root[seat_id]->ptrs.inl.children[1] = n;
-        cur->parent = n->parent = root[seat_id];
+        MBPTptr new_root = Seat_allocate_node(seat_id);
+        Seat_set_root(seat_id, new_root);
+        new_root->isRoot = true;
+        new_root->isLeaf = false;
+        new_root->numKeys = 1;
+        new_root->ptrs.inl.children[0] = cur;
+        new_root->ptrs.inl.children[1] = n;
+        cur->parent = n->parent = new_root;
         cur->isRoot = false;
         if (cur->isLeaf) {
             cur->ptrs.lf.right = n;
             n->ptrs.lf.left = cur;
-            root[seat_id]->key[0] = n->key[0];
+            new_root->key[0] = n->key[0];
         } else {
-            root[seat_id]->key[0] = cur->key[Mid - 1];
+            new_root->key[0] = cur->key[Mid - 1];
         }
-        height[seat_id]++;
+        Seat_inc_height(seat_id);
     } else {  // insert n to cur->parent
         n->parent = cur->parent;
         if (cur->isLeaf) {
@@ -310,7 +171,7 @@ void split(MBPTptr cur, uint32_t seat_id)
 }
 
 void insert(MBPTptr cur, key_int64_t key, value_ptr_t value, MBPTptr n,
-    uint32_t seat_id)
+    seat_id_t seat_id)
 {
     int i, ins;
     ins = findKeyPos(cur, key);
@@ -362,25 +223,24 @@ void insert(MBPTptr cur, key_int64_t key, value_ptr_t value, MBPTptr n,
         split(cur, seat_id);  // key is full
 }
 
-void init_BPTree(uint32_t seat_id)
+void init_BPTree(seat_id_t seat_id)
 {
-    NumOfNodes[seat_id] = 0;
-    height[seat_id] = 1;
-    root[seat_id] = newBPTreeNode(seat_id);
-    root[seat_id]->numKeys = 0;
-    root[seat_id]->isRoot = true;
-    root[seat_id]->isLeaf = true;
-    root[seat_id]->ptrs.lf.right = NULL;
-    root[seat_id]->ptrs.lf.left = NULL;
-    root[seat_id]->ptrs.lf.value[0] = 0;
+    MBPTptr root = Seat_get_root(seat_id);
+    root->numKeys = 0;
+    root->isRoot = true;
+    root->isLeaf = true;
+    root->ptrs.lf.right = NULL;
+    root->ptrs.lf.left = NULL;
+    root->ptrs.lf.value[0] = 0;
 }
 
-int BPTreeInsert(key_int64_t key, value_ptr_t value, uint32_t seat_id)
+int BPTreeInsert(key_int64_t key, value_ptr_t value, seat_id_t seat_id)
 {
-    if (root[seat_id]->numKeys == 0) {  // if the tree is empty
-        root[seat_id]->key[0] = key;
-        root[seat_id]->numKeys++;
-        root[seat_id]->ptrs.lf.value[0] = value;
+    MBPTptr root = Seat_get_root(seat_id);
+    if (root->numKeys == 0) {  // if the tree is empty
+        root->key[0] = key;
+        root->numKeys++;
+        root->ptrs.lf.value[0] = value;
         return true;
     }
     MBPTptr Leaf = findLeaf(key, seat_id);
@@ -391,7 +251,7 @@ int BPTreeInsert(key_int64_t key, value_ptr_t value, uint32_t seat_id)
     return true;
 }
 
-value_ptr_t BPTreeGet(key_int64_t key, uint32_t seat_id)
+value_ptr_t BPTreeGet(key_int64_t key, seat_id_t seat_id)
 {
     MBPTptr Leaf = findLeaf(key, seat_id);
     int i;
@@ -484,14 +344,9 @@ void BPTreePrintAll(uint32_t seat_id)
 }
 
 #endif
-int BPTree_GetNumOfNodes(uint32_t seat_id)
-{
-    return NumOfNodes[seat_id];
-}
 
-int BPTree_GetHeight(uint32_t seat_id) { return height[seat_id]; }
 
-int BPTree_Serialize(uint32_t seat_id, KVPairPtr dest){
+int BPTree_Serialize(seat_id_t seat_id, KVPairPtr dest){
     int n = 0;
     MBPTptr leaf = findLeaf(KEY_MIN, seat_id);
     while(leaf != NULL){
@@ -505,7 +360,7 @@ int BPTree_Serialize(uint32_t seat_id, KVPairPtr dest){
     return n;
 }
 
-void BPTree_Deserialize(uint32_t seat_id, KVPairPtr src, int start_index, int n){
+void BPTree_Deserialize(seat_id_t seat_id, KVPairPtr src, int start_index, int n){
     for(int i = start_index; i < start_index + n; i++){
         BPTreeInsert(src[i].key,src[i].value,seat_id);
     }

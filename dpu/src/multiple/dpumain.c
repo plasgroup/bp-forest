@@ -49,24 +49,24 @@ void serialize(MBPTptr root)
     return;
 }
 
-MBPTptr deserialize_node(uint32_t tid)
-{
-    MBPTptr node = newBPTreeNode(tid);
-    memcpy(node, &nodes_transfer_buffer[nodes_transfer_num++], sizeof(BPTreeNode));
-    if (!node->isLeaf) {
-        for (int i = 0; i <= node->numKeys; i++) {
-            node->ptrs.inl.children[i] = deserialize_node(tid);
-            node->ptrs.inl.children[i]->parent = node;
-        }
-    }
-    return node;
-}
+// MBPTptr deserialize_node(uint32_t tid)
+// {
+//     MBPTptr node = newBPTreeNode(tid);
+//     memcpy(node, &nodes_transfer_buffer[nodes_transfer_num++], sizeof(BPTreeNode));
+//     if (!node->isLeaf) {
+//         for (int i = 0; i <= node->numKeys; i++) {
+//             node->ptrs.inl.children[i] = deserialize_node(tid);
+//             node->ptrs.inl.children[i]->parent = node;
+//         }
+//     }
+//     return node;
+// }
 
-MBPTptr deserialize(uint32_t tid)
-{
-    nodes_transfer_num = 0;
-    return deserialize_node(tid);
-}
+// MBPTptr deserialize(uint32_t tid)
+// {
+//     nodes_transfer_num = 0;
+//     return deserialize_node(tid);
+// }
 
 int main()
 {
@@ -198,21 +198,22 @@ int main()
         }
         break;
     }
-    case TASK_FROM: {
-        if (tid == (uint32_t)(task_no >> 32)) {
-            serialize(root[tid]);
-            freeBPTree(root[tid], tid);
-        }
-        break;
-    }
-    case TASK_TO: {
-        if (tid == (uint32_t)(task_no >> 32)) {
-            MBPTptr new_root;
-            malloc_tree(new_root);
-            new_root = deserialize(tid);
-        }
-        break;
-    }
+    // case TASK_FROM: {
+    //     if (tid == (uint32_t)(task_no >> 32)) {
+    //         serialize(Seat_get_root(tid));
+    //         Cabin_release_seat(tid);
+    //     }
+    //     break;
+    // }
+    // case TASK_TO: {
+    //     if (tid == (uint32_t)(task_no >> 32)) {
+    //         MBPTptr new_root;
+    //         seat_id_t seat_id = Cabin_allocate_seat();
+    //         deserialize(seat_id);
+    //         Seat_set_root(seat_id, new_root)
+    //     }
+    //     break;
+    // }
     default: {
         printf("no such a task: task %d\n", task);
         return -1;

@@ -9,13 +9,16 @@ typedef uint32_t bitmap_word_t;
 #define LOG_BITS_IN_BMPWD     5
 #define BITS_IN_BMPWD (1 << LOG_BITS_IN_BMPWD)
 
-#define ROOT_NODE_INDEX 0
+#define INIT_ROOT_NODE_INDEX 0
 
 struct Seat {
   int in_use;
   __mram_ptr Node* storage;
+  int root_index;
   bitmap_word_t bitmap[(MAX_NODES_IN_SEAT + BITS_IN_BMPWD - 1) >> LOG_BITS_IN_BMPWD];
   int next_alloc;
+  int height;
+  int n_nodes;
 };
 
 
@@ -120,16 +123,62 @@ static void Seat_init(seat_id_t seat_id)
   seat = &cabin[seat_id];
 
   seat->in_use = 1;
+  seat->root_index = INIT_ROOT_NODE_INDEX;
   memset(seat->bitmap, 0, sizeof(seat->bitmap));
-  bitmap_set(seat->bitmap, ROOT_NODE_INDEX);
+  bitmap_set(seat->bitmap, INIT_ROOT_NODE_INDEX);
   seat->next_alloc = 1;
+  seat->height = 1;
+  seat->n_nodes = 1;
 }
 
 __mram_ptr Node* Seat_get_root(seat_id_t seat_id)
 {
+  struct Seat* seat;
   assert(0 <= seat_id && seat_id <= NR_SEATS_IN_DPU);
   assert(cabin[seat_id].in_use);
-  return &cabin[seat_id].storage[ROOT_NODE_INDEX];
+  seat = &cabin[seat_id];
+
+  return &seat->storage[seat->root_index];
+}
+
+void Seat_set_root(seat_id_t seat_id, __mram_ptr Node* new_root)
+{
+  struct Seat* seat;
+  assert(0 <= seat_id && seat_id <= NR_SEATS_IN_DPU);
+  assert(cabin[seat_id].in_use);
+  seat = &cabin[seat_id];
+
+  seat->root_index = new_root - seat->storage;
+}
+
+void Seat_inc_height(seat_id_t seat_id)
+{
+  struct Seat* seat;
+  assert(0 <= seat_id && seat_id <= NR_SEATS_IN_DPU);
+  assert(cabin[seat_id].in_use);
+  seat = &cabin[seat_id];
+
+  seat->height++;
+}
+
+int Seat_get_height(seat_id_t seat_id)
+{
+  struct Seat* seat;
+  assert(0 <= seat_id && seat_id <= NR_SEATS_IN_DPU);
+  assert(cabin[seat_id].in_use);
+  seat = &cabin[seat_id];
+
+  return seat->height;
+}
+
+int Seat_get_n_nodes(seat_id_t seat_id)
+{
+  struct Seat* seat;
+  assert(0 <= seat_id && seat_id <= NR_SEATS_IN_DPU);
+  assert(cabin[seat_id].in_use);
+  seat = &cabin[seat_id];
+
+  return seat->n_nodes;
 }
 
 __mram_ptr Node* Seat_allocate_node(seat_id_t seat_id)
@@ -142,12 +191,12 @@ __mram_ptr Node* Seat_allocate_node(seat_id_t seat_id)
 
   id = bitmap_find_and_set_first_zero(seat->bitmap, seat->next_alloc,
 				      MAX_NODES_IN_SEAT);
-  assert(id != ROOT_NODE_INDEX);
 
   if (id < 0)
     assert(0);
 
   seat->next_alloc = id + 1;
+  seat->n_nodes++;
   return &seat->storage[id];
 }
 
@@ -162,4 +211,5 @@ void Seat_free_node(seat_id_t seat_id, __mram_ptr Node* node)
   id = node - seat->storage;
   bitmap_clear(seat->bitmap, id);
   seat->next_alloc = id;
+  seat->n_nodes--;
 }

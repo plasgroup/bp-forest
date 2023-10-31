@@ -9,6 +9,7 @@
 #endif
 #define MAX_NODE_NUM \
     ((NODE_DATA_SIZE << 20) / sizeof(BPTreeNode) / NUM_SEAT_IN_A_DPU)  // NODE_DATA_SIZE MB for Node data
+#include "cabin.h"
 #include "common.h"
 #include <mram.h>
 #include <string.h>
@@ -48,19 +49,19 @@ typedef union NodeOrOffset {
     int offset;
 } NodeOrOffset;
 
-extern void init_BPTree(uint32_t seat_id);
+extern void init_BPTree(seat_id_t seat_id);
 
 /**
  *    @param key key to insert
  *    @param pos pos
  *    @param value value to insert
  **/
-extern int BPTreeInsert(key_int64_t key, value_ptr_t value , uint32_t seat_id);
+extern int BPTreeInsert(key_int64_t key, value_ptr_t value , seat_id_t seat_id);
 
 /**
  *    @param key key to search
  **/
-extern value_ptr_t BPTreeGet(key_int64_t key, uint32_t seat_id);
+extern value_ptr_t BPTreeGet(key_int64_t key, seat_id_t seat_id);
 extern void BPTreeGetRange(key_int64_t, int);
 extern void BPTreeDelete(key_int64_t);
 extern int BPTree_GetNumOfNodes();
@@ -68,14 +69,5 @@ extern void BPTreePrintLeaves();
 extern void BPTreePrintRoot();
 extern void BPTreePrintAll();
 extern int BPTree_GetHeight();
-extern MBPTptr newBPTreeNode(uint32_t);
-extern void freeBPTree(MBPTptr, int);
-extern MBPTptr malloc_tree();
-extern int BPTree_Serialize(uint32_t seat_id, KVPairPtr dest);
-#ifdef ALLOC_WITH_FREE_LIST
-extern void init_free_list(int);
-#endif
-#ifdef ALLOC_WITH_BITMAP
-extern void init_node_bitmap(uint32_t);
-#endif
+extern int BPTree_Serialize(seat_id_t seat_id, KVPairPtr dest);
 #endif
