@@ -3,12 +3,10 @@
 
 #define MAX_CHILD (127)  // split occurs if numKeys >= MAX_CHILD
 
-#define NODE_DATA_SIZE (30)  // maximum node data size, MB
-#ifndef MAX_NODE_NUM_PER_TREE
-#define MAX_NODE_NUM_PER_TREE (NODE_DATA_SIZE / NUM_SEAT_IN_A_DPU / sizeof(BPTreeNode))
+#define NODE_DATA_SIZE (30)  // maximum node data size for a DPU, MB
+#ifndef MAX_NUM_NODES_IN_SEAT
+#define MAX_NUM_NODES_IN_SEAT ((NODE_DATA_SIZE << 20) / NR_SEATS_IN_DPU / sizeof(BPTreeNode))
 #endif
-#define MAX_NODE_NUM \
-    ((NODE_DATA_SIZE << 20) / sizeof(BPTreeNode) / NUM_SEAT_IN_A_DPU)  // NODE_DATA_SIZE MB for Node data
 #include "cabin.h"
 #include "common.h"
 #include <mram.h>
@@ -20,7 +18,7 @@ typedef struct KVPair{
     value_ptr_t value;
 } KVPair;
 typedef __mram_ptr KVPair* KVPairPtr;
-extern MBPTptr root[NUM_SEAT_IN_A_DPU];
+extern MBPTptr root[NR_SEATS_IN_DPU];
 
 typedef struct InternalNodePtrs {
     MBPTptr children[MAX_CHILD + 1];

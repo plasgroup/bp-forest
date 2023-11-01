@@ -11,9 +11,10 @@
 #ifndef NR_TASKLETS
 #define NR_TASKLETS (2)
 #endif
-#ifndef NUM_SEAT_IN_A_DPU
-#define NUM_SEAT_IN_A_DPU (40)
+#ifndef NR_SEATS_IN_DPU
+#define NR_SEATS_IN_DPU (10)
 #endif
+#define NUM_INIT_TREES_IN_DPU (NR_SEATS_IN_DPU / 4)
 // the size for a request(default:16B)
 #define REQUEST_SIZE (sizeof(each_request_t))
 // buffer size for request in a DPU(default:20MB/64MB)
@@ -22,9 +23,8 @@
 #endif
 // default:1,233,618 requests / DPU / batch
 #ifndef MAX_REQ_NUM_IN_A_DPU
-#define MAX_REQ_NUM_IN_A_DPU (MRAM_REQUEST_BUFFER_SIZE / REQUEST_SIZE / 2 / 1000)
+#define MAX_REQ_NUM_IN_A_DPU (MRAM_REQUEST_BUFFER_SIZE / REQUEST_SIZE / 2)
 #endif
-#define NUM_SEAT_IN_A_DPU (40)
 #define NUM_REQUESTS_PER_BATCH (10000)
 #define READ (1)
 #define WRITE (0)
@@ -62,6 +62,14 @@ typedef struct {
     each_request_t requests[MAX_REQ_NUM_IN_A_DPU];
 } dpu_requests_t;
 
+typedef struct {
+    value_ptr_t get_result;
+} each_result_t;
+
+typedef struct {
+    each_result_t results[MAX_REQ_NUM_IN_A_DPU];
+} dpu_results_t;
+
 #ifdef VARY_REQUESTNUM
 typedef struct {  // for returning the result of the experiment
     int x;
@@ -75,10 +83,6 @@ typedef struct {  // for specifing the points of x in the experiment
     int DPUnum;
 } dpu_experiment_var_t;
 #endif
-
-typedef struct {
-    value_ptr_t val_ptr;
-} dpu_result_t;
 
 typedef struct {
     /*  num_elems: number of elements(k-v pair) in the tree

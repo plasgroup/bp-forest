@@ -15,7 +15,7 @@
 // int do_split_phase(MBPTptr bpt)
 // {
 //     /* firstly, clear the former split_context */
-//     for (int i = 0; i < NUM_SEAT_IN_A_DPU; i++) {
+//     for (int i = 0; i < NR_SEATS_IN_DPU; i++) {
 //         for (int j = 0; j < MAX_NUM_SPLIT; j++) {
 //             split_result[i].new_tree_index[j] = 0;
 //             split_result[i].num_elems[j] = 0;

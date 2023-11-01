@@ -1,6 +1,7 @@
 #include "bplustree.h"
 #include "common.h"
 #include "split_phase.h"
+#include "cabin.h"
 #include <assert.h>
 #include <barrier.h>
 #include <defs.h>
@@ -14,12 +15,12 @@ BARRIER_INIT(my_barrier, NR_TASKLETS);
 SEMAPHORE_INIT(my_semaphore, 1);
 
 __mram each_request_t request_buffer[MAX_REQ_NUM_IN_A_DPU];
-__mram int end_idx[NUM_SEAT_IN_A_DPU];
-__mram dpu_result_t result[MAX_REQ_NUM_IN_A_DPU];
+__mram int end_idx[NR_SEATS_IN_DPU];
+__mram each_result_t result[MAX_REQ_NUM_IN_A_DPU];
 __mram_ptr void* ptr;
-__mram BPTreeNode nodes_transfer_buffer[MAX_NODE_NUM];
+__mram BPTreeNode nodes_transfer_buffer[MAX_NUM_NODES_IN_SEAT];
 __mram uint64_t nodes_transfer_num;
-__mram split_info_t split_result[NUM_SEAT_IN_A_DPU];
+__mram split_info_t split_result[NR_SEATS_IN_DPU];
 __host uint64_t task_no;
 int queries_per_tasklet;
 int current_tree;
@@ -71,41 +72,33 @@ void serialize(MBPTptr root)
 int main()
 {
     int tid = me();
+
     if (tid == 0) {
-        // printf("size of request_buffer:%u\n", sizeof(request_buffer));
-        // printf("using up to %d MB for value data, can store up to %d values per
-        // tasklet\n", VALUE_DATA_SIZE, MAX_VALUE_NUM); printf("using up to %d MB for
-        // node data, node size = %u, can store up to %d nodes per tasklet\n",
-        // NODE_DATA_SIZE,sizeof(BPTreeNode), MAX_NODE_NUM);
-        // printf("batch_num:%d\n", batch_num);
         task = (uint32_t)task_no;
+#ifdef DEBUG_ON
         printf("task = %d\n", task);
 
-        for (int t = 0; t < NUM_SEAT_IN_A_DPU; t++) {
+        for (int t = 0; t < NR_SEATS_IN_DPU; t++) {
             printf("end_idx[%d] = %d\n", t, end_idx[t]);
         }
+#endif
     }
     barrier_wait(&my_barrier);
-
     switch (task) {
     case TASK_INIT: {
-#ifdef ALLOC_WITH_FREE_LIST
-        init_free_list(tid);
-#endif
-#ifdef ALLOC_WITH_BITNAP
-        init_node_bitmap(tid);
-#endif
-    if(tid == 0){
-        for(int seat_id = 0; seat_id < NUM_SEAT_IN_A_DPU; seat_id++){
-            init_BPTree(seat_id);
+        if(tid == 0){
+            Cabin_init();
+            for(seat_id_t seat_id = 0; seat_id < NUM_INIT_TREES_IN_DPU; seat_id++){
+                Cabin_allocate_seat(seat_id);
+                init_BPTree(seat_id);
+            }
         }
-    }
         break;
     }
     case TASK_INSERT: {
         /* insertion */
         if (tid == 0) {
-            queries_per_tasklet = end_idx[NUM_SEAT_IN_A_DPU - 1] / NR_TASKLETS;
+            queries_per_tasklet = end_idx[NR_SEATS_IN_DPU - 1] / NR_TASKLETS;
             current_tree = 0;
             printf("insert task\n");
         }
@@ -117,7 +110,7 @@ int main()
         for (int tasklet = 0; tasklet < NR_TASKLETS; tasklet++) {
             if (tid == tasklet) {
                 start_tree = current_tree;
-                while (num_queries < queries_per_tasklet && current_tree < NUM_SEAT_IN_A_DPU) {
+                while (num_queries < queries_per_tasklet && current_tree < NR_SEATS_IN_DPU) {
                     current_tree++;
                     if (current_tree == 0)
                         num_queries += end_idx[0];
@@ -165,14 +158,14 @@ int main()
         // for(int i = start_tree; i < end_tree;i++){
         //     do_split_phase(root[i]);
         // }
-        // if(BPTree_GetNumOfNodes(tid) > MAX_NODE_NUM-100){
+        // if(BPTree_GetNumOfNodes(tid) > MAX_NUM_NODES_IN_SEAT-100){
         //     assert(0);
         // }
         break;
     }
     case TASK_GET: {
         if (tid == 0) {
-            queries_per_tasklet = end_idx[NUM_SEAT_IN_A_DPU - 1] / NR_TASKLETS;
+            queries_per_tasklet = end_idx[NR_SEATS_IN_DPU - 1] / NR_TASKLETS;
         }
         barrier_wait(&my_barrier);
         // DPU側で負荷分散する
@@ -186,12 +179,12 @@ int main()
         while(true){
             if(end_idx[tree] < end_index){ /* not last tree */
                 for(; index < end_idx[tree]; index++){
-                    result[index].val_ptr = BPTreeGet(request_buffer[index].key, tree);
+                    // result[index].get_result = BPTreeGet(request_buffer[index].key, tree);
                 }
                 tree++;
             } else { /* last tree */
                 for(; index < end_index; index++){
-                    result[index].val_ptr = BPTreeGet(request_buffer[index].key, tree);
+                    result[index].get_result = BPTreeGet(request_buffer[index].key, tree);
                 }
                 break;
             }

@@ -6,22 +6,13 @@
 #include <stdio.h>
 
 // #define USE_LINEAR_SEARCH
-
-/* nodes(keys and pointers) */
-
-#ifndef MRAM_NODE_ARRAY_SIZE
-#define MRAM_NODE_ARRAY_SIZE (48 * 1024 * 1024)
-#endif
-#ifndef MAX_NODE_NUM_PER_TREE
-#define MAX_NODE_NUM_PER_TREE (MRAM_NODE_ARRAY_SIZE / NUM_SEAT_IN_A_DPU / sizeof(BPTreeNode));
-#endif
-#define BITMAP_NUM_ELEMS (MAX_NODE_NUM_PER_TREE / 32)
+#define BITMAP_NUM_ELEMS (MAX_NUM_NODES_IN_SEAT / 32)
 
 #ifdef DEBUG_ON
 typedef struct Queue {  // queue for showing all nodes by BFS
     int tail;
     int head;
-    MBPTptr ptrs[MAX_NODE_NUM];
+    MBPTptr ptrs[MAX_NUM_NODES_IN_SEAT];
 } Queue_t;
 
 __mram_ptr Queue_t* queue[NR_TASKLETS];
@@ -35,24 +26,24 @@ void initQueue(__mram_ptr Queue_t** queue, uint32_t seat_id)
 
 void enqueue(__mram_ptr Queue_t** queue, MBPTptr input, uint32_t seat_id)
 {
-    if ((queue[seat_id]->tail + 2) % MAX_NODE_NUM == queue[seat_id]->head) {
+    if ((queue[seat_id]->tail + 2) % MAX_NUM_NODES_IN_SEAT == queue[seat_id]->head) {
         printf("queue is full\n");
         return;
     }
-    queue[seat_id]->ptrs[(queue[seat_id]->tail + 1) % MAX_NODE_NUM] = input;
-    queue[seat_id]->tail = (queue[seat_id]->tail + 1) % MAX_NODE_NUM;
+    queue[seat_id]->ptrs[(queue[seat_id]->tail + 1) % MAX_NUM_NODES_IN_SEAT] = input;
+    queue[seat_id]->tail = (queue[seat_id]->tail + 1) % MAX_NUM_NODES_IN_SEAT;
     // printf("%p is enqueued\n",input);
 }
 
 MBPTptr dequeue(__mram_ptr Queue_t** queue, uint32_t seat_id)
 {
     MBPTptr ret;
-    if ((queue[seat_id]->tail + 1) % MAX_NODE_NUM == queue[seat_id]->head) {
+    if ((queue[seat_id]->tail + 1) % MAX_NUM_NODES_IN_SEAT == queue[seat_id]->head) {
         printf("queue is empty\n");
         return NULL;
     }
     ret = queue[seat_id]->ptrs[queue[seat_id]->head];
-    queue[seat_id]->head = (queue[seat_id]->head + 1) % MAX_NODE_NUM;
+    queue[seat_id]->head = (queue[seat_id]->head + 1) % MAX_NUM_NODES_IN_SEAT;
     // printf("%p is dequeued\n",ret);
     return ret;
 }
@@ -331,7 +322,7 @@ void BPTreePrintAll(uint32_t seat_id)
     int nodeNo = 0;
     initQueue(queue, seat_id);
     enqueue(queue, root[seat_id], seat_id);
-    while ((queue[seat_id]->tail + 1) % MAX_NODE_NUM != queue[seat_id]->head) {
+    while ((queue[seat_id]->tail + 1) % MAX_NUM_NODES_IN_SEAT != queue[seat_id]->head) {
         MBPTptr cur = dequeue(queue, seat_id);
         showNode(cur, nodeNo);
         nodeNo++;
