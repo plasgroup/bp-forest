@@ -12,7 +12,7 @@
 #define NR_TASKLETS (2)
 #endif
 #ifndef NR_SEATS_IN_DPU
-#define NR_SEATS_IN_DPU (10)
+#define NR_SEATS_IN_DPU (12)
 #endif
 #define NUM_INIT_TREES_IN_DPU (NR_SEATS_IN_DPU / 4)
 // the size for a request(default:16B)

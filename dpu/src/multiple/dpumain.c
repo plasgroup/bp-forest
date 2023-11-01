@@ -18,8 +18,8 @@ __mram each_request_t request_buffer[MAX_REQ_NUM_IN_A_DPU];
 __mram int end_idx[NR_SEATS_IN_DPU];
 __mram each_result_t result[MAX_REQ_NUM_IN_A_DPU];
 __mram_ptr void* ptr;
-__mram BPTreeNode nodes_transfer_buffer[MAX_NUM_NODES_IN_SEAT];
-__mram uint64_t nodes_transfer_num;
+__mram KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
+__mram uint64_t tree_transfer_num;
 __mram split_info_t split_result[NR_SEATS_IN_DPU];
 __host uint64_t task_no;
 int queries_per_tasklet;
@@ -30,54 +30,14 @@ uint32_t task;
 __mram_ptr void* getval;
 #endif
 
-
-void traverse_and_copy_nodes(MBPTptr node)
-{
-    // showNode(node, nodes_transfer_num);
-    memcpy(&nodes_transfer_buffer[nodes_transfer_num++], node, sizeof(BPTreeNode));
-    if (!node->isLeaf) {
-        for (int i = 0; i <= node->numKeys; i++) {
-            traverse_and_copy_nodes(node->ptrs.inl.children[i]);
-        }
-    }
-    return;
-}
-
-void serialize(MBPTptr root)
-{
-    nodes_transfer_num = 0;
-    traverse_and_copy_nodes(root);
-    return;
-}
-
-// MBPTptr deserialize_node(uint32_t tid)
-// {
-//     MBPTptr node = newBPTreeNode(tid);
-//     memcpy(node, &nodes_transfer_buffer[nodes_transfer_num++], sizeof(BPTreeNode));
-//     if (!node->isLeaf) {
-//         for (int i = 0; i <= node->numKeys; i++) {
-//             node->ptrs.inl.children[i] = deserialize_node(tid);
-//             node->ptrs.inl.children[i]->parent = node;
-//         }
-//     }
-//     return node;
-// }
-
-// MBPTptr deserialize(uint32_t tid)
-// {
-//     nodes_transfer_num = 0;
-//     return deserialize_node(tid);
-// }
-
 int main()
 {
     int tid = me();
 
     if (tid == 0) {
         task = (uint32_t)task_no;
+        printf("task_no: %016lx\n", task_no);
 #ifdef DEBUG_ON
-        printf("task = %d\n", task);
-
         for (int t = 0; t < NR_SEATS_IN_DPU; t++) {
             printf("end_idx[%d] = %d\n", t, end_idx[t]);
         }
@@ -144,12 +104,12 @@ int main()
         while(true){
             if(end_idx[tree] < end_index){ /* not last tree */
                 for(; index < end_idx[tree]; index++){
-                    result[index].val_ptr = BPTreeGet(request_buffer[index].key, tree);
+                    result[index].get_result = BPTreeGet(request_buffer[index].key, tree);
                 }
                 tree++;
             } else { /* last tree */
                 for(; index < end_index; index++){
-                    result[index].val_ptr = BPTreeGet(request_buffer[index].key, tree);
+                    result[index].get_result = BPTreeGet(request_buffer[index].key, tree);
                 }
                 break;
             }
@@ -191,22 +151,24 @@ int main()
         }
         break;
     }
-    // case TASK_FROM: {
-    //     if (tid == (uint32_t)(task_no >> 32)) {
-    //         serialize(Seat_get_root(tid));
-    //         Cabin_release_seat(tid);
-    //     }
-    //     break;
-    // }
-    // case TASK_TO: {
-    //     if (tid == (uint32_t)(task_no >> 32)) {
-    //         MBPTptr new_root;
-    //         seat_id_t seat_id = Cabin_allocate_seat();
-    //         deserialize(seat_id);
-    //         Seat_set_root(seat_id, new_root)
-    //     }
-    //     break;
-    // }
+    case TASK_FROM: {
+        if (tid == 0) {
+            seat_id_t seat_id = (task_no >> 32);
+            tree_transfer_num = BPTree_Serialize(seat_id, tree_transfer_buffer);
+            printf("tree_transfer num: %lu, size of buffer = %d\n", tree_transfer_num, MAX_NUM_NODES_IN_SEAT * MAX_CHILD);
+            Cabin_release_seat(seat_id);
+        }
+        break;
+    }
+    case TASK_TO: {
+        if (tid == 0) {
+            seat_id_t seat_id = (task_no >> 32);
+            Cabin_allocate_seat(seat_id);
+            init_BPTree(seat_id);
+            BPTree_Deserialize(seat_id, tree_transfer_buffer, 0, tree_transfer_num);
+        }
+        break;
+    }
     default: {
         printf("no such a task: task %d\n", task);
         return -1;

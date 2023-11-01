@@ -337,11 +337,12 @@ void BPTreePrintAll(uint32_t seat_id)
 #endif
 
 
-int BPTree_Serialize(seat_id_t seat_id, KVPairPtr dest){
+int BPTree_Serialize(seat_id_t seat_id, KVPairPtr dest)
+{
     int n = 0;
     MBPTptr leaf = findLeaf(KEY_MIN, seat_id);
-    while(leaf != NULL){
-        for(int i = 0; i < leaf->numKeys; i++){
+    while (leaf != NULL) {
+        for (int i = 0; i < leaf->numKeys; i++) {
             dest[n].key = leaf->key[i];
             dest[n].value = leaf->ptrs.lf.value[i];
             n++;
@@ -351,8 +352,10 @@ int BPTree_Serialize(seat_id_t seat_id, KVPairPtr dest){
     return n;
 }
 
-void BPTree_Deserialize(seat_id_t seat_id, KVPairPtr src, int start_index, int n){
-    for(int i = start_index; i < start_index + n; i++){
-        BPTreeInsert(src[i].key,src[i].value,seat_id);
+void BPTree_Deserialize(seat_id_t seat_id, KVPairPtr src, int start_index, int n)
+{
+    for (int i = start_index; i < start_index + n; i++) {
+        // printf("key = %ld, seat_id = %d\n", src[i].key, seat_id);
+        BPTreeInsert(src[i].key, src[i].value, seat_id);
     }
 }

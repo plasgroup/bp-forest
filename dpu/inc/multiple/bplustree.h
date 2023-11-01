@@ -68,4 +68,5 @@ extern void BPTreePrintRoot();
 extern void BPTreePrintAll();
 extern int BPTree_GetHeight();
 extern int BPTree_Serialize(seat_id_t seat_id, KVPairPtr dest);
-#endif
+extern void BPTree_Deserialize(seat_id_t seat_id, KVPairPtr src, int start_index, int n);
+#endif /* __bplustree_H__ */
