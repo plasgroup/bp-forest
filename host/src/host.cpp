@@ -626,8 +626,8 @@ int do_one_batch(int batch_num, int migrations_per_batch, uint64_t &total_num_ke
     dpu_results = (dpu_results_t*)malloc((NR_DPUS) * sizeof(dpu_results_t));
     gettimeofday(&start, NULL);
     if (*task == TASK_INSERT){
-        // recieve_split_info(set, dpu);
-        // update_cpu_struct();
+        recieve_split_info(set, dpu);
+        update_cpu_struct();
     }
     if (*task == TASK_GET){
         receive_results(set,dpu);
@@ -710,7 +710,7 @@ int main(int argc, char* argv[])
     int migrations_per_batch = a.get<int>("migration_num");
     printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, migration_num, preprocess_time1, preprocess_time2, preprocess_time, migration_time, send_time, execution_time, batch_time, throughput\n");
     while (total_num_keys < max_key_num) {
-        num_keys = do_one_batch(batch_num, migrations_per_batch, total_num_keys, max_key_num, file_input, &task_get, set, dpu);
+        num_keys = do_one_batch(batch_num, migrations_per_batch, total_num_keys, max_key_num, file_input, &task_insert, set, dpu);
         total_num_keys += num_keys;
         batch_num++;
         batch_time = preprocess_time + migration_time + send_time + execution_time;

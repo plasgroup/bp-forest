@@ -19,6 +19,7 @@ extern void Seat_free_node(seat_id_t seat_id, __mram_ptr Node* node);
 extern void Seat_inc_height(seat_id_t seat_id);
 extern int Seat_get_height(seat_id_t seat_id);
 extern int Seat_get_n_nodes(seat_id_t seat_id);
+extern int Seat_is_used(seat_id_t seat_id);
 extern __mram_ptr Node* Seat_get_node_by_id(seat_id_t seat_id, int id);
 
 #endif /* __CABIN_H__ */

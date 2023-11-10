@@ -1,7 +1,7 @@
 #include "bplustree.h"
+#include "cabin.h"
 #include "common.h"
 #include "split_phase.h"
-#include "cabin.h"
 #include <assert.h>
 #include <barrier.h>
 #include <defs.h>
@@ -46,9 +46,9 @@ int main()
     barrier_wait(&my_barrier);
     switch (task) {
     case TASK_INIT: {
-        if(tid == 0){
+        if (tid == 0) {
             Cabin_init();
-            for(seat_id_t seat_id = 0; seat_id < NUM_INIT_TREES_IN_DPU; seat_id++){
+            for (seat_id_t seat_id = 0; seat_id < NUM_INIT_TREES_IN_DPU; seat_id++) {
                 Cabin_allocate_seat(seat_id);
                 init_BPTree(seat_id);
             }
@@ -83,7 +83,7 @@ int main()
         }
         for (int tree = start_tree; tree < end_tree; tree++) {
             for (int index = tree == 0 ? 0 : end_idx[tree - 1]; index < end_idx[tree]; index++) {
-                if (tid == 0){
+                if (tid == 0) {
                     //printf("[tasklet %d] insert (%ld, %ld)\n", tid, request_buffer[index].key, request_buffer[index].write_val_ptr);
                 }
                 BPTreeInsert(request_buffer[index].key, request_buffer[index].write_val_ptr, tree);
@@ -91,7 +91,7 @@ int main()
         }
 
 
-#ifdef DEBUG_ON        
+#ifdef DEBUG_ON
         barrier_wait(&my_barrier);
         // DPU側で負荷分散する
         int start_index = queries_per_tasklet * tid;
@@ -101,27 +101,27 @@ int main()
             tree++;
         }
         int index = start_index;
-        while(true){
-            if(end_idx[tree] < end_index){ /* not last tree */
-                for(; index < end_idx[tree]; index++){
+        while (true) {
+            if (end_idx[tree] < end_index) { /* not last tree */
+                for (; index < end_idx[tree]; index++) {
                     result[index].get_result = BPTreeGet(request_buffer[index].key, tree);
                 }
                 tree++;
             } else { /* last tree */
-                for(; index < end_index; index++){
+                for (; index < end_index; index++) {
                     result[index].get_result = BPTreeGet(request_buffer[index].key, tree);
                 }
                 break;
             }
         }
 #endif
-        // for(int i = start_tree; i < end_tree;i++){
-        //     do_split_phase(root[i]);
-        // }
-        // if(BPTree_GetNumOfNodes(tid) > MAX_NUM_NODES_IN_SEAT-100){
-        //     assert(0);
-        // }
-        break;
+        /* split large trees */
+        barrier_wait(&my_barrier);
+        if (tid == 0) {
+            for (seat_id_t i = 0; i < NR_SEATS_IN_DPU; i++) {
+                if(Seat_is_used(i)) do_split_phase(i, tree_transfer_buffer);
+            }
+        }
     }
     case TASK_GET: {
         if (tid == 0) {
@@ -136,14 +136,14 @@ int main()
             tree++;
         }
         int index = start_index;
-        while(true){
-            if(end_idx[tree] < end_index){ /* not last tree */
-                for(; index < end_idx[tree]; index++){
+        while (true) {
+            if (end_idx[tree] < end_index) { /* not last tree */
+                for (; index < end_idx[tree]; index++) {
                     // result[index].get_result = BPTreeGet(request_buffer[index].key, tree);
                 }
                 tree++;
             } else { /* last tree */
-                for(; index < end_index; index++){
+                for (; index < end_index; index++) {
                     result[index].get_result = BPTreeGet(request_buffer[index].key, tree);
                 }
                 break;

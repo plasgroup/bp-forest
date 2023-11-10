@@ -229,3 +229,8 @@ __mram_ptr Node* Seat_get_node_by_id(seat_id_t seat_id, int id)
 
   return &seat->storage[id];
 }
+
+int Seat_is_used(seat_id_t seat_id)
+{
+  return cabin[seat_id].in_use;
+}

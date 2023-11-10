@@ -352,6 +352,27 @@ int BPTree_Serialize(seat_id_t seat_id, KVPairPtr dest)
     return n;
 }
 
+int BPTree_Serialize_j_Last_Subtrees(MBPTptr tree, KVPairPtr dest, int j)
+{
+    int n = 0;
+    int num_serialized_subtrees = 0;
+    MBPTptr leaf = findLeafOfSubtree(KEY_MAX, tree);
+    while (leaf != NULL) {
+        for (int i = 0; i < leaf->numKeys; i++) {
+            dest[n].key = leaf->key[i];
+            dest[n].value = leaf->ptrs.lf.value[i];
+            n++;
+        }
+        j++;
+        if (num_serialized_subtrees == j) {
+            leaf->ptrs.lf.left->ptrs.lf.right = NULL;
+            break;
+        }
+        leaf = leaf->ptrs.lf.left;
+    }
+    return n;
+}
+
 void BPTree_Deserialize(seat_id_t seat_id, KVPairPtr src, int start_index, int n)
 {
     for (int i = start_index; i < start_index + n; i++) {

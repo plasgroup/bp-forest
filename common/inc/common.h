@@ -50,6 +50,7 @@
 
 typedef uint64_t key_int64_t;
 #define KEY_MIN (0)
+#define KEY_MAX (-1ULL)
 typedef uint64_t value_ptr_t;
 // one request
 typedef struct {
@@ -88,6 +89,8 @@ typedef struct {
     /*  num_elems: number of elements(k-v pair) in the tree
     new_tree_index: the tree_index of the new tree made by split
     split_key: the border key of the split  */
+    int num_split;
+    int num_elems_after;
     int num_elems[MAX_NUM_SPLIT];
     key_int64_t split_key[MAX_NUM_SPLIT];
     int new_tree_index[MAX_NUM_SPLIT];

@@ -1,7 +1,7 @@
 #ifndef __bplustree_H__
 #define __bplustree_H__
 
-#define MAX_CHILD (127)  // split occurs if numKeys >= MAX_CHILD
+#define MAX_CHILD (126)  // split occurs if numKeys >= MAX_CHILD
 
 #define NODE_DATA_SIZE (30)  // maximum node data size for a DPU, MB
 #ifndef MAX_NUM_NODES_IN_SEAT
@@ -68,5 +68,6 @@ extern void BPTreePrintRoot();
 extern void BPTreePrintAll();
 extern int BPTree_GetHeight();
 extern int BPTree_Serialize(seat_id_t seat_id, KVPairPtr dest);
+extern int BPTree_Serialize_j_Last_Subtrees(MBPTptr tree, KVPairPtr dest, int j);
 extern void BPTree_Deserialize(seat_id_t seat_id, KVPairPtr src, int start_index, int n);
 #endif /* __bplustree_H__ */
