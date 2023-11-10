@@ -14,6 +14,9 @@
 #ifndef NR_SEATS_IN_DPU
 #define NR_SEATS_IN_DPU (12)
 #endif
+#ifndef MAX_NUM_SEATS_BEFORE_INSERT
+#define MAX_NUM_SEATS_BEFORE_INSERT (2)
+#endif
 #define NUM_INIT_TREES_IN_DPU (NR_SEATS_IN_DPU / 4)
 // the size for a request(default:16B)
 #define REQUEST_SIZE (sizeof(each_request_t))
@@ -90,9 +93,8 @@ typedef struct {
     new_tree_index: the tree_index of the new tree made by split
     split_key: the border key of the split  */
     int num_split;
-    int num_elems_after;
     int num_elems[MAX_NUM_SPLIT];
-    key_int64_t split_key[MAX_NUM_SPLIT];
+    key_int64_t split_key[MAX_NUM_SPLIT - 1];
     int new_tree_index[MAX_NUM_SPLIT];
 } split_info_t;
 

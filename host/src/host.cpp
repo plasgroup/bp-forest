@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #endif
 #include "cmdline.h"
+#include "migration.hpp"
 #include <assert.h>
 extern "C" {
 #include <dpu.h>
@@ -34,27 +35,27 @@ extern "C" {
 #ifndef NUM_INIT_REQS
 #define NUM_INIT_REQS (1000 * NUM_TOTAL_INIT_TREES)
 #endif
-#define PRINT_POSITION_AND_VARIABLE(NAME,FORMAT) \
-    printf("[Debug at %s:%d] " #NAME " = " #FORMAT "\n", __FILE__, __LINE__, NAME); 
+#define PRINT_POSITION_AND_VARIABLE(NAME, FORMAT) \
+    printf("[Debug at %s:%d] " #NAME " = " #FORMAT "\n", __FILE__, __LINE__, NAME);
 #define PRINT_POSITION_AND_MESSAGE(MESSAGE) \
-    printf("[Debug at %s:%d] " #MESSAGE"\n", __FILE__, __LINE__);
+    printf("[Debug at %s:%d] " #MESSAGE "\n", __FILE__, __LINE__);
 #define GET_AND_PRINT_TIME(CODES, LABEL) \
     gettimeofday(&start, NULL);          \
     CODES                                \
     gettimeofday(&end, NULL);            \
     printf("time spent for %s: %0.8f sec\n", #LABEL, time_diff(&start, &end));
-#define PRINT_LOG_ALL_DPUS                               \
-        DPU_FOREACH(set, dpu, each_dpu)                  \
-        {                                                \
-            DPU_ASSERT(dpu_log_read(dpu, stdout));       \
-        }
-#define PRINT_LOG_ONE_DPU(i)                           \
-        DPU_FOREACH(set, dpu, each_dpu)                  \
-        {                                                \
-            if (each_dpu == i) {                         \
-                DPU_ASSERT(dpu_log_read(dpu, stdout));   \
-            }                                            \
-        }
+#define PRINT_LOG_ALL_DPUS                     \
+    DPU_FOREACH(set, dpu, each_dpu)            \
+    {                                          \
+        DPU_ASSERT(dpu_log_read(dpu, stdout)); \
+    }
+#define PRINT_LOG_ONE_DPU(i)                       \
+    DPU_FOREACH(set, dpu, each_dpu)                \
+    {                                              \
+        if (each_dpu == i) {                       \
+            DPU_ASSERT(dpu_log_read(dpu, stdout)); \
+        }                                          \
+    }
 
 dpu_requests_t* dpu_requests;
 dpu_results_t* dpu_results;
@@ -97,7 +98,7 @@ key_int64_t tree_to_key_map[NR_DPUS][NR_SEATS_IN_DPU];
 int key_index[NR_DPUS][NR_SEATS_IN_DPU + 1] = {0};
 BPTreeNode nodes_buffer[MAX_NUM_NODES_IN_SEAT];
 uint64_t nodes_num;
-std::pair<int,int> migration_dest[NR_DPUS][NR_SEATS_IN_DPU];
+std::pair<int, int> migration_dest[NR_DPUS][NR_SEATS_IN_DPU];
 split_info_t split_result[NR_DPUS][NR_SEATS_IN_DPU];
 void init_key_to_tree_map()
 {
@@ -125,7 +126,7 @@ void init_migration_dest()
 {
     for (int i = 0; i < NR_DPUS; i++) {
         for (int j = 0; j < NR_SEATS_IN_DPU; j++)
-            migration_dest[i][j] = std::make_pair<int,int>(-1,-1);
+            migration_dest[i][j] = std::make_pair<int, int>(-1, -1);
     }
 }
 float time_diff(struct timeval* start, struct timeval* end)
@@ -160,7 +161,8 @@ void send_requests(struct dpu_set_t set, struct dpu_set_t dpu, const uint64_t* t
     DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_TO_DPU, "request_buffer", 0, sizeof(each_request_t) * send_size, DPU_XFER_DEFAULT));
 }
 
-void receive_results(struct dpu_set_t set, struct dpu_set_t dpu){
+void receive_results(struct dpu_set_t set, struct dpu_set_t dpu)
+{
 #ifdef PRINT_DEBUG
     printf("send_size: %ld / buffer_size: %ld\n", sizeof(dpu_results_t) * send_size, sizeof(dpu_results_t) * MAX_REQ_NUM_IN_A_DPU);
 #endif
@@ -172,10 +174,11 @@ void receive_results(struct dpu_set_t set, struct dpu_set_t dpu){
 }
 
 #ifdef DEBUG_ON
-void check_results(dpu_results_t* dpu_results, int key_index[NR_DPUS][NR_SEATS_IN_DPU + 1]){
-    for(int dpu = 0; dpu < NR_DPUS; dpu++){
-        for(int seat = 0; seat < NR_SEATS_IN_DPU; seat++){
-            for(int index = seat==0 ? 0 : key_index[dpu][seat-1]; index < key_index[dpu][seat]; index++){
+void check_results(dpu_results_t* dpu_results, int key_index[NR_DPUS][NR_SEATS_IN_DPU + 1])
+{
+    for (int dpu = 0; dpu < NR_DPUS; dpu++) {
+        for (int seat = 0; seat < NR_SEATS_IN_DPU; seat++) {
+            for (int index = seat == 0 ? 0 : key_index[dpu][seat - 1]; index < key_index[dpu][seat]; index++) {
                 assert(dpu_results[dpu].results[index].get_result == dpu_requests[dpu].requests[index].write_val_ptr);
             }
         }
@@ -194,7 +197,7 @@ void send_nodes_from_dpu_to_dpu(int from_DPU, int from_tree, int to_DPU, int to_
             DPU_ASSERT(dpu_prepare_xfer(dpu, &task));
             DPU_ASSERT(dpu_push_xfer(dpu, DPU_XFER_TO_DPU, "task_no", 0, sizeof(uint64_t), DPU_XFER_DEFAULT));
             DPU_ASSERT(dpu_launch(dpu, DPU_SYNCHRONOUS));
-            //TODO: nodes_bufferを増やす
+            // TODO: nodes_bufferを増やす
             DPU_ASSERT(dpu_copy_from(dpu, "tree_transfer_num", 0, &nodes_num, sizeof(uint64_t)));
             DPU_ASSERT(dpu_copy_from(dpu, "tree_transfer_buffer", 0, &nodes_buffer, nodes_num * sizeof(BPTreeNode)));
             break;
@@ -304,7 +307,7 @@ void initialize_dpus(int num_init_reqs, struct dpu_set_t set, struct dpu_set_t d
     DPU_ASSERT(dpu_broadcast_to(set, "task_no", 0, &task_init, sizeof(uint64_t), DPU_XFER_DEFAULT));
     DPU_ASSERT(dpu_launch(set, DPU_SYNCHRONOUS));
     dpu_sync(set);
-    
+
 #ifdef PRINT_DEBUG
     // DPU_FOREACH(set, dpu)
     // {
@@ -327,7 +330,7 @@ void initialize_dpus(int num_init_reqs, struct dpu_set_t set, struct dpu_set_t d
 #endif
 #ifdef DEBUG_ON
     dpu_results = (dpu_results_t*)malloc((NR_DPUS) * sizeof(dpu_results_t));
-    receive_results(set,dpu);
+    receive_results(set, dpu);
     check_results(dpu_results, key_index);
     free(dpu_results);
 #endif
@@ -346,7 +349,8 @@ void initialize_dpus(int num_init_reqs, struct dpu_set_t set, struct dpu_set_t d
     return;
 }
 
-void recieve_split_info(struct dpu_set_t set, struct dpu_set_t dpu){
+void recieve_split_info(struct dpu_set_t set, struct dpu_set_t dpu)
+{
     DPU_FOREACH(set, dpu, each_dpu)
     {
         DPU_ASSERT(dpu_prepare_xfer(
@@ -357,15 +361,18 @@ void recieve_split_info(struct dpu_set_t set, struct dpu_set_t dpu){
         DPU_XFER_DEFAULT));
 }
 
-void update_cpu_struct(){
-    for(int dpu = 0; dpu < NR_DPUS; dpu++){
-        for(int old_tree = 0; old_tree < NR_SEATS_IN_DPU; old_tree++){
-            for(int new_tree = 0; new_tree < MAX_NUM_SPLIT; new_tree++){
-                key_int64_t border_key = split_result[dpu][old_tree].split_key[new_tree];
-                int new_slot = split_result[dpu][old_tree].new_tree_index[new_tree];
-                if(new_slot != 0){
-                    key_to_tree_map[border_key] = std::make_pair(dpu, new_slot);
-                    tree_to_key_map[dpu][new_slot] = border_key;
+/* update cpu structs according to results of split after insertion from DPUs */
+void update_cpu_struct()
+{
+    for (int dpu = 0; dpu < NR_DPUS; dpu++) {
+        for (int old_tree = 0; old_tree < NR_SEATS_IN_DPU; old_tree++) {
+            for (int new_tree = 0; new_tree < split_result[dpu][old_tree].num_split; new_tree++) {
+                int new_seat_id = split_result[dpu][old_tree].new_tree_index[new_tree];
+                if (new_tree != 0) {
+                    key_int64_t border_key = split_result[dpu][old_tree].split_key[new_tree - 1];
+                    key_to_tree_map[border_key] = std::make_pair(dpu, new_seat_id);
+                    tree_to_key_map[dpu][new_seat_id] = border_key;
+                    tree_bitmap[dpu] |= (1 << new_seat_id);
                 }
             }
         }
@@ -373,7 +380,7 @@ void update_cpu_struct(){
 }
 
 /* make batch, do migration, prepare queries for dpus */
-int batch_preprocess(std::ifstream& fs, int n, uint64_t &total_num_keys, int num_migration, struct dpu_set_t set, struct dpu_set_t dpu)
+int batch_preprocess(std::ifstream& fs, int n, uint64_t& total_num_keys, int num_migration, struct dpu_set_t set, struct dpu_set_t dpu)
 {
     /* read workload file */
     key_int64_t* batch_keys = (key_int64_t*)malloc(n * sizeof(key_int64_t));
@@ -418,58 +425,8 @@ int batch_preprocess(std::ifstream& fs, int n, uint64_t &total_num_keys, int num
     gettimeofday(&end, NULL);
     preprocess_time1 = time_diff(&start, &end);
     // 3.木のmigration
-    migrated_tree_num = 0;
     gettimeofday(&start, NULL);
-    int num_trees_to_be_migrated = num_migration;  // 何個の木を移動するか
-    int count = 0;                                       // チェックしたDPUの数(移動しなかった場合も含む)
-    while (num_trees_to_be_migrated) {
-        if (count >= NR_DPUS - 1 - (num_migration - num_trees_to_be_migrated)) {
-            //printf("migration limit because of NR_DPUS, %d migration done\n", num_migration - num_trees_to_be_migrated);
-            break;
-        }
-        int from_DPU = idx[count];
-        int to_DPU = idx[NR_DPUS - 1 - (num_migration - num_trees_to_be_migrated)];
-        int diff_before = num_keys_for_DPU[from_DPU] - num_keys_for_DPU[to_DPU];
-        //printf("from_DPU=%d,to_DPU=%d,diff_before=%d\n", from_DPU, to_DPU, diff_before);
-        if (diff_before < 200) {  // すでに負荷分散出来ているのでこの先のペアは移動不要
-            //printf("migration limit because the workload is already balanced, %d migration done\n", num_migration - num_trees_to_be_migrated);
-            break;
-        }
-        if (__builtin_popcount(tree_bitmap[from_DPU]) > 1) {  // 木が1つだけだったら移動しない
-            int from_tree = 0;
-            int min_diff_after = 1 << 30;
-            /* determine from_tree */
-            for (int i = 0; i < NR_SEATS_IN_DPU; i++) {  // 最も負荷を分散出来る木を移動
-                if ((tree_bitmap[from_DPU] & (1 << i)) != 0ULL) {  // if the tree exists
-                    int diff_after = std::abs((num_keys_for_DPU[from_DPU] - num_keys_for_tree[from_DPU][i]) - (num_keys_for_DPU[to_DPU] + num_keys_for_tree[from_DPU][i]));  // 移動後のクエリ数の差
-                    if (diff_after < min_diff_after) {
-                        from_tree = i;
-                        min_diff_after = diff_after;
-                    }
-                }
-            }
-            if (diff_before > min_diff_after) {  // 木を移動した結果、さらに偏ってしまう場合はのぞく
-                /* determine to_tree */
-                int to_tree;
-                for (int i = 0; i < NR_SEATS_IN_DPU; i++) {
-                    if (!(tree_bitmap[to_DPU] & (1 << i))) {    // i番目の木が空いているかどうか
-                        to_tree = i;
-                        //printf("migration: (%d,%d)->(%d,%d)\n", from_DPU, from_tree, to_DPU, to_tree);
-                        migration_dest[from_DPU][from_tree] = std::make_pair(to_DPU,to_tree);
-                        // send_nodes_from_dpu_to_dpu(from_DPU, from_tree, to_DPU, to_tree, set, dpu);
-                        num_keys_for_DPU[from_DPU] -= num_keys_for_tree[from_DPU][from_tree];
-                        num_keys_for_DPU[to_DPU] += num_keys_for_tree[from_DPU][from_tree];
-                        num_keys_for_tree[to_DPU][to_tree] = num_keys_for_tree[from_DPU][from_tree];
-                        num_keys_for_tree[from_DPU][from_tree] = 0;
-                        num_trees_to_be_migrated--;
-                        migrated_tree_num++;
-                        break;
-                    }
-                }
-            }
-        }
-        count++;
-    }
+    migration_plan_get(num_migration, idx, migration_dest, tree_bitmap, num_keys_for_DPU, num_keys_for_tree, key_to_tree_map);
     for (int i = 0; i < NR_DPUS; i++) {
         for (int j = 0; j < NR_SEATS_IN_DPU; j++) {
             auto& to = migration_dest[i][j];
@@ -484,7 +441,7 @@ int batch_preprocess(std::ifstream& fs, int n, uint64_t &total_num_keys, int num
                 //         DPU_ASSERT(dpu_log_read(dpu, stdout));
                 //     }
                 // }
-                migration_dest[i][j] = std::make_pair(-1,-1);
+                migration_dest[i][j] = std::make_pair(-1, -1);
             }
         }
     }
@@ -526,7 +483,7 @@ int batch_preprocess(std::ifstream& fs, int n, uint64_t &total_num_keys, int num
             dpu_requests[it->second.first].requests[key_index[it->second.first][it->second.second]].key = batch_keys[i];
             dpu_requests[it->second.first].requests[key_index[it->second.first][it->second.second]++].write_val_ptr = batch_keys[i];
         } else {
-            PRINT_POSITION_AND_MESSAGE(ERROR: the key is out of range 4);
+            PRINT_POSITION_AND_MESSAGE(ERROR : the key is out of range 4);
         }
     }
 
@@ -567,7 +524,8 @@ int batch_preprocess(std::ifstream& fs, int n, uint64_t &total_num_keys, int num
 //     }
 // }
 
-int do_one_batch(int batch_num, int migrations_per_batch, uint64_t &total_num_keys, const int max_key_num, std::ifstream& file_input, const uint64_t* task, dpu_set_t set, dpu_set_t dpu){
+int do_one_batch(int batch_num, int migrations_per_batch, uint64_t& total_num_keys, const int max_key_num, std::ifstream& file_input, const uint64_t* task, dpu_set_t set, dpu_set_t dpu)
+{
 #ifdef PRINT_DEBUG
     printf("======= batch %d =======\n", batch_num);
 #endif
@@ -578,10 +536,10 @@ int do_one_batch(int batch_num, int migrations_per_batch, uint64_t &total_num_ke
                "] heap size is not enough\n");
         return 0;
     }
-/* preprocess */
+    /* preprocess */
     int num_migration;
     int num_keys;
-    if (batch_num == 0){
+    if (batch_num == 0) {
         num_migration = 0;  // batch 0: no migration
     } else {
         num_migration = migrations_per_batch;
@@ -602,7 +560,7 @@ int do_one_batch(int batch_num, int migrations_per_batch, uint64_t &total_num_ke
 #ifdef PRINT_DEBUG
     printf("sending %d requests for %d DPUS...\n", NUM_REQUESTS_PER_BATCH, nr_of_dpus);
 #endif
-/* query deliver */
+    /* query deliver */
     gettimeofday(&start, NULL);
     send_requests(set, dpu, task);
     gettimeofday(&end, NULL);
@@ -611,7 +569,7 @@ int do_one_batch(int batch_num, int migrations_per_batch, uint64_t &total_num_ke
     printf("[2/4] send finished %0.5fsec\n", send_time);
 #endif
 
-/* execution */
+    /* execution */
     gettimeofday(&start, NULL);
     DPU_ASSERT(dpu_launch(set, DPU_SYNCHRONOUS));
     dpu_sync(set);
@@ -622,15 +580,15 @@ int do_one_batch(int batch_num, int migrations_per_batch, uint64_t &total_num_ke
 #endif
     // PRINT_LOG_ALL_DPUS;
 
-/* postprocess */
+    /* postprocess */
     dpu_results = (dpu_results_t*)malloc((NR_DPUS) * sizeof(dpu_results_t));
     gettimeofday(&start, NULL);
-    if (*task == TASK_INSERT){
+    if (*task == TASK_INSERT) {
         recieve_split_info(set, dpu);
         update_cpu_struct();
     }
-    if (*task == TASK_GET){
-        receive_results(set,dpu);
+    if (*task == TASK_GET) {
+        receive_results(set, dpu);
 #ifdef DEBUG_ON
         check_results(dpu_results, key_index);
 #endif
@@ -645,7 +603,7 @@ int do_one_batch(int batch_num, int migrations_per_batch, uint64_t &total_num_ke
     // PRINT_LOG_ONE_DPU(0);
 #endif
     free(dpu_requests);
-    PRINT_POSITION_AND_VARIABLE(num_keys, %d);
+    PRINT_POSITION_AND_VARIABLE(num_keys, % d);
     return num_keys;
 }
 
@@ -656,7 +614,10 @@ int main(int argc, char* argv[])
     assert(NR_SEATS_IN_DPU <= 64);
     assert(sizeof(dpu_requests_t) == sizeof(dpu_requests[0]));
 #ifdef PRINT_DEBUG
-    std::cout << ", NR_DPUS:" << NR_DPUS << std::endl << ", NR_TASKLETS:" << NR_TASKLETS << std::endl << "NUM Trees per DPU(init):" << NUM_INIT_TREES_IN_DPU << std::endl << ", NUM Trees per DPU(max):" << NR_SEATS_IN_DPU << std::endl;
+    std::cout << ", NR_DPUS:" << NR_DPUS << std::endl
+              << ", NR_TASKLETS:" << NR_TASKLETS << std::endl
+              << "NUM Trees per DPU(init):" << NUM_INIT_TREES_IN_DPU << std::endl
+              << ", NUM Trees per DPU(max):" << NR_SEATS_IN_DPU << std::endl;
     printf("no. of requests per batch: %ld\n", (uint64_t)NUM_REQUESTS_PER_BATCH);
 #endif
     cmdline::parser a;
@@ -670,7 +631,7 @@ int main(int argc, char* argv[])
     const int max_key_num = a.get<int>("keynum");
     std::string file_name = (a.get<std::string>("directory") + "/workload/zipf_const_" + zipfian_const + ".bin");
     std::string dpu_binary;
-    if(a.exist("simulator")){
+    if (a.exist("simulator")) {
         dpu_binary = a.get<std::string>("directory") + "/build_simulator/dpu/dpu_program";
     } else {
         dpu_binary = a.get<std::string>("directory") + "/build_UPMEM/dpu/dpu_program";
@@ -680,9 +641,9 @@ int main(int argc, char* argv[])
     std::cout << "[INFO] zipf_const:" << zipfian_const << ", workload file:" << file_name << std::endl;
 #endif
     struct dpu_set_t set, dpu;
-    if(a.exist("simulator")){
+    if (a.exist("simulator")) {
         DPU_ASSERT(dpu_alloc(NR_DPUS, "backend=simulator", &set));
-    } else{
+    } else {
         DPU_ASSERT(dpu_alloc(NR_DPUS, NULL, &set));
     }
 
