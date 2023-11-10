@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <utility>
+#include <map>
 
 using Migration_DPU_t = std::pair<int, int>[NR_SEATS_IN_DPU];
 using Migration_plan_ptr = Migration_DPU_t*;

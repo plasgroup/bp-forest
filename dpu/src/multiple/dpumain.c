@@ -118,9 +118,7 @@ int main()
         /* split large trees */
         barrier_wait(&my_barrier);
         if (tid == 0) {
-            for (seat_id_t i = 0; i < NR_SEATS_IN_DPU; i++) {
-                if(Seat_is_used(i)) do_split_phase(i, tree_transfer_buffer);
-            }
+            split_phase();
         }
     }
     case TASK_GET: {

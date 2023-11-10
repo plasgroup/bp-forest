@@ -3,6 +3,10 @@
 #include "common.h"
 #include <assert.h>
 
+extern KVPairPtr tree_transfer_buffer;
+extern __mram split_info_t split_result[NR_SEATS_IN_DPU];
+
+/* TODO: move to somewhere */
 int traverse_and_count_elems(MBPTptr node)
 {
     int elems = node->numKeys;
@@ -13,44 +17,50 @@ int traverse_and_count_elems(MBPTptr node)
     }
     return elems;
 }
+/* END move to somewhere */
 
-void split_tree(seat_id_t seat_id, KVPairPtr tree_transfer_buffer, int num_trees, int num_elems)
+static void clear_split_result()
 {
-    split_result[seat_id].num_split = num_trees;
-    int num_elems_per_tree = num_elems / num_trees;
-    for (int i = 0; i < num_trees; i++) {
-        seat_id_t new_seat_id = Cabin_allocate_seat(-1);
-        assert(new_seat_id != INVALID_SEAT_ID);
-        init_BPTree(new_seat_id);
-        int start_index = i * num_elems_per_tree;
-        int transfer_num = (i == num_trees - 1) ? (num_elems_per_tree) : (num_elems - num_elems_per_tree * (num_trees - 1));
-        BPTree_Deserialize(new_seat_id, tree_transfer_buffer, start_index, transfer_num);
-        split_result[seat_id].num_elems[i] = transfer_num;
-        if (i > 0) {
-            split_result[seat_id].split_key[i - 1] = Seat_get_root(new_seat_id)->key[0];
-        }
-        split_result[seat_id].new_tree_index[i] = new_seat_id;
-    }
-    return;
+    memset(split_result, 0, sizeof(split_result));
 }
 
-int do_split_phase(seat_id_t seat_id, KVPairPtr tree_transfer_buffer)
+static seat_id_t create_split_tree(KVPairPtr buffer, int start, int end)
 {
-    /* firstly, clear the former split_context */
-    for (int j = 0; j < MAX_NUM_SPLIT; j++) {
-        split_result[seat_id].new_tree_index[j] = 0;
-        split_result[seat_id].num_elems[j] = 0;
-        split_result[seat_id].split_key[j] = 0;
+    seat_id_t seat_id = Cabin_allocate_seat(INVALID_SEAT_ID);
+    assert(seat_id != INVALID_SEAT_ID);
+    init_BPTree(seat_id);
+    BPTree_Deserialize(seat_id, buffer, start, end - start);
+    return seat_id;
+}
+
+static void split_tree(KVPairPtr buffer, int n, __mram_ptr split_info_t* result)
+{
+    int num_trees = (n + NR_ELEMS_AFTER_SPLIT - 1) / NR_ELEMS_AFTER_SPLIT;
+    assert(num_trees <= MAX_NUM_SPLIT);
+    for (int i = 0; i < num_trees; i++) {
+        int start = n * i / num_trees;
+        int end = n * (i + 1) / num_trees;
+        seat_id_t new_seat_id = create_split_tree(buffer, start, end);
+        result->num_elems[i] = end - start;
+        result->new_tree_index[i] = new_seat_id;
     }
-    /* split if the size exceed the threshold */
-    MBPTptr bpt = Seat_get_root(seat_id);
-    if (traverse_and_count_elems(bpt) > SPLIT_THRESHOLD) {
-        int num_trees = (traverse_and_count_elems(bpt) + SPLIT_THRESHOLD - 1) / SPLIT_THRESHOLD;
-        assert(num_trees <= MAX_NUM_SPLIT);
-        int num_elems = BPTree_Serialize(seat_id, tree_transfer_buffer);
-        Cabin_release_seat(seat_id);
-        split_tree(seat_id, tree_transfer_buffer, num_trees, num_elems);
-        return 1;
+    for (int i = 1; i < num_trees; i++) {
+        int start = n * i / num_trees;
+        result->split_key[i - 1] = buffer[start].key;
     }
-    return 0;
+    result->num_split = num_trees;
+}
+
+void split_phase()
+{
+    clear_split_result();
+    for (seat_id_t seat_id = 0; seat_id < NR_SEATS_IN_DPU; seat_id++)
+        if (Seat_is_used(seat_id)) {
+            // TODO: check number of elements in advance
+            int n = BPTree_Serialize(seat_id, tree_transfer_buffer);
+            if (n > SPLIT_THRESHOLD) {
+                Cabin_release_seat(seat_id);
+                split_tree(tree_transfer_buffer, n, &split_result[seat_id]);
+            }
+        }
 }
