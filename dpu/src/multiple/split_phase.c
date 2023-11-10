@@ -3,7 +3,7 @@
 #include "common.h"
 #include <assert.h>
 
-extern KVPairPtr tree_transfer_buffer;
+extern __mram KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
 extern __mram split_info_t split_result[NR_SEATS_IN_DPU];
 
 /* TODO: move to somewhere */

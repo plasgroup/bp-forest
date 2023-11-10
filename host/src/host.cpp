@@ -578,7 +578,7 @@ int do_one_batch(int batch_num, int migrations_per_batch, uint64_t& total_num_ke
 #ifdef PRINT_DEBUG
     printf("[3/4]all the dpu execution finished: %0.5fsec\n", execution_time);
 #endif
-    // PRINT_LOG_ALL_DPUS;
+    PRINT_LOG_ALL_DPUS;
 
     /* postprocess */
     dpu_results = (dpu_results_t*)malloc((NR_DPUS) * sizeof(dpu_results_t));
