@@ -8,7 +8,6 @@ typedef struct MBPTptr {
 } __attribute__((packed)) MBPTptr;
 
 #define MAX_CHILD 12
-#define MAX_NUM_NODES_IN_SEAT 10000
 extern MBPTptr root;
 
 typedef struct InternalNodePtrs {

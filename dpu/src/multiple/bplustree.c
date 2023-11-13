@@ -380,3 +380,14 @@ void BPTree_Deserialize(seat_id_t seat_id, KVPairPtr src, int start_index, int n
         BPTreeInsert(src[i].key, src[i].value, seat_id);
     }
 }
+
+int traverse_and_count_elems(MBPTptr node)
+{
+    int elems = node->numKeys;
+    if (!node->isLeaf) {
+        for (int i = 0; i <= node->numKeys; i++) {
+            elems += traverse_and_count_elems(node->ptrs.inl.children[i]);
+        }
+    }
+    return elems;
+}

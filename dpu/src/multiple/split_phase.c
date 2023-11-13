@@ -6,18 +6,6 @@
 extern __mram KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
 extern __mram split_info_t split_result[NR_SEATS_IN_DPU];
 
-/* TODO: move to somewhere */
-int traverse_and_count_elems(MBPTptr node)
-{
-    int elems = node->numKeys;
-    if (!node->isLeaf) {
-        for (int i = 0; i <= node->numKeys; i++) {
-            elems += traverse_and_count_elems(node->ptrs.inl.children[i]);
-        }
-    }
-    return elems;
-}
-/* END move to somewhere */
 
 static void clear_split_result()
 {

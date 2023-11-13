@@ -1,22 +1,13 @@
-#ifndef __bplustree_H__
-#define __bplustree_H__
+#pragma once
 
 #define MAX_CHILD (126)  // split occurs if numKeys >= MAX_CHILD
 
-#define NODE_DATA_SIZE (30)  // maximum node data size for a DPU, MB
-#ifndef MAX_NUM_NODES_IN_SEAT
-#define MAX_NUM_NODES_IN_SEAT ((NODE_DATA_SIZE << 20) / NR_SEATS_IN_DPU / sizeof(BPTreeNode))
-#endif
 #include "cabin.h"
 #include "common.h"
 #include <mram.h>
 #include <string.h>
 
 typedef __mram_ptr struct BPTreeNode* MBPTptr;
-typedef struct KVPair{
-    key_int64_t key;
-    value_ptr_t value;
-} KVPair;
 typedef __mram_ptr KVPair* KVPairPtr;
 extern MBPTptr root[NR_SEATS_IN_DPU];
 
@@ -70,4 +61,3 @@ extern int BPTree_GetHeight();
 extern int BPTree_Serialize(seat_id_t seat_id, KVPairPtr dest);
 extern int BPTree_Serialize_j_Last_Subtrees(MBPTptr tree, KVPairPtr dest, int j);
 extern void BPTree_Deserialize(seat_id_t seat_id, KVPairPtr src, int start_index, int n);
-#endif /* __bplustree_H__ */
