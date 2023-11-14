@@ -7,217 +7,180 @@ extern "C" {
 #include <dpu.h>
 #include <dpu_log.h>
 }
-#include <iostream>
 #include <map>
+#include <limits>
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
 
-#define QUERY_BALANCED (200)
+#define min2(a,b)   ((a) < (b) ? (a) : (b))
+#define min3(a,b,c) ((a) < (b) ? min2(a, c) : min2(b, c))
 
-/* for std::sort */
-auto comp_idx(int* ptr)
+Migration::Migration(HostTree* tree)
 {
-    return [ptr](int l_idx, int r_idx) {
-        return ptr[l_idx] > ptr[r_idx];
-    };
-}
-
-void Migration::plan_one_migration(int from_DPU, int from_seat, int to_DPU, int to_seat)
-{
-    /* current position */
-    auto& curr_pos = current_position[from_DPU][from_seat];
-    /* update */
-    migration_plan[curr_pos.first][curr_pos.second] = {to_DPU, to_seat};
-    curr_pos = {to_DPU, to_seat};
-}
-
-Migration::Position Migration::getFinalPosition(int from_DPU, int from_seat)
-{
-    return migration_plan[from_DPU][from_seat];
-};
-
-void Migration::migration_plan_query_balancing(HostTree* tree, BatchCtx& batch_ctx, int num_migration, int max_num_seats_in_DPU)
-{
-    extern int migrated_tree_num; /* for stats */
-    migrated_tree_num = 0;
-    int num_trees_to_be_migrated = num_migration;
-    int idx_fromDPU = 0;
-    int idx_toDPU = NR_DPUS - 1;
-    while (num_trees_to_be_migrated) {
-        int from_DPU = batch_ctx.DPU_idx[idx_fromDPU];
-        int to_DPU = batch_ctx.DPU_idx[idx_toDPU];
-        int diff_before = batch_ctx.num_keys_for_DPU[from_DPU] - batch_ctx.num_keys_for_DPU[to_DPU];
-        if (__builtin_popcount(tree->tree_bitmap[from_DPU]) > 1) {  // 木が1つだけだったら移動しない
-            /* Search for an avalable to_DPU. The conditions are:
-            1. There exists avalable seat in to_DPU
-            2. There is more than QUERY_BALANCED difference in the number of queries between from_DPU and to_DPU
-            3. search limit: idx_fromDPU == idx_toDPU
-            */
-            while (__builtin_popcount((tree->tree_bitmap[to_DPU]) > max_num_seats_in_DPU || diff_before < QUERY_BALANCED) && idx_fromDPU < idx_toDPU) {
-                idx_toDPU--;
-                to_DPU = batch_ctx.DPU_idx[idx_toDPU];
-                diff_before = batch_ctx.num_keys_for_DPU[from_DPU] - batch_ctx.num_keys_for_DPU[to_DPU];
-            }
-            if (idx_fromDPU >= idx_toDPU) {
-                printf("migration limit because of NR_DPUS, %d migrations\n", migrated_tree_num);
-                break;
-            }
-            printf("from_DPU=%d, to_DPU=%d, diff_before=%d\n", from_DPU, to_DPU, diff_before);
-            int from_tree = 0;
-            int min_diff_after = 1 << 30;
-            /* determine from_tree */
-            for (int i = 0; i < NR_SEATS_IN_DPU; i++) {                  // 最も負荷を分散出来る木を移動
-                if ((tree->tree_bitmap[from_DPU] & (1 << i)) != 0ULL) {  // if the tree exists
-                    int diff_after = std::abs((batch_ctx.num_keys_for_DPU[from_DPU] - batch_ctx.num_keys_for_tree[from_DPU][i])
-                                              - (batch_ctx.num_keys_for_DPU[to_DPU] + batch_ctx.num_keys_for_tree[from_DPU][i]));  // 移動後のクエリ数の差
-                    if (diff_after < min_diff_after) {
-                        from_tree = i;
-                        min_diff_after = diff_after;
-                    }
-                }
-            }
-            if (diff_before > min_diff_after) {  // 木を移動した結果、さらに偏ってしまう場合はのぞく
-                /* determine to_tree */
-                int to_tree;
-                for (int i = 0; i < NR_SEATS_IN_DPU; i++) {
-                    if (!(tree->tree_bitmap[to_DPU] & (1 << i))) {  // i番目の木が空いているかどうか
-                        /* Enable one migration */
-                        to_tree = i;
-                        //printf("migration: (%d,%d)->(%d,%d)\n", from_DPU, from_tree, to_DPU, to_tree);
-                        /* update batch_ctx */
-                        migration_plan[from_DPU][from_tree] = std::make_pair(to_DPU, to_tree);
-                        batch_ctx.num_keys_for_DPU[from_DPU] -= batch_ctx.num_keys_for_tree[from_DPU][from_tree];
-                        batch_ctx.num_keys_for_DPU[to_DPU] += batch_ctx.num_keys_for_tree[from_DPU][from_tree];
-                        batch_ctx.num_keys_for_tree[to_DPU][to_tree] = batch_ctx.num_keys_for_tree[from_DPU][from_tree];
-                        batch_ctx.num_keys_for_tree[from_DPU][from_tree] = 0;
-                        /* update tree */
-                        tree->tree_bitmap[from_DPU] &= ~(1 << from_tree);
-                        tree->tree_bitmap[to_DPU] |= (1 << to_tree);
-                        tree->key_to_tree_map[tree->tree_to_key_map[from_DPU][from_tree]] = std::make_pair(to_DPU, to_tree);
-                        tree->tree_to_key_map[to_DPU][to_tree] = tree->tree_to_key_map[from_DPU][from_tree];
-                        tree->tree_to_key_map[from_DPU][from_tree] = -1;
-
-                        num_trees_to_be_migrated--; /* i.e. idx_toDPU--; */
-                        migrated_tree_num++;        /* for stats */
-                        break;
-                    }
-                }
-            }
-        }
-        idx_fromDPU++;
+    for (int i = 0; i < NR_DPUS; i++) {
+        used_seats[i] = tree->get_used_seats(i);
+        nr_used_seats[i] = __builtin_popcount(used_seats[i]);
+        freeing_seats[i] = 0;
+        nr_freeing_seats[i] = 0;
     }
-    return;
+    std::fill<Position*, Position>(&plan[0][0], &plan[NR_DPUS][0], {-1, -1});
 }
 
-void Migration::migration_plan_memory_balancing(HostTree* tree, BatchCtx& batch_ctx, int max_num_seats_in_DPU)
+Migration::Position Migration::get_source(int dpu, seat_id_t seat_id)
 {
-    extern int migrated_tree_num; /* for stats */
-    migrated_tree_num = 0;
-    int idx_fromDPU = 0;
-    int idx_toDPU = NR_DPUS - 1;
-    while (true) {
-        int from_DPU = batch_ctx.DPU_idx[idx_fromDPU];
-        int to_DPU = batch_ctx.DPU_idx[idx_toDPU];
-        if (idx_fromDPU >= idx_toDPU) {
-            printf("migration limit because of NR_DPUS, %d migrations\n", migrated_tree_num);
+    while (plan[dpu][seat_id].first != -1) {
+        dpu = plan[dpu][seat_id].first;
+        seat_id = plan[dpu][seat_id].second;
+    }
+    return {dpu, seat_id};
+}
+
+void Migration::do_migrate_subtree(int from_dpu, seat_id_t from, int to_dpu, seat_id_t to)
+{
+    /* Source tree may not be in (from_dpu, from) because it may be planned to
+     * move to there in the same migration plan. In that case, the chain of
+     * the migrations are followed when the plan is applied. This is possible
+     * because of the invariant that no used seat at the beginning is not
+     * chosen as a destination of a migration.
+     */
+    plan[to_dpu][to] = {from_dpu, from};
+}
+
+void Migration::migrate_subtree(int from_dpu, seat_id_t from, int to_dpu, seat_id_t to)
+{
+    do_migrate_subtree(from_dpu, from, to_dpu, to);
+    used_seats[from_dpu] &= ~(1 << from);
+    freeing_seats[from_dpu] |= 1 << from;
+    used_seats[to_dpu] |= 1 << to;
+    nr_used_seats[from_dpu] --;
+    nr_freeing_seats[from_dpu] ++;
+    nr_used_seats[to_dpu] ++;
+}
+
+bool Migration::migrate_subtree_to_balance_load(int from_dpu, int to_dpu, int diff, int nkeys_for_trees[NR_DPUS][NR_SEATS_IN_DPU])
+{
+    seat_id_t candidate = INVALID_SEAT_ID;
+    int best = std::numeric_limits<int>::max();
+    for (seat_id_t from = 0; from < NR_SEATS_IN_DPU; from++) {
+        Position p = get_source(from_dpu, from);
+        int nkeys = nkeys_for_trees[p.first][p.second];
+        if (nkeys >= diff)
+            continue;
+        int score = abs(nkeys * 2 - diff);
+        if (score < best) {
+            best = score;
+            candidate = from;
+        }
+    }
+    if (candidate != INVALID_SEAT_ID) {
+        seat_set_t unavail = used_seats[to_dpu] | freeing_seats[to_dpu];
+        int to = 0;
+        while ((unavail & (1 << to)))
+            to++;
+        assert(to < NR_SEATS_IN_DPU);
+        migrate_subtree(from_dpu, candidate, to_dpu, to);
+        return true;
+    }
+    return false;
+}
+
+void Migration::migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migration)
+{
+    int dpu_ids[NR_DPUS];
+    int nr_keys_for_dpu[NR_DPUS];
+
+    for (int i = 0; i < NR_DPUS; i++)
+        dpu_ids[i] = i;
+    for (int i = 0; i < NR_DPUS; i++) {
+        int nkeys = 0;
+        for (int j = 0; j < NR_SEATS_IN_DPU; j++) {
+            Position p = get_source(i, j);
+            nkeys += batch_ctx.num_keys_for_tree[p.first][p.second];
+        }
+        nr_keys_for_dpu[i] = nkeys;
+    }
+    /* sort `dpu_ids` from many queries to few queries */
+    std::sort(dpu_ids, dpu_ids + NR_DPUS, [&](int a, int b) {
+        return nr_keys_for_dpu[a] > nr_keys_for_dpu[b];
+    });
+    
+    int l = 0, r = NR_DPUS - 1;
+    for (int i = 0; i < num_migration;) {
+        if (l >= r)
             break;
+        if (nr_used_seats[dpu_ids[l]] <= 1) {
+            l++;
+            continue;
         }
-        if (batch_ctx.DPU_idx[idx_fromDPU] <= max_num_seats_in_DPU) {
-            printf("migration planning for memory balancing is finished, %d migrations\n", migrated_tree_num);
-            break;
+        if (nr_used_seats[dpu_ids[r]] >= SOFT_LIMIT_NR_TREES_IN_DPU ||
+            nr_used_seats[dpu_ids[r]] + nr_freeing_seats[dpu_ids[r]] >= NR_SEATS_IN_DPU) {
+            r--;
+            continue;
         }
-        /* migrate trees from from_DPU to to_DPU */
-        while (tree->num_seats_used[from_DPU] > max_num_seats_in_DPU && tree->num_seats_used[to_DPU] < max_num_seats_in_DPU) {
-            printf("from_DPU=%d, to_DPU=%d\n", from_DPU, to_DPU);
-            int from_tree = 0;
-            int min_diff_after = 1 << 30;
-            /* determine from_tree */
-            for (int i = 0; i < NR_SEATS_IN_DPU; i++) {                  // 最も負荷を分散出来る木を移動
-                if ((tree->tree_bitmap[from_DPU] & (1 << i)) != 0ULL) {  // if the tree exists
-                    int diff_after = std::abs((batch_ctx.num_keys_for_DPU[from_DPU] - batch_ctx.num_keys_for_tree[from_DPU][i])
-                                              - (batch_ctx.num_keys_for_DPU[to_DPU] + batch_ctx.num_keys_for_tree[from_DPU][i]));  // 移動後のクエリ数の差
-                    if (diff_after < min_diff_after) {
-                        from_tree = i;
-                        min_diff_after = diff_after;
-                    }
-                }
-            }
-            /* determine to_tree */
-            int to_tree;
-            for (int i = 0; i < NR_SEATS_IN_DPU; i++) {
-                if (!(tree->tree_bitmap[to_DPU] & (1 << i))) {  // i番目の木が空いているかどうか
-                    /* Enable one migration */
-                    to_tree = i;
-                    //printf("migration: (%d,%d)->(%d,%d)\n", from_DPU, from_tree, to_DPU, to_tree);
-                    plan_one_migration(from_DPU, from_tree, to_DPU, to_tree);
-                    /* update batch_ctx */
-                    batch_ctx.num_keys_for_DPU[from_DPU] -= batch_ctx.num_keys_for_tree[from_DPU][from_tree];
-                    batch_ctx.num_keys_for_DPU[to_DPU] += batch_ctx.num_keys_for_tree[from_DPU][from_tree];
-                    batch_ctx.num_keys_for_tree[to_DPU][to_tree] = batch_ctx.num_keys_for_tree[from_DPU][from_tree];
-                    batch_ctx.num_keys_for_tree[from_DPU][from_tree] = 0;
-                    /* update tree */
-                    tree->tree_bitmap[from_DPU] &= ~(1 << from_tree);
-                    tree->tree_bitmap[to_DPU] |= (1 << to_tree);
-                    tree->key_to_tree_map[tree->tree_to_key_map[from_DPU][from_tree]] = std::make_pair(to_DPU, to_tree);
-                    tree->tree_to_key_map[to_DPU][to_tree] = tree->tree_to_key_map[from_DPU][from_tree];
-                    tree->tree_to_key_map[from_DPU][from_tree] = -1;
-                    tree->num_seats_used[from_DPU]--;
-                    tree->num_seats_used[to_DPU]++;
-
-                    migrated_tree_num++; /* for stats */
-                    break;
-                }
-            }
-            bool flag = false;                                            /* whether (to_DPU is full) or (there is no need to move tree from from_DPU)  */
-            if (tree->num_seats_used[from_DPU] <= max_num_seats_in_DPU) { /* to_DPU is full */
-                idx_fromDPU++;
-                flag = true;
-            }
-            if (tree->num_seats_used[to_DPU] >= max_num_seats_in_DPU) { /* there is no need to move tree from from_DPU */
-                idx_toDPU--;
-                flag = true;
-            }
-            if (flag)
-                break;
+        int diff = nr_keys_for_dpu[dpu_ids[l]] - nr_keys_for_dpu[dpu_ids[r]];
+        if (!migrate_subtree_to_balance_load(dpu_ids[l], dpu_ids[r], diff, batch_ctx.num_keys_for_tree)) {
+            l++;
+            continue;
         }
+        i++;
     }
-    return;
 }
 
-void Migration::migration_plan_get(HostTree* tree, BatchCtx& batch_ctx, int num_migration)
+void Migration::migrate_subtrees(int from_dpu, int to_dpu, int n)
 {
-    printf("migration_plan_get\n");
+    seat_set_t from_used = used_seats[from_dpu];
+    seat_set_t to_used = used_seats[to_dpu];
+    seat_set_t freeing = freeing_seats[to_dpu];
+    seat_set_t moving_from = 0;
+    seat_set_t moving_to = 0;
+    seat_id_t from = 0, to = 0;
 
-    /* DPUをクエリの数が多い順に並び替える */
-    for (int i = 0; i < NR_DPUS; i++) {
-        batch_ctx.DPU_idx[i] = i;
+    for (int i = 0; i < n; i++) {
+        while (!(from_used & (1 << from)))
+            from++;
+        assert(from < NR_SEATS_IN_DPU);
+        while (((to_used | freeing) & (1 << to)))
+            to++;
+        assert(to < NR_SEATS_IN_DPU);
+
+        /* migrate tree (from_dpu, form) -> (to_dpu, to) */
+        moving_from |= 1 << from;
+        moving_to |= 1 << to;
+        do_migrate_subtree(from_dpu, from, to_dpu, to);
+        from++;
+        to++;
     }
-    std::sort(batch_ctx.DPU_idx, batch_ctx.DPU_idx + NR_DPUS, comp_idx(batch_ctx.num_keys_for_DPU));
-
-    migration_plan_query_balancing(tree, batch_ctx, num_migration, NR_SEATS_IN_DPU);
+    used_seats[from_dpu] &= ~moving_from;
+    freeing_seats[from_dpu] |= moving_from;
+    used_seats[to_dpu] |= moving_to;
+    nr_used_seats[from_dpu] -= n;
+    nr_freeing_seats[from_dpu] += n;
+    nr_used_seats[to_dpu] += n;
 }
 
-void Migration::migration_plan_insert(HostTree* tree, BatchCtx& batch_ctx, int num_migration)
+void Migration::migration_plan_memory_balancing()
 {
-    printf("migration_plan_insert\n");
-
-    /* DPUを木の数が多い順に並び替える */
     for (int i = 0; i < NR_DPUS; i++) {
-        batch_ctx.DPU_idx[i] = i;
+        if (nr_used_seats[i] > SOFT_LIMIT_NR_TREES_IN_DPU) {
+            int rem = nr_used_seats[i] - SOFT_LIMIT_NR_TREES_IN_DPU;
+            int j = 0;
+            while (rem > 0) {
+                int room = SOFT_LIMIT_NR_TREES_IN_DPU - nr_used_seats[j];
+                int avail = NR_SEATS_IN_DPU - (nr_used_seats[j] + nr_freeing_seats[j]);
+                int n = min3(rem, room, avail);
+                if (n > 0) {
+                    migrate_subtrees(i, j, n);
+                    rem -= n;
+                }
+                j++;
+                assert(j < NR_DPUS);
+            }
+        }
     }
-    std::sort(batch_ctx.DPU_idx, batch_ctx.DPU_idx + NR_DPUS, comp_idx(tree->num_seats_used));
-
-    migration_plan_memory_balancing(tree, batch_ctx, MAX_NUM_SEATS_BEFORE_INSERT);
-
-    /* DPUをクエリの数が多い順に並び替える */
-    for (int i = 0; i < NR_DPUS; i++) {
-        batch_ctx.DPU_idx[i] = i;
-    }
-    std::sort(batch_ctx.DPU_idx, batch_ctx.DPU_idx + NR_DPUS, comp_idx(batch_ctx.num_keys_for_DPU));
-    migration_plan_query_balancing(tree, batch_ctx, num_migration, MAX_NUM_SEATS_BEFORE_INSERT);
 }
 
-void send_nodes_from_dpu_to_dpu(int from_DPU, int from_tree, int to_DPU, int to_tree, dpu_set_t set, dpu_set_t dpu)
+static void send_nodes_from_dpu_to_dpu(int from_DPU, int from_tree, int to_DPU, int to_tree, dpu_set_t set, dpu_set_t dpu)
 {
     uint64_t task;
     /* grobal variables difined in host.cpp */
@@ -255,15 +218,32 @@ void send_nodes_from_dpu_to_dpu(int from_DPU, int from_tree, int to_DPU, int to_
     }
 }
 
-/* execute migration according to migration_plan */
-void Migration::do_migration(dpu_set_t set, dpu_set_t dpu)
+void Migration::normalize()
 {
-    for (int i = 0; i < NR_DPUS; i++) {
-        for (int j = 0; j < NR_SEATS_IN_DPU; j++) {
-            Position to = getFinalPosition(i, j);
-            if (to.first != -1 && to.first != i) {
-                send_nodes_from_dpu_to_dpu(i, j, to.first, to.second, set, dpu);
+    for (int i = 0; i < NR_DPUS; i++)
+        for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
+            if (plan[i][j].first != -1) {
+                Position p = plan[i][j];
+                while (plan[p.first][p.second].first != -1) {
+                    Position q = plan[p.first][p.second];
+                    plan[p.first][p.second] = {-1, -1};
+                    p = q;
+                }
+                plan[i][j] = p;
             }
-        }
-    }
+}
+
+/* execute migration according to migration_plan */
+void Migration::execute(dpu_set_t set, dpu_set_t dpu)
+{
+    normalize();
+    /* apply */
+    for (int i = 0; i < NR_DPUS; i++)
+        for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
+            if (plan[i][j].first != -1) {
+                int from_dpu = plan[i][j].first;
+                int from = plan[i][j].second;
+                printf("send_nodes_from_dpu_to_dpu (%d,%d) -> (%d,%d)\n", from_dpu, from, i ,j);
+                send_nodes_from_dpu_to_dpu(from_dpu, from, i, j, set, dpu);
+            }
 }

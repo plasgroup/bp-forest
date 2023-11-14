@@ -290,7 +290,6 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
         auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
         if (it != host_tree->key_to_tree_map.end()) {
             batch_ctx.num_keys_for_tree[it->second.first][it->second.second]++;
-            batch_ctx.num_keys_for_DPU[it->second.first]++;
         } else {
             printf("ERROR: the key is out of range 3\n");
         }
@@ -298,24 +297,15 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
     preprocess_time1 = time_diff(&start, &end);
 
     /* 2. migration planning */
-    Migration migration_plan;
+    Migration migration_plan(host_tree);
     gettimeofday(&start, NULL);
-    switch (*task) {
-    case TASK_GET: {
-        migration_plan.migration_plan_get(host_tree, batch_ctx, num_migration);
-        break;
-    }
-    case TASK_INSERT: {
-        migration_plan.migration_plan_insert(host_tree, batch_ctx, num_migration);
-        break;
-    }
-    }
+    migration_plan.migration_plan_query_balancing(batch_ctx, num_migration);
     gettimeofday(&end, NULL);
     migration_plan_time = time_diff(&start, &end);
 
     /* 3. execute migration according to migration_plan */
     gettimeofday(&start, NULL);
-    migration_plan.do_migration(set, dpu);
+    migration_plan.execute(set, dpu);
     gettimeofday(&end, NULL);
     migration_time = time_diff(&start, &end);
 
@@ -342,7 +332,10 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
 
     for (int i = 0; i < NR_DPUS; i++) {
         for (int j = 1; j <= NR_SEATS_IN_DPU; j++) {
-            batch_ctx.key_index[i][j] = batch_ctx.key_index[i][j - 1] + batch_ctx.num_keys_for_tree[i][j - 1];
+            Migration::Position p = migration_plan.get_source(i, j - 1);
+            int dpu = p.first;
+            seat_id_t seat_id = p.second;
+            batch_ctx.key_index[i][j] = batch_ctx.key_index[i][j - 1] + batch_ctx.num_keys_for_tree[dpu][seat_id];
             //printf("batch_ctx.key_index[%d][%d] = %d\n", i, j, batch_ctx.key_index[i][j]);
         }
     }
@@ -365,8 +358,8 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
     /* count the number of requests for each DPU, determine the send size */
     for (int dpu_i = 0; dpu_i < NR_DPUS; dpu_i++) {
         /* send size: maximum number of requests to a DPU */
-        if (batch_ctx.num_keys_for_DPU[dpu_i] > batch_ctx.send_size)
-            batch_ctx.send_size = batch_ctx.num_keys_for_DPU[dpu_i];
+        if (batch_ctx.send_size < batch_ctx.key_index[dpu_i][NR_SEATS_IN_DPU])
+            batch_ctx.send_size = batch_ctx.key_index[dpu_i][NR_SEATS_IN_DPU];
     }
 #ifdef PRINT_DEBUG
 // for (key_int64_t x : num_keys) {

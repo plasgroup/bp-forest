@@ -1,12 +1,10 @@
 #pragma once
 
 #include "mram.h"
+#include "common.h"
 
 struct BPTreeNode;
 typedef struct BPTreeNode Node;
-typedef int seat_id_t;
-
-#define INVALID_SEAT_ID (-1)
 
 extern void Cabin_init();
 extern seat_id_t Cabin_allocate_seat(seat_id_t seat_id);

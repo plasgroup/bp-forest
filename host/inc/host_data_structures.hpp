@@ -30,6 +30,11 @@ class HostTree {
             }
         }
 
+        seat_set_t get_used_seats(int dpu)
+        {
+            return tree_bitmap[dpu];
+        }
+
     private:
 
 };

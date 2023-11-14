@@ -19,8 +19,8 @@
 #define MAX_NUM_NODES_IN_SEAT ((NODE_DATA_SIZE << 20) / NR_SEATS_IN_DPU / sizeof(BPTreeNode))
 #endif
 #define MAX_NUM_SPLIT (5)
-#ifndef MAX_NUM_SEATS_BEFORE_INSERT
-#define MAX_NUM_SEATS_BEFORE_INSERT (NR_SEATS_IN_DPU - MAX_NUM_SPLIT - 1)
+#ifndef SOFT_LIMIT_NR_TREES_IN_DPU
+#define SOFT_LIMIT_NR_TREES_IN_DPU (NR_SEATS_IN_DPU - MAX_NUM_SPLIT - 1)
 #endif
 #define NUM_INIT_TREES_IN_DPU (NR_SEATS_IN_DPU / 4)
 #define REQUEST_SIZE (sizeof(each_request_t))
@@ -111,6 +111,10 @@ typedef struct {
 #define TASK_INSERT (11ULL)
 #define TASK_FROM (100ULL)
 #define TASK_TO (101ULL)
+
+typedef int seat_id_t;
+#define INVALID_SEAT_ID (-1)
+typedef uint64_t seat_set_t;
 
 #define PRINT_POSITION_AND_VARIABLE(NAME, FORMAT) \
     printf("[Debug at %s:%d] " #NAME " = " #FORMAT "\n", __FILE__, __LINE__, NAME);
