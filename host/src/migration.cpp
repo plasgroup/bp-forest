@@ -248,7 +248,6 @@ void Migration::execute(dpu_set_t set, dpu_set_t dpu)
             if (plan[i][j].first != -1) {
                 int from_dpu = plan[i][j].first;
                 int from = plan[i][j].second;
-                printf("send_nodes_from_dpu_to_dpu (%d,%d) -> (%d,%d)\n", from_dpu, from, i ,j);
                 send_nodes_from_dpu_to_dpu(from_dpu, from, i, j, set, dpu);
             }
 }
