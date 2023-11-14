@@ -306,6 +306,7 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
     /* 3. execute migration according to migration_plan */
     gettimeofday(&start, NULL);
     migration_plan.execute(set, dpu);
+    host_tree->apply_migration(&migration_plan);
     gettimeofday(&end, NULL);
     migration_time = time_diff(&start, &end);
 

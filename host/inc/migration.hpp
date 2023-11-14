@@ -1,7 +1,6 @@
 #pragma once
 
 #include "common.h"
-#include "host_data_structures.hpp"
 extern "C" {
 #include <dpu.h>
 #include <dpu_log.h>
@@ -12,10 +11,92 @@ extern "C" {
 #include <stdlib.h>
 #include <utility>
 #include <vector>
+
+class HostTree;
+class BatchCtx;
+
 class Migration
 {
 public:
     using Position = std::pair<int, int>;
+
+    class MigrationPlanIterator :
+        public std::iterator<std::input_iterator_tag, std::pair<Position, Position>> {
+
+        friend Migration;
+
+        typedef std::pair<Position, Position> item_t;
+
+    private:
+        Migration* migration;
+        Position p;
+
+        bool inc_p()
+        {
+            p.second++;
+            if (p.second == NR_SEATS_IN_DPU) {
+                p.first++;
+                p.second = 0;
+                if (p.first == NR_DPUS) {
+                    p = {-1, INVALID_SEAT_ID};
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        void locate_next()
+        {
+            while (migration->plan[p.first][p.second].first == -1)
+                if (!inc_p())
+                    return;
+        }
+
+        void advance()
+        {
+            inc_p();
+            locate_next();
+        }
+
+        MigrationPlanIterator(Migration* m, bool begin) : migration(m)
+        {
+            if (begin) {
+                p = {0, 0};
+                locate_next();
+            } else
+                p = {-1, INVALID_SEAT_ID};
+        }
+
+    public:
+
+        MigrationPlanIterator& operator++()
+        {
+            advance();
+            return *this;
+        }
+
+        MigrationPlanIterator operator++(int)
+        {
+            MigrationPlanIterator pre = *this;
+            advance();
+            return pre;
+        }
+
+        item_t operator*()
+        {
+            return {migration->plan[p.first][p.second], p};
+        }
+
+        bool operator==(const MigrationPlanIterator& it)
+        {
+            return it.migration == migration && it.p == p;
+        }
+
+        bool operator!=(const MigrationPlanIterator& it)
+        {
+            return !(*this == it);
+        }
+    };
 
 private:
     Position plan[NR_DPUS][NR_SEATS_IN_DPU];
@@ -33,6 +114,15 @@ public:
     void execute(dpu_set_t set, dpu_set_t dpu);
     void print_plan(void);
 
+    MigrationPlanIterator begin()
+    {
+        return MigrationPlanIterator(this, true);
+    }
+
+    MigrationPlanIterator end()
+    {
+        return MigrationPlanIterator(this, false);
+    }
 
 private:
     void do_migrate_subtree(int from_dpu, seat_id_t from, int to_dpu, seat_id_t to);
@@ -40,3 +130,4 @@ private:
     bool migrate_subtree_to_balance_load(int from_dpu, int to_dpu, int diff, int nkeys_for_trees[NR_DPUS][NR_SEATS_IN_DPU]);
     void migrate_subtrees(int from_dpu, int to_dpu, int n);
 };
+

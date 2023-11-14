@@ -1,5 +1,6 @@
 #pragma once
 #include "common.h"
+#include "migration.hpp"
 #include <map>
 #include <stdlib.h>
 
@@ -33,6 +34,22 @@ class HostTree {
         seat_set_t get_used_seats(int dpu)
         {
             return tree_bitmap[dpu];
+        }
+
+        void apply_migration(Migration* m)
+        {
+            for (auto it = m->begin(); it != m->end(); ++it) {
+                Migration::Position from = (*it).first;
+                Migration::Position to = (*it).second;
+                key_int64_t key = tree_to_key_map[from.first][from.second];
+                tree_bitmap[from.first] &= ~(1 << from.second);
+                num_seats_used[from.first]--;
+                tree_bitmap[to.first] |= 1 << to.second;
+                num_seats_used[to.first]++;
+                tree_to_key_map[to.first][to.second] = key;
+                tree_to_key_map[from.first][from.second] = 0; // invalid key?
+                key_to_tree_map[key] = to;
+            }
         }
 
     private:
