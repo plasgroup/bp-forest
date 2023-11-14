@@ -2,8 +2,8 @@
 #define _GNU_SOURCE
 #endif
 #include "cmdline.h"
-#include "migration.hpp"
 #include "host_data_structures.hpp"
+#include "migration.hpp"
 #include <assert.h>
 extern "C" {
 #include <dpu.h>
@@ -254,8 +254,9 @@ void update_cpu_struct(HostTree* host_tree)
 {
     for (int dpu = 0; dpu < NR_DPUS; dpu++) {
         for (int old_tree = 0; old_tree < NR_SEATS_IN_DPU; old_tree++) {
-            host_tree->num_seats_used[NR_DPUS]+= split_result[dpu][old_tree].num_split;
+            host_tree->num_seats_used[NR_DPUS] += split_result[dpu][old_tree].num_split;
             for (int new_tree = 0; new_tree < split_result[dpu][old_tree].num_split; new_tree++) {
+                printf("split: DPU %d seat %d -> seat %d\n", dpu, old_tree, new_tree);
                 int new_seat_id = split_result[dpu][old_tree].new_tree_index[new_tree];
                 if (new_tree != 0) {
                     key_int64_t border_key = split_result[dpu][old_tree].split_key[new_tree - 1];
@@ -297,25 +298,24 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
     preprocess_time1 = time_diff(&start, &end);
 
     /* 2. migration planning */
-    Migration_plan_t migration_plan = migration_plan_new();
-    migration_plan = migration_plan_init(migration_plan);
+    Migration migration_plan;
     gettimeofday(&start, NULL);
     switch (*task) {
-        case TASK_GET: {
-            migration_plan = migration_plan_get(migration_plan, host_tree, batch_ctx, num_migration);
-            break;
-        }
-        case TASK_INSERT: {
-            migration_plan = migration_plan_insert(migration_plan, host_tree, batch_ctx, num_migration);
-            break;
-        }
+    case TASK_GET: {
+        migration_plan.migration_plan_get(host_tree, batch_ctx, num_migration);
+        break;
+    }
+    case TASK_INSERT: {
+        migration_plan.migration_plan_insert(host_tree, batch_ctx, num_migration);
+        break;
+    }
     }
     gettimeofday(&end, NULL);
     migration_plan_time = time_diff(&start, &end);
 
     /* 3. execute migration according to migration_plan */
     gettimeofday(&start, NULL);
-    do_migration(migration_plan, set, dpu);
+    migration_plan.do_migration(set, dpu);
     gettimeofday(&end, NULL);
     migration_time = time_diff(&start, &end);
 
@@ -448,7 +448,7 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
 #ifdef PRINT_DEBUG
     printf("[3/4]all the dpu execution finished: %0.5fsec\n", execution_time);
 #endif
-    //PRINT_LOG_ALL_DPUS;
+    // PRINT_LOG_ALL_DPUS;
 
     /* postprocess */
     dpu_results = (dpu_results_t*)malloc((NR_DPUS) * sizeof(dpu_results_t));

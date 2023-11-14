@@ -14,12 +14,13 @@
 #define NR_SEATS_IN_DPU (12)
 #endif
 /* maximum node data size for a DPU, MB */
-#define NODE_DATA_SIZE (30)  
+#define NODE_DATA_SIZE (30)
 #ifndef MAX_NUM_NODES_IN_SEAT
 #define MAX_NUM_NODES_IN_SEAT ((NODE_DATA_SIZE << 20) / NR_SEATS_IN_DPU / sizeof(BPTreeNode))
 #endif
+#define MAX_NUM_SPLIT (5)
 #ifndef MAX_NUM_SEATS_BEFORE_INSERT
-#define MAX_NUM_SEATS_BEFORE_INSERT (4)
+#define MAX_NUM_SEATS_BEFORE_INSERT (NR_SEATS_IN_DPU - MAX_NUM_SPLIT - 1)
 #endif
 #define NUM_INIT_TREES_IN_DPU (NR_SEATS_IN_DPU / 4)
 #define REQUEST_SIZE (sizeof(each_request_t))
@@ -38,7 +39,6 @@
 #ifndef WORKLOAD
 #define WORKLOAD (W50R50)
 #endif
-#define MAX_NUM_SPLIT (5)
 // #define PRINT_DEBUG
 // #define VARY_REQUESTNUM
 // #define DEBUG_ON
@@ -57,7 +57,7 @@ typedef uint64_t key_int64_t;
 #define KEY_MAX (-1ULL)
 typedef uint64_t value_ptr_t;
 
-typedef struct KVPair{
+typedef struct KVPair {
     key_int64_t key;
     value_ptr_t value;
 } KVPair;
