@@ -31,6 +31,8 @@ public:
     void migration_plan_memory_balancing(void);
     void normalize(void);
     void execute(dpu_set_t set, dpu_set_t dpu);
+    void print_plan(void);
+
 
 private:
     void do_migrate_subtree(int from_dpu, seat_id_t from, int to_dpu, seat_id_t to);

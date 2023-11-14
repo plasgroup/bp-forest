@@ -300,6 +300,9 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
     Migration migration_plan(host_tree);
     gettimeofday(&start, NULL);
     migration_plan.migration_plan_query_balancing(batch_ctx, num_migration);
+    migration_plan.print_plan();
+    migration_plan.migration_plan_query_balancing(batch_ctx, num_migration);
+    migration_plan.print_plan();
     gettimeofday(&end, NULL);
     migration_plan_time = time_diff(&start, &end);
 

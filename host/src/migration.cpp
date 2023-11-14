@@ -30,8 +30,9 @@ Migration::Migration(HostTree* tree)
 Migration::Position Migration::get_source(int dpu, seat_id_t seat_id)
 {
     while (plan[dpu][seat_id].first != -1) {
-        dpu = plan[dpu][seat_id].first;
-        seat_id = plan[dpu][seat_id].second;
+        Position p = plan[dpu][seat_id];
+        dpu = p.first;
+        seat_id = p.second;
     }
     return {dpu, seat_id};
 }
@@ -63,6 +64,8 @@ bool Migration::migrate_subtree_to_balance_load(int from_dpu, int to_dpu, int di
     seat_id_t candidate = INVALID_SEAT_ID;
     int best = std::numeric_limits<int>::max();
     for (seat_id_t from = 0; from < NR_SEATS_IN_DPU; from++) {
+        if (!(used_seats[from_dpu] & (1 << from)))
+            continue;
         Position p = get_source(from_dpu, from);
         int nkeys = nkeys_for_trees[p.first][p.second];
         if (nkeys >= diff)
@@ -123,6 +126,8 @@ void Migration::migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migr
             l++;
             continue;
         }
+        l++;
+        r--;
         i++;
     }
 }
@@ -246,4 +251,19 @@ void Migration::execute(dpu_set_t set, dpu_set_t dpu)
                 printf("send_nodes_from_dpu_to_dpu (%d,%d) -> (%d,%d)\n", from_dpu, from, i ,j);
                 send_nodes_from_dpu_to_dpu(from_dpu, from, i, j, set, dpu);
             }
+}
+
+void Migration::print_plan()
+{
+    printf("====== plan ======\n");
+    printf("  :");
+    for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
+        printf("%5d|", j);
+    printf("\n");
+    for (int i = 0; i < NR_DPUS; i++) {
+        printf("%2d:", i);
+        for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
+            printf("%2d,%2d|", plan[i][j].first, plan[i][j].second);
+        printf("\n");
+    }
 }
