@@ -18,10 +18,10 @@ class BatchCtx;
 class Migration
 {
 public:
-    using Position = std::pair<int, int>;
+    using Position = std::pair<dpu_id_t, seat_id_t>;
 
-    class MigrationPlanIterator :
-        public std::iterator<std::input_iterator_tag, std::pair<Position, Position>> {
+    class MigrationPlanIterator : public std::iterator<std::input_iterator_tag, std::pair<Position, Position>>
+    {
 
         friend Migration;
 
@@ -68,7 +68,6 @@ public:
         }
 
     public:
-
         MigrationPlanIterator& operator++()
         {
             advance();
@@ -107,7 +106,8 @@ private:
 
 public:
     Migration(HostTree* tree);
-    Position get_source(int dpu, seat_id_t seat_id);
+    int get_num_queries_for_source(BatchCtx& batch_ctx, dpu_id_t dpu, seat_id_t seat_id);
+    Position get_source(dpu_id_t dpu, seat_id_t seat_id);
     void migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migration);
     void migration_plan_memory_balancing(void);
     void normalize(void);
@@ -125,9 +125,8 @@ public:
     }
 
 private:
-    void do_migrate_subtree(int from_dpu, seat_id_t from, int to_dpu, seat_id_t to);
-    void migrate_subtree(int from_dpu, seat_id_t from, int to_dpu, seat_id_t to);
-    bool migrate_subtree_to_balance_load(int from_dpu, int to_dpu, int diff, int nkeys_for_trees[NR_DPUS][NR_SEATS_IN_DPU]);
-    void migrate_subtrees(int from_dpu, int to_dpu, int n);
+    void do_migrate_subtree(dpu_id_t from_dpu, seat_id_t from, dpu_id_t to_dpu, seat_id_t to);
+    void migrate_subtree(dpu_id_t from_dpu, seat_id_t from, dpu_id_t to_dpu, seat_id_t to);
+    bool migrate_subtree_to_balance_load(dpu_id_t from_dpu, dpu_id_t to_dpu, int diff, int nkeys_for_trees[NR_DPUS][NR_SEATS_IN_DPU]);
+    void migrate_subtrees(dpu_id_t from_dpu, dpu_id_t to_dpu, int n);
 };
-

@@ -23,7 +23,7 @@ __mram uint64_t tree_transfer_num;
 __mram split_info_t split_result[NR_SEATS_IN_DPU];
 __host uint64_t task_no;
 int queries_per_tasklet;
-int current_tree;
+seat_id_t current_tree;
 uint32_t task;
 
 #ifdef DEBUG_ON
@@ -57,16 +57,15 @@ int main()
         break;
     }
     case TASK_INSERT: {
-        /* insertion */
         if (tid == 0) {
             queries_per_tasklet = end_idx[NR_SEATS_IN_DPU - 1] / NR_TASKLETS;
             current_tree = 0;
             printf("insert task\n");
         }
         barrier_wait(&my_barrier);
-        // DPU側で負荷分散する
-        int start_tree;
-        int end_tree;
+        /* determine which tree to execute */
+        seat_id_t start_tree;
+        seat_id_t end_tree;
         int num_queries = 0;
         for (int tasklet = 0; tasklet < NR_TASKLETS; tasklet++) {
             if (tid == tasklet) {
@@ -82,13 +81,24 @@ int main()
             }
             barrier_wait(&my_barrier);
         }
-        for (int tree = start_tree; tree < end_tree; tree++) {
+#ifdef PRINT_DEBUG
+        sem_take(&my_semaphore);
+        printf("[tasklet %d] inserting tree [%d, %d)\n", tid, start_tree, end_tree);
+        sem_give(&my_semaphore);
+        barrier_wait(&my_barrier);
+#endif
+        /* execution */
+        for (seat_id_t tree = start_tree; tree < end_tree; tree++) {
             for (int index = tree == 0 ? 0 : end_idx[tree - 1]; index < end_idx[tree]; index++) {
-                if (tid == 0) {
-                    //printf("[tasklet %d] insert (%ld, %ld)\n", tid, request_buffer[index].key, request_buffer[index].write_val_ptr);
-                }
                 BPTreeInsert(request_buffer[index].key, request_buffer[index].write_val_ptr, tree);
             }
+#ifdef PRINT_DEBUG
+            if (Seat_is_used(tree)) {
+                printf("[tasklet %d] total num of nodes of seat %d = %d\n", tid,
+                    Seat_get_n_nodes(tree), tree);
+                printf("[tasklet %d] height of seat %d = %d\n", tid, Seat_get_height(tree), tree);
+            }
+#endif
         }
 
 
@@ -174,15 +184,6 @@ int main()
     }
     }
 
-#ifdef PRINT_DEBUG
-    // /* sequential execution using semaphore */
-    // sem_take(&my_semaphore);
-    // printf("[tasklet %d] total num of nodes = %d\n", tid,
-    //     BPTree_GetNumOfNodes(tid));
-    // printf("[tasklet %d] height = %d\n", tid, BPTree_GetHeight(tid));
-    // sem_give(&my_semaphore);
-    // barrier_wait(&my_barrier);
-#endif
 #ifdef PRINT_ON
     // sem_take(&my_semaphore);
     // printf("\n");

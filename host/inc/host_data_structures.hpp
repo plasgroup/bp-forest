@@ -4,7 +4,7 @@
 #include <map>
 #include <stdlib.h>
 
-/* Data structures in host for managing subtrees in DPUs*/
+/* Data structures in host for managing subtrees in DPUs */
 class HostTree {
     public:
         uint64_t tree_bitmap[NR_DPUS];

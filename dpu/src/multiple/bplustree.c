@@ -1,6 +1,6 @@
 #include "bplustree.h"
-#include "common.h"
 #include "cabin.h"
+#include "common.h"
 #include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -265,7 +265,7 @@ void showNode(MBPTptr cur, int nodeNo)
     printf("[Node No. %d]\n", nodeNo);
     if (cur->isLeaf == true) {
         cur->isRoot ? printf("this is a Root LeafNode (addr %p)\n", cur)
-                         : printf("this is a LeafNode (addr %p)\n", cur);
+                    : printf("this is a LeafNode (addr %p)\n", cur);
         printf("0. parent: %p\n", cur->parent);
         printf("1. number of keys: %d\n", cur->numKeys);
         printf("2. keys:[ ");
@@ -282,7 +282,7 @@ void showNode(MBPTptr cur, int nodeNo)
             cur->ptrs.lf.right);
     } else {
         cur->isRoot ? printf("this is a Root InternalNode (addr %p)\n", cur)
-                         : printf("this is an InternalNode (addr %p)\n", cur);
+                    : printf("this is an InternalNode (addr %p)\n", cur);
         printf("0. parent: %p\n", cur->parent);
         printf("1. number of keys: %d\n", cur->numKeys);
         printf("2. keys:[ ");

@@ -45,7 +45,7 @@ extern void init_BPTree(seat_id_t seat_id);
  *    @param pos pos
  *    @param value value to insert
  **/
-extern int BPTreeInsert(key_int64_t key, value_ptr_t value , seat_id_t seat_id);
+extern int BPTreeInsert(key_int64_t key, value_ptr_t value, seat_id_t seat_id);
 
 /**
  *    @param key key to search
@@ -53,11 +53,9 @@ extern int BPTreeInsert(key_int64_t key, value_ptr_t value , seat_id_t seat_id);
 extern value_ptr_t BPTreeGet(key_int64_t key, seat_id_t seat_id);
 extern void BPTreeGetRange(key_int64_t, int);
 extern void BPTreeDelete(key_int64_t);
-extern int BPTree_GetNumOfNodes();
 extern void BPTreePrintLeaves();
 extern void BPTreePrintRoot();
 extern void BPTreePrintAll();
-extern int BPTree_GetHeight();
 extern int BPTree_Serialize(seat_id_t seat_id, KVPairPtr dest);
 extern int BPTree_Serialize_j_Last_Subtrees(MBPTptr tree, KVPairPtr dest, int j);
 extern void BPTree_Deserialize(seat_id_t seat_id, KVPairPtr src, int start_index, int n);
