@@ -2,6 +2,7 @@
 #include "bplustree.h"
 #include "common.h"
 #include <assert.h>
+#include <stdio.h>
 
 extern __mram KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
 extern __mram split_info_t split_result[NR_SEATS_IN_DPU];
@@ -29,6 +30,7 @@ static void split_tree(KVPairPtr buffer, int n, __mram_ptr split_info_t* result)
         int start = n * i / num_trees;
         int end = n * (i + 1) / num_trees;
         seat_id_t new_seat_id = create_split_tree(buffer, start, end);
+        printf("%d, ", new_seat_id);
         result->num_elems[i] = end - start;
         result->new_tree_index[i] = new_seat_id;
     }
@@ -37,6 +39,7 @@ static void split_tree(KVPairPtr buffer, int n, __mram_ptr split_info_t* result)
         result->split_key[i - 1] = buffer[start].key;
     }
     result->num_split = num_trees;
+    printf("\n");
 }
 
 void split_phase()
@@ -47,6 +50,7 @@ void split_phase()
             // TODO: check number of elements in advance
             int n = BPTree_Serialize(seat_id, tree_transfer_buffer);
             if (n > SPLIT_THRESHOLD) {
+                printf("split: seat %d -> ", seat_id);
                 Cabin_release_seat(seat_id);
                 split_tree(tree_transfer_buffer, n, &split_result[seat_id]);
             }

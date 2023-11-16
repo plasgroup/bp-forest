@@ -89,16 +89,19 @@ int main()
 #endif
         /* execution */
         for (seat_id_t tree = start_tree; tree < end_tree; tree++) {
-            for (int index = tree == 0 ? 0 : end_idx[tree - 1]; index < end_idx[tree]; index++) {
-                BPTreeInsert(request_buffer[index].key, request_buffer[index].write_val_ptr, tree);
-            }
-#ifdef PRINT_DEBUG
             if (Seat_is_used(tree)) {
-                printf("[tasklet %d] total num of nodes of seat %d = %d\n", tid,
-                    Seat_get_n_nodes(tree), tree);
-                printf("[tasklet %d] height of seat %d = %d\n", tid, Seat_get_height(tree), tree);
-            }
+                for (int index = tree == 0 ? 0 : end_idx[tree - 1]; index < end_idx[tree]; index++) {
+                    BPTreeInsert(request_buffer[index].key, request_buffer[index].write_val_ptr, tree);
+                }
+#ifdef PRINT_DEBUG
+                sem_take(&my_semaphore);
+                printf("[tasklet %d] inserted seat %d\n", tid, tree);
+                printf("[tasklet %d] total num of nodes of seat %d = %d\n", tid, tree, Seat_get_n_nodes(tree));
+                printf("[tasklet %d] height of seat %d = %d\n", tid, tree, Seat_get_height(tree));
+                printf("[tasklet %d] num of KV-Pairs of seat %d = %d\n", tid, tree, BPTree_Serialize(tree, tree_transfer_buffer));
+                sem_give(&my_semaphore);
 #endif
+            }
         }
 
 
@@ -130,6 +133,15 @@ int main()
         barrier_wait(&my_barrier);
         if (tid == 0) {
             split_phase();
+#ifdef PRINT_DEBUG
+            for (seat_id_t seat_id = 0; seat_id < NR_SEATS_IN_DPU; seat_id++) {
+                if (Seat_is_used(seat_id)) {
+                    printf("[after split] total num of nodes of seat %d = %d\n", seat_id, Seat_get_n_nodes(seat_id));
+                    printf("[after split] height of seat %d = %d\n", seat_id, Seat_get_height(seat_id));
+                    printf("[after split] num of KV-Pairs of seat %d = %d\n", seat_id, BPTree_Serialize(seat_id, tree_transfer_buffer));
+                }
+            }
+#endif
         }
     }
     case TASK_GET: {

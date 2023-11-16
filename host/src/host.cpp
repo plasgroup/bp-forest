@@ -256,8 +256,8 @@ void update_cpu_struct(HostTree* host_tree)
         for (seat_id_t old_tree = 0; old_tree < NR_SEATS_IN_DPU; old_tree++) {
             host_tree->num_seats_used[NR_DPUS] += split_result[dpu][old_tree].num_split;
             for (int new_tree = 0; new_tree < split_result[dpu][old_tree].num_split; new_tree++) {
-                printf("split: DPU %d seat %d -> seat %d\n", dpu, old_tree, new_tree);
                 seat_id_t new_seat_id = split_result[dpu][old_tree].new_tree_index[new_tree];
+                printf("split: DPU %d seat %d -> seat %d\n", dpu, old_tree, new_seat_id);
                 if (new_tree != 0) {
                     key_int64_t border_key = split_result[dpu][old_tree].split_key[new_tree - 1];
                     host_tree->key_to_tree_map[border_key] = std::make_pair(dpu, new_seat_id);
@@ -299,19 +299,19 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
     /* 2. migration planning */
     Migration migration_plan(host_tree);
     gettimeofday(&start, NULL);
-    migration_plan.migration_plan_memory_balancing();
-    migration_plan.migration_plan_query_balancing(batch_ctx, num_migration);
+    // migration_plan.migration_plan_memory_balancing();
+    // migration_plan.migration_plan_query_balancing(batch_ctx, num_migration);
     gettimeofday(&end, NULL);
     migration_plan_time = time_diff(&start, &end);
 
     /* 3. execute migration according to migration_plan */
-    migration_plan.print_plan();
+    // migration_plan.print_plan();
     gettimeofday(&start, NULL);
-    migration_plan.execute(set, dpu);
-    host_tree->apply_migration(&migration_plan);
+    // migration_plan.execute(set, dpu);
+    // host_tree->apply_migration(&migration_plan);
     gettimeofday(&end, NULL);
     migration_time = time_diff(&start, &end);
-    migration_plan.print_plan();
+    // migration_plan.print_plan();
 
     // for (int i = 0; i < NR_DPUS; i++) {
     //     printf("after migration: DPU #%d has %d queries\n", i, num_keys_for_DPU[i]);
@@ -335,7 +335,7 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
         auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
         if (it != host_tree->key_to_tree_map.end()) {
             dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]].key = batch_keys[i];
-            /* key_index is incremented here, so batch_ctx.key_index[i][j] represents 
+            /* key_index is incremented here, so batch_ctx.key_index[i][j] represents
              * the first index for seat j in DPU i BEFORE this for loop, then
              * the first index for seat j+1 in DPU i AFTER this for loop. */
             dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]++].write_val_ptr = batch_keys[i];
@@ -346,14 +346,14 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
     }
 #ifdef PRINT_DEBUG
     for (dpu_id_t i = 0; i < NR_DPUS; i++) {
-        printf("query num before migration (DPU %d) ", i);
+        printf("before (DPU %d) ", i);
         for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++) {
-            printf("[%d] = %4d ", j, batch_ctx.num_keys_for_tree[i][j]);
+            printf("[%d]=%4d ", j, batch_ctx.num_keys_for_tree[i][j]);
         }
         printf("\n");
-        printf("query num after  migration (DPU %d) ", i);
+        printf("after  (DPU %d) ", i);
         for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++) {
-            printf("[%d] = %4d ", j, j == 0 ? batch_ctx.key_index[i][j] : batch_ctx.key_index[i][j] - batch_ctx.key_index[i][j - 1]);
+            printf("[%d]=%4d ", j, j == 0 ? batch_ctx.key_index[i][j] : batch_ctx.key_index[i][j] - batch_ctx.key_index[i][j - 1]);
         }
         printf("\n");
     }
@@ -444,7 +444,10 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
 #ifdef PRINT_DEBUG
     printf("[3/4]all the dpu execution finished: %0.5fsec\n", execution_time);
 #endif
-    // PRINT_LOG_ALL_DPUS;
+#ifdef PRINT_DEBUG
+    PRINT_LOG_ONE_DPU(0);
+    //PRINT_LOG_ALL_DPUS;
+#endif
 
     /* postprocess */
     dpu_results = (dpu_results_t*)malloc((NR_DPUS) * sizeof(dpu_results_t));
@@ -543,7 +546,7 @@ int main(int argc, char* argv[])
     printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, migration_num, preprocess_time1, preprocess_time2, preprocess_time, migration_time, send_time, execution_time, batch_time, throughput\n");
     while (total_num_keys < max_key_num) {
         BatchCtx batch_ctx;
-        num_keys = do_one_batch(&task_get, batch_num, migrations_per_batch, total_num_keys, max_key_num, file_input, host_tree, batch_ctx, set, dpu);
+        num_keys = do_one_batch(&task_insert, batch_num, migrations_per_batch, total_num_keys, max_key_num, file_input, host_tree, batch_ctx, set, dpu);
         total_num_keys += num_keys;
         batch_num++;
         batch_time = preprocess_time + migration_time + send_time + execution_time;

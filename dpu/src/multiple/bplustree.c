@@ -376,7 +376,6 @@ int BPTree_Serialize_j_Last_Subtrees(MBPTptr tree, KVPairPtr dest, int j)
 void BPTree_Deserialize(seat_id_t seat_id, KVPairPtr src, int start_index, int n)
 {
     for (int i = start_index; i < start_index + n; i++) {
-        // printf("key = %ld, seat_id = %d\n", src[i].key, seat_id);
         BPTreeInsert(src[i].key, src[i].value, seat_id);
     }
 }
