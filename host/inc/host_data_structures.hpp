@@ -12,6 +12,7 @@ public:
     int num_seats_used[NR_DPUS];
     key_int64_t tree_to_key_map[NR_DPUS][NR_SEATS_IN_DPU];
     std::map<key_int64_t, std::pair<int, int>> key_to_tree_map;
+    int num_kvpairs[NR_DPUS][NR_SEATS_IN_DPU]{};
     HostTree(key_int64_t range)
     {
         /* init key_to_tree_map */

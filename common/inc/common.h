@@ -22,6 +22,8 @@
 #ifndef SOFT_LIMIT_NR_TREES_IN_DPU
 #define SOFT_LIMIT_NR_TREES_IN_DPU (NR_SEATS_IN_DPU - MAX_NUM_SPLIT - 1)
 #endif
+#define MERGE_THRESHOLD (1000)
+#define NUM_ELEMS_AFTER_MERGE (2000)
 #define NUM_INIT_TREES_IN_DPU (NR_SEATS_IN_DPU / 4)
 #define REQUEST_SIZE (sizeof(each_request_t))
 /* buffer size for request in a DPU(default:15MB/64MB) */
@@ -95,6 +97,9 @@ typedef struct {  // for specifing the points of x in the experiment
 } dpu_experiment_var_t;
 #endif
 
+typedef int seat_id_t;
+#define INVALID_SEAT_ID (-1)
+typedef uint64_t seat_set_t;
 typedef struct {
     /*  num_elems: number of elements(k-v pair) in the tree
     new_tree_index: the tree_index of the new tree made by split
@@ -105,16 +110,24 @@ typedef struct {
     int new_tree_index[MAX_NUM_SPLIT];
 } split_info_t;
 
+typedef struct {
+    /*  for example, if tree_nums = {2,4}, merge_list = {3,2,5,1,7,6}
+        merge seat 3,2, merge seat 5,1,7,6  */
+    int num_merge;
+    int merge_list_size;
+    int tree_nums[NR_SEATS_IN_DPU / 2];
+    seat_id_t merge_list[NR_SEATS_IN_DPU];
+} merge_info_t;
+
 /* Tasks */
 #define TASK_INIT (0ULL)
 #define TASK_GET (10ULL)
 #define TASK_INSERT (11ULL)
+#define TASK_DELETE (12ULL)
 #define TASK_FROM (100ULL)
 #define TASK_TO (101ULL)
+#define TASK_MERGE (102ULL)
 
-typedef int seat_id_t;
-#define INVALID_SEAT_ID (-1)
-typedef uint64_t seat_set_t;
 
 #define PRINT_POSITION_AND_VARIABLE(NAME, FORMAT) \
     printf("[Debug at %s:%d] " #NAME " = " #FORMAT "\n", __FILE__, __LINE__, NAME);

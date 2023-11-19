@@ -110,6 +110,7 @@ public:
     Position get_source(dpu_id_t dpu, seat_id_t seat_id);
     void migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migration);
     void migration_plan_memory_balancing(void);
+    void migration_plan_for_merge(HostTree* host_tree, merge_info_t* merge_list);
     void normalize(void);
     void execute(dpu_set_t set, dpu_set_t dpu);
     void print_plan(void);
@@ -129,4 +130,5 @@ private:
     void migrate_subtree(dpu_id_t from_dpu, seat_id_t from, dpu_id_t to_dpu, seat_id_t to);
     bool migrate_subtree_to_balance_load(dpu_id_t from_dpu, dpu_id_t to_dpu, int diff, int nkeys_for_trees[NR_DPUS][NR_SEATS_IN_DPU]);
     void migrate_subtrees(dpu_id_t from_dpu, dpu_id_t to_dpu, int n);
+    bool plan_merge(Position left, Position right, merge_info_t* merge_list);
 };

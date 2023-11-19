@@ -193,6 +193,45 @@ void Migration::migration_plan_memory_balancing()
         }
     }
 }
+bool Migration::plan_merge(Position left, Position right, merge_info_t* merge_info)
+{
+    if (left.first != right.first && nr_used_seats[left.first] == NR_SEATS_IN_DPU) {
+        return false;
+    } else if (left.first != right.first) {
+        seat_set_t unavail = used_seats[left.first] | freeing_seats[left.first];
+        seat_id_t to = 0;
+        while ((unavail & (1 << to)))
+            to++;
+        migrate_subtree(right.first, right.second, left.first, to);
+    }
+    merge_info[left.first].merge_list[merge_info[left.first].merge_list_size] = left.second;
+    merge_info[left.first].merge_list_size++;
+    merge_info[left.first].merge_list[merge_info[left.first].merge_list_size] = right.second;
+    merge_info[left.first].merge_list_size++;
+    merge_info[left.first].tree_nums[merge_info->num_merge] = 2;
+    merge_info[left.first].num_merge++;
+    return true;
+}
+
+void Migration::migration_plan_for_merge(HostTree* host_tree, merge_info_t* merge_list)
+{
+    auto it = host_tree->key_to_tree_map.begin();
+    while (true) {
+        int nkeys = 0;
+        auto it_next = it;
+        it_next++;
+        if (it_next == host_tree->key_to_tree_map.end())
+            break;
+        Position left = it->second;
+        Position right = it_next->second;
+        if (host_tree->num_kvpairs[left.first][left.second] + host_tree->num_kvpairs[right.first][right.second] < MERGE_THRESHOLD) {
+            if (plan_merge(left, right, merge_list)) {
+                it++;
+            }
+        }
+        it++;
+    }
+}
 
 static void send_nodes_from_dpu_to_dpu(dpu_id_t from_DPU, seat_id_t from_tree, dpu_id_t to_DPU, seat_id_t to_tree, dpu_set_t set, dpu_set_t dpu)
 {

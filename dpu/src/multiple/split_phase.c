@@ -34,9 +34,9 @@ static void split_tree(KVPairPtr buffer, int n, __mram_ptr split_info_t* result)
         result->num_elems[i] = end - start;
         result->new_tree_index[i] = new_seat_id;
     }
-    for (int i = 1; i < num_trees; i++) {
-        int start = n * i / num_trees;
-        result->split_key[i - 1] = buffer[start].key;
+    for (int i = 0; i < num_trees; i++) {
+        int end = n * (i + 1) / num_trees - 1;
+        result->split_key[i] = buffer[end].key;
     }
     result->num_split = num_trees;
     printf("\n");

@@ -105,7 +105,7 @@ MBPTptr findLeaf(key_int64_t key, seat_id_t seat_id)
     return findLeafOfSubtree(key, Seat_get_root(seat_id));
 }
 
-void insert(MBPTptr cur, key_int64_t, value_ptr_t, MBPTptr, seat_id_t);
+bool insert(MBPTptr cur, key_int64_t, value_ptr_t, MBPTptr, seat_id_t);
 void split(MBPTptr cur, seat_id_t seat_id)
 {
     // cur splits into cur and n
@@ -161,14 +161,17 @@ void split(MBPTptr cur, seat_id_t seat_id)
     }
 }
 
-void insert(MBPTptr cur, key_int64_t key, value_ptr_t value, MBPTptr n,
+bool insert(MBPTptr cur, key_int64_t key, value_ptr_t value, MBPTptr n,
     seat_id_t seat_id)
 {
+    bool is_updated = false;
+    extern __host int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
     int i, ins;
     ins = findKeyPos(cur, key);
     if (cur->isLeaf == true) {                       // inserted into a Leaf node
         if (ins != 0 && cur->key[ins - 1] == key) {  // key already exist, update the value
             cur->ptrs.lf.value[ins - 1] = value;
+            is_updated = true;
         } else {  // key doesn't already exist
             for (i = cur->numKeys; i > ins; i--) {
                 cur->key[i] = cur->key[i - 1];
@@ -177,6 +180,7 @@ void insert(MBPTptr cur, key_int64_t key, value_ptr_t value, MBPTptr n,
             cur->key[ins] = key;
             cur->ptrs.lf.value[ins] = value;
             cur->numKeys++;
+            num_kvpairs_in_seat[seat_id]++;
         }
 
     } else {  // inserted into an internal node by split
@@ -212,10 +216,12 @@ void insert(MBPTptr cur, key_int64_t key, value_ptr_t value, MBPTptr n,
     }
     if (cur->numKeys == MAX_CHILD)
         split(cur, seat_id);  // key is full
+    return is_updated;
 }
 
 void init_BPTree(seat_id_t seat_id)
 {
+    extern num_kvpairs_in_seat[NR_SEATS_IN_DPU];
     MBPTptr root = Seat_get_root(seat_id);
     root->numKeys = 0;
     root->isRoot = true;
@@ -223,9 +229,18 @@ void init_BPTree(seat_id_t seat_id)
     root->ptrs.lf.right = NULL;
     root->ptrs.lf.left = NULL;
     root->ptrs.lf.value[0] = 0;
+    num_kvpairs_in_seat[seat_id] = 0;
 }
-
-int BPTreeInsert(key_int64_t key, value_ptr_t value, seat_id_t seat_id)
+/**
+ * @brief 
+ * If key already exists in the tree, update value and return true. 
+ * If not, insert key and return false.
+ * @param key key to insert
+ * @param value value related to key
+ * @param seat_id seat_id of the subtree
+ * @return Whether key is updated
+ */
+bool BPTreeInsert(key_int64_t key, value_ptr_t value, seat_id_t seat_id)
 {
     MBPTptr root = Seat_get_root(seat_id);
     if (root->numKeys == 0) {  // if the tree is empty
@@ -237,11 +252,18 @@ int BPTreeInsert(key_int64_t key, value_ptr_t value, seat_id_t seat_id)
     MBPTptr Leaf = findLeaf(key, seat_id);
     // int i = findKeyPos(Leaf, key);
     // printf("key:%ld,pos:%d\n",key,i);
-    insert(Leaf, key, value, NULL, seat_id);
+
     // printf("inserted {key %d, value '%s'}.\n",key,(char*)value);
-    return true;
+    return insert(Leaf, key, value, NULL, seat_id);
 }
 
+/**
+ * @brief 
+ * get a value related to the key.
+ * @param key key
+ * @param seat_id seat_id of the subtree
+ * @return value related to the key
+ */
 value_ptr_t BPTreeGet(key_int64_t key, seat_id_t seat_id)
 {
     MBPTptr Leaf = findLeaf(key, seat_id);
@@ -340,6 +362,21 @@ void BPTreePrintAll(uint32_t seat_id)
 int BPTree_Serialize(seat_id_t seat_id, KVPairPtr dest)
 {
     int n = 0;
+    MBPTptr leaf = findLeaf(KEY_MIN, seat_id);
+    while (leaf != NULL) {
+        for (int i = 0; i < leaf->numKeys; i++) {
+            dest[n].key = leaf->key[i];
+            dest[n].value = leaf->ptrs.lf.value[i];
+            n++;
+        }
+        leaf = leaf->ptrs.lf.right;
+    }
+    return n;
+}
+
+int BPTree_Serialize_start_index(seat_id_t seat_id, KVPairPtr dest, int start_index)
+{
+    int n = start_index;
     MBPTptr leaf = findLeaf(KEY_MIN, seat_id);
     while (leaf != NULL) {
         for (int i = 0; i < leaf->numKeys; i++) {

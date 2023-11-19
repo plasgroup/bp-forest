@@ -114,9 +114,11 @@ seat_id_t Cabin_allocate_seat(seat_id_t seat_id)
 
 void Cabin_release_seat(seat_id_t seat_id)
 {
+    extern __host int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
     assert(0 <= seat_id && seat_id <= NR_SEATS_IN_DPU);
     assert(cabin[seat_id].in_use);
     cabin[seat_id].in_use = 0;
+    num_kvpairs_in_seat[seat_id] = 0;
 }
 
 /*** Seat ***/

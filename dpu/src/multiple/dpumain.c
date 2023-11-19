@@ -1,6 +1,7 @@
 #include "bplustree.h"
 #include "cabin.h"
 #include "common.h"
+#include "merge_phase.h"
 #include "split_phase.h"
 #include <assert.h>
 #include <barrier.h>
@@ -21,7 +22,10 @@ __mram_ptr void* ptr;
 __mram KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
 __mram uint64_t tree_transfer_num;
 __mram split_info_t split_result[NR_SEATS_IN_DPU];
+__mram merge_info_t merge_info;
+
 __host uint64_t task_no;
+__host int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
 int queries_per_tasklet;
 seat_id_t current_tree;
 uint32_t task;
@@ -66,6 +70,7 @@ int main()
         }
         barrier_wait(&my_barrier);
         /* determine which tree to execute */
+        /* TODO: better load balancing */
         seat_id_t start_tree;
         seat_id_t end_tree;
         int num_queries = 0;
@@ -189,6 +194,12 @@ int main()
             Cabin_allocate_seat(seat_id);
             init_BPTree(seat_id);
             BPTree_Deserialize(seat_id, tree_transfer_buffer, 0, tree_transfer_num);
+        }
+        break;
+    }
+    case TASK_MERGE: {
+        if (tid == 0) {
+            merge_phase();
         }
         break;
     }
