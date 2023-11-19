@@ -16,6 +16,7 @@ static void clear_split_result()
 static seat_id_t create_split_tree(KVPairPtr buffer, int start, int end)
 {
     seat_id_t seat_id = Cabin_allocate_seat(INVALID_SEAT_ID);
+    printf("%d:", seat_id);
     assert(seat_id != INVALID_SEAT_ID);
     init_BPTree(seat_id);
     BPTree_Deserialize(seat_id, buffer, start, end - start);
@@ -30,7 +31,6 @@ static void split_tree(KVPairPtr buffer, int n, __mram_ptr split_info_t* result)
         int start = n * i / num_trees;
         int end = n * (i + 1) / num_trees;
         seat_id_t new_seat_id = create_split_tree(buffer, start, end);
-        printf("%d, ", new_seat_id);
         result->num_elems[i] = end - start;
         result->new_tree_index[i] = new_seat_id;
     }

@@ -299,19 +299,19 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
     /* 2. migration planning */
     Migration migration_plan(host_tree);
     gettimeofday(&start, NULL);
-    // migration_plan.migration_plan_memory_balancing();
+    migration_plan.migration_plan_memory_balancing();
     // migration_plan.migration_plan_query_balancing(batch_ctx, num_migration);
     gettimeofday(&end, NULL);
     migration_plan_time = time_diff(&start, &end);
 
     /* 3. execute migration according to migration_plan */
-    // migration_plan.print_plan();
+    migration_plan.print_plan();
     gettimeofday(&start, NULL);
-    // migration_plan.execute(set, dpu);
-    // host_tree->apply_migration(&migration_plan);
+    migration_plan.execute(set, dpu);
+    host_tree->apply_migration(&migration_plan);
     gettimeofday(&end, NULL);
     migration_time = time_diff(&start, &end);
-    // migration_plan.print_plan();
+    migration_plan.print_plan();
 
     // for (int i = 0; i < NR_DPUS; i++) {
     //     printf("after migration: DPU #%d has %d queries\n", i, num_keys_for_DPU[i]);
@@ -327,9 +327,16 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
     for (dpu_id_t i = 0; i < NR_DPUS; i++) {
         for (seat_id_t j = 1; j <= NR_SEATS_IN_DPU; j++) {
             batch_ctx.key_index[i][j] = batch_ctx.key_index[i][j - 1] + migration_plan.get_num_queries_for_source(batch_ctx, i, j - 1);
+            //printf("key_index[%d][%d] = %d, num_queries_for_source[%d][%d] = %d\n", i, j - 1, batch_ctx.key_index[i][j - 1], i, j - 1, migration_plan.get_num_queries_for_source(batch_ctx, i, j - 1));
         }
     }
-
+    for (dpu_id_t i = 0; i < NR_DPUS; i++) {
+        printf("key_index before (DPU %d) ", i);
+        for (seat_id_t j = 0; j <= NR_SEATS_IN_DPU; j++) {
+            printf("[%d]=%4d ", j, batch_ctx.key_index[i][j]);
+        }
+        printf("\n");
+    }
     /* 5. make requests to send to DPUs*/
     for (int i = 0; i < key_count; i++) {
         auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
@@ -354,6 +361,13 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
         printf("after  (DPU %d) ", i);
         for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++) {
             printf("[%d]=%4d ", j, j == 0 ? batch_ctx.key_index[i][j] : batch_ctx.key_index[i][j] - batch_ctx.key_index[i][j - 1]);
+        }
+        printf("\n");
+    }
+    for (dpu_id_t i = 0; i < NR_DPUS; i++) {
+        printf("key_index after (DPU %d) ", i);
+        for (seat_id_t j = 0; j <= NR_SEATS_IN_DPU; j++) {
+            printf("[%d]=%4d ", j, batch_ctx.key_index[i][j]);
         }
         printf("\n");
     }

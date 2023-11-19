@@ -25,6 +25,7 @@ __host uint64_t task_no;
 int queries_per_tasklet;
 seat_id_t current_tree;
 uint32_t task;
+int num_invoked = 0;
 
 #ifdef DEBUG_ON
 __mram_ptr void* getval;
@@ -33,8 +34,9 @@ __mram_ptr void* getval;
 int main()
 {
     int tid = me();
-
     if (tid == 0) {
+        num_invoked++;
+        printf("%dth invocation\n", num_invoked);
         task = (uint32_t)task_no;
         printf("task_no: %016lx\n", task_no);
         printf("split threshold: %d\n", SPLIT_THRESHOLD);
