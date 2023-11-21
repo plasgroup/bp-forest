@@ -37,3 +37,4 @@ build/
 workload/
 .vscode/
 data/
+build_*

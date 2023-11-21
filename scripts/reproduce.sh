@@ -4,7 +4,7 @@ echo cd $(pwd)
 mkdir -p workload
 cmake -S . -B ./build -DNR_TASKLETS=10 -DNR_DPUS=2048 -DNUM_BPTREE_IN_DPU=10 -DCMAKE_BUILD_TYPE=Release > /dev/null 2>&1
 cmake --build ./build > /dev/null 2>&1
-for i in 0 0.5 0.99 1.2
+for i in 0 0.6 0.99 1.2
 do
     build/workload_gen/workload_gen -n 100000000 -a ${i} -e 2048
     echo generated workload for zipf_const_${i}
