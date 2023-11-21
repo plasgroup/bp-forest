@@ -33,7 +33,9 @@
 #ifndef MAX_REQ_NUM_IN_A_DPU
 #define MAX_REQ_NUM_IN_A_DPU (MRAM_REQUEST_BUFFER_SIZE / REQUEST_SIZE / 2)
 #endif
+#ifndef NUM_REQUESTS_PER_BATCH
 #define NUM_REQUESTS_PER_BATCH (10000)
+#endif
 #define READ (1)
 #define WRITE (0)
 #define W50R50 (1)

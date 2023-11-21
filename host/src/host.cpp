@@ -227,8 +227,8 @@ void initialize_dpus(int num_init_reqs, HostTree* tree, struct dpu_set_t set, st
 #endif
     gettimeofday(&end, NULL);
     init_time = time_diff(&start, &end);
-    printf("DPU initialization:%0.5f\n", init_time);
 #ifdef PRINT_DEBUG
+    printf("DPU initialization:%0.5f\n", init_time);
     // DPU_FOREACH(set, dpu, each_dpu)
     // {
     //     if (each_dpu == 0)
@@ -354,13 +354,13 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
     /* 2. migration planning */
     Migration migration_plan(host_tree);
     gettimeofday(&start, NULL);
-    migration_plan.migration_plan_memory_balancing();
+    // migration_plan.migration_plan_memory_balancing();
     migration_plan.migration_plan_query_balancing(batch_ctx, num_migration);
     gettimeofday(&end, NULL);
     migration_plan_time = time_diff(&start, &end);
 
     /* 3. execute migration according to migration_plan */
-    migration_plan.print_plan();
+    // migration_plan.print_plan();
     gettimeofday(&start, NULL);
     migration_plan.execute(set, dpu);
     host_tree->apply_migration(&migration_plan);
@@ -385,6 +385,7 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
             //printf("key_index[%d][%d] = %d, num_queries_for_source[%d][%d] = %d\n", i, j - 1, batch_ctx.key_index[i][j - 1], i, j - 1, migration_plan.get_num_queries_for_source(batch_ctx, i, j - 1));
         }
     }
+#ifdef PRINT_DEBUG
     for (dpu_id_t i = 0; i < NR_DPUS; i++) {
         printf("key_index before (DPU %d) ", i);
         for (seat_id_t j = 0; j <= NR_SEATS_IN_DPU; j++) {
@@ -392,6 +393,7 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
         }
         printf("\n");
     }
+#endif
     /* 5. make requests to send to DPUs*/
     for (int i = 0; i < key_count; i++) {
         auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
@@ -542,14 +544,14 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
 #endif
     }
     /* merge */
-    memset(merge_info, 0, sizeof(merge_info_t) * NR_DPUS);
-    Migration migration_plan_for_merge(host_tree);
-    migration_plan_for_merge.migration_plan_for_merge(host_tree, merge_info);
-    migration_plan_for_merge.print_plan();
-    migration_plan_for_merge.execute(set, dpu);
-    host_tree->apply_migration(&migration_plan_for_merge);
-    update_cpu_struct_merge(host_tree);
-    execute_merge(set, dpu);
+    // memset(merge_info, 0, sizeof(merge_info_t) * NR_DPUS);
+    // Migration migration_plan_for_merge(host_tree);
+    // migration_plan_for_merge.migration_plan_for_merge(host_tree, merge_info);
+    // migration_plan_for_merge.print_plan();
+    // migration_plan_for_merge.execute(set, dpu);
+    // host_tree->apply_migration(&migration_plan_for_merge);
+    // update_cpu_struct_merge(host_tree);
+    // execute_merge(set, dpu);
 
     gettimeofday(&end, NULL);
     free(dpu_results);
@@ -561,7 +563,7 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     // PRINT_LOG_ONE_DPU(0);
 #endif
     free(dpu_requests);
-    PRINT_POSITION_AND_VARIABLE(num_keys, % d);
+    // PRINT_POSITION_AND_VARIABLE(num_keys, % d);
     return num_keys;
 }
 
@@ -580,14 +582,14 @@ int main(int argc, char* argv[])
     printf("no. of requests per batch: %ld\n", (uint64_t)NUM_REQUESTS_PER_BATCH);
 #endif
     cmdline::parser a;
-    a.add<int>("keynum", 'n', "maximum num of keys for the experiment", false, 1000000);
+    a.add<int>("keynum", 'n', "maximum num of keys for the experiment", false, NUM_REQUESTS_PER_BATCH * 10);
     a.add<std::string>("zipfianconst", 'a', "zipfian consttant", false, "0.99");
     a.add<int>("migration_num", 'm', "migration_num per batch", false, 5);
     a.add<std::string>("directory", 'd', "execution directory, offset from bp-forest directory. ex)bp-forest-exp", false, ".");
     a.add("simulator", 's', "if declared, the binary for simulator is used");
     a.parse_check(argc, argv);
     std::string zipfian_const = a.get<std::string>("zipfianconst");
-    const int max_key_num = a.get<int>("keynum");
+    int max_key_num = a.get<int>("keynum");
     std::string file_name = (a.get<std::string>("directory") + "/workload/zipf_const_" + zipfian_const + ".bin");
     std::string dpu_binary;
     if (a.exist("simulator")) {
@@ -635,7 +637,7 @@ int main(int argc, char* argv[])
     printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, migration_num, preprocess_time1, preprocess_time2, preprocess_time, migration_time, send_time, execution_time, batch_time, throughput\n");
     while (total_num_keys < max_key_num) {
         BatchCtx batch_ctx;
-        num_keys = do_one_batch(&task_insert, batch_num, migrations_per_batch, total_num_keys, max_key_num, file_input, host_tree, batch_ctx, set, dpu);
+        num_keys = do_one_batch(&task_get, batch_num, migrations_per_batch, total_num_keys, max_key_num, file_input, host_tree, batch_ctx, set, dpu);
         total_num_keys += num_keys;
         batch_num++;
         batch_time = preprocess_time + migration_time + send_time + execution_time;
