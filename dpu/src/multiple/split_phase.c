@@ -6,6 +6,7 @@
 
 extern __mram KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
 extern __mram split_info_t split_result[NR_SEATS_IN_DPU];
+extern __host int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
 
 
 static void clear_split_result()
@@ -47,10 +48,10 @@ void split_phase()
     clear_split_result();
     for (seat_id_t seat_id = 0; seat_id < NR_SEATS_IN_DPU; seat_id++)
         if (Seat_is_used(seat_id)) {
-            // TODO: check number of elements in advance
-            int n = BPTree_Serialize(seat_id, tree_transfer_buffer);
+            int n = num_kvpairs_in_seat[seat_id];
             if (n > SPLIT_THRESHOLD) {
                 printf("split: seat %d -> ", seat_id);
+                BPTree_Serialize(seat_id, tree_transfer_buffer);
                 Cabin_release_seat(seat_id);
                 split_tree(tree_transfer_buffer, n, &split_result[seat_id]);
             }

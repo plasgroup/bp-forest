@@ -31,6 +31,8 @@ public:
             tree_bitmap[i] = (1 << NUM_INIT_TREES_IN_DPU) - 1;
             num_seats_used[i] = NUM_INIT_TREES_IN_DPU;
         }
+
+        memset(&num_kvpairs, 0, sizeof(num_kvpairs));
     }
 
     seat_set_t get_used_seats(int dpu)

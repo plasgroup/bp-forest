@@ -4,4 +4,4 @@
 cd $(dirname $0)/..
 echo cd $(pwd)
 # execution
-./build_simulator/host/host_app --simulator -a 0.6 -n 100000
+./build_simulator/host/host_app --simulator -a 0.6

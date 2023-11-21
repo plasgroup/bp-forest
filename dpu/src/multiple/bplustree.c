@@ -242,11 +242,13 @@ void init_BPTree(seat_id_t seat_id)
  */
 bool BPTreeInsert(key_int64_t key, value_ptr_t value, seat_id_t seat_id)
 {
+    extern __host int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
     MBPTptr root = Seat_get_root(seat_id);
     if (root->numKeys == 0) {  // if the tree is empty
         root->key[0] = key;
         root->numKeys++;
         root->ptrs.lf.value[0] = value;
+        num_kvpairs_in_seat[seat_id]++;
         return true;
     }
     MBPTptr Leaf = findLeaf(key, seat_id);

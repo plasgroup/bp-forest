@@ -323,23 +323,61 @@ void execute_merge(struct dpu_set_t set, struct dpu_set_t dpu)
     DPU_ASSERT(dpu_launch(set, DPU_SYNCHRONOUS));
 }
 
-/* make batch, do migration, prepare queries for dpus */
-int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& total_num_keys, int num_migration, HostTree* host_tree, BatchCtx& batch_ctx, struct dpu_set_t set, struct dpu_set_t dpu)
+// void show_requests(int i)
+// {
+//     if (i >= NR_DPUS) {
+//         printf("[invalid argment]i must be less than NR_DPUS");
+//         return;
+//     }
+//     printf("[debug_info]DPU:%d\n", i);
+//     for (seat_id_t tree_i = 0; tree_i < NUM_BPTREE_IN_DPU; tree_i++) {
+//         if (dpu_requests[i].end_idx[tree_i] != 0) {
+//             printf("tree %d first req:%ld,WRITE\n", tree_i, dpu_requests[i].requests[0].key);
+//         }
+//     }
+// }
+
+int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, uint64_t& total_num_keys, const int max_key_num, std::ifstream& file_input, HostTree* host_tree, BatchCtx& batch_ctx, dpu_set_t set, dpu_set_t dpu)
 {
-    /* read workload file */
-    key_int64_t* batch_keys = (key_int64_t*)malloc(n * sizeof(key_int64_t));
+#ifdef PRINT_DEBUG
+    printf("======= batch %d =======\n", batch_num);
+#endif
+    dpu_requests = (dpu_requests_t*)malloc(
+        (NR_DPUS) * sizeof(dpu_requests_t));
+    if (dpu_requests == NULL) {
+        printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET
+               "] heap size is not enough\n");
+        return 0;
+    }
+    int num_migration;
+    if (batch_num == 0) {
+        num_migration = 0;  // batch 0: no migration
+    } else {
+        num_migration = migrations_per_batch;
+    }
+    /* 0. read workload file */
+    int num_keys_batch;
+    if (max_key_num - total_num_keys >= NUM_REQUESTS_PER_BATCH) {
+        num_keys_batch = NUM_REQUESTS_PER_BATCH;
+    } else {
+        num_keys_batch = max_key_num - total_num_keys;
+    }
+    if (num_keys_batch == 0) {
+        free(dpu_requests);
+        return 0;
+    }
+    key_int64_t* batch_keys = (key_int64_t*)malloc(num_keys_batch * sizeof(key_int64_t));
     if (dpu_requests == NULL) {
         printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET
                "] heap size is not enough\n");
         return 0;
     }
     // std::cout << "malloc batch_keys" << std::endl;
-    int key_count;
-    fs.read(reinterpret_cast<char*>(batch_keys), sizeof(batch_keys) * n);
-    key_count = fs.tellg() / sizeof(key_int64_t) - total_num_keys;
+    file_input.read(reinterpret_cast<char*>(batch_keys), sizeof(batch_keys) * num_keys_batch);
+    num_keys_batch = file_input.tellg() / sizeof(key_int64_t) - total_num_keys;
     gettimeofday(&start, NULL);
     /* 1. count number of queries for each DPU, tree */
-    for (int i = 0; i < key_count; i++) {
+    for (int i = 0; i < num_keys_batch; i++) {
         //printf("i: %d, batch_keys[i]:%ld\n", i, batch_keys[i]);
         auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
         if (it != host_tree->key_to_tree_map.end()) {
@@ -371,8 +409,10 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
     // for (int i = 0; i < NR_DPUS; i++) {
     //     printf("after migration: DPU #%d has %d queries\n", i, num_keys_for_DPU[i]);
     // }
+    PRINT_LOG_ALL_DPUS;
     gettimeofday(&start, NULL);
-    /* 4. key_index(i番目のDPUのj番目の木へのクエリの開始インデックス)の作成 */
+    /* 4. prepare requests to send to DPUs */
+    /* 4.1 key_index (starting index for queries to the j-th seat of the i-th DPU) */
     for (dpu_id_t i = 0; i < NR_DPUS; i++) {
         for (seat_id_t j = 0; j <= NR_SEATS_IN_DPU; j++) {
             batch_ctx.key_index[i][j] = 0;
@@ -394,8 +434,8 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
         printf("\n");
     }
 #endif
-    /* 5. make requests to send to DPUs*/
-    for (int i = 0; i < key_count; i++) {
+    /* 4.2. make requests to send to DPUs*/
+    for (int i = 0; i < num_keys_batch; i++) {
         auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
         if (it != host_tree->key_to_tree_map.end()) {
             dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]].key = batch_keys[i];
@@ -444,52 +484,6 @@ int batch_preprocess(const uint64_t* task, std::ifstream& fs, int n, uint64_t& t
     preprocess_time2 = time_diff(&start, &end);
     preprocess_time = preprocess_time1 + preprocess_time2;
     free(batch_keys);
-    return key_count;
-}
-
-// void show_requests(int i)
-// {
-//     if (i >= NR_DPUS) {
-//         printf("[invalid argment]i must be less than NR_DPUS");
-//         return;
-//     }
-//     printf("[debug_info]DPU:%d\n", i);
-//     for (seat_id_t tree_i = 0; tree_i < NUM_BPTREE_IN_DPU; tree_i++) {
-//         if (dpu_requests[i].end_idx[tree_i] != 0) {
-//             printf("tree %d first req:%ld,WRITE\n", tree_i, dpu_requests[i].requests[0].key);
-//         }
-//     }
-// }
-
-int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, uint64_t& total_num_keys, const int max_key_num, std::ifstream& file_input, HostTree* host_tree, BatchCtx& batch_ctx, dpu_set_t set, dpu_set_t dpu)
-{
-#ifdef PRINT_DEBUG
-    printf("======= batch %d =======\n", batch_num);
-#endif
-    dpu_requests = (dpu_requests_t*)malloc(
-        (NR_DPUS) * sizeof(dpu_requests_t));
-    if (dpu_requests == NULL) {
-        printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET
-               "] heap size is not enough\n");
-        return 0;
-    }
-    /* preprocess */
-    int num_migration;
-    int num_keys;
-    if (batch_num == 0) {
-        num_migration = 0;  // batch 0: no migration
-    } else {
-        num_migration = migrations_per_batch;
-    }
-    if (max_key_num - total_num_keys >= NUM_REQUESTS_PER_BATCH) {
-        num_keys = batch_preprocess(task, file_input, NUM_REQUESTS_PER_BATCH, total_num_keys, num_migration, host_tree, batch_ctx, set, dpu);
-    } else {
-        num_keys = batch_preprocess(task, file_input, (max_key_num - total_num_keys), total_num_keys, num_migration, host_tree, batch_ctx, set, dpu);
-    }
-    if (num_keys == 0) {
-        free(dpu_requests);
-        return 0;
-    }
 #ifdef PRINT_DEBUG
     printf("[1/4] preprocess finished %0.5fsec\n", preprocess_time);
 #endif
@@ -497,7 +491,7 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
 #ifdef PRINT_DEBUG
     printf("sending %d requests for %d DPUS...\n", NUM_REQUESTS_PER_BATCH, nr_of_dpus);
 #endif
-    /* query deliver */
+    /* 5. query deliver */
     gettimeofday(&start, NULL);
     send_requests(set, dpu, task, batch_ctx);
     gettimeofday(&end, NULL);
@@ -506,7 +500,7 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     printf("[2/4] send finished %0.5fsec\n", send_time);
 #endif
 
-    /* execution */
+    /* 6. DPU query execution */
     gettimeofday(&start, NULL);
     DPU_ASSERT(dpu_launch(set, DPU_SYNCHRONOUS));
     dpu_sync(set);
@@ -520,21 +514,12 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     //PRINT_LOG_ALL_DPUS;
 #endif
 
-    /* postprocess */
+    /* 7. recieve results (and update CPU structs) */
     dpu_results = (dpu_results_t*)malloc((NR_DPUS) * sizeof(dpu_results_t));
     gettimeofday(&start, NULL);
+    recieve_num_kvpairs(set, dpu, host_tree);
     if (*task == TASK_INSERT) {
         recieve_split_info(set, dpu);
-        recieve_num_kvpairs(set, dpu, host_tree);
-#ifdef PRINT_DEBUG
-        for (dpu_id_t i = 0; i < NR_DPUS; i++) {
-            printf("num_kvpairs of DPU %d ", i);
-            for (seat_id_t j = 0; j <= NR_SEATS_IN_DPU; j++) {
-                printf("[%d]=%4d ", j, host_tree->num_kvpairs[i][j]);
-            }
-            printf("\n");
-        }
-#endif
         update_cpu_struct(host_tree);
     }
     if (*task == TASK_GET) {
@@ -543,7 +528,16 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
         check_results(dpu_results, batch_ctx.key_index);
 #endif
     }
-    /* merge */
+#ifdef PRINT_DEBUG
+    for (dpu_id_t i = 0; i < NR_DPUS; i++) {
+        printf("num_kvpairs of DPU %d ", i);
+        for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++) {
+            printf("[%d]=%4d ", j, host_tree->num_kvpairs[i][j]);
+        }
+        printf("\n");
+    }
+#endif
+    /* 8. merge small subtrees in DPU*/
     // memset(merge_info, 0, sizeof(merge_info_t) * NR_DPUS);
     // Migration migration_plan_for_merge(host_tree);
     // migration_plan_for_merge.migration_plan_for_merge(host_tree, merge_info);
@@ -563,8 +557,8 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     // PRINT_LOG_ONE_DPU(0);
 #endif
     free(dpu_requests);
-    // PRINT_POSITION_AND_VARIABLE(num_keys, % d);
-    return num_keys;
+    PRINT_POSITION_AND_VARIABLE(num_keys_batch, % d);
+    return num_keys_batch;
 }
 
 int main(int argc, char* argv[])

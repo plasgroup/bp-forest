@@ -183,7 +183,7 @@ int main()
         if (tid == 0) {
             seat_id_t seat_id = (task_no >> 32);
             tree_transfer_num = BPTree_Serialize(seat_id, tree_transfer_buffer);
-            printf("tree_transfer num: %lu, size of buffer = %d\n", tree_transfer_num, MAX_NUM_NODES_IN_SEAT * MAX_CHILD);
+            //printf("TASK FROM, tree_transfer num: %lu\n", tree_transfer_num);
             Cabin_release_seat(seat_id);
         }
         break;
@@ -193,7 +193,9 @@ int main()
             seat_id_t seat_id = (task_no >> 32);
             Cabin_allocate_seat(seat_id);
             init_BPTree(seat_id);
+            //printf("TASK TO, tree_transfer num: %lu\n", tree_transfer_num);
             BPTree_Deserialize(seat_id, tree_transfer_buffer, 0, tree_transfer_num);
+            //printf("TASK TO, after deserialize: %d\n", num_kvpairs_in_seat[seat_id]);
         }
         break;
     }
