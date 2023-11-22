@@ -261,7 +261,7 @@ int generate_requests_fromfile(std::ifstream& fs, int n)
 #endif
 
 #ifndef CYCLIC_DIST
-int generate_requests_fromfile(std::ifstream& fs, int n)
+int generate_requests_fromfile(std::ifstream& fs, int n, int query_num_coefficient)
 {
 #ifdef PRINT_DEBUG
     std::cout << "not cyclic" << std::endl;
@@ -284,8 +284,9 @@ int generate_requests_fromfile(std::ifstream& fs, int n)
     // std::cout << "malloc batch_keys" << std::endl;
     int key_count = 0;
     fs.read(reinterpret_cast<char*>(batch_keys), sizeof(batch_keys) * n);
-    key_count = fs.tellg() / sizeof(key_int64_t) - total_num_keys;
-    // std::cout << "key_count: " << key_count << std::endl;
+    key_count = fs.tellg() / sizeof(key_int64_t) - total_num_keys / query_num_coefficient;
+    //std::cout << "total_num_keys: " << total_num_keys << std::endl;
+    //std::cout << "key_count: " << key_count << std::endl;
     /* sort by which tree the requests should be processed */
     std::sort(batch_keys, batch_keys + key_count, [](auto a, auto b) { return a / RANGE < b / RANGE; });
     /* count the number of requests for each tree */
@@ -767,9 +768,9 @@ int main(int argc, char* argv[])
     while (total_num_keys < max_key_num) {
         // printf("%d\n", num_keys);
         if (max_key_num - total_num_keys >= NUM_REQUESTS_PER_BATCH) {
-            num_keys = query_num_coefficient * generate_requests_fromfile(file_input, NUM_REQUESTS_PER_BATCH / query_num_coefficient);
+            num_keys = query_num_coefficient * generate_requests_fromfile(file_input, NUM_REQUESTS_PER_BATCH / query_num_coefficient, query_num_coefficient);
         } else {
-            num_keys = query_num_coefficient * generate_requests_fromfile(file_input, (max_key_num - total_num_keys) / query_num_coefficient);
+            num_keys = query_num_coefficient * generate_requests_fromfile(file_input, (max_key_num - total_num_keys) / query_num_coefficient, query_num_coefficient);
         }
         if (num_keys == 0)
             break;
