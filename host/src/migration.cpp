@@ -216,7 +216,7 @@ bool Migration::plan_merge(Position left, Position right, merge_info_t* merge_in
 void Migration::migration_plan_for_merge(HostTree* host_tree, merge_info_t* merge_list)
 {
     auto it = host_tree->key_to_tree_map.begin();
-    while (true) {
+    while (it != host_tree->key_to_tree_map.end()) {
         int nkeys = 0;
         auto it_next = it;
         it_next++;
