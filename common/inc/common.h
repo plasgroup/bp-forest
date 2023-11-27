@@ -113,12 +113,7 @@ typedef struct {
 } split_info_t;
 
 typedef struct {
-    /*  for example, if tree_nums = {2,4}, merge_list = {3,2,5,1,7,6}
-        merge seat 3,2, merge seat 5,1,7,6  */
-    int num_merge;
-    int merge_list_size;
-    int tree_nums[NR_SEATS_IN_DPU / 2];
-    seat_id_t merge_list[NR_SEATS_IN_DPU];
+    seat_id_t merge_to[NR_SEATS_IN_DPU];
 } merge_info_t;
 
 /* Tasks */

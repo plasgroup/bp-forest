@@ -99,6 +99,7 @@ uint64_t nodes_num;
 split_info_t split_result[NR_DPUS][NR_SEATS_IN_DPU];
 merge_info_t merge_info[NR_DPUS];
 
+void print_merge_info();
 
 float time_diff(struct timeval* start, struct timeval* end)
 {
@@ -290,20 +291,11 @@ void update_cpu_struct(HostTree* host_tree)
 /* update cpu structs according to merge info */
 void update_cpu_struct_merge(HostTree* host_tree)
 {
-    for (dpu_id_t dpu = 0; dpu < NR_DPUS; dpu++) {
-        int index = 0;
-        for (int i = 0; i < merge_info[dpu].num_merge; i++) {
-            for (int j = 0; j < merge_info[dpu].tree_nums[i] - 1; j++) {
-                seat_id_t merged_tree = merge_info[dpu].merge_list[index];
-                index++;
-                host_tree->key_to_tree_map.erase(host_tree->tree_to_key_map[dpu][merged_tree]);
-                host_tree->tree_to_key_map[dpu][merged_tree] = 0;
-                host_tree->num_seats_used[dpu]--;
-                host_tree->tree_bitmap[dpu] &= ~(1 << merged_tree);
-            }
-            index++;
-        }
-    }
+    /* migration plan should be applied in advance */
+    for (dpu_id_t dpu = 0; dpu < NR_DPUS; dpu++)
+        for (seat_id_t i = 0; i < NR_SEATS_IN_DPU; i++)
+            if (merge_info[dpu].merge_to[i] != INVALID_SEAT_ID)
+                host_tree->remove(dpu, i); // merge to the previous subtree
 }
 
 void send_merge_info(struct dpu_set_t set, struct dpu_set_t dpu)
@@ -385,7 +377,7 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
         if (it != host_tree->key_to_tree_map.end()) {
             batch_ctx.num_keys_for_tree[it->second.first][it->second.second]++;
         } else {
-            printf("ERROR: the key is out of range 3\n");
+            printf("ERROR: the key is out of range 3: 0x%lx\n", batch_keys[i]);
         }
     }
     gettimeofday(&end, NULL);
@@ -541,10 +533,12 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
 #endif
     /* 8. merge small subtrees in DPU*/
 #ifdef MERGE
-    memset(merge_info, 0, sizeof(merge_info_t) * NR_DPUS);
+    for (dpu_id_t i = 0; i < NR_DPUS; i++)
+        std::fill(&merge_info[i].merge_to[0], &merge_info[i].merge_to[NR_SEATS_IN_DPU], INVALID_SEAT_ID);
     Migration migration_plan_for_merge(host_tree);
     migration_plan_for_merge.migration_plan_for_merge(host_tree, merge_info);
     migration_plan_for_merge.print_plan();
+    print_merge_info();
     migration_plan_for_merge.execute(set, dpu);
     host_tree->apply_migration(&migration_plan_for_merge);
     update_cpu_struct_merge(host_tree);
@@ -557,7 +551,7 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
 #endif
 
 #ifdef PRINT_DEBUG
-    // PRINT_LOG_ONE_DPU(0);
+    PRINT_LOG_ONE_DPU(0);
 #endif
     free(dpu_requests);
     PRINT_POSITION_AND_VARIABLE(num_keys_batch, % d);
@@ -665,4 +659,15 @@ int main(int argc, char* argv[])
     DPU_ASSERT(dpu_free(set));
     delete host_tree;
     return 0;
+}
+
+void print_merge_info()
+{
+    printf("===== merge info =====\n");
+    for (dpu_id_t i = 0; i < NR_DPUS; i++) {
+        printf("%2d", i);
+        for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
+            printf(" %2d", merge_info[i].merge_to[j]);
+        printf("\n");
+    }
 }

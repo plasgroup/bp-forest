@@ -56,6 +56,15 @@ public:
         }
     }
 
+    void remove(dpu_id_t dpu, seat_id_t seat)
+    {
+        key_int64_t lb = tree_to_key_map[dpu][seat];
+        printf("remove (%d, %d) key = 0x%lx\n", dpu, seat, lb);
+        key_to_tree_map.erase(lb);
+        tree_to_key_map[dpu][seat] = 0;
+        num_seats_used[dpu]--;
+        tree_bitmap[dpu] &= ~(1 << seat);
+    }
 private:
 };
 

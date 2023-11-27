@@ -27,6 +27,15 @@ Migration::Migration(HostTree* tree)
     std::fill<Position*, Position>(&plan[0][0], &plan[NR_DPUS][0], {-1, -1});
 }
 
+seat_id_t Migration::find_available_seat(dpu_id_t dpu)
+{
+    seat_set_t unavail = used_seats[dpu] | freeing_seats[dpu];
+    seat_id_t seat = 0;
+    while ((unavail & (1 << seat)))
+        seat++;
+    return seat;
+}
+
 Migration::Position Migration::get_source(dpu_id_t dpu, seat_id_t seat_id)
 {
     if (!(used_seats[dpu] & (1 << seat_id)))
@@ -88,10 +97,7 @@ bool Migration::migrate_subtree_to_balance_load(dpu_id_t from_dpu, dpu_id_t to_d
         }
     }
     if (candidate != INVALID_SEAT_ID) {
-        seat_set_t unavail = used_seats[to_dpu] | freeing_seats[to_dpu];
-        seat_id_t to = 0;
-        while ((unavail & (1 << to)))
-            to++;
+        seat_id_t to = find_available_seat(to_dpu);
         assert(to < NR_SEATS_IN_DPU);
         migrate_subtree(from_dpu, candidate, to_dpu, to);
         return true;
@@ -195,21 +201,18 @@ void Migration::migration_plan_memory_balancing()
 }
 bool Migration::plan_merge(Position left, Position right, merge_info_t* merge_info)
 {
-    if (left.first != right.first && nr_used_seats[left.first] == NR_SEATS_IN_DPU) {
-        return false;
-    } else if (left.first != right.first) {
-        seat_set_t unavail = used_seats[left.first] | freeing_seats[left.first];
-        seat_id_t to = 0;
-        while ((unavail & (1 << to)))
-            to++;
-        migrate_subtree(right.first, right.second, left.first, to);
+    dpu_id_t dpu = right.first;
+    seat_id_t dest = right.second;
+    seat_id_t src = left.second;
+    
+    if (left.first != right.first) {
+        if (nr_used_seats[dpu] == NR_SEATS_IN_DPU)
+            // destination is full
+            return false;
+        src = find_available_seat(dpu);
+        migrate_subtree(left.first, left.second, dpu, src);
     }
-    merge_info[left.first].merge_list[merge_info[left.first].merge_list_size] = left.second;
-    merge_info[left.first].merge_list_size++;
-    merge_info[left.first].merge_list[merge_info[left.first].merge_list_size] = right.second;
-    merge_info[left.first].merge_list_size++;
-    merge_info[left.first].tree_nums[merge_info->num_merge] = 2;
-    merge_info[left.first].num_merge++;
+    merge_info[dpu].merge_to[src] = dest;
     return true;
 }
 
