@@ -54,6 +54,8 @@ extern "C" {
         }                                          \
     }
 
+#define MERGE
+
 constexpr key_int64_t RANGE = std::numeric_limits<uint64_t>::max() / (NUM_TOTAL_INIT_TREES);
 
 /* For working in some functions */
@@ -392,7 +394,7 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     /* 2. migration planning */
     Migration migration_plan(host_tree);
     gettimeofday(&start, NULL);
-    // migration_plan.migration_plan_memory_balancing();
+    migration_plan.migration_plan_memory_balancing();
     migration_plan.migration_plan_query_balancing(batch_ctx, num_migration);
     gettimeofday(&end, NULL);
     migration_plan_time = time_diff(&start, &end);
@@ -409,7 +411,7 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     // for (int i = 0; i < NR_DPUS; i++) {
     //     printf("after migration: DPU #%d has %d queries\n", i, num_keys_for_DPU[i]);
     // }
-    PRINT_LOG_ALL_DPUS;
+    PRINT_LOG_ONE_DPU(0);
     gettimeofday(&start, NULL);
     /* 4. prepare requests to send to DPUs */
     /* 4.1 key_index (starting index for queries to the j-th seat of the i-th DPU) */
@@ -538,15 +540,16 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     }
 #endif
     /* 8. merge small subtrees in DPU*/
-    // memset(merge_info, 0, sizeof(merge_info_t) * NR_DPUS);
-    // Migration migration_plan_for_merge(host_tree);
-    // migration_plan_for_merge.migration_plan_for_merge(host_tree, merge_info);
-    // migration_plan_for_merge.print_plan();
-    // migration_plan_for_merge.execute(set, dpu);
-    // host_tree->apply_migration(&migration_plan_for_merge);
-    // update_cpu_struct_merge(host_tree);
-    // execute_merge(set, dpu);
-
+#ifdef MERGE
+    memset(merge_info, 0, sizeof(merge_info_t) * NR_DPUS);
+    Migration migration_plan_for_merge(host_tree);
+    migration_plan_for_merge.migration_plan_for_merge(host_tree, merge_info);
+    migration_plan_for_merge.print_plan();
+    migration_plan_for_merge.execute(set, dpu);
+    host_tree->apply_migration(&migration_plan_for_merge);
+    update_cpu_struct_merge(host_tree);
+    execute_merge(set, dpu);
+#endif
     gettimeofday(&end, NULL);
     free(dpu_results);
 #ifdef PRINT_DEBUG
