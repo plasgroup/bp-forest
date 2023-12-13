@@ -34,7 +34,7 @@ extern "C" {
 
 #define NUM_TOTAL_INIT_TREES (NR_DPUS * NUM_INIT_TREES_IN_DPU)
 #ifndef NUM_INIT_REQS
-#define NUM_INIT_REQS (1000 * NUM_TOTAL_INIT_TREES)
+#define NUM_INIT_REQS (2000 * NUM_TOTAL_INIT_TREES)
 #endif
 #define GET_AND_PRINT_TIME(CODES, LABEL) \
     gettimeofday(&start, NULL);          \
@@ -75,11 +75,18 @@ float migration_time;
 float migration_plan_time;
 float send_time;
 float execution_time;
+float recieve_result_time = 0;
+float merge_time;
 float batch_time = 0;
 float total_preprocess_time = 0;
+float total_preprocess_time1 = 0;
+float total_preprocess_time2 = 0;
+float total_migration_plan_time = 0;
 float total_migration_time = 0;
 float total_send_time = 0;
 float total_execution_time = 0;
+float total_recieve_result_time = 0;
+float total_merge_time = 0;
 float total_batch_time = 0;
 float init_time = 0;
 /* tasks */
@@ -277,7 +284,7 @@ void update_cpu_struct(HostTree* host_tree)
                 host_tree->num_seats_used[dpu] += split_result[dpu][old_tree].num_split;
                 for (int new_tree = 0; new_tree < split_result[dpu][old_tree].num_split; new_tree++) {
                     seat_id_t new_seat_id = split_result[dpu][old_tree].new_tree_index[new_tree];
-                    printf("split: DPU %d seat %d -> seat %d\n", dpu, old_tree, new_seat_id);
+                    // printf("split: DPU %d seat %d -> seat %d\n", dpu, old_tree, new_seat_id);
                     key_int64_t border_key = split_result[dpu][old_tree].split_key[new_tree];
                     host_tree->key_to_tree_map[border_key] = std::make_pair(dpu, new_seat_id);
                     host_tree->tree_to_key_map[dpu][new_seat_id] = border_key;
@@ -403,7 +410,7 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     // for (int i = 0; i < NR_DPUS; i++) {
     //     printf("after migration: DPU #%d has %d queries\n", i, num_keys_for_DPU[i]);
     // }
-    PRINT_LOG_ONE_DPU(0);
+    // PRINT_LOG_ONE_DPU(0);
     gettimeofday(&start, NULL);
     /* 4. prepare requests to send to DPUs */
     /* 4.1 key_index (starting index for queries to the j-th seat of the i-th DPU) */
@@ -476,8 +483,6 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
 #endif
     gettimeofday(&end, NULL);
     preprocess_time2 = time_diff(&start, &end);
-    preprocess_time = preprocess_time1 + preprocess_time2;
-    free(batch_keys);
 #ifdef PRINT_DEBUG
     printf("[1/4] preprocess finished %0.5fsec\n", preprocess_time);
 #endif
@@ -530,22 +535,26 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
         }
         printf("\n");
     }
+    
 #endif
+    gettimeofday(&end, NULL);
+    recieve_result_time = time_diff(&start, &end);
     /* 8. merge small subtrees in DPU*/
+    gettimeofday(&start, NULL);
 #ifdef MERGE
     for (dpu_id_t i = 0; i < NR_DPUS; i++)
         std::fill(&merge_info[i].merge_to[0], &merge_info[i].merge_to[NR_SEATS_IN_DPU], INVALID_SEAT_ID);
     Migration migration_plan_for_merge(host_tree);
     migration_plan_for_merge.migration_plan_for_merge(host_tree, merge_info);
-    migration_plan_for_merge.print_plan();
-    print_merge_info();
+    // migration_plan_for_merge.print_plan();
+    // print_merge_info();
     migration_plan_for_merge.execute(set, dpu);
     host_tree->apply_migration(&migration_plan_for_merge);
     update_cpu_struct_merge(host_tree);
     execute_merge(set, dpu);
 #endif
     gettimeofday(&end, NULL);
-    free(dpu_results);
+    merge_time = time_diff(&start, &end);
 #ifdef PRINT_DEBUG
     printf("[4/4] batch postprocess finished: %0.5fsec\n", time_diff(&start, &end));
 #endif
@@ -554,7 +563,10 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     PRINT_LOG_ONE_DPU(0);
 #endif
     free(dpu_requests);
-    PRINT_POSITION_AND_VARIABLE(num_keys_batch, % d);
+    free(batch_keys);
+    free(dpu_results);
+
+    // PRINT_POSITION_AND_VARIABLE(num_keys_batch, % d);
     return num_keys_batch;
 }
 
@@ -589,9 +601,7 @@ int main(int argc, char* argv[])
         dpu_binary = a.get<std::string>("directory") + "/build_UPMEM/dpu/dpu_program";
     }
 
-#ifdef PRINT_DEBUG
-    std::cout << "[INFO] zipf_const:" << zipfian_const << ", workload file:" << file_name << std::endl;
-#endif
+    // std::cout << "[INFO] zipf_const:" << zipfian_const << ", workload file:" << file_name << std::endl;
     /* allocate DPUS */
     struct dpu_set_t set, dpu;
     if (a.exist("simulator")) {
@@ -625,23 +635,27 @@ int main(int argc, char* argv[])
     int batch_num = 0;
     total_num_keys = 0;
     int migrations_per_batch = a.get<int>("migration_num");
-    printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, migration_num, preprocess_time1, preprocess_time2, preprocess_time, migration_time, send_time, execution_time, batch_time, throughput\n");
+    printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, migration_num, preprocess_time1, preprocess_time2, migration_time, send_time, execution_time, recieve_result_time, merge_time, batch_time, throughput\n");
     while (total_num_keys < max_key_num) {
         BatchCtx batch_ctx;
-        num_keys = do_one_batch(&task_get, batch_num, migrations_per_batch, total_num_keys, max_key_num, file_input, host_tree, batch_ctx, set, dpu);
+        num_keys = do_one_batch(&task_insert, batch_num, migrations_per_batch, total_num_keys, max_key_num, file_input, host_tree, batch_ctx, set, dpu);
         total_num_keys += num_keys;
         batch_num++;
-        batch_time = preprocess_time + migration_time + send_time + execution_time;
-        total_preprocess_time += preprocess_time;
+        batch_time = preprocess_time1 + preprocess_time2 + migration_plan_time + migration_time + send_time + execution_time + recieve_result_time + merge_time;
+        total_preprocess_time1 += preprocess_time1;
+        total_preprocess_time2 += preprocess_time2;
+        total_migration_plan_time += migration_plan_time;
         total_migration_time += migration_time;
         total_send_time += send_time;
         total_execution_time += execution_time;
+        total_recieve_result_time += recieve_result_time;
+        total_merge_time += merge_time;
         total_batch_time += batch_time;
         double throughput = num_keys / batch_time;
-        printf("%s, %d, %d, %d, %d, %d, %d, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
+        printf("%s, %d, %d, %d, %d, %d, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
             zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, batch_num,
-            num_keys, batch_ctx.send_size, migrated_tree_num, preprocess_time1, preprocess_time2, preprocess_time, migration_time, send_time,
-            execution_time, batch_time, throughput);
+            num_keys, batch_ctx.send_size, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time,
+            execution_time, recieve_result_time, merge_time, batch_time, throughput);
     }
 
 
@@ -652,10 +666,10 @@ int main(int argc, char* argv[])
     //printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, send_time, cpu_time,
     //    execution_time, 100 * cpu_time / execution_time, send_and_execution_time, total_time, throughput);
     double throughput = total_num_keys / total_batch_time;
-    printf("%s, %d, %d, total, %ld,, %0.5f, %0.5f, %0.5f,%0.5f,%0.5f, %0.5f, %0.5f, %0.0f\n",
+    printf("%s, %d, %d, total, %ld, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
         zipfian_const.c_str(), NR_DPUS, NR_TASKLETS,
-        total_num_keys, total_preprocess_time, total_preprocess_time, total_preprocess_time, total_migration_time, total_send_time,
-        total_execution_time, total_batch_time, throughput);
+        total_num_keys, total_preprocess_time1, total_preprocess_time2, total_migration_plan_time, total_migration_time, total_send_time,
+        total_execution_time, total_recieve_result_time, total_merge_time, total_batch_time, throughput);
     DPU_ASSERT(dpu_free(set));
     delete host_tree;
     return 0;

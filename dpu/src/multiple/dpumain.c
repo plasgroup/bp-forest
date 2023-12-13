@@ -40,10 +40,10 @@ int main()
     int tid = me();
     if (tid == 0) {
         num_invoked++;
-        printf("%dth invocation\n", num_invoked);
+        // printf("%dth invocation\n", num_invoked);
         task = (uint32_t)task_no;
-        printf("task_no: %016lx\n", task_no);
-        printf("split threshold: %d\n", SPLIT_THRESHOLD);
+        // printf("task_no: %016lx\n", task_no);
+        // printf("split threshold: %d\n", SPLIT_THRESHOLD);
 #ifdef DEBUG_ON
         for (int t = 0; t < NR_SEATS_IN_DPU; t++) {
             printf("end_idx[%d] = %d\n", t, end_idx[t]);
