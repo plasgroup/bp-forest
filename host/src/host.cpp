@@ -302,7 +302,7 @@ void update_cpu_struct_merge(HostTree* host_tree)
     for (dpu_id_t dpu = 0; dpu < NR_DPUS; dpu++)
         for (seat_id_t i = 0; i < NR_SEATS_IN_DPU; i++)
             if (merge_info[dpu].merge_to[i] != INVALID_SEAT_ID)
-                host_tree->remove(dpu, i); // merge to the previous subtree
+                host_tree->remove(dpu, i);  // merge to the previous subtree
 }
 
 void send_merge_info(struct dpu_set_t set, struct dpu_set_t dpu)
@@ -535,7 +535,7 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
         }
         printf("\n");
     }
-    
+
 #endif
     gettimeofday(&end, NULL);
     recieve_result_time = time_diff(&start, &end);
@@ -637,7 +637,7 @@ int main(int argc, char* argv[])
     int batch_num = 0;
     total_num_keys = 0;
     int migrations_per_batch = a.get<int>("migration_num");
-    printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, migration_num, preprocess_time1, preprocess_time2, migration_time, send_time, execution_time, recieve_result_time, merge_time, batch_time, throughput\n");
+    printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time, execution_time, recieve_result_time, merge_time, batch_time, throughput\n");
     while (total_num_keys < max_key_num) {
         BatchCtx batch_ctx;
         if (op_type == "get")
