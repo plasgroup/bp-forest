@@ -590,11 +590,13 @@ int main(int argc, char* argv[])
     a.add<int>("migration_num", 'm', "migration_num per batch", false, 5);
     a.add<std::string>("directory", 'd', "execution directory, offset from bp-forest directory. ex)bp-forest-exp", false, ".");
     a.add("simulator", 's', "if declared, the binary for simulator is used");
+    a.add<std::string>("ops", 'o', "kind of operation ex)get, insert", false, "get");
     a.parse_check(argc, argv);
     std::string zipfian_const = a.get<std::string>("zipfianconst");
     int max_key_num = a.get<int>("keynum");
     std::string file_name = (a.get<std::string>("directory") + "/workload/zipf_const_" + zipfian_const + ".bin");
     std::string dpu_binary;
+    std::string op_type = a.get<std::string>("ops");
     if (a.exist("simulator")) {
         dpu_binary = a.get<std::string>("directory") + "/build_simulator/dpu/dpu_program";
     } else {
@@ -638,7 +640,10 @@ int main(int argc, char* argv[])
     printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, migration_num, preprocess_time1, preprocess_time2, migration_time, send_time, execution_time, recieve_result_time, merge_time, batch_time, throughput\n");
     while (total_num_keys < max_key_num) {
         BatchCtx batch_ctx;
-        num_keys = do_one_batch(&task_insert, batch_num, migrations_per_batch, total_num_keys, max_key_num, file_input, host_tree, batch_ctx, set, dpu);
+        if (op_type == "get")
+            num_keys = do_one_batch(&task_get, batch_num, migrations_per_batch, total_num_keys, max_key_num, file_input, host_tree, batch_ctx, set, dpu);
+        if (op_type == "insert")
+            num_keys = do_one_batch(&task_insert, batch_num, migrations_per_batch, total_num_keys, max_key_num, file_input, host_tree, batch_ctx, set, dpu);
         total_num_keys += num_keys;
         batch_num++;
         batch_time = preprocess_time1 + preprocess_time2 + migration_plan_time + migration_time + send_time + execution_time + recieve_result_time + merge_time;
