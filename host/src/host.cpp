@@ -502,7 +502,7 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     /* 6. DPU query execution */
     gettimeofday(&start, NULL);
     //DPU_ASSERT(dpu_launch(set, DPU_SYNCHRONOUS));
-    dpu_sync(set);
+    // dpu_sync(set);
     gettimeofday(&end, NULL);
     execution_time = time_diff(&start, &end);
 #ifdef PRINT_DEBUG
