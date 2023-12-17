@@ -223,10 +223,10 @@ void initialize_dpus(int num_init_reqs, HostTree* tree, struct dpu_set_t set, st
     //printf("sent reqs\n");
     gettimeofday(&start, NULL);
     //DPU_ASSERT(dpu_launch(set, DPU_SYNCHRONOUS));
-    dpu_sync(set);
+    //dpu_sync(set);
 
 #ifdef PRINT_DEBUG
-    PRINT_LOG_ONE_DPU(0);
+    // PRINT_LOG_ONE_DPU(0);
 #endif
 #ifdef DEBUG_ON
     /* checking result of search for inserted keys */
@@ -509,7 +509,7 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     printf("[3/4]all the dpu execution finished: %0.5fsec\n", execution_time);
 #endif
 #ifdef PRINT_DEBUG
-    PRINT_LOG_ONE_DPU(0);
+    // PRINT_LOG_ONE_DPU(0);
     //PRINT_LOG_ALL_DPUS;
 #endif
 
@@ -560,7 +560,7 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
 #endif
 
 #ifdef PRINT_DEBUG
-    PRINT_LOG_ONE_DPU(0);
+    // PRINT_LOG_ONE_DPU(0);
 #endif
     free(dpu_requests);
     free(batch_keys);
