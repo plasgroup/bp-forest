@@ -38,7 +38,7 @@ extern "C" {
 #ifndef NUM_INIT_REQS
 #define NUM_INIT_REQS (2000 * NUM_TOTAL_INIT_TREES)
 #endif
-#define NUM_THREADS (36)
+#define NUM_THREADS (1)
 #define GET_AND_PRINT_TIME(CODES, LABEL) \
     gettimeofday(&start, NULL);          \
     CODES                                \
