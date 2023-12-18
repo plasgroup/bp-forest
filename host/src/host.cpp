@@ -17,9 +17,11 @@ extern "C" {
 #include <iostream>
 #include <limits>
 #include <math.h>
+#include <mutex>
 #include <pthread.h>
 #include <sched.h>
 #include <sys/time.h>
+#include <thread>
 #include <vector>
 // extern "C" {
 // #include "bplustree.h"
@@ -36,6 +38,7 @@ extern "C" {
 #ifndef NUM_INIT_REQS
 #define NUM_INIT_REQS (2000 * NUM_TOTAL_INIT_TREES)
 #endif
+#define NUM_THREADS (36)
 #define GET_AND_PRINT_TIME(CODES, LABEL) \
     gettimeofday(&start, NULL);          \
     CODES                                \
@@ -338,6 +341,21 @@ void execute_merge(struct dpu_set_t set, struct dpu_set_t dpu)
 //     }
 // }
 
+std::mutex mtx;  // 共有データへのアクセス制御用のミューテックス
+
+void thread_cpu_search(int st, int ed, key_int64_t* batch_keys, HostTree* host_tree, BatchCtx& batch_ctx)
+{
+    for (int i = st; i < ed; i++) {
+        auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
+        if (it != host_tree->key_to_tree_map.end()) {
+            std::lock_guard<std::mutex> lock(mtx);
+            batch_ctx.num_keys_for_tree[it->second.first][it->second.second]++;
+        } else {
+            printf("ERROR: the key is out of range 3: 0x%lx\n", batch_keys[i]);
+        }
+    }
+}
+
 int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, uint64_t& total_num_keys, const int max_key_num, std::ifstream& file_input, HostTree* host_tree, BatchCtx& batch_ctx, dpu_set_t set, dpu_set_t dpu)
 {
 #ifdef PRINT_DEBUG
@@ -378,14 +396,18 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     num_keys_batch = file_input.tellg() / sizeof(key_int64_t) - total_num_keys;
     gettimeofday(&start, NULL);
     /* 1. count number of queries for each DPU, tree */
-    for (int i = 0; i < num_keys_batch; i++) {
-        //printf("i: %d, batch_keys[i]:%ld\n", i, batch_keys[i]);
-        auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
-        if (it != host_tree->key_to_tree_map.end()) {
-            batch_ctx.num_keys_for_tree[it->second.first][it->second.second]++;
-        } else {
-            printf("ERROR: the key is out of range 3: 0x%lx\n", batch_keys[i]);
-        }
+    std::vector<std::thread> threads;
+    int batch_size = num_keys_batch / NUM_THREADS;
+    int st = 0;
+
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        int ed = (i == NUM_THREADS - 1) ? num_keys_batch : st + batch_size;
+        threads.emplace_back(thread_cpu_search, st, ed, batch_keys, host_tree, std::ref(batch_ctx));
+        st = ed;
+    }
+
+    for (auto& t : threads) {
+        t.join();
     }
     gettimeofday(&end, NULL);
     preprocess_time1 = time_diff(&start, &end);
