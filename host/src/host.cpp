@@ -120,18 +120,18 @@ float time_diff(struct timeval* start, struct timeval* end)
 void send_requests(struct dpu_set_t set, struct dpu_set_t dpu, const uint64_t* task, BatchCtx& batch_ctx)
 {
     //DPU_ASSERT(dpu_broadcast_to(set, "task_no", 0, task, sizeof(uint64_t), DPU_XFER_DEFAULT));
-    DPU_FOREACH(set, dpu, each_dpu)
-    {
-        //DPU_ASSERT(dpu_prepare_xfer(dpu, &batch_ctx.key_index[each_dpu]));
-    }
-    //DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_TO_DPU, "end_idx", 0, sizeof(int) * (NR_SEATS_IN_DPU), DPU_XFER_DEFAULT));
+    // DPU_FOREACH(set, dpu, each_dpu)
+    // {
+    //     DPU_ASSERT(dpu_prepare_xfer(dpu, &batch_ctx.key_index[each_dpu]));
+    // }
+    // DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_TO_DPU, "end_idx", 0, sizeof(int) * (NR_SEATS_IN_DPU), DPU_XFER_DEFAULT));
 #ifdef PRINT_DEBUG
     // printf("[INFO at %s:%d] send_size: %ld / buffer_size: %ld\n", __FILE__, __LINE__, sizeof(each_request_t) * send_size, sizeof(each_request_t) * MAX_REQ_NUM_IN_A_DPU);
 #endif
-    DPU_FOREACH(set, dpu, each_dpu)
-    {
-        //DPU_ASSERT(dpu_prepare_xfer(dpu, &dpu_requests[each_dpu]));
-    }
+    // DPU_FOREACH(set, dpu, each_dpu)
+    // {
+    //     DPU_ASSERT(dpu_prepare_xfer(dpu, &dpu_requests[each_dpu]));
+    // }
     //DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_TO_DPU, "request_buffer", 0, sizeof(each_request_t) * batch_ctx.send_size, DPU_XFER_DEFAULT));
 }
 
@@ -140,10 +140,10 @@ void receive_results(struct dpu_set_t set, struct dpu_set_t dpu, BatchCtx& batch
 #ifdef PRINT_DEBUG
     printf("send_size: %ld / buffer_size: %ld\n", sizeof(each_result_t) * batch_ctx.send_size, sizeof(each_result_t) * MAX_REQ_NUM_IN_A_DPU);
 #endif
-    DPU_FOREACH(set, dpu, each_dpu)
-    {
-        //DPU_ASSERT(dpu_prepare_xfer(dpu, &dpu_results[each_dpu]));
-    }
+    // DPU_FOREACH(set, dpu, each_dpu)
+    // {
+    //     DPU_ASSERT(dpu_prepare_xfer(dpu, &dpu_results[each_dpu]));
+    // }
     //DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_FROM_DPU, "result", 0, sizeof(each_result_t) * batch_ctx.send_size, DPU_XFER_DEFAULT));
 }
 
@@ -255,11 +255,11 @@ void initialize_dpus(int num_init_reqs, HostTree* tree, struct dpu_set_t set, st
 
 void recieve_split_info(struct dpu_set_t set, struct dpu_set_t dpu)
 {
-    DPU_FOREACH(set, dpu, each_dpu)
-    {
-        //DPU_ASSERT(dpu_prepare_xfer(
-        //   dpu, &split_result[each_dpu]));
-    }
+    // DPU_FOREACH(set, dpu, each_dpu)
+    // {
+    //DPU_ASSERT(dpu_prepare_xfer(
+    //   dpu, &split_result[each_dpu]));
+    // }
     //DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_FROM_DPU, "split_result", 0,
     // sizeof(split_info_t) * NR_SEATS_IN_DPU,
     // DPU_XFER_DEFAULT));
@@ -267,11 +267,11 @@ void recieve_split_info(struct dpu_set_t set, struct dpu_set_t dpu)
 
 void recieve_num_kvpairs(struct dpu_set_t set, struct dpu_set_t dpu, HostTree* host_tree)
 {
-    DPU_FOREACH(set, dpu, each_dpu)
-    {
-        //DPU_ASSERT(dpu_prepare_xfer(
-        //     dpu, &(host_tree->num_kvpairs[each_dpu])));
-    }
+    // DPU_FOREACH(set, dpu, each_dpu)
+    // {
+    //DPU_ASSERT(dpu_prepare_xfer(
+    //     dpu, &(host_tree->num_kvpairs[each_dpu])));
+    // }
     //DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_FROM_DPU, "num_kvpairs_in_seat", 0,
     //     sizeof(int) * NR_SEATS_IN_DPU,
     //     DPU_XFER_DEFAULT));
@@ -311,11 +311,11 @@ void update_cpu_struct_merge(HostTree* host_tree)
 void send_merge_info(struct dpu_set_t set, struct dpu_set_t dpu)
 {
     //DPU_ASSERT(dpu_broadcast_to(set, "task_no", 0, &task_merge, sizeof(uint64_t), DPU_XFER_DEFAULT));
-    DPU_FOREACH(set, dpu, each_dpu)
-    {
-        //DPU_ASSERT(dpu_prepare_xfer(
-        //     dpu, &merge_info[each_dpu]));
-    }
+    // DPU_FOREACH(set, dpu, each_dpu)
+    // {
+    //DPU_ASSERT(dpu_prepare_xfer(
+    //     dpu, &merge_info[each_dpu]));
+    // }
     //DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_TO_DPU, "merge_info", 0,
     //     sizeof(merge_info_t),
     //     DPU_XFER_DEFAULT));
@@ -550,13 +550,13 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
 #endif
     }
 #ifdef PRINT_DEBUG
-    // for (dpu_id_t i = 0; i < NR_DPUS; i++) {
-    //     printf("num_kvpairs of DPU %d ", i);
-    //     for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++) {
-    //         printf("[%d]=%4d ", j, host_tree->num_kvpairs[i][j]);
-    //     }
-    //     printf("\n");
-    // }
+    for (dpu_id_t i = 0; i < NR_DPUS; i++) {
+        printf("num_kvpairs of DPU %d ", i);
+        for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++) {
+            printf("[%d]=%4d ", j, host_tree->num_kvpairs[i][j]);
+        }
+        printf("\n");
+    }
 
 #endif
     gettimeofday(&end, NULL);
@@ -693,7 +693,7 @@ int main(int argc, char* argv[])
     //printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, send_time, cpu_time,
     //    execution_time, 100 * cpu_time / execution_time, send_and_execution_time, total_time, throughput);
     double throughput = total_num_keys / total_batch_time;
-    printf("%s, %d, %d, total, %ld, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
+    printf("%s, %d, %d, total, %ld,, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
         zipfian_const.c_str(), NR_DPUS, NR_TASKLETS,
         total_num_keys, total_preprocess_time1, total_preprocess_time2, total_migration_plan_time, total_migration_time, total_send_time,
         total_execution_time, total_recieve_result_time, total_merge_time, total_batch_time, throughput);
