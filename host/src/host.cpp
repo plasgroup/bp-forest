@@ -401,7 +401,7 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     /* 3. execute migration according to migration_plan */
     // migration_plan.print_plan();
     gettimeofday(&start, NULL);
-    migration_plan.execute(set, dpu);
+    migration_plan.normalize();
     host_tree->apply_migration(&migration_plan);
     gettimeofday(&end, NULL);
     migration_time = time_diff(&start, &end);
@@ -519,7 +519,7 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     //recieve_num_kvpairs(set, dpu, host_tree);
     if (*task == TASK_INSERT) {
         //recieve_split_info(set, dpu);
-        update_cpu_struct(host_tree);
+        //update_cpu_struct(host_tree);
     }
     if (*task == TASK_GET) {
         //receive_results(set, dpu, batch_ctx);
@@ -528,13 +528,13 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
 #endif
     }
 #ifdef PRINT_DEBUG
-    for (dpu_id_t i = 0; i < NR_DPUS; i++) {
-        printf("num_kvpairs of DPU %d ", i);
-        for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++) {
-            printf("[%d]=%4d ", j, host_tree->num_kvpairs[i][j]);
-        }
-        printf("\n");
-    }
+    // for (dpu_id_t i = 0; i < NR_DPUS; i++) {
+    //     printf("num_kvpairs of DPU %d ", i);
+    //     for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++) {
+    //         printf("[%d]=%4d ", j, host_tree->num_kvpairs[i][j]);
+    //     }
+    //     printf("\n");
+    // }
 
 #endif
     gettimeofday(&end, NULL);
@@ -542,16 +542,16 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     /* 8. merge small subtrees in DPU*/
     gettimeofday(&start, NULL);
 #ifdef MERGE
-    for (dpu_id_t i = 0; i < NR_DPUS; i++)
-        std::fill(&merge_info[i].merge_to[0], &merge_info[i].merge_to[NR_SEATS_IN_DPU], INVALID_SEAT_ID);
-    Migration migration_plan_for_merge(host_tree);
-    migration_plan_for_merge.migration_plan_for_merge(host_tree, merge_info);
-    // migration_plan_for_merge.print_plan();
-    // print_merge_info();
-    //migration_plan_for_merge.execute(set, dpu);
-    host_tree->apply_migration(&migration_plan_for_merge);
-    update_cpu_struct_merge(host_tree);
-    //execute_merge(set, dpu);
+    // for (dpu_id_t i = 0; i < NR_DPUS; i++)
+    //     std::fill(&merge_info[i].merge_to[0], &merge_info[i].merge_to[NR_SEATS_IN_DPU], INVALID_SEAT_ID);
+    // Migration migration_plan_for_merge(host_tree);
+    // migration_plan_for_merge.migration_plan_for_merge(host_tree, merge_info);
+    // // migration_plan_for_merge.print_plan();
+    // // print_merge_info();
+    // //migration_plan_for_merge.execute(set, dpu);
+    // host_tree->apply_migration(&migration_plan_for_merge);
+    // update_cpu_struct_merge(host_tree);
+    // //execute_merge(set, dpu);
 #endif
     gettimeofday(&end, NULL);
     merge_time = time_diff(&start, &end);
