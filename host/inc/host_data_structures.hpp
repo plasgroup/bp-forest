@@ -74,7 +74,7 @@ class BatchCtx
 {
 public:
     /* key_index: i番目のDPUのj番目の木へのクエリの開始インデックス */
-    int key_index[NR_DPUS][NR_SEATS_IN_DPU + 1]{};
+    int key_index[NR_DPUS + 1][NR_SEATS_IN_DPU + 1]{};
     int DPU_idx[NR_DPUS]{};
     int num_keys_for_DPU[NR_DPUS]{};
     int num_keys_for_tree[NR_DPUS][NR_SEATS_IN_DPU]{};
@@ -84,6 +84,7 @@ public:
         for (int i = 0; i < NR_DPUS; i++) {
             DPU_idx[i] = i;
         }
+        key_index[0][NR_SEATS_IN_DPU] = 0;
     }
 
 private:

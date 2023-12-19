@@ -16,7 +16,7 @@ BARRIER_INIT(my_barrier, NR_TASKLETS);
 SEMAPHORE_INIT(my_semaphore, 1);
 
 __mram each_request_t request_buffer[MAX_REQ_NUM_IN_A_DPU];
-__mram int end_idx[NR_SEATS_IN_DPU];
+__mram int end_idx[NR_SEATS_IN_DPU + 1];
 __mram each_result_t result[MAX_REQ_NUM_IN_A_DPU];
 __mram_ptr void* ptr;
 __mram KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
@@ -34,6 +34,15 @@ int num_invoked = 0;
 #ifdef DEBUG_ON
 __mram_ptr void* getval;
 #endif
+
+void adjust_end_index() {
+    for (int i = 1; i <= NR_SEATS_IN_DPU; i++) {
+        end_idx[i] -= end_idx[0];
+    }
+    for (int i = 1; i <= NR_SEATS_IN_DPU; i++) {
+        end_idx[i - 1] = end_idx[i];
+    }
+}
 
 int main()
 {
@@ -64,7 +73,8 @@ int main()
     }
     case TASK_INSERT: {
         if (tid == 0) {
-            queries_per_tasklet = end_idx[NR_SEATS_IN_DPU - 1] / NR_TASKLETS;
+            adjust_end_index();
+            queries_per_tasklet = end_idx[NR_SEATS_IN_DPU-1] / NR_TASKLETS;
             current_tree = 0;
             printf("insert task\n");
         }
@@ -153,6 +163,7 @@ int main()
     }
     case TASK_GET: {
         if (tid == 0) {
+            adjust_end_index();
             queries_per_tasklet = end_idx[NR_SEATS_IN_DPU - 1] / NR_TASKLETS;
         }
         barrier_wait(&my_barrier);

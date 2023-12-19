@@ -24,7 +24,6 @@
 #endif
 #define MERGE_THRESHOLD (1500)
 #define NUM_ELEMS_AFTER_MERGE (2000)
-#define NUM_INIT_TREES_IN_DPU (NR_SEATS_IN_DPU / 4)
 #define REQUEST_SIZE (sizeof(each_request_t))
 /* buffer size for request in a DPU(default:15MB/64MB) */
 #ifndef MRAM_REQUEST_BUFFER_SIZE
@@ -33,8 +32,18 @@
 #ifndef MAX_REQ_NUM_IN_A_DPU
 #define MAX_REQ_NUM_IN_A_DPU (MRAM_REQUEST_BUFFER_SIZE / REQUEST_SIZE / 2)
 #endif
+#define NUM_INIT_TREES_IN_DPU (NR_SEATS_IN_DPU / 4)
+#define NUM_TOTAL_INIT_TREES (NR_DPUS * NUM_INIT_TREES_IN_DPU)
+#ifndef NUM_INIT_REQS
+#define NUM_INIT_REQS (2000 * NUM_TOTAL_INIT_TREES)
+#endif
 #ifndef NUM_REQUESTS_PER_BATCH
 #define NUM_REQUESTS_PER_BATCH (1000000)
+#endif
+#if NUM_INIT_REQS > NUM_REQUESTS_PER_BATCH
+    #define REQUEST_ARRAY_SIZE (NUM_INIT_REQS)
+#else
+    #define REQUEST_ARRAY_SIZE (NUM_REQUESTS_PER_BATCH)
 #endif
 #define READ (1)
 #define WRITE (0)
@@ -74,7 +83,7 @@ typedef struct {
 
 /* requests for a DPU in a batch */
 typedef struct {
-    each_request_t requests[MAX_REQ_NUM_IN_A_DPU];
+    each_request_t requests[REQUEST_ARRAY_SIZE];
 } dpu_requests_t;
 
 typedef struct {

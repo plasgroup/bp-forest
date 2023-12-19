@@ -34,11 +34,7 @@ extern "C" {
 #define ANSI_COLOR_GREEN "\x1b[32m"
 #define ANSI_COLOR_RESET "\x1b[0m"
 
-#define NUM_TOTAL_INIT_TREES (NR_DPUS * NUM_INIT_TREES_IN_DPU)
-#ifndef NUM_INIT_REQS
-#define NUM_INIT_REQS (2000 * NUM_TOTAL_INIT_TREES)
-#endif
-#define NUM_THREADS (36)
+//#define NUM_THREADS (36)
 #define GET_AND_PRINT_TIME(CODES, LABEL) \
     gettimeofday(&start, NULL);          \
     CODES                                \
@@ -119,32 +115,32 @@ float time_diff(struct timeval* start, struct timeval* end)
 
 void send_requests(struct dpu_set_t set, struct dpu_set_t dpu, const uint64_t* task, BatchCtx& batch_ctx)
 {
-    //DPU_ASSERT(dpu_broadcast_to(set, "task_no", 0, task, sizeof(uint64_t), DPU_XFER_DEFAULT));
-    // DPU_FOREACH(set, dpu, each_dpu)
-    // {
-    //     DPU_ASSERT(dpu_prepare_xfer(dpu, &batch_ctx.key_index[each_dpu]));
-    // }
-    // DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_TO_DPU, "end_idx", 0, sizeof(int) * (NR_SEATS_IN_DPU), DPU_XFER_DEFAULT));
-#ifdef PRINT_DEBUG
-    // printf("[INFO at %s:%d] send_size: %ld / buffer_size: %ld\n", __FILE__, __LINE__, sizeof(each_request_t) * send_size, sizeof(each_request_t) * MAX_REQ_NUM_IN_A_DPU);
-#endif
-    // DPU_FOREACH(set, dpu, each_dpu)
-    // {
-    //     DPU_ASSERT(dpu_prepare_xfer(dpu, &dpu_requests[each_dpu]));
-    // }
-    //DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_TO_DPU, "request_buffer", 0, sizeof(each_request_t) * batch_ctx.send_size, DPU_XFER_DEFAULT));
+//     DPU_ASSERT(dpu_broadcast_to(set, "task_no", 0, task, sizeof(uint64_t), DPU_XFER_DEFAULT));
+//     DPU_FOREACH(set, dpu, each_dpu)
+//     {
+//         DPU_ASSERT(dpu_prepare_xfer(dpu, &batch_ctx.key_index[each_dpu][NR_SEATS_IN_DPU]));
+//     }
+//     DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_TO_DPU, "end_idx", 0, sizeof(int) * (NR_SEATS_IN_DPU + 1), DPU_XFER_DEFAULT));
+// #ifdef PRINT_DEBUG
+//     // printf("[INFO at %s:%d] send_size: %ld / buffer_size: %ld\n", __FILE__, __LINE__, sizeof(each_request_t) * send_size, sizeof(each_request_t) * MAX_REQ_NUM_IN_A_DPU);
+// #endif
+//     DPU_FOREACH(set, dpu, each_dpu)
+//     {
+//         DPU_ASSERT(dpu_prepare_xfer(dpu, &dpu_requests[batch_ctx.keys_index[each_dpu][NR_SEATS_IN_DPU]]));
+//     }
+//     DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_TO_DPU, "request_buffer", 0, sizeof(each_request_t) * batch_ctx.send_size, DPU_XFER_DEFAULT));
 }
 
 void receive_results(struct dpu_set_t set, struct dpu_set_t dpu, BatchCtx& batch_ctx)
 {
-#ifdef PRINT_DEBUG
-    printf("send_size: %ld / buffer_size: %ld\n", sizeof(each_result_t) * batch_ctx.send_size, sizeof(each_result_t) * MAX_REQ_NUM_IN_A_DPU);
-#endif
-    // DPU_FOREACH(set, dpu, each_dpu)
-    // {
-    //     DPU_ASSERT(dpu_prepare_xfer(dpu, &dpu_results[each_dpu]));
-    // }
-    //DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_FROM_DPU, "result", 0, sizeof(each_result_t) * batch_ctx.send_size, DPU_XFER_DEFAULT));
+// #ifdef PRINT_DEBUG
+//     printf("send_size: %ld / buffer_size: %ld\n", sizeof(each_result_t) * batch_ctx.send_size, sizeof(each_result_t) * MAX_REQ_NUM_IN_A_DPU);
+// #endif
+//     DPU_FOREACH(set, dpu, each_dpu)
+//     {
+//         DPU_ASSERT(dpu_prepare_xfer(dpu, &dpu_results[each_dpu]));
+//     }
+//     DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_FROM_DPU, "result", 0, sizeof(each_result_t) * batch_ctx.send_size, DPU_XFER_DEFAULT));
 }
 
 #ifdef DEBUG_ON
@@ -163,7 +159,7 @@ void check_results(dpu_results_t* dpu_results, int key_index[NR_DPUS][NR_SEATS_I
 void initialize_dpus(int num_init_reqs, HostTree* tree, struct dpu_set_t set, struct dpu_set_t dpu)
 {
     BatchCtx batch_ctx;
-    dpu_requests = (dpu_requests_t*)malloc((NR_DPUS) * sizeof(dpu_requests_t));
+    dpu_requests = (dpu_requests_t*)malloc(sizeof(dpu_requests_t));
     if (dpu_requests == NULL) {
         printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET
                "]heap size is not enough\n");
@@ -183,17 +179,21 @@ void initialize_dpus(int num_init_reqs, HostTree* tree, struct dpu_set_t set, st
         }
     }
     /* compute key_index */
-    for (dpu_id_t i = 0; i < NR_DPUS; i++) {
-        for (seat_id_t j = 1; j <= NR_SEATS_IN_DPU; j++) {
-            batch_ctx.key_index[i][j] = batch_ctx.key_index[i][j - 1] + batch_ctx.num_keys_for_tree[i][j - 1];
+    int current_index = 0;
+    for (dpu_id_t i = 1; i <= NR_DPUS; i++) {
+        for (seat_id_t j = 0; j <= NR_SEATS_IN_DPU; j++) {
+            batch_ctx.key_index[i][j] = current_index;
+            if (j != 0)
+                current_index += batch_ctx.num_keys_for_tree[i - 1][j];
         }
     }
     /* make requests to send to DPUs */
     for (int i = 0; i < num_init_reqs; i++) {
         auto it = tree->key_to_tree_map.lower_bound(keys[i]);
         if (it != tree->key_to_tree_map.end()) {
-            dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]].key = keys[i];
-            dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]++].write_val_ptr = keys[i];
+            dpu_requests->requests[batch_ctx.key_index[it->second.first + 1][it->second.second]].key = keys[i];
+            dpu_requests->requests[batch_ctx.key_index[it->second.first + 1][it->second.second]].write_val_ptr = keys[i];
+            batch_ctx.key_index[it->second.first + 1][it->second.second]++;
         } else {
             printf("ERROR: the key is out of range 2\n");
         }
@@ -202,14 +202,14 @@ void initialize_dpus(int num_init_reqs, HostTree* tree, struct dpu_set_t set, st
     /* count the number of requests for each DPU, determine the send size */
     for (dpu_id_t dpu_i = 0; dpu_i < NR_DPUS; dpu_i++) {
         /* send size: maximum number of requests to a DPU */
-        if (batch_ctx.num_keys_for_DPU[dpu_i] > batch_ctx.send_size)
-            batch_ctx.send_size = batch_ctx.num_keys_for_DPU[dpu_i];
+        if (batch_ctx.send_size < batch_ctx.key_index[dpu_i+1][NR_SEATS_IN_DPU] - batch_ctx.key_index[dpu_i][NR_SEATS_IN_DPU])
+            batch_ctx.send_size = batch_ctx.key_index[dpu_i+1][NR_SEATS_IN_DPU] - batch_ctx.key_index[dpu_i][NR_SEATS_IN_DPU];
     }
 
     /* init BPTree in DPUs */
-    //DPU_ASSERT(dpu_broadcast_to(set, "task_no", 0, &task_init, sizeof(uint64_t), DPU_XFER_DEFAULT));
-    //DPU_ASSERT(dpu_launch(set, DPU_SYNCHRONOUS));
-    //dpu_sync(set);
+    // DPU_ASSERT(dpu_broadcast_to(set, "task_no", 0, &task_init, sizeof(uint64_t), DPU_XFER_DEFAULT));
+    // DPU_ASSERT(dpu_launch(set, DPU_SYNCHRONOUS));
+    // dpu_sync(set);
 
 #ifdef PRINT_DEBUG
     // DPU_FOREACH(set, dpu)
@@ -340,7 +340,7 @@ void execute_merge(struct dpu_set_t set, struct dpu_set_t dpu)
 //         }
 //     }
 // }
-
+#if NUM_THREADS > 1
 std::mutex mtx;  // 共有データへのアクセス制御用のミューテックス
 
 void thread_cpu_search(int st, int ed, key_int64_t* batch_keys, HostTree* host_tree, BatchCtx& batch_ctx)
@@ -355,14 +355,14 @@ void thread_cpu_search(int st, int ed, key_int64_t* batch_keys, HostTree* host_t
         }
     }
 }
+#endif
 
 int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, uint64_t& total_num_keys, const int max_key_num, std::ifstream& file_input, HostTree* host_tree, BatchCtx& batch_ctx, dpu_set_t set, dpu_set_t dpu)
 {
 #ifdef PRINT_DEBUG
     printf("======= batch %d =======\n", batch_num);
 #endif
-    dpu_requests = (dpu_requests_t*)malloc(
-        (NR_DPUS) * sizeof(dpu_requests_t));
+    dpu_requests = (dpu_requests_t*)malloc(sizeof(dpu_requests_t));
     if (dpu_requests == NULL) {
         printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET
                "] heap size is not enough\n");
@@ -396,10 +396,10 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     num_keys_batch = file_input.tellg() / sizeof(key_int64_t) - total_num_keys;
     gettimeofday(&start, NULL);
     /* 1. count number of queries for each DPU, tree */
+#if NUM_THREADS > 1
     std::vector<std::thread> threads;
     int batch_size = num_keys_batch / NUM_THREADS;
     int st = 0;
-
     for (int i = 0; i < NUM_THREADS; ++i) {
         int ed = (i == NUM_THREADS - 1) ? num_keys_batch : st + batch_size;
         threads.emplace_back(thread_cpu_search, st, ed, batch_keys, host_tree, std::ref(batch_ctx));
@@ -409,6 +409,17 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     for (auto& t : threads) {
         t.join();
     }
+#else
+    for (int i = 0; i < num_keys_batch; i++) {
+        auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
+        if (it != host_tree->key_to_tree_map.end()) {
+            batch_ctx.num_keys_for_tree[it->second.first][it->second.second]++;
+            batch_ctx.num_keys_for_DPU[it->second.first]++;
+        } else {
+            printf("ERROR: the key is out of range 3: 0x%lx\n", batch_keys[i]);
+        }
+    }
+#endif
     gettimeofday(&end, NULL);
     preprocess_time1 = time_diff(&start, &end);
 
@@ -436,15 +447,18 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     gettimeofday(&start, NULL);
     /* 4. prepare requests to send to DPUs */
     /* 4.1 key_index (starting index for queries to the j-th seat of the i-th DPU) */
-    for (dpu_id_t i = 0; i < NR_DPUS; i++) {
+    for (dpu_id_t i = 0; i <= NR_DPUS; i++) {
         for (seat_id_t j = 0; j <= NR_SEATS_IN_DPU; j++) {
             batch_ctx.key_index[i][j] = 0;
         }
     }
-
-    for (dpu_id_t i = 0; i < NR_DPUS; i++) {
-        for (seat_id_t j = 1; j <= NR_SEATS_IN_DPU; j++) {
-            batch_ctx.key_index[i][j] = batch_ctx.key_index[i][j - 1] + migration_plan.get_num_queries_for_source(batch_ctx, i, j - 1);
+    int current_index = 0;
+    for (dpu_id_t i = 1; i <= NR_DPUS; i++) {
+        for (seat_id_t j = 0; j <= NR_SEATS_IN_DPU; j++) {
+            /* key_index[i-1][j]: (DPU_i, seat_j)'s starting index of the dpu_requests array */
+            if (j != 0)
+                current_index += migration_plan.get_num_queries_for_source(batch_ctx, i - 1, j - 1);
+            batch_ctx.key_index[i][j] = current_index;
             //printf("key_index[%d][%d] = %d, num_queries_for_source[%d][%d] = %d\n", i, j - 1, batch_ctx.key_index[i][j - 1], i, j - 1, migration_plan.get_num_queries_for_source(batch_ctx, i, j - 1));
         }
     }
@@ -452,7 +466,7 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     for (dpu_id_t i = 0; i < NR_DPUS; i++) {
         printf("key_index before (DPU %d) ", i);
         for (seat_id_t j = 0; j <= NR_SEATS_IN_DPU; j++) {
-            printf("[%d]=%4d ", j, batch_ctx.key_index[i][j]);
+            printf("[%d]=%4d ", j, batch_ctx.key_index[i+1][j]);
         }
         printf("\n");
     }
@@ -461,11 +475,12 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     for (int i = 0; i < num_keys_batch; i++) {
         auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
         if (it != host_tree->key_to_tree_map.end()) {
-            dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]].key = batch_keys[i];
-            /* key_index is incremented here, so batch_ctx.key_index[i][j] represents
+            dpu_requests->requests[batch_ctx.key_index[it->second.first + 1][it->second.second]].key = batch_keys[i];
+            dpu_requests->requests[batch_ctx.key_index[it->second.first + 1][it->second.second]].write_val_ptr = batch_keys[i];
+             /* key_index is incremented here, so batch_ctx.key_index[i][j] represents
              * the first index for seat j in DPU i BEFORE this for loop, then
              * the first index for seat j+1 in DPU i AFTER this for loop. */
-            dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]++].write_val_ptr = batch_keys[i];
+            batch_ctx.key_index[it->second.first + 1][it->second.second]++;
         } else {
             PRINT_POSITION_AND_MESSAGE(ERROR
                                        : the key is out of range);
@@ -480,14 +495,14 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
         printf("\n");
         printf("after  (DPU %d) ", i);
         for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++) {
-            printf("[%d]=%4d ", j, j == 0 ? batch_ctx.key_index[i][j] : batch_ctx.key_index[i][j] - batch_ctx.key_index[i][j - 1]);
+            printf("[%d]=%4d ", j, j == 0 ? batch_ctx.key_index[i+1][j] : batch_ctx.key_index[i+1][j] - batch_ctx.key_index[i+1][j - 1]);
         }
         printf("\n");
     }
     for (dpu_id_t i = 0; i < NR_DPUS; i++) {
         printf("key_index after (DPU %d) ", i);
         for (seat_id_t j = 0; j <= NR_SEATS_IN_DPU; j++) {
-            printf("[%d]=%4d ", j, batch_ctx.key_index[i][j]);
+            printf("[%d]=%4d ", j, batch_ctx.key_index[i+1][j]);
         }
         printf("\n");
     }
@@ -495,8 +510,8 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     /* count the number of requests for each DPU, determine the send size */
     for (dpu_id_t dpu_i = 0; dpu_i < NR_DPUS; dpu_i++) {
         /* send size: maximum number of requests to a DPU */
-        if (batch_ctx.send_size < batch_ctx.key_index[dpu_i][NR_SEATS_IN_DPU])
-            batch_ctx.send_size = batch_ctx.key_index[dpu_i][NR_SEATS_IN_DPU];
+        if (batch_ctx.send_size < batch_ctx.key_index[dpu_i+1][NR_SEATS_IN_DPU] - batch_ctx.key_index[dpu_i][NR_SEATS_IN_DPU])
+            batch_ctx.send_size = batch_ctx.key_index[dpu_i+1][NR_SEATS_IN_DPU] - batch_ctx.key_index[dpu_i][NR_SEATS_IN_DPU];
     }
 #ifdef PRINT_DEBUG
 // for (key_int64_t x : num_keys) {
@@ -550,13 +565,13 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
 #endif
     }
 #ifdef PRINT_DEBUG
-    for (dpu_id_t i = 0; i < NR_DPUS; i++) {
-        printf("num_kvpairs of DPU %d ", i);
-        for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++) {
-            printf("[%d]=%4d ", j, host_tree->num_kvpairs[i][j]);
-        }
-        printf("\n");
-    }
+    // for (dpu_id_t i = 0; i < NR_DPUS; i++) {
+    //     printf("num_kvpairs of DPU %d ", i);
+    //     for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++) {
+    //         printf("[%d]=%4d ", j, host_tree->num_kvpairs[i][j]);
+    //     }
+    //     printf("\n");
+    // }
 
 #endif
     gettimeofday(&end, NULL);
