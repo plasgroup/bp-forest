@@ -52,6 +52,8 @@
 #ifndef WORKLOAD
 #define WORKLOAD (W50R50)
 #endif
+
+#define ROUND_UP_2(x) ((((x) + 1) / 2) * 2)
 // #define PRINT_DEBUG
 // #define VARY_REQUESTNUM
 // #define DEBUG_ON

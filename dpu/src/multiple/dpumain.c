@@ -16,7 +16,7 @@ BARRIER_INIT(my_barrier, NR_TASKLETS);
 SEMAPHORE_INIT(my_semaphore, 1);
 
 __mram each_request_t request_buffer[MAX_REQ_NUM_IN_A_DPU];
-__mram int end_idx[NR_SEATS_IN_DPU + 1];
+__mram int end_idx[ROUND_UP_2(NR_SEATS_IN_DPU + 1)];
 __mram each_result_t result[MAX_REQ_NUM_IN_A_DPU];
 __mram_ptr void* ptr;
 __mram KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
