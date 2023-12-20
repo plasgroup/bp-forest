@@ -109,6 +109,7 @@ const uint64_t task_invalid = 999 + (1ULL << 32);
 /* data for communication between host and DPUs */
 dpu_requests_t* dpu_requests;
 dpu_results_t* dpu_results;
+key_int64_t* batch_keys;
 BPTreeNode nodes_buffer[MAX_NUM_NODES_IN_SEAT];
 uint64_t nodes_num;
 split_info_t split_result[NR_DPUS][NR_SEATS_IN_DPU];
@@ -172,7 +173,6 @@ void check_results(dpu_results_t* dpu_results, int key_index[NR_DPUS][NR_SEATS_I
 void initialize_dpus(int num_init_reqs, HostTree* tree, struct dpu_set_t set, struct dpu_set_t dpu)
 {
     BatchCtx batch_ctx;
-    dpu_requests = (dpu_requests_t*)malloc((NR_DPUS) * sizeof(dpu_requests_t));
     if (dpu_requests == NULL) {
         printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET
                "]heap size is not enough\n");
@@ -248,10 +248,8 @@ void initialize_dpus(int num_init_reqs, HostTree* tree, struct dpu_set_t set, st
 #endif /* PRINT_DEBUG */
 #ifdef DEBUG_ON
     /* checking result of search for inserted keys */
-    dpu_results = (dpu_results_t*)malloc((NR_DPUS) * sizeof(dpu_results_t));
     receive_results(set, dpu);
     check_results(dpu_results, batch_ctx.key_index);
-    free(dpu_results);
 #endif
     gettimeofday(&end, NULL);
     init_time = time_diff(&start, &end);
@@ -263,7 +261,6 @@ void initialize_dpus(int num_init_reqs, HostTree* tree, struct dpu_set_t set, st
     //         DPU_ASSERT(dpu_log_read(dpu, stdout));
     // }
 #endif
-    free(dpu_requests);
     free(keys);
     return;
 }
@@ -369,8 +366,6 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
 #ifdef PRINT_DEBUG
     printf("======= batch %d =======\n", batch_num);
 #endif
-    dpu_requests = (dpu_requests_t*)malloc(
-        (NR_DPUS) * sizeof(dpu_requests_t));
     if (dpu_requests == NULL) {
         printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET
                "] heap size is not enough\n");
@@ -390,10 +385,8 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
         num_keys_batch = max_key_num - total_num_keys;
     }
     if (num_keys_batch == 0) {
-        free(dpu_requests);
         return 0;
     }
-    key_int64_t* batch_keys = (key_int64_t*)malloc(num_keys_batch * sizeof(key_int64_t));
     if (dpu_requests == NULL) {
         printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET
                "] heap size is not enough\n");
@@ -548,7 +541,6 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
 #endif /* PRINT_DEBUG */
 
     /* 7. recieve results (and update CPU structs) */
-    dpu_results = (dpu_results_t*)malloc((NR_DPUS) * sizeof(dpu_results_t));
     gettimeofday(&start, NULL);
     recieve_num_kvpairs(set, dpu, host_tree);
     if (*task == TASK_INSERT) {
@@ -596,10 +588,6 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
 #ifdef PRINT_DEBUG
     PRINT_LOG_ONE_DPU(0);
 #endif
-    free(dpu_requests);
-    free(batch_keys);
-    free(dpu_results);
-
     // PRINT_POSITION_AND_VARIABLE(num_keys_batch, % d);
     return num_keys_batch;
 }
@@ -641,6 +629,9 @@ int main(int argc, char* argv[])
     // std::cout << "[INFO] zipf_const:" << zipfian_const << ", workload file:" << file_name << std::endl;
     /* allocate DPUS */
     struct dpu_set_t set, dpu;
+    batch_keys = (key_int64_t*)malloc(NUM_REQUESTS_PER_BATCH * sizeof(key_int64_t));
+    dpu_requests = (dpu_requests_t*)malloc((NR_DPUS) * sizeof(dpu_requests_t));
+    dpu_results = (dpu_results_t*)malloc((NR_DPUS) * sizeof(dpu_results_t));
 #ifndef NO_DPU_EXECUTION
     if (a.exist("simulator")) {
         DPU_ASSERT(dpu_alloc(NR_DPUS, "backend=simulator", &set));
