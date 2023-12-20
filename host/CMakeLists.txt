@@ -8,7 +8,7 @@ file(GLOB HOST_SOURCE
 )
 find_package(Threads REQUIRED)
 
-foreach(build_version IN ITEMS host_only UPMEM simulator)
+foreach(build_version IN LISTS targets)
     add_executable(host_app_${build_version} ${HOST_SOURCE})
     target_include_directories(host_app_${build_version} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/inc)
 

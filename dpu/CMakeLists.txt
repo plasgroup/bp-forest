@@ -2,7 +2,7 @@ set(CMAKE_C_COMPILER dpu-upmem-dpurte-clang)
 
 file(GLOB DPU_SOURCE ${CMAKE_CURRENT_LIST_DIR}/src/multiple/*.c)
 
-foreach(build_version IN ITEMS UPMEM simulator)
+foreach(build_version IN LISTS targets)
     add_executable(dpu_program_${build_version} ${DPU_SOURCE})
     target_include_directories(dpu_program_${build_version} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/inc/multiple)
 

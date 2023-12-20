@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.10)
 project(bp-forest C CXX)
 
+if(DEFINED targets)
+else(DEFINED targets)
+    set(targets host_only;UPMEM;simulator)
+endif(DEFINED targets)
 if(DEFINED NR_TASKLETS)
 else(DEFINED NR_TASKLETS)
     set(NR_TASKLETS 24)
