@@ -5,10 +5,13 @@
 #include "host_data_structures.hpp"
 #include "migration.hpp"
 #include <cassert>
+#ifndef NO_DPU_EXECUTION
 extern "C" {
 #include <dpu.h>
 #include <dpu_log.h>
 }
+typedef 
+#endif /* NO_DPU_EXECUTION */
 #include "node_defs.hpp"
 #include <algorithm>
 #include <cstdio>

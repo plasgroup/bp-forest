@@ -1,6 +1,12 @@
 #pragma once
 #include <stdint.h>
-
+#ifdef NO_DPU_EXECUTION
+typedef int dpu_id_t;
+struct dpu_set_t {
+    /** DPU device type for the DPU set. */
+    int kind;
+};
+#endif /* NO_DPU_EXECUTION */
 #define NR_ELEMS_PER_DPU (RAND_MAX / NR_DPUS)
 #define NR_ELEMS_PER_TASKLET (RAND_MAX / NR_DPUS / NR_TASKLETS)
 #define NR_ELEMS_PER_TASKLET (RAND_MAX / NR_DPUS / NR_TASKLETS)
@@ -55,7 +61,6 @@
 #endif
 
 /* Structure used by both the host and the dpu to communicate information */
-
 typedef uint64_t key_int64_t;
 #define KEY_MIN (0)
 #define KEY_MAX (-1ULL)

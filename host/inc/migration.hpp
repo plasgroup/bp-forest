@@ -1,10 +1,12 @@
 #pragma once
 
 #include "common.h"
+#ifndef NO_DPU_EXECUTION
 extern "C" {
 #include <dpu.h>
 #include <dpu_log.h>
 }
+#endif /* NO_DPU_EXECUTION */
 #include <iostream>
 #include <map>
 #include <stdio.h>

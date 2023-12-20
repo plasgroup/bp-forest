@@ -3,10 +3,12 @@
 #include "host_data_structures.hpp"
 #include "node_defs.hpp"
 #include <algorithm>
+#ifndef NO_DPU_EXECUTION
 extern "C" {
 #include <dpu.h>
 #include <dpu_log.h>
 }
+#endif /* NO_DPU_EXECUTION */
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -204,7 +206,7 @@ bool Migration::plan_merge(Position left, Position right, merge_info_t* merge_in
     dpu_id_t dpu = right.first;
     seat_id_t dest = right.second;
     seat_id_t src = left.second;
-    
+
     if (left.first != right.first) {
         if (nr_used_seats[dpu] == NR_SEATS_IN_DPU)
             // destination is full
@@ -243,6 +245,7 @@ static void send_nodes_from_dpu_to_dpu(dpu_id_t from_DPU, seat_id_t from_tree, d
     extern dpu_id_t each_dpu;
     extern BPTreeNode nodes_buffer[MAX_NUM_NODES_IN_SEAT];
     extern uint64_t nodes_num;
+#ifndef NO_DPU_EXECUTION
     DPU_FOREACH(set, dpu, each_dpu)
     {
         if (each_dpu == from_DPU) {
@@ -270,6 +273,7 @@ static void send_nodes_from_dpu_to_dpu(dpu_id_t from_DPU, seat_id_t from_tree, d
             break;
         }
     }
+#endif /* NO_DPU_EXECUTION */
 }
 
 void Migration::normalize()

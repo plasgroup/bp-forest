@@ -1,6 +1,7 @@
 #pragma once
 #include "common.h"
 #include "migration.hpp"
+#include <cstring>
 #include <map>
 #include <stdlib.h>
 
@@ -65,6 +66,7 @@ public:
         num_seats_used[dpu]--;
         tree_bitmap[dpu] &= ~(1 << seat);
     }
+
 private:
 };
 
