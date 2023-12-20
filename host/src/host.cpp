@@ -10,7 +10,6 @@ extern "C" {
 #include <dpu.h>
 #include <dpu_log.h>
 }
-typedef 
 #endif /* NO_DPU_EXECUTION */
 #include "node_defs.hpp"
 #include <algorithm>
@@ -621,9 +620,9 @@ int main(int argc, char* argv[])
     std::string op_type = a.get<std::string>("ops");
 #ifndef NO_DPU_EXECUTION
     if (a.exist("simulator")) {
-        dpu_binary = a.get<std::string>("directory") + "/build_simulator/dpu/dpu_program";
+        dpu_binary = a.get<std::string>("directory") + "/build/dpu/dpu_program_simulator";
     } else {
-        dpu_binary = a.get<std::string>("directory") + "/build_UPMEM/dpu/dpu_program";
+        dpu_binary = a.get<std::string>("directory") + "/build/dpu/dpu_program_UPMEM";
     }
 #endif /* NO_DPU_EXECUTION */
     // std::cout << "[INFO] zipf_const:" << zipfian_const << ", workload file:" << file_name << std::endl;
