@@ -1,6 +1,27 @@
-add_library(common INTERFACE)
-target_include_directories(common INTERFACE ${CMAKE_CURRENT_LIST_DIR}/inc)
+# host_only
+add_library(common_host_only INTERFACE)
+target_include_directories(common_host_only INTERFACE ${CMAKE_CURRENT_LIST_DIR}/inc)
 
-target_link_libraries(common INTERFACE)
-target_compile_definitions(common INTERFACE NR_TASKLETS=${NR_TASKLETS} NR_DPUS=${NR_DPUS} NUM_BPTREE_IN_CPU=${NUM_BPTREE_IN_CPU} NUM_BPTREE_IN_DPU=${NUM_BPTREE_IN_DPU} $<$<CONFIG:Debug>:PRINT_DEBUG=1>)
-target_link_options(common INTERFACE -DNR_TASKLETS=${NR_TASKLETS} -DNR_DPUS=${NR_DPUS} -DNUM_BPTREE_IN_CPU=${NUM_BPTREE_IN_CPU} -DNUM_BPTREE_IN_DPU=${NUM_BPTREE_IN_DPU} $<$<CONFIG:Debug>:-DPRINT_DEBUG=1>)
+target_link_libraries(common_host_only INTERFACE)
+target_compile_definitions(common_host_only INTERFACE STACK_SIZE_DEFAULT=1024 NR_TASKLETS=${NR_TASKLETS} NR_DPUS=${NR_DPUS_HOST_ONLY}  NUM_REQUESTS_PER_BATCH=${NUM_REQUESTS_PER_BATCH_HOST_ONLY} $<$<CONFIG:Debug>:PRINT_DEBUG=1>)
+target_link_options(common_host_only INTERFACE -DSTACK_SIZE_DEFAULT=1024 -DNR_TASKLETS=${NR_TASKLETS} -DNR_DPUS=${NR_DPUS_HOST_ONLY} -DNUM_REQUESTS_PER_BATCH=${NUM_REQUESTS_PER_BATCH_HOST_ONLY} $<$<CONFIG:Debug>:-DPRINT_DEBUG=1>)
+target_compile_definitions(common_host_only INTERFACE NO_DPU_EXECUTION)
+target_link_options(common_host_only INTERFACE -DNO_DPU_EXECUTION)
+
+
+# UPMEM
+add_library(common_UPMEM INTERFACE)
+target_include_directories(common_UPMEM INTERFACE ${CMAKE_CURRENT_LIST_DIR}/inc)
+
+target_link_libraries(common_UPMEM INTERFACE)
+target_compile_definitions(common_UPMEM INTERFACE STACK_SIZE_DEFAULT=1024 NR_TASKLETS=${NR_TASKLETS} NR_DPUS=${NR_DPUS_UPMEM}  NUM_REQUESTS_PER_BATCH=${NUM_REQUESTS_PER_BATCH_UPMEM} $<$<CONFIG:Debug>:PRINT_DEBUG=1>)
+target_link_options(common_UPMEM INTERFACE -DSTACK_SIZE_DEFAULT=1024 -DNR_TASKLETS=${NR_TASKLETS} -DNR_DPUS=${NR_DPUS_UPMEM} -DNUM_REQUESTS_PER_BATCH=${NUM_REQUESTS_PER_BATCH_UPMEM} $<$<CONFIG:Debug>:-DPRINT_DEBUG=1>)
+
+
+# simulator
+add_library(common_simulator INTERFACE)
+target_include_directories(common_simulator INTERFACE ${CMAKE_CURRENT_LIST_DIR}/inc)
+
+target_link_libraries(common_simulator INTERFACE)
+target_compile_definitions(common_simulator INTERFACE STACK_SIZE_DEFAULT=1024 NR_TASKLETS=${NR_TASKLETS} NR_DPUS=${NR_DPUS_SIMULATOR}  NUM_REQUESTS_PER_BATCH=${NUM_REQUESTS_PER_BATCH_SIMULATOR} $<$<CONFIG:Debug>:PRINT_DEBUG=1>)
+target_link_options(common_simulator INTERFACE -DSTACK_SIZE_DEFAULT=1024 -DNR_TASKLETS=${NR_TASKLETS} -DNR_DPUS=${NR_DPUS_SIMULATOR} -DNUM_REQUESTS_PER_BATCH=${NUM_REQUESTS_PER_BATCH_SIMULATOR} $<$<CONFIG:Debug>:-DPRINT_DEBUG=1>)

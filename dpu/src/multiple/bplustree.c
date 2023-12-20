@@ -1,83 +1,55 @@
 #include "bplustree.h"
+#include "cabin.h"
 #include "common.h"
+#include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
 
 // #define USE_LINEAR_SEARCH
-
-// nodes(keys and pointers)
-__mram BPTreeNode nodes[NR_TASKLETS][MAX_NODE_NUM];
-
-int free_node_index_stack_head[NR_TASKLETS] = {-1};
-__mram int free_node_index_stack[NR_TASKLETS][MAX_NODE_NUM];
-
-int height[NR_TASKLETS] = {1};
-
-int max_node_index[NR_TASKLETS] = {-1};
-
-MBPTptr root[NR_TASKLETS];
-
-int NumOfNodes[NR_TASKLETS] = {0};
+#define BITMAP_NUM_ELEMS (MAX_NUM_NODES_IN_SEAT / 32)
 
 #ifdef DEBUG_ON
 typedef struct Queue {  // queue for showing all nodes by BFS
     int tail;
     int head;
-    MBPTptr ptrs[MAX_NODE_NUM];
+    MBPTptr ptrs[MAX_NUM_NODES_IN_SEAT];
 } Queue_t;
 
 __mram_ptr Queue_t* queue[NR_TASKLETS];
 
-void initQueue(__mram_ptr Queue_t** queue, uint32_t tasklet_id)
+void initQueue(__mram_ptr Queue_t** queue, uint32_t seat_id)
 {
-    queue[tasklet_id]->head = 0;
-    queue[tasklet_id]->tail = -1;
+    queue[seat_id]->head = 0;
+    queue[seat_id]->tail = -1;
     // printf("queue is initialized\n");
 }
 
-void enqueue(__mram_ptr Queue_t** queue, MBPTptr input, uint32_t tasklet_id)
+void enqueue(__mram_ptr Queue_t** queue, MBPTptr input, uint32_t seat_id)
 {
-    if ((queue[tasklet_id]->tail + 2) % MAX_NODE_NUM == queue[tasklet_id]->head) {
+    if ((queue[seat_id]->tail + 2) % MAX_NUM_NODES_IN_SEAT == queue[seat_id]->head) {
         printf("queue is full\n");
         return;
     }
-    queue[tasklet_id]->ptrs[(queue[tasklet_id]->tail + 1) % MAX_NODE_NUM] = input;
-    queue[tasklet_id]->tail = (queue[tasklet_id]->tail + 1) % MAX_NODE_NUM;
+    queue[seat_id]->ptrs[(queue[seat_id]->tail + 1) % MAX_NUM_NODES_IN_SEAT] = input;
+    queue[seat_id]->tail = (queue[seat_id]->tail + 1) % MAX_NUM_NODES_IN_SEAT;
     // printf("%p is enqueued\n",input);
 }
 
-MBPTptr dequeue(__mram_ptr Queue_t** queue, uint32_t tasklet_id)
+MBPTptr dequeue(__mram_ptr Queue_t** queue, uint32_t seat_id)
 {
     MBPTptr ret;
-    if ((queue[tasklet_id]->tail + 1) % MAX_NODE_NUM == queue[tasklet_id]->head) {
+    if ((queue[seat_id]->tail + 1) % MAX_NUM_NODES_IN_SEAT == queue[seat_id]->head) {
         printf("queue is empty\n");
         return NULL;
     }
-    ret = queue[tasklet_id]->ptrs[queue[tasklet_id]->head];
-    queue[tasklet_id]->head = (queue[tasklet_id]->head + 1) % MAX_NODE_NUM;
+    ret = queue[seat_id]->ptrs[queue[seat_id]->head];
+    queue[seat_id]->head = (queue[seat_id]->head + 1) % MAX_NUM_NODES_IN_SEAT;
     // printf("%p is dequeued\n",ret);
     return ret;
 }
 
 void showNode(MBPTptr, int);
 #endif
-
-MBPTptr newBPTreeNode(uint32_t tasklet_id)
-{
-    MBPTptr p;
-    if (free_node_index_stack_head[tasklet_id] >= 0) {  // if there is gap in nodes array
-        p = &nodes[tasklet_id]
-                  [free_node_index_stack[tasklet_id]
-                                        [free_node_index_stack_head[tasklet_id]--]];
-    } else
-        p = &nodes[tasklet_id][++max_node_index[tasklet_id]];
-    p->parent = NULL;
-    p->isRoot = false;
-    p->isLeaf = false;
-    p->numKeys = 0;
-    NumOfNodes[tasklet_id]++;
-    return p;
-}
 
 // binary search
 #ifndef USE_LINEAR_SEARCH
@@ -111,30 +83,34 @@ int findKeyPos(MBPTptr n, key_int64_t key)
     return ret;
 }
 #endif
-MBPTptr findLeaf(key_int64_t key, uint32_t tasklet_id)
+MBPTptr findLeafOfSubtree(key_int64_t key, MBPTptr subtree)
 {
-    MBPTptr n = root[tasklet_id];
     while (true) {
-        if (n->isLeaf == true)
+        if (subtree->isLeaf == true)
             break;
-        if (key < n->key[0]) {
-            n = n->ptrs.inl.children[0];
+        if (key < subtree->key[0]) {
+            subtree = subtree->ptrs.inl.children[0];
         } else {
-            int i = findKeyPos(n, key);
+            int i = findKeyPos(subtree, key);
 #ifdef DEBUG_ON
             // printf("findLeaf:Node = %p, key = %d, i = %d\n",n, key,i);
 #endif
-            n = n->ptrs.inl.children[i];
+            subtree = subtree->ptrs.inl.children[i];
         }
     }
-    return n;
+    return subtree;
 }
-void insert(MBPTptr cur, key_int64_t, value_ptr_t, MBPTptr, uint32_t);
-void split(MBPTptr cur, uint32_t tasklet_id)
+MBPTptr findLeaf(key_int64_t key, seat_id_t seat_id)
+{
+    return findLeafOfSubtree(key, Seat_get_root(seat_id));
+}
+
+bool insert(MBPTptr cur, key_int64_t, value_ptr_t, MBPTptr, seat_id_t);
+void split(MBPTptr cur, seat_id_t seat_id)
 {
     // cur splits into cur and n
     // copy cur[Mid+1 .. MAX_CHILD] to n[0 .. n->key_num-1]
-    MBPTptr n = newBPTreeNode(tasklet_id);
+    MBPTptr n = Seat_allocate_node(seat_id);
     int Mid = (MAX_CHILD + 1) >> 1;
     n->isLeaf = cur->isLeaf;
     n->numKeys = MAX_CHILD - Mid;
@@ -158,40 +134,44 @@ void split(MBPTptr cur, uint32_t tasklet_id)
     }
     if (cur->isRoot) {  // root Node splits
         // Create a new root
-        root[tasklet_id] = newBPTreeNode(tasklet_id);
-        root[tasklet_id]->isRoot = true;
-        root[tasklet_id]->isLeaf = false;
-        root[tasklet_id]->numKeys = 1;
-        root[tasklet_id]->ptrs.inl.children[0] = cur;
-        root[tasklet_id]->ptrs.inl.children[1] = n;
-        cur->parent = n->parent = root[tasklet_id];
+        MBPTptr new_root = Seat_allocate_node(seat_id);
+        Seat_set_root(seat_id, new_root);
+        new_root->isRoot = true;
+        new_root->isLeaf = false;
+        new_root->numKeys = 1;
+        new_root->ptrs.inl.children[0] = cur;
+        new_root->ptrs.inl.children[1] = n;
+        cur->parent = n->parent = new_root;
         cur->isRoot = false;
         if (cur->isLeaf) {
             cur->ptrs.lf.right = n;
             n->ptrs.lf.left = cur;
-            root[tasklet_id]->key[0] = n->key[0];
+            new_root->key[0] = n->key[0];
         } else {
-            root[tasklet_id]->key[0] = cur->key[Mid - 1];
+            new_root->key[0] = cur->key[Mid - 1];
         }
-        height[tasklet_id]++;
+        Seat_inc_height(seat_id);
     } else {  // insert n to cur->parent
         n->parent = cur->parent;
         if (cur->isLeaf) {
-            insert(n->parent, n->key[0], 0, n, tasklet_id);
+            insert(n->parent, n->key[0], 0, n, seat_id);
         } else {
-            insert(cur->parent, cur->key[Mid - 1], 0, n, tasklet_id);
+            insert(cur->parent, cur->key[Mid - 1], 0, n, seat_id);
         }
     }
 }
 
-void insert(MBPTptr cur, key_int64_t key, value_ptr_t value, MBPTptr n,
-    uint32_t tasklet_id)
+bool insert(MBPTptr cur, key_int64_t key, value_ptr_t value, MBPTptr n,
+    seat_id_t seat_id)
 {
+    bool is_updated = false;
+    extern __host int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
     int i, ins;
     ins = findKeyPos(cur, key);
     if (cur->isLeaf == true) {                       // inserted into a Leaf node
         if (ins != 0 && cur->key[ins - 1] == key) {  // key already exist, update the value
             cur->ptrs.lf.value[ins - 1] = value;
+            is_updated = true;
         } else {  // key doesn't already exist
             for (i = cur->numKeys; i > ins; i--) {
                 cur->key[i] = cur->key[i - 1];
@@ -200,6 +180,7 @@ void insert(MBPTptr cur, key_int64_t key, value_ptr_t value, MBPTptr n,
             cur->key[ins] = key;
             cur->ptrs.lf.value[ins] = value;
             cur->numKeys++;
+            num_kvpairs_in_seat[seat_id]++;
         }
 
     } else {  // inserted into an internal node by split
@@ -234,41 +215,60 @@ void insert(MBPTptr cur, key_int64_t key, value_ptr_t value, MBPTptr n,
         }
     }
     if (cur->numKeys == MAX_CHILD)
-        split(cur, tasklet_id);  // key is full
+        split(cur, seat_id);  // key is full
+    return is_updated;
 }
 
-void init_BPTree(uint32_t tasklet_id)
+void init_BPTree(seat_id_t seat_id)
 {
-    NumOfNodes[tasklet_id] = 0;
-    height[tasklet_id] = 1;
-    root[tasklet_id] = newBPTreeNode(tasklet_id);
-    root[tasklet_id]->numKeys = 0;
-    root[tasklet_id]->isRoot = true;
-    root[tasklet_id]->isLeaf = true;
-    root[tasklet_id]->ptrs.lf.right = NULL;
-    root[tasklet_id]->ptrs.lf.left = NULL;
-    root[tasklet_id]->ptrs.lf.value[0] = 0;
+    extern num_kvpairs_in_seat[NR_SEATS_IN_DPU];
+    MBPTptr root = Seat_get_root(seat_id);
+    root->numKeys = 0;
+    root->isRoot = true;
+    root->isLeaf = true;
+    root->ptrs.lf.right = NULL;
+    root->ptrs.lf.left = NULL;
+    root->ptrs.lf.value[0] = 0;
+    num_kvpairs_in_seat[seat_id] = 0;
 }
-
-int BPTreeInsert(key_int64_t key, value_ptr_t value, uint32_t tasklet_id)
+/**
+ * @brief 
+ * If key already exists in the tree, update value and return true. 
+ * If not, insert key and return false.
+ * @param key key to insert
+ * @param value value related to key
+ * @param seat_id seat_id of the subtree
+ * @return Whether key is updated
+ */
+bool BPTreeInsert(key_int64_t key, value_ptr_t value, seat_id_t seat_id)
 {
-    if (root[tasklet_id]->numKeys == 0) {  // if the tree is empty
-        root[tasklet_id]->key[0] = key;
-        root[tasklet_id]->numKeys++;
-        root[tasklet_id]->ptrs.lf.value[0] = value;
+    extern __host int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
+    MBPTptr root = Seat_get_root(seat_id);
+    if (root->numKeys == 0) {  // if the tree is empty
+        root->key[0] = key;
+        root->numKeys++;
+        root->ptrs.lf.value[0] = value;
+        num_kvpairs_in_seat[seat_id]++;
         return true;
     }
-    MBPTptr Leaf = findLeaf(key, tasklet_id);
+    MBPTptr Leaf = findLeaf(key, seat_id);
     // int i = findKeyPos(Leaf, key);
     // printf("key:%ld,pos:%d\n",key,i);
-    insert(Leaf, key, value, NULL, tasklet_id);
+
     // printf("inserted {key %d, value '%s'}.\n",key,(char*)value);
-    return true;
+    return insert(Leaf, key, value, NULL, seat_id);
 }
 
-value_ptr_t BPTreeGet(key_int64_t key, uint32_t tasklet_id)
+/**
+ * @brief 
+ * get a value related to the key.
+ * @param key key
+ * @param seat_id seat_id of the subtree
+ * @return value related to the key
+ */
+value_ptr_t BPTreeGet(key_int64_t key, seat_id_t seat_id)
 {
-    MBPTptr Leaf = findLeaf(key, tasklet_id);
+    MBPTptr Leaf = findLeaf(key, seat_id);
     int i;
     for (i = 0; i < Leaf->numKeys; i++) {
         if (Leaf->key[i] == key) {
@@ -323,9 +323,9 @@ void showNode(MBPTptr cur, int nodeNo)
     printf("\n");
 }
 
-void BPTreePrintLeaves(uint32_t tasklet_id)
+void BPTreePrintLeaves(uint32_t seat_id)
 {
-    MBPTptr Leaf = findLeaf(0, tasklet_id);
+    MBPTptr Leaf = findLeaf(0, seat_id);
     int cnt = 0;
     while (Leaf != NULL) {
         showNode(Leaf, cnt);
@@ -335,33 +335,97 @@ void BPTreePrintLeaves(uint32_t tasklet_id)
     printf("\n");
 }
 
-void BPTreePrintRoot(uint32_t tasklet_id)
+void BPTreePrintRoot(uint32_t seat_id)
 {
     printf("rootNode\n");
-    showNode(root[tasklet_id], 0);
+    showNode(root[seat_id], 0);
 }
 
-void BPTreePrintAll(uint32_t tasklet_id)
+void BPTreePrintAll(uint32_t seat_id)
 {  // show all node (BFS)
     int nodeNo = 0;
-    initQueue(queue, tasklet_id);
-    enqueue(queue, root[tasklet_id], tasklet_id);
-    while ((queue[tasklet_id]->tail + 1) % MAX_NODE_NUM != queue[tasklet_id]->head) {
-        MBPTptr cur = dequeue(queue, tasklet_id);
+    initQueue(queue, seat_id);
+    enqueue(queue, root[seat_id], seat_id);
+    while ((queue[seat_id]->tail + 1) % MAX_NUM_NODES_IN_SEAT != queue[seat_id]->head) {
+        MBPTptr cur = dequeue(queue, seat_id);
         showNode(cur, nodeNo);
         nodeNo++;
         if (!cur->isLeaf) {
             for (int i = 0; i <= cur->numKeys; i++) {
-                enqueue(queue, cur->ptrs.inl.children[i], tasklet_id);
+                enqueue(queue, cur->ptrs.inl.children[i], seat_id);
             }
         }
     }
 }
 
 #endif
-int BPTree_GetNumOfNodes(uint32_t tasklet_id)
+
+
+int BPTree_Serialize(seat_id_t seat_id, KVPairPtr dest)
 {
-    return NumOfNodes[tasklet_id];
+    int n = 0;
+    MBPTptr leaf = findLeaf(KEY_MIN, seat_id);
+    while (leaf != NULL) {
+        for (int i = 0; i < leaf->numKeys; i++) {
+            dest[n].key = leaf->key[i];
+            dest[n].value = leaf->ptrs.lf.value[i];
+            n++;
+        }
+        leaf = leaf->ptrs.lf.right;
+    }
+    return n;
 }
 
-int BPTree_GetHeight(uint32_t tasklet_id) { return height[tasklet_id]; }
+int BPTree_Serialize_start_index(seat_id_t seat_id, KVPairPtr dest, int start_index)
+{
+    int n = start_index;
+    MBPTptr leaf = findLeaf(KEY_MIN, seat_id);
+    while (leaf != NULL) {
+        for (int i = 0; i < leaf->numKeys; i++) {
+            dest[n].key = leaf->key[i];
+            dest[n].value = leaf->ptrs.lf.value[i];
+            n++;
+        }
+        leaf = leaf->ptrs.lf.right;
+    }
+    return n;
+}
+
+int BPTree_Serialize_j_Last_Subtrees(MBPTptr tree, KVPairPtr dest, int j)
+{
+    int n = 0;
+    int num_serialized_subtrees = 0;
+    MBPTptr leaf = findLeafOfSubtree(KEY_MAX, tree);
+    while (leaf != NULL) {
+        for (int i = 0; i < leaf->numKeys; i++) {
+            dest[n].key = leaf->key[i];
+            dest[n].value = leaf->ptrs.lf.value[i];
+            n++;
+        }
+        j++;
+        if (num_serialized_subtrees == j) {
+            leaf->ptrs.lf.left->ptrs.lf.right = NULL;
+            break;
+        }
+        leaf = leaf->ptrs.lf.left;
+    }
+    return n;
+}
+
+void BPTree_Deserialize(seat_id_t seat_id, KVPairPtr src, int start_index, int n)
+{
+    for (int i = start_index; i < start_index + n; i++) {
+        BPTreeInsert(src[i].key, src[i].value, seat_id);
+    }
+}
+
+int traverse_and_count_elems(MBPTptr node)
+{
+    int elems = node->numKeys;
+    if (!node->isLeaf) {
+        for (int i = 0; i <= node->numKeys; i++) {
+            elems += traverse_and_count_elems(node->ptrs.inl.children[i]);
+        }
+    }
+    return elems;
+}

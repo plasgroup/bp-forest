@@ -1,17 +1,16 @@
-#ifndef __bplustree_H__
-#define __bplustree_H__
+#pragma once
 
-#define MAX_CHILD (18)  // split occurs if numKeys >= MAX_CHILD
+#define MAX_CHILD (126)  // split occurs if numKeys >= MAX_CHILD
 
-#define NODE_DATA_SIZE (33)  // maximum node data size, MB
-#define MAX_NODE_NUM \
-    ((NODE_DATA_SIZE << 20) / sizeof(BPTreeNode) / NUM_BPTREE_IN_DPU)  // NODE_DATA_SIZE MB for Node data
+#include "cabin.h"
 #include "common.h"
 #include <mram.h>
+#include <stdbool.h>
 #include <string.h>
 
 typedef __mram_ptr struct BPTreeNode* MBPTptr;
-extern MBPTptr root[NR_TASKLETS];
+typedef __mram_ptr KVPair* KVPairPtr;
+extern MBPTptr root[NR_SEATS_IN_DPU];
 
 typedef struct InternalNodePtrs {
     MBPTptr children[MAX_CHILD + 1];
@@ -35,24 +34,30 @@ typedef struct BPTreeNode {
     } ptrs;
 } BPTreeNode;
 
-extern void init_BPTree();
+typedef union NodeOrOffset {
+    BPTreeNode node;
+    int offset;
+} NodeOrOffset;
+
+extern void init_BPTree(seat_id_t seat_id);
 
 /**
  *    @param key key to insert
  *    @param pos pos
  *    @param value value to insert
  **/
-extern int BPTreeInsert(key_int64_t, value_ptr_t, uint32_t);
+extern bool BPTreeInsert(key_int64_t key, value_ptr_t value, seat_id_t seat_id);
+
 /**
  *    @param key key to search
  **/
-extern value_ptr_t BPTreeGet(key_int64_t, uint32_t);
+extern value_ptr_t BPTreeGet(key_int64_t key, seat_id_t seat_id);
 extern void BPTreeGetRange(key_int64_t, int);
 extern void BPTreeDelete(key_int64_t);
-extern int BPTree_GetNumOfNodes();
 extern void BPTreePrintLeaves();
 extern void BPTreePrintRoot();
 extern void BPTreePrintAll();
-extern int BPTree_GetHeight();
-
-#endif
+extern int BPTree_Serialize(seat_id_t seat_id, KVPairPtr dest);
+extern int BPTree_Serialize_start_index(seat_id_t seat_id, KVPairPtr dest, int start_index);
+extern int BPTree_Serialize_j_Last_Subtrees(MBPTptr tree, KVPairPtr dest, int j);
+extern void BPTree_Deserialize(seat_id_t seat_id, KVPairPtr src, int start_index, int n);
