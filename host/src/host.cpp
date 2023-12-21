@@ -177,12 +177,11 @@ void initialize_dpus(int num_init_reqs, HostTree* tree, struct dpu_set_t set, st
                "]heap size is not enough\n");
         return;
     }
-    key_int64_t* keys = (key_int64_t*)malloc(num_init_reqs * sizeof(key_int64_t));
     key_int64_t interval = (key_int64_t)std::numeric_limits<uint64_t>::max() / num_init_reqs;
 
     for (int i = 0; i < num_init_reqs; i++) {
-        keys[i] = interval * i;
-        std::map<key_int64_t, std::pair<int, int>>::iterator it = tree->key_to_tree_map.lower_bound(keys[i]);
+        batch_keys[i] = interval * i;
+        std::map<key_int64_t, std::pair<int, int>>::iterator it = tree->key_to_tree_map.lower_bound(batch_keys[i]);
         if (it != tree->key_to_tree_map.end()) {
             batch_ctx.num_keys_for_tree[it->second.first][it->second.second]++;
             batch_ctx.num_keys_for_DPU[it->second.first]++;
@@ -198,10 +197,10 @@ void initialize_dpus(int num_init_reqs, HostTree* tree, struct dpu_set_t set, st
     }
     /* make requests to send to DPUs */
     for (int i = 0; i < num_init_reqs; i++) {
-        auto it = tree->key_to_tree_map.lower_bound(keys[i]);
+        auto it = tree->key_to_tree_map.lower_bound(batch_keys[i]);
         if (it != tree->key_to_tree_map.end()) {
-            dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]].key = keys[i];
-            dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]++].write_val_ptr = keys[i];
+            dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]].key = batch_keys[i];
+            dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]++].write_val_ptr = batch_keys[i];
         } else {
             printf("ERROR: the key is out of range 2\n");
         }
@@ -260,7 +259,6 @@ void initialize_dpus(int num_init_reqs, HostTree* tree, struct dpu_set_t set, st
     //         DPU_ASSERT(dpu_log_read(dpu, stdout));
     // }
 #endif
-    free(keys);
     return;
 }
 
@@ -628,7 +626,8 @@ int main(int argc, char* argv[])
     // std::cout << "[INFO] zipf_const:" << zipfian_const << ", workload file:" << file_name << std::endl;
     /* allocate DPUS */
     struct dpu_set_t set, dpu;
-    batch_keys = (key_int64_t*)malloc(NUM_REQUESTS_PER_BATCH * sizeof(key_int64_t));
+    int keys_array_size = NUM_INIT_REQS > NUM_REQUESTS_PER_BATCH ? NUM_INIT_REQS : NUM_REQUESTS_PER_BATCH;
+    batch_keys = (key_int64_t*)malloc(keys_array_size * sizeof(key_int64_t));
     dpu_requests = (dpu_requests_t*)malloc((NR_DPUS) * sizeof(dpu_requests_t));
     dpu_results = (dpu_results_t*)malloc((NR_DPUS) * sizeof(dpu_results_t));
 #ifndef NO_DPU_EXECUTION
