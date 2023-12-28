@@ -603,7 +603,7 @@ struct Option {
         std::string alpha = a.get<std::string>("zipfianconst");
         zipfian_const = atof(alpha.c_str());
         std::string wlf = a.get<std::string>("directory") + "/workload/zipf_const_" + alpha + ".bin";
-        workload_file = wlf.c_str();
+        workload_file = strdup(wlf.c_str());
         nr_total_queries = a.get<int>("keynum");
         nr_migrations_per_batch = a.get<int>("migration_num");
         is_simulator = a.exist("simulator");
@@ -618,13 +618,15 @@ struct Option {
 #ifdef HOST_ONLY
         dpu_binary = NULL;
 #else /* HOST_ONLY */
+        std::string db = a.get<std::string>("directory");
         if (is_simulator)
-            dpu_binary = (a.get<std::string>("directory") + "/build/dpu/dpu_program_simulator").c_str();
+            db += "/build/dpu/dpu_program_simulator";
         else
-            dpu_binary = (a.get<std::string>("directory") + "/build/dpu/dpu_program_UPMEM").c_str();
+            db += "/build/dpu/dpu_program_UPMEM";
+        dpu_binary = strdup(db.c_str());
 #endif /* HOST_ONLY */
     }
-    const char* dpu_binary = NULL;
+    const char* dpu_binary;
     const char* workload_file;
     bool is_simulator;
     float zipfian_const;
