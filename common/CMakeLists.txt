@@ -5,8 +5,8 @@ target_include_directories(common_host_only INTERFACE ${CMAKE_CURRENT_LIST_DIR}/
 target_link_libraries(common_host_only INTERFACE)
 target_compile_definitions(common_host_only INTERFACE STACK_SIZE_DEFAULT=1024 NR_TASKLETS=${NR_TASKLETS_HOST_ONLY} NR_DPUS=${NR_DPUS_HOST_ONLY}  NUM_REQUESTS_PER_BATCH=${NUM_REQUESTS_PER_BATCH_HOST_ONLY} $<$<CONFIG:Debug>:PRINT_DEBUG=1>)
 target_link_options(common_host_only INTERFACE -DSTACK_SIZE_DEFAULT=1024 -DNR_TASKLETS=${NR_TASKLETS_HOST_ONLY} -DNR_DPUS=${NR_DPUS_HOST_ONLY} -DNUM_REQUESTS_PER_BATCH=${NUM_REQUESTS_PER_BATCH_HOST_ONLY} $<$<CONFIG:Debug>:-DPRINT_DEBUG=1>)
-target_compile_definitions(common_host_only INTERFACE NO_DPU_EXECUTION)
-target_link_options(common_host_only INTERFACE -DNO_DPU_EXECUTION)
+target_compile_definitions(common_host_only INTERFACE NO_DPU_EXECUTION HOST_ONLY)
+target_link_options(common_host_only INTERFACE -DNO_DPU_EXECUTION -DHOST_ONLY)
 
 
 # UPMEM

@@ -589,9 +589,57 @@ int do_one_batch(const uint64_t* task, int batch_num, int migrations_per_batch, 
     return num_keys_batch;
 }
 
+struct Option {
+    void parse(int argc, char* argv[]) {
+        cmdline::parser a;
+        a.add<int>("keynum", 'n', "maximum num of keys for the experiment", false, NUM_REQUESTS_PER_BATCH * 10);
+        a.add<std::string>("zipfianconst", 'a', "zipfian consttant", false, "0.99");
+        a.add<int>("migration_num", 'm', "migration_num per batch", false, 5);
+        a.add<std::string>("directory", 'd', "execution directory, offset from bp-forest directory. ex)bp-forest-exp", false, ".");
+        a.add("simulator", 's', "if declared, the binary for simulator is used");
+        a.add<std::string>("ops", 'o', "kind of operation ex)get, insert", false, "get");
+        a.parse_check(argc, argv);
+
+        std::string alpha = a.get<std::string>("zipfianconst");
+        zipfian_const = atof(alpha.c_str());
+        std::string wlf = a.get<std::string>("directory") + "/workload/zipf_const_" + alpha + ".bin";
+        workload_file = wlf.c_str();
+        nr_total_queries = a.get<int>("keynum");
+        nr_migrations_per_batch = a.get<int>("migration_num");
+        is_simulator = a.exist("simulator");
+        if (a.get<std::string>("ops") == "get")
+            op_type = OP_TYPE_GET;
+        else if (a.get<std::string>("ops") == "insert")
+            op_type = OP_TYPE_INSERT;
+        else {
+            fprintf(stderr, "invalid operation type: %s\n", a.get<std::string>("ops").c_str());
+            exit(1);
+        }
+#ifdef HOST_ONLY
+        dpu_binary = NULL;
+#else /* HOST_ONLY */
+        if (is_simulator)
+            dpu_binary = (a.get<std::string>("directory") + "/build/dpu/dpu_program_simulator").c_str();
+        else
+            dpu_binary = (a.get<std::string>("directory") + "/build/dpu/dpu_program_UPMEM").c_str();
+#endif /* HOST_ONLY */
+    }
+    const char* dpu_binary = NULL;
+    const char* workload_file;
+    bool is_simulator;
+    float zipfian_const;
+    int nr_total_queries;
+    int nr_migrations_per_batch;
+    enum OpType {
+        OP_TYPE_GET,
+        OP_TYPE_INSERT
+    } op_type;
+} Opt;
+
 int main(int argc, char* argv[])
 {
-    printf("\n");
+    Opt.parse(argc, argv);
+    
     /* In current implementation, bitmap word is 64 bit. So NR_SEAT_IN_DPU must not be greater than 64. */
     assert(NR_SEATS_IN_DPU <= 64);
     assert(sizeof(dpu_requests_t) == sizeof(dpu_requests[0]));
@@ -603,27 +651,7 @@ int main(int argc, char* argv[])
               << "NUM Trees per DPU(max):" << NR_SEATS_IN_DPU << std::endl;
     printf("no. of requests per batch: %ld\n", (uint64_t)NUM_REQUESTS_PER_BATCH);
 #endif
-    cmdline::parser a;
-    a.add<int>("keynum", 'n', "maximum num of keys for the experiment", false, NUM_REQUESTS_PER_BATCH * 10);
-    a.add<std::string>("zipfianconst", 'a', "zipfian consttant", false, "0.99");
-    a.add<int>("migration_num", 'm', "migration_num per batch", false, 5);
-    a.add<std::string>("directory", 'd', "execution directory, offset from bp-forest directory. ex)bp-forest-exp", false, ".");
-    a.add("simulator", 's', "if declared, the binary for simulator is used");
-    a.add<std::string>("ops", 'o', "kind of operation ex)get, insert", false, "get");
-    a.parse_check(argc, argv);
-    std::string zipfian_const = a.get<std::string>("zipfianconst");
-    int max_key_num = a.get<int>("keynum");
-    std::string file_name = (a.get<std::string>("directory") + "/workload/zipf_const_" + zipfian_const + ".bin");
-    std::string dpu_binary;
-    std::string op_type = a.get<std::string>("ops");
-#ifndef NO_DPU_EXECUTION
-    if (a.exist("simulator")) {
-        dpu_binary = a.get<std::string>("directory") + "/build/dpu/dpu_program_simulator";
-    } else {
-        dpu_binary = a.get<std::string>("directory") + "/build/dpu/dpu_program_UPMEM";
-    }
-#endif /* NO_DPU_EXECUTION */
-    // std::cout << "[INFO] zipf_const:" << zipfian_const << ", workload file:" << file_name << std::endl;
+
     /* allocate DPUS */
     struct dpu_set_t set, dpu;
     int keys_array_size = NUM_INIT_REQS > NUM_REQUESTS_PER_BATCH ? NUM_INIT_REQS : NUM_REQUESTS_PER_BATCH;
@@ -631,13 +659,13 @@ int main(int argc, char* argv[])
     dpu_requests = (dpu_requests_t*)malloc((NR_DPUS) * sizeof(dpu_requests_t));
     dpu_results = (dpu_results_t*)malloc((NR_DPUS) * sizeof(dpu_results_t));
 #ifndef NO_DPU_EXECUTION
-    if (a.exist("simulator")) {
+    if (Opt.is_simulator) {
         DPU_ASSERT(dpu_alloc(NR_DPUS, "backend=simulator", &set));
     } else {
         DPU_ASSERT(dpu_alloc(NR_DPUS, NULL, &set));
     }
 
-    DPU_ASSERT(dpu_load(set, dpu_binary.c_str(), NULL));
+    DPU_ASSERT(dpu_load(set, Opt.dpu_binary, NULL));
     DPU_ASSERT(dpu_get_nr_dpus(set, &nr_of_dpus));
 #endif /* NO_DPU_EXECUTION */
 
@@ -653,7 +681,7 @@ int main(int argc, char* argv[])
 #endif
 
     /* load workload file */
-    std::ifstream file_input(file_name, std::ios_base::binary);
+    std::ifstream file_input(Opt.workload_file, std::ios_base::binary);
     if (!file_input) {
         printf("cannot open file\n");
         return 1;
@@ -663,14 +691,19 @@ int main(int argc, char* argv[])
     int num_keys = 0;
     int batch_num = 0;
     total_num_keys = 0;
-    int migrations_per_batch = a.get<int>("migration_num");
     printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time, execution_time, recieve_result_time, merge_time, batch_time, throughput\n");
-    while (total_num_keys < max_key_num) {
+    while (total_num_keys < Opt.nr_total_queries) {
         BatchCtx batch_ctx;
-        if (op_type == "get")
-            num_keys = do_one_batch(&task_get, batch_num, migrations_per_batch, total_num_keys, max_key_num, file_input, host_tree, batch_ctx, set, dpu);
-        if (op_type == "insert")
-            num_keys = do_one_batch(&task_insert, batch_num, migrations_per_batch, total_num_keys, max_key_num, file_input, host_tree, batch_ctx, set, dpu);
+        switch (Opt.op_type) {
+        case Option::OP_TYPE_GET:
+            num_keys = do_one_batch(&task_get, batch_num, Opt.nr_migrations_per_batch, total_num_keys, Opt.nr_total_queries, file_input, host_tree, batch_ctx, set, dpu);
+            break;
+        case Option::OP_TYPE_INSERT:
+            num_keys = do_one_batch(&task_insert, batch_num, Opt.nr_migrations_per_batch, total_num_keys, Opt.nr_total_queries, file_input, host_tree, batch_ctx, set, dpu);
+            break;
+        default:
+            abort();
+        }
         total_num_keys += num_keys;
         batch_num++;
         batch_time = preprocess_time1 + preprocess_time2 + migration_plan_time + migration_time + send_time + execution_time + recieve_result_time + merge_time;
@@ -684,8 +717,8 @@ int main(int argc, char* argv[])
         total_merge_time += merge_time;
         total_batch_time += batch_time;
         double throughput = num_keys / batch_time;
-        printf("%s, %d, %d, %d, %d, %d, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
-            zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, batch_num,
+        printf("%.2f, %d, %d, %d, %d, %d, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
+            Opt.zipfian_const, NR_DPUS, NR_TASKLETS, batch_num,
             num_keys, batch_ctx.send_size, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time,
             execution_time, recieve_result_time, merge_time, batch_time, throughput);
     }
@@ -698,8 +731,8 @@ int main(int argc, char* argv[])
     //printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, send_time, cpu_time,
     //    execution_time, 100 * cpu_time / execution_time, send_and_execution_time, total_time, throughput);
     double throughput = total_num_keys / total_batch_time;
-    printf("%s, %d, %d, total, %ld,, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
-        zipfian_const.c_str(), NR_DPUS, NR_TASKLETS,
+    printf("%.2f, %d, %d, total, %ld,, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
+        Opt.zipfian_const, NR_DPUS, NR_TASKLETS,
         total_num_keys, total_preprocess_time1, total_preprocess_time2, total_migration_plan_time, total_migration_time, total_send_time,
         total_execution_time, total_recieve_result_time, total_merge_time, total_batch_time, throughput);
 #ifndef NO_DPU_EXECUTION
