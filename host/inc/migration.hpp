@@ -1,4 +1,5 @@
-#pragma once
+#ifndef __MIGRATION_HPP__
+#define __MIGRATION_HPP__
 
 #include "common.h"
 #ifndef NO_DPU_EXECUTION
@@ -114,7 +115,7 @@ public:
     void migration_plan_memory_balancing(void);
     void migration_plan_for_merge(HostTree* host_tree, merge_info_t* merge_list);
     void normalize(void);
-    void execute(dpu_set_t set, dpu_set_t dpu);
+    void execute(void);
     void print_plan(void);
 
     MigrationPlanIterator begin()
@@ -135,3 +136,5 @@ private:
     void migrate_subtrees(dpu_id_t from_dpu, dpu_id_t to_dpu, int n);
     bool plan_merge(Position left, Position right, merge_info_t* merge_list);
 };
+
+#endif /* __MIGRATION_HPP__ */

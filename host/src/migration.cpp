@@ -1,5 +1,6 @@
 #include "migration.hpp"
 #include "common.h"
+#include "upmem.hpp"
 #include "host_data_structures.hpp"
 #include "node_defs.hpp"
 #include <algorithm>
@@ -238,44 +239,6 @@ void Migration::migration_plan_for_merge(HostTree* host_tree, merge_info_t* merg
     }
 }
 
-static void send_nodes_from_dpu_to_dpu(dpu_id_t from_DPU, seat_id_t from_tree, dpu_id_t to_DPU, seat_id_t to_tree, dpu_set_t set, dpu_set_t dpu)
-{
-    uint64_t task;
-    /* grobal variables difined in host.cpp */
-    extern dpu_id_t each_dpu;
-    extern BPTreeNode nodes_buffer[MAX_NUM_NODES_IN_SEAT];
-    extern uint64_t nodes_num;
-#ifndef NO_DPU_EXECUTION
-    DPU_FOREACH(set, dpu, each_dpu)
-    {
-        if (each_dpu == from_DPU) {
-            task = (((uint64_t)from_tree) << 32) | TASK_FROM;
-            DPU_ASSERT(dpu_prepare_xfer(dpu, &task));
-            DPU_ASSERT(dpu_push_xfer(dpu, DPU_XFER_TO_DPU, "task_no", 0, sizeof(uint64_t), DPU_XFER_DEFAULT));
-            DPU_ASSERT(dpu_launch(dpu, DPU_SYNCHRONOUS));
-            // TODO: nodes_bufferを増やし、並列にmigrationを行う
-            DPU_ASSERT(dpu_copy_from(dpu, "tree_transfer_num", 0, &nodes_num, sizeof(uint64_t)));
-            DPU_ASSERT(dpu_copy_from(dpu, "tree_transfer_buffer", 0, &nodes_buffer, nodes_num * sizeof(BPTreeNode)));
-            break;
-        }
-    }
-    DPU_FOREACH(set, dpu, each_dpu)
-    {
-        if (each_dpu == to_DPU) {
-            task = (((uint64_t)to_tree) << 32) | TASK_TO;
-            DPU_ASSERT(dpu_prepare_xfer(dpu, &nodes_num));
-            DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_TO_DPU, "tree_transfer_num", 0, sizeof(uint64_t), DPU_XFER_DEFAULT));
-            DPU_ASSERT(dpu_prepare_xfer(dpu, &nodes_buffer));
-            DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_TO_DPU, "tree_transfer_buffer", 0, nodes_num * sizeof(BPTreeNode), DPU_XFER_DEFAULT));
-            DPU_ASSERT(dpu_prepare_xfer(dpu, &task));
-            DPU_ASSERT(dpu_push_xfer(set, DPU_XFER_TO_DPU, "task_no", 0, sizeof(uint64_t), DPU_XFER_DEFAULT));
-            DPU_ASSERT(dpu_launch(dpu, DPU_SYNCHRONOUS));
-            break;
-        }
-    }
-#endif /* NO_DPU_EXECUTION */
-}
-
 void Migration::normalize()
 {
     for (dpu_id_t i = 0; i < NR_DPUS; i++)
@@ -292,7 +255,7 @@ void Migration::normalize()
 }
 
 /* execute migration according to migration_plan */
-void Migration::execute(dpu_set_t set, dpu_set_t dpu)
+void Migration::execute()
 {
     normalize();
     /* apply */
@@ -304,7 +267,7 @@ void Migration::execute(dpu_set_t set, dpu_set_t dpu)
 #ifdef PRINT_DEBUG
                 printf("do migration: (%d, %d) -> (%d, %d)\n", from_dpu, from, i, j);
 #endif
-                send_nodes_from_dpu_to_dpu(from_dpu, from, i, j, set, dpu);
+                upmem_send_nodes_from_dpu_to_dpu(from_dpu, from, i, j);
             }
 }
 
