@@ -23,6 +23,20 @@ static float time_diff(struct timeval* start, struct timeval* end)
     return timediff;
 }
 
+static const char* task_name(uint64_t task)
+{
+    switch (TASK_GET_ID(task)) {
+    case TASK_INIT:   return "INIT";
+    case TASK_GET:    return "GET";
+    case TASK_INSERT: return "INSERT";
+    case TASK_DELETE: return "DELETE";
+    case TASK_FROM:   return "FROM";
+    case TASK_TO:     return "TO";
+    case TASK_MERGE:   return "MERGE";
+    default: return "unknown-task";
+    }
+}
+
 void upmem_init(const char* binary, bool is_simulator)
 {
     int nr_dpus_allocated;
@@ -48,6 +62,17 @@ void upmem_release()
 {
 #ifndef HOST_ONLY
     DPU_ASSERT(dpu_free(dpu_set));
+#endif /* HOST_ONLY */
+}
+
+uint32_t upmem_get_nr_dpus()
+{
+#ifdef HOST_ONLY
+    return 0;
+#else /* HOST_ONLY */
+    uint32_t nr_dpus;
+    DPU_ASSERT(dpu_get_nr_dpus(dpu_set, &nr_dpus));
+    return nr_dpus;
 #endif /* HOST_ONLY */
 }
 
@@ -108,7 +133,8 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
         *send_time = time_diff(&start, &end);
 
 #ifdef PRINT_DEBUG
-    printf("send task [%s] done; %0.5f sec\n", task_name(task), time_diff(start, end));
+    printf("send task [%s] done; %0.5f sec\n",
+           task_name(task), time_diff(&start, &end));
     printf("execute task [%s]\n", task_name(task));
 #endif /* PRINT_DEBUG */
 
@@ -131,7 +157,8 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
         *exec_time = time_diff(&start, &end);
 
 #ifdef PRINT_DEBUG
-    printf("execute task [%s] done; %0.5f sec\n", task_name(task), time_diff(start, end));
+    printf("execute task [%s] done; %0.5f sec\n",
+           task_name(task), time_diff(&start, &end));
 #endif /* PRINT_DEBUG */
 }
 
@@ -184,7 +211,7 @@ void upmem_recieve_split_info(float* receive_time)
         *receive_time = time_diff(&start, &end);
 }
 
-void recieve_num_kvpairs(HostTree* host_tree, float* receive_time)
+void upmem_recieve_num_kvpairs(HostTree* host_tree, float* receive_time)
 {
     dpu_set_t dpu;
     uint64_t dpu_index;

@@ -33,23 +33,6 @@
 #ifndef NUM_INIT_REQS
 #define NUM_INIT_REQS (2000 * NUM_TOTAL_INIT_TREES)
 #endif
-#ifdef NO_DPU_EXECUTION
-#define PRINT_LOG_ALL_DPUS
-#define PRINT_LOG_ONE_DPU(i)
-#else /* NO_DPU_EXECUTION */
-#define PRINT_LOG_ALL_DPUS                     \
-    DPU_FOREACH(set, dpu, each_dpu)            \
-    {                                          \
-        DPU_ASSERT(dpu_log_read(dpu, stdout)); \
-    }
-#define PRINT_LOG_ONE_DPU(i)                       \
-    DPU_FOREACH(set, dpu, each_dpu)                \
-    {                                              \
-        if (each_dpu == i) {                       \
-            DPU_ASSERT(dpu_log_read(dpu, stdout)); \
-        }                                          \
-    }
-#endif /* NO_DPU_EXECUTION */
 
 // #define MERGE
 
@@ -358,7 +341,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     preprocess_time2 = time_diff(&start, &end);
 
 #ifdef PRINT_DEBUG
-    printf("sending %d requests for %d DPUS...\n", NUM_REQUESTS_PER_BATCH, nr_of_dpus);
+    printf("sending %d requests for %d DPUS...\n", NUM_REQUESTS_PER_BATCH, upmem_get_nr_dpus());
 #endif
     /* 5. query deliver + 6. DPU query execution */
     upmem_send_task(task, batch_ctx, &send_time, &execution_time);
@@ -366,7 +349,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     /* 7. recieve results (and update CPU structs) */
     
     gettimeofday(&start, NULL);
-    recieve_num_kvpairs(host_tree, NULL);
+    upmem_recieve_num_kvpairs(host_tree, NULL);
     if (task == TASK_INSERT) {
         upmem_recieve_split_info(NULL);
         update_cpu_struct(host_tree);
@@ -399,7 +382,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     migration_plan_for_merge.migration_plan_for_merge(host_tree, merge_info);
     // migration_plan_for_merge.print_plan();
     // print_merge_info();
-    migration_plan_for_merge.execute(set, dpu);
+    migration_plan_for_merge.execute();
     host_tree->apply_migration(&migration_plan_for_merge);
     update_cpu_struct_merge(host_tree);
     upmem_send_task(TASK_MERGE, batch_ctx, NULL, NULL);
@@ -410,10 +393,6 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     printf("[4/4] batch postprocess finished: %0.5fsec\n", time_diff(&start, &end));
 #endif
 
-#ifdef PRINT_DEBUG
-    PRINT_LOG_ONE_DPU(0);
-#endif
-    // PRINT_POSITION_AND_VARIABLE(num_keys_batch, % d);
     return num_keys_batch;
 }
 

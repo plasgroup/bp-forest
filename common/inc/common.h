@@ -130,6 +130,12 @@ typedef struct {
 #define TASK_TO (101ULL)
 #define TASK_MERGE (102ULL)
 
+#define TASK_OPERAND_SHIFT 32
+#define TASK_ID_MASK ((1ULL << TASK_OPERAND_SHIFT) - 1)
+#define TASK_WITH_OPERAND(task,rand) ((task) | ((rand) << TASK_OPERAND_SHIFT))
+#define TASK_GET_ID(task) ((task) & TASK_ID_MASK)
+#define TASK_GET_OPERAND(task) ((task) >> TASK_OPERAND_SHIFT)
+
 
 #define PRINT_POSITION_AND_VARIABLE(NAME, FORMAT) \
     printf("[Debug at %s:%d] " #NAME " = " #FORMAT "\n", __FILE__, __LINE__, NAME);
