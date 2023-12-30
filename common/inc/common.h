@@ -1,5 +1,8 @@
 #pragma once
+
+#include "workload_types.h"
 #include <stdint.h>
+
 #ifdef NO_DPU_EXECUTION
 typedef int dpu_id_t;
 struct dpu_set_t {
@@ -59,17 +62,6 @@ struct dpu_set_t {
 #ifdef VARY_REQUESTNUM  // for experiment: xaxis is requestnum
 #define NUM_VARS (8)    // number of point of xs
 #endif
-
-/* Structure used by both the host and the dpu to communicate information */
-typedef uint64_t key_int64_t;
-#define KEY_MIN (0)
-#define KEY_MAX (-1ULL)
-typedef uint64_t value_ptr_t;
-
-typedef struct KVPair {
-    key_int64_t key;
-    value_ptr_t value;
-} KVPair;
 
 /* one request */
 typedef struct {

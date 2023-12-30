@@ -1,5 +1,5 @@
 #include "cmdline.h"
-#include "common.h"
+#include "workload_types.h"
 #include "generator.h"
 #include "scrambled_zipfian_generator.h"
 #include "zipfian_generator.h"

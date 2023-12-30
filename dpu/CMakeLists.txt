@@ -10,5 +10,3 @@ foreach(build_version IN LISTS targets)
     target_compile_options(dpu_program_${build_version} PRIVATE $<$<CONFIG:Debug>:-pg>)
     target_link_options(dpu_program_${build_version} PRIVATE $<$<CONFIG:Debug>:-pg>)
 endforeach(build_version)
-
-
