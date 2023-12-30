@@ -3,4 +3,4 @@
 cd $(dirname $0)/..
 echo cd $(pwd)
 
-dpu-lldb -o "file ./build_simulator/host/host_app"
+dpu-lldb -o "file ./build/host/host_app"

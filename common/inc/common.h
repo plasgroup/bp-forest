@@ -1,5 +1,8 @@
 #pragma once
+
+#include "workload_types.h"
 #include <stdint.h>
+
 #define NR_ELEMS_PER_DPU (RAND_MAX / NR_DPUS)
 #define NR_ELEMS_PER_TASKLET (RAND_MAX / NR_DPUS / NR_TASKLETS)
 #define NR_ELEMS_PER_TASKLET (RAND_MAX / NR_DPUS / NR_TASKLETS)
@@ -52,17 +55,6 @@
 #ifdef VARY_REQUESTNUM  // for experiment: xaxis is requestnum
 #define NUM_VARS (8)    // number of point of xs
 #endif
-
-/* Structure used by both the host and the dpu to communicate information */
-typedef uint64_t key_int64_t;
-#define KEY_MIN (0)
-#define KEY_MAX (-1ULL)
-typedef uint64_t value_ptr_t;
-
-typedef struct KVPair {
-    key_int64_t key;
-    value_ptr_t value;
-} KVPair;
 
 /* one request */
 typedef struct {
