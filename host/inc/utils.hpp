@@ -22,4 +22,11 @@ private:
     static inline std::random_device rnd;
 };
 
+static inline float time_diff(struct timeval* start, struct timeval* end)
+{
+    float timediff =
+      (end->tv_sec - start->tv_sec) + 1e-6 * (end->tv_usec - start->tv_usec);
+    return timediff;
+}
+
 #endif /* __UTILS_HPP__ */

@@ -1,11 +1,7 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
-#include "cmdline.h"
-#include "host_data_structures.hpp"
-#include "migration.hpp"
 #include <cassert>
-#include "node_defs.hpp"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -22,8 +18,13 @@
 // }
 #include <map>
 
+#include "cmdline.h"
 #include "common.h"
+#include "host_data_structures.hpp"
+#include "migration.hpp"
+#include "node_defs.hpp"
 #include "upmem.hpp"
+#include "utils.hpp"
 
 #define ANSI_COLOR_RED "\x1b[31m"
 #define ANSI_COLOR_GREEN "\x1b[32m"
@@ -70,11 +71,54 @@ key_int64_t* batch_keys;
 
 void print_merge_info();
 
-static float time_diff(struct timeval* start, struct timeval* end)
-{
-    float timediff = (end->tv_sec - start->tv_sec) + 1e-6 * (end->tv_usec - start->tv_usec);
-    return timediff;
-}
+struct Option {
+    void parse(int argc, char* argv[]) {
+        cmdline::parser a;
+        a.add<int>("keynum", 'n', "maximum num of keys for the experiment", false, NUM_REQUESTS_PER_BATCH * 10);
+        a.add<std::string>("zipfianconst", 'a', "zipfian consttant", false, "0.99");
+        a.add<int>("migration_num", 'm', "migration_num per batch", false, 5);
+        a.add<std::string>("directory", 'd', "execution directory, offset from bp-forest directory. ex)bp-forest-exp", false, ".");
+        a.add("simulator", 's', "if declared, the binary for simulator is used");
+        a.add<std::string>("ops", 'o', "kind of operation ex)get, insert", false, "get");
+        a.parse_check(argc, argv);
+
+        std::string alpha = a.get<std::string>("zipfianconst");
+        zipfian_const = atof(alpha.c_str());
+        std::string wlf = a.get<std::string>("directory") + "/workload/zipf_const_" + alpha + ".bin";
+        workload_file = strdup(wlf.c_str());
+        nr_total_queries = a.get<int>("keynum");
+        nr_migrations_per_batch = a.get<int>("migration_num");
+        is_simulator = a.exist("simulator");
+        if (a.get<std::string>("ops") == "get")
+            op_type = OP_TYPE_GET;
+        else if (a.get<std::string>("ops") == "insert")
+            op_type = OP_TYPE_INSERT;
+        else {
+            fprintf(stderr, "invalid operation type: %s\n", a.get<std::string>("ops").c_str());
+            exit(1);
+        }
+#ifdef HOST_ONLY
+        dpu_binary = NULL;
+#else /* HOST_ONLY */
+        std::string db = a.get<std::string>("directory");
+        if (is_simulator)
+            db += "/build/dpu/dpu_program_simulator";
+        else
+            db += "/build/dpu/dpu_program_UPMEM";
+        dpu_binary = strdup(db.c_str());
+#endif /* HOST_ONLY */
+    }
+    const char* dpu_binary;
+    const char* workload_file;
+    bool is_simulator;
+    float zipfian_const;
+    int nr_total_queries;
+    int nr_migrations_per_batch;
+    enum OpType {
+        OP_TYPE_GET,
+        OP_TYPE_INSERT
+    } op_type;
+} opt;
 
 #ifdef DEBUG_ON
 void check_results(dpu_results_t* dpu_results, int key_index[NR_DPUS][NR_SEATS_IN_DPU + 1])
@@ -376,58 +420,9 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     return num_keys_batch;
 }
 
-struct Option {
-    void parse(int argc, char* argv[]) {
-        cmdline::parser a;
-        a.add<int>("keynum", 'n', "maximum num of keys for the experiment", false, NUM_REQUESTS_PER_BATCH * 10);
-        a.add<std::string>("zipfianconst", 'a', "zipfian consttant", false, "0.99");
-        a.add<int>("migration_num", 'm', "migration_num per batch", false, 5);
-        a.add<std::string>("directory", 'd', "execution directory, offset from bp-forest directory. ex)bp-forest-exp", false, ".");
-        a.add("simulator", 's', "if declared, the binary for simulator is used");
-        a.add<std::string>("ops", 'o', "kind of operation ex)get, insert", false, "get");
-        a.parse_check(argc, argv);
-
-        std::string alpha = a.get<std::string>("zipfianconst");
-        zipfian_const = atof(alpha.c_str());
-        std::string wlf = a.get<std::string>("directory") + "/workload/zipf_const_" + alpha + ".bin";
-        workload_file = strdup(wlf.c_str());
-        nr_total_queries = a.get<int>("keynum");
-        nr_migrations_per_batch = a.get<int>("migration_num");
-        is_simulator = a.exist("simulator");
-        if (a.get<std::string>("ops") == "get")
-            op_type = OP_TYPE_GET;
-        else if (a.get<std::string>("ops") == "insert")
-            op_type = OP_TYPE_INSERT;
-        else {
-            fprintf(stderr, "invalid operation type: %s\n", a.get<std::string>("ops").c_str());
-            exit(1);
-        }
-#ifdef HOST_ONLY
-        dpu_binary = NULL;
-#else /* HOST_ONLY */
-        std::string db = a.get<std::string>("directory");
-        if (is_simulator)
-            db += "/build/dpu/dpu_program_simulator";
-        else
-            db += "/build/dpu/dpu_program_UPMEM";
-        dpu_binary = strdup(db.c_str());
-#endif /* HOST_ONLY */
-    }
-    const char* dpu_binary;
-    const char* workload_file;
-    bool is_simulator;
-    float zipfian_const;
-    int nr_total_queries;
-    int nr_migrations_per_batch;
-    enum OpType {
-        OP_TYPE_GET,
-        OP_TYPE_INSERT
-    } op_type;
-} Opt;
-
 int main(int argc, char* argv[])
 {
-    Opt.parse(argc, argv);
+    opt.parse(argc, argv);
     
     /* In current implementation, bitmap word is 64 bit. So NR_SEAT_IN_DPU must not be greater than 64. */
     assert(NR_SEATS_IN_DPU <= 64);
@@ -441,7 +436,7 @@ int main(int argc, char* argv[])
     printf("no. of requests per batch: %ld\n", (uint64_t)NUM_REQUESTS_PER_BATCH);
 #endif
 
-    upmem_init(Opt.dpu_binary, Opt.is_simulator);
+    upmem_init(opt.dpu_binary, opt.is_simulator);
 
     int keys_array_size = NUM_INIT_REQS > NUM_REQUESTS_PER_BATCH ? NUM_INIT_REQS : NUM_REQUESTS_PER_BATCH;
     batch_keys = (key_int64_t*)malloc(keys_array_size * sizeof(key_int64_t));
@@ -455,7 +450,7 @@ int main(int argc, char* argv[])
 #endif
 
     /* load workload file */
-    std::ifstream file_input(Opt.workload_file, std::ios_base::binary);
+    std::ifstream file_input(opt.workload_file, std::ios_base::binary);
     if (!file_input) {
         printf("cannot open file\n");
         return 1;
@@ -466,14 +461,14 @@ int main(int argc, char* argv[])
     int batch_num = 0;
     uint64_t total_num_keys = 0;
     printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time, execution_time, recieve_result_time, merge_time, batch_time, throughput\n");
-    while (total_num_keys < Opt.nr_total_queries) {
+    while (total_num_keys < opt.nr_total_queries) {
         BatchCtx batch_ctx;
-        switch (Opt.op_type) {
+        switch (opt.op_type) {
         case Option::OP_TYPE_GET:
-            num_keys = do_one_batch(TASK_GET, batch_num, Opt.nr_migrations_per_batch, total_num_keys, Opt.nr_total_queries, file_input, host_tree, batch_ctx);
+            num_keys = do_one_batch(TASK_GET, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, file_input, host_tree, batch_ctx);
             break;
         case Option::OP_TYPE_INSERT:
-            num_keys = do_one_batch(TASK_INSERT, batch_num, Opt.nr_migrations_per_batch, total_num_keys, Opt.nr_total_queries, file_input, host_tree, batch_ctx);
+            num_keys = do_one_batch(TASK_INSERT, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, file_input, host_tree, batch_ctx);
             break;
         default:
             abort();
@@ -492,7 +487,7 @@ int main(int argc, char* argv[])
         total_batch_time += batch_time;
         double throughput = num_keys / batch_time;
         printf("%.2f, %d, %d, %d, %d, %d, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
-            Opt.zipfian_const, NR_DPUS, NR_TASKLETS, batch_num,
+            opt.zipfian_const, NR_DPUS, NR_TASKLETS, batch_num,
             num_keys, batch_ctx.send_size, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time,
             execution_time, recieve_result_time, merge_time, batch_time, throughput);
     }
@@ -506,7 +501,7 @@ int main(int argc, char* argv[])
     //    execution_time, 100 * cpu_time / execution_time, send_and_execution_time, total_time, throughput);
     double throughput = total_num_keys / total_batch_time;
     printf("%.2f, %d, %d, total, %ld,, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
-        Opt.zipfian_const, NR_DPUS, NR_TASKLETS,
+        opt.zipfian_const, NR_DPUS, NR_TASKLETS,
         total_num_keys, total_preprocess_time1, total_preprocess_time2, total_migration_plan_time, total_migration_time, total_send_time,
         total_execution_time, total_recieve_result_time, total_merge_time, total_batch_time, throughput);
 

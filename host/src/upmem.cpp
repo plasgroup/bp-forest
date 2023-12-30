@@ -4,6 +4,7 @@
 #include "common.h"
 #include "host_data_structures.hpp"
 #include "node_defs.hpp"
+#include "utils.hpp"
 
 #ifndef HOST_ONLY
 extern "C" {
@@ -126,12 +127,6 @@ private:
 
 } emu[EMU_MAX_DPUS];
 #endif /* HOST_ONLY */
-
-static float time_diff(struct timeval* start, struct timeval* end)
-{
-    float timediff = (end->tv_sec - start->tv_sec) + 1e-6 * (end->tv_usec - start->tv_usec);
-    return timediff;
-}
 
 static const char* task_name(uint64_t task)
 {
