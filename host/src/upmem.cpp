@@ -1,7 +1,6 @@
 #include <stdlib.h>
 #include <sys/time.h>
 #include <assert.h>
-#include <bitset>
 #include "common.h"
 #include "host_data_structures.hpp"
 #include "node_defs.hpp"
@@ -12,6 +11,9 @@ extern "C" {
 #include <dpu_log.h>
 }
 #else /* HOST_ONLY */
+#include <bitset>
+#include <map>
+
 #define EMU_MAX_DPUS 3000
 typedef std::bitset<EMU_MAX_DPUS> dpu_set_t;
 typedef uint32_t dpu_id_t;
@@ -30,18 +32,44 @@ static BPTreeNode tree_migration_buffer[MAX_NUM_NODES_IN_SEAT];
 uint32_t upmem_get_nr_dpus();
 
 #ifdef HOST_ONLY
+
 struct Emulation {
     void* get_addr_of_symbol(const char* symbol)
     {
-        if (strcmp(symbol, "task_no") == 0)
-            return &mram.task_no;
+#define MRAM_SYMBOL(S) do {          \
+        if (strcmp(symbol, #S) == 0) \
+            return &mram.S;          \
+} while (0)
+
+        MRAM_SYMBOL(task_no);
+        MRAM_SYMBOL(end_idx);
+        MRAM_SYMBOL(request_buffer);
+        MRAM_SYMBOL(merge_info);
+        MRAM_SYMBOL(result);
+        MRAM_SYMBOL(split_result);
+        MRAM_SYMBOL(num_kvpairs_in_seat);
+        MRAM_SYMBOL(tree_transfer_num);
+        MRAM_SYMBOL(tree_transfer_buffer);
+
+#undef MRAM_SYMBOL
+
         abort();
         return NULL;
     }
 
     struct MRAM {
         uint64_t task_no;
+        int end_idx[NR_SEATS_IN_DPU];
+        each_request_t request_buffer[MAX_REQ_NUM_IN_A_DPU];
+        merge_info_t merge_info;
+        each_result_t result[MAX_REQ_NUM_IN_A_DPU];
+        split_info_t split_result[NR_SEATS_IN_DPU];
+        int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
+        uint64_t tree_transfer_num;
+        KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
     } mram;
+
+    std::map<key_int64_t, value_ptr_t> subtree[NR_SEATS_IN_DPU];
 
     void execute()
     {
@@ -49,8 +77,13 @@ struct Emulation {
         case TASK_INIT:
             break;
         case TASK_INSERT:
+            insert();
+#ifdef DEBUG_ON
+            get();
+#endif /* DEBUG_ON */
             break;
         case TASK_GET:
+            get();
             break;
         default:
             abort();
@@ -58,6 +91,39 @@ struct Emulation {
     }
 
 private:
+    void insert()
+    {
+        /* sanity check */
+        assert(mram.end_idx[0] >= 0);
+        for (int i = 1; i < NR_SEATS_IN_DPU; i++)
+            assert(mram.end_idx[i - 1] <= mram.end_idx[i]);
+
+        for (int i = 0, j = 0; i < NR_SEATS_IN_DPU; i++)
+            for (; j < mram.end_idx[i]; j++) {
+                key_int64_t key = mram.request_buffer[j].key;
+                value_ptr_t val = mram.request_buffer[j].write_val_ptr;
+                subtree[i].insert(std::make_pair(key, val));
+            }
+    }
+
+    void get()
+    {
+        /* sanity check */
+        assert(mram.end_idx[0] >= 0);
+        for (int i = 1; i < NR_SEATS_IN_DPU; i++)
+            assert(mram.end_idx[i - 1] <= mram.end_idx[i]);
+
+        for (int i = 0, j = 0; i < NR_SEATS_IN_DPU; i++)
+            for (; j < mram.end_idx[i]; j++) {
+                key_int64_t key = mram.request_buffer[j].key;
+                auto it = subtree[i].lower_bound(key);
+                if (it != subtree[i].end() && it->first == key)
+                    mram.result[j].get_result = subtree[i].at(key);
+                else
+                    mram.result[j].get_result = 0;
+            }
+    }
+
 } emu[EMU_MAX_DPUS];
 #endif /* HOST_ONLY */
 
