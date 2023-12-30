@@ -1,19 +1,13 @@
 #ifndef __MIGRATION_HPP__
 #define __MIGRATION_HPP__
 
-#include "common.h"
-#ifndef NO_DPU_EXECUTION
-extern "C" {
-#include <dpu.h>
-#include <dpu_log.h>
-}
-#endif /* NO_DPU_EXECUTION */
 #include <iostream>
 #include <map>
 #include <stdio.h>
 #include <stdlib.h>
 #include <utility>
 #include <vector>
+#include "common.h"
 
 class HostTree;
 class BatchCtx;
@@ -21,7 +15,7 @@ class BatchCtx;
 class Migration
 {
 public:
-    using Position = std::pair<dpu_id_t, seat_id_t>;
+    using Position = std::pair<uint32_t, seat_id_t>;
 
     class MigrationPlanIterator : public std::iterator<std::input_iterator_tag, std::pair<Position, Position>>
     {
@@ -109,8 +103,8 @@ private:
 
 public:
     Migration(HostTree* tree);
-    int get_num_queries_for_source(BatchCtx& batch_ctx, dpu_id_t dpu, seat_id_t seat_id);
-    Position get_source(dpu_id_t dpu, seat_id_t seat_id);
+    int get_num_queries_for_source(BatchCtx& batch_ctx, uint32_t dpu, seat_id_t seat_id);
+    Position get_source(uint32_t dpu, seat_id_t seat_id);
     void migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migration);
     void migration_plan_memory_balancing(void);
     void migration_plan_for_merge(HostTree* host_tree, merge_info_t* merge_list);
@@ -129,11 +123,11 @@ public:
     }
 
 private:
-    seat_id_t find_available_seat(dpu_id_t dpu);
-    void do_migrate_subtree(dpu_id_t from_dpu, seat_id_t from, dpu_id_t to_dpu, seat_id_t to);
-    void migrate_subtree(dpu_id_t from_dpu, seat_id_t from, dpu_id_t to_dpu, seat_id_t to);
-    bool migrate_subtree_to_balance_load(dpu_id_t from_dpu, dpu_id_t to_dpu, int diff, int nkeys_for_trees[NR_DPUS][NR_SEATS_IN_DPU]);
-    void migrate_subtrees(dpu_id_t from_dpu, dpu_id_t to_dpu, int n);
+    seat_id_t find_available_seat(uint32_t dpu);
+    void do_migrate_subtree(uint32_t from_dpu, seat_id_t from, uint32_t to_dpu, seat_id_t to);
+    void migrate_subtree(uint32_t from_dpu, seat_id_t from, uint32_t to_dpu, seat_id_t to);
+    bool migrate_subtree_to_balance_load(uint32_t from_dpu, uint32_t to_dpu, int diff, int nkeys_for_trees[NR_DPUS][NR_SEATS_IN_DPU]);
+    void migrate_subtrees(uint32_t from_dpu, uint32_t to_dpu, int n);
     bool plan_merge(Position left, Position right, merge_info_t* merge_list);
 };
 

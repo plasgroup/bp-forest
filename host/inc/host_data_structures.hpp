@@ -1,9 +1,11 @@
-#pragma once
-#include "common.h"
-#include "migration.hpp"
+#ifndef __HOST_DATA_STRUCTURES_HPP__
+#define __HOST_DATA_STRUCTURES_HPP__
+
 #include <cstring>
 #include <map>
 #include <stdlib.h>
+#include "common.h"
+#include "migration.hpp"
 
 /* Data structures in host for managing subtrees in DPUs */
 class HostTree
@@ -57,7 +59,7 @@ public:
         }
     }
 
-    void remove(dpu_id_t dpu, seat_id_t seat)
+    void remove(uint32_t dpu, seat_id_t seat)
     {
         key_int64_t lb = tree_to_key_map[dpu][seat];
         printf("remove (%d, %d) key = 0x%lx\n", dpu, seat, lb);
@@ -89,3 +91,5 @@ public:
 
 private:
 };
+
+#endif /* __HOST_DATA_STRUCTURES_HPP__ */

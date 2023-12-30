@@ -1,12 +1,5 @@
 #pragma once
 #include <stdint.h>
-#ifdef NO_DPU_EXECUTION
-typedef int dpu_id_t;
-struct dpu_set_t {
-    /** DPU device type for the DPU set. */
-    int kind;
-};
-#endif /* NO_DPU_EXECUTION */
 #define NR_ELEMS_PER_DPU (RAND_MAX / NR_DPUS)
 #define NR_ELEMS_PER_TASKLET (RAND_MAX / NR_DPUS / NR_TASKLETS)
 #define NR_ELEMS_PER_TASKLET (RAND_MAX / NR_DPUS / NR_TASKLETS)
@@ -132,7 +125,8 @@ typedef struct {
 
 #define TASK_OPERAND_SHIFT 32
 #define TASK_ID_MASK ((1ULL << TASK_OPERAND_SHIFT) - 1)
-#define TASK_WITH_OPERAND(task,rand) ((task) | ((rand) << TASK_OPERAND_SHIFT))
+#define TASK_WITH_OPERAND(task,rand) \
+    ((task) | (((uint64_t) (rand)) << TASK_OPERAND_SHIFT))
 #define TASK_GET_ID(task) ((task) & TASK_ID_MASK)
 #define TASK_GET_OPERAND(task) ((task) >> TASK_OPERAND_SHIFT)
 

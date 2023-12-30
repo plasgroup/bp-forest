@@ -18,7 +18,7 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
 void upmem_receive_results(BatchCtx& batch_ctx, float* receive_time);
 void upmem_recieve_split_info(float* receive_time);
 void upmem_recieve_num_kvpairs(HostTree* host_tree, float* receive_time);
-void upmem_send_nodes_from_dpu_to_dpu(dpu_id_t from_DPU, seat_id_t from_tree,
-                                      dpu_id_t to_DPU, seat_id_t to_tree);
+void upmem_send_nodes_from_dpu_to_dpu(uint32_t from_DPU, seat_id_t from_tree,
+                                      uint32_t to_DPU, seat_id_t to_tree);
 
 #endif /* __UPMEM_HPP__ */

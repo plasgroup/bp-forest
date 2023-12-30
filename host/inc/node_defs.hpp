@@ -1,4 +1,5 @@
-#pragma once
+#ifndef __NODE_DEFS_HPP__
+#define __NODE_DEFS_HPP__
 
 #include <stdint.h>
 typedef uint64_t key_int64_t;
@@ -31,3 +32,5 @@ typedef struct BPTreeNode {
         LeafNodePtrs lf;
     } ptrs;
 } BPTreeNode;
+
+#endif /* __NODE_DEFS_HPP__ */

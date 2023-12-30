@@ -1,4 +1,5 @@
-#pragma once
+#ifndef __UTILS_HPP__
+#define __UTILS_HPP__
 
 #include <iostream>
 #include <random>
@@ -20,3 +21,5 @@ private:
     static inline std::mt19937 mt32;
     static inline std::random_device rnd;
 };
+
+#endif /* __UTILS_HPP__ */
