@@ -38,11 +38,8 @@
 
 constexpr key_int64_t RANGE = std::numeric_limits<uint64_t>::max() / (NUM_TOTAL_INIT_TREES);
 
-/* For working in some functions */
-uint64_t total_num_keys;
-int migrated_tree_num;
+
 /* for stats */
-struct timeval start, end, start_total, end_total;
 uint64_t nb_cycles_insert[NR_DPUS];
 uint64_t nb_cycles_get[NR_DPUS];
 uint64_t total_cycles_insert;
@@ -67,18 +64,6 @@ float total_recieve_result_time = 0;
 float total_merge_time = 0;
 float total_batch_time = 0;
 float init_time = 0;
-/* tasks */
-const uint64_t task_from = TASK_FROM;
-const uint64_t task_to = TASK_TO;
-const uint64_t task_init = TASK_INIT;
-const uint64_t task_get = TASK_GET;
-const uint64_t task_insert = TASK_INSERT;
-const uint64_t task_delete = TASK_DELETE;
-const uint64_t task_merge = TASK_MERGE;
-const uint64_t task_invalid = 999 + (1ULL << 32);
-/* data for communication between host and DPUs */
-BPTreeNode nodes_buffer[MAX_NUM_NODES_IN_SEAT];
-uint64_t nodes_num;
 
 key_int64_t* batch_keys;
 
@@ -479,7 +464,7 @@ int main(int argc, char* argv[])
     /* main routine */
     int num_keys = 0;
     int batch_num = 0;
-    total_num_keys = 0;
+    uint64_t total_num_keys = 0;
     printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time, execution_time, recieve_result_time, merge_time, batch_time, throughput\n");
     while (total_num_keys < Opt.nr_total_queries) {
         BatchCtx batch_ctx;
