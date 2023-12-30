@@ -4,4 +4,4 @@
 cd $(dirname $0)/..
 echo cd $(pwd)
 # execution
-./build_UPMEM/host/host_app -a 0.6
+./build/host/host_app_UPMEM -a 0.6
