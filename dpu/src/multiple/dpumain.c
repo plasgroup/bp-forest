@@ -116,7 +116,7 @@ int main()
         barrier_wait(&my_barrier);
         // DPU側で負荷分散する
         int start_index = queries_per_tasklet * tid;
-        int end_index = tid == NR_TASKLETS - 1 ? end_idx[tid] : queries_per_tasklet * (tid + 1);
+        int end_index = tid == NR_TASKLETS - 1 ? end_idx[NR_SEATS_IN_DPU - 1] : queries_per_tasklet * (tid + 1);
         int tree = 0;
         while (end_idx[tree] <= start_index) {
             tree++;
