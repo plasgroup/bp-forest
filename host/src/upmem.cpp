@@ -98,6 +98,12 @@ struct Emulation {
     }
 
 private:
+    void task_init()
+    {
+        for (int i = 0; i < NR_SEATS_IN_DPU; i++)
+            mram.num_kvpairs_in_seat[i] = 0;
+    }
+
     void task_insert()
     {
         /* sanity check */
@@ -109,7 +115,12 @@ private:
             for (; j < mram.end_idx[i]; j++) {
                 key_int64_t key = mram.request_buffer[j].key;
                 value_ptr_t val = mram.request_buffer[j].write_val_ptr;
-                subtree[i].insert(std::make_pair(key, val));
+                auto& t = subtree[i];
+                if (t.find(key) == t.end()) {
+                    t.insert(std::make_pair(key, val));
+                    mram.num_kvpairs_in_seat[i]++;
+                } else
+                    t[key] = val;
             }
     }
 
@@ -141,6 +152,7 @@ private:
         }
         mram.tree_transfer_num = n;
         subtree[seat_id].clear();
+        mram.num_kvpairs_in_seat[seat_id] = 0;
     }
 
     void task_to(seat_id_t seat_id)
@@ -149,6 +161,7 @@ private:
         for (int i = 0; i < mram.tree_transfer_num; i++) {
             key_int64_t key = mram.tree_transfer_buffer[i].key;
             value_ptr_t val = mram.tree_transfer_buffer[i].value;
+            assert(subtree[seat_id].find(key) == subtree[seat_id].end());
             subtree[seat_id].insert(std::make_pair(key, val));
         }
     }
