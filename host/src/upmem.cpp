@@ -334,7 +334,7 @@ static uint32_t
 nr_dpus_in_set(dpu_set_t set)
 {
     uint32_t nr_dpus;
-    DPU_ASSERT(dpu_get_nr_dpus(dpu_set, &nr_dpus));
+    DPU_ASSERT(dpu_get_nr_dpus(set, &nr_dpus));
     return nr_dpus;
 }
 
