@@ -246,7 +246,7 @@ void initialize_dpus(int num_init_reqs, HostTree* tree, struct dpu_set_t set, st
 #endif /* PRINT_DEBUG */
 #ifdef DEBUG_ON
     /* checking result of search for inserted keys */
-    receive_results(set, dpu);
+    receive_results(set, dpu, batch_ctx);
     check_results(dpu_results, batch_ctx.key_index);
 #endif
     gettimeofday(&end, NULL);
