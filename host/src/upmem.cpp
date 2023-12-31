@@ -74,17 +74,23 @@ struct Emulation {
 
     void execute()
     {
-        switch (mram.task_no) {
+        switch (TASK_GET_ID(mram.task_no)) {
         case TASK_INIT:
             break;
         case TASK_INSERT:
-            insert();
+            task_insert();
 #ifdef DEBUG_ON
-            get();
+            task_get();
 #endif /* DEBUG_ON */
             break;
         case TASK_GET:
-            get();
+            task_get();
+            break;
+        case TASK_FROM:
+            task_from(TASK_GET_OPERAND(mram.task_no));
+            break;
+        case TASK_TO:
+            task_to(TASK_GET_OPERAND(mram.task_no));
             break;
         default:
             abort();
@@ -92,7 +98,7 @@ struct Emulation {
     }
 
 private:
-    void insert()
+    void task_insert()
     {
         /* sanity check */
         assert(mram.end_idx[0] >= 0);
@@ -107,7 +113,7 @@ private:
             }
     }
 
-    void get()
+    void task_get()
     {
         /* sanity check */
         assert(mram.end_idx[0] >= 0);
@@ -123,6 +129,28 @@ private:
                 else
                     mram.result[j].get_result = 0;
             }
+    }
+
+    void task_from(seat_id_t seat_id)
+    {
+        int n = 0;
+        for (auto x: subtree[seat_id]) {
+            mram.tree_transfer_buffer[n].key = x.first;
+            mram.tree_transfer_buffer[n].value = x.second;
+            n++;
+        }
+        mram.tree_transfer_num = n;
+        subtree[seat_id].clear();
+    }
+
+    void task_to(seat_id_t seat_id)
+    {
+        assert(subtree[seat_id].size() == 0);
+        for (int i = 0; i < mram.tree_transfer_num; i++) {
+            key_int64_t key = mram.tree_transfer_buffer[i].key;
+            value_ptr_t val = mram.tree_transfer_buffer[i].value;
+            subtree[seat_id].insert(std::make_pair(key, val));
+        }
     }
 
 } emu[EMU_MAX_DPUS];
