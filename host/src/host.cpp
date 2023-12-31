@@ -68,6 +68,9 @@ float init_time = 0;
 
 key_int64_t* batch_keys;
 
+#ifdef DEBUG_ON
+std::map<key_int64_t, value_ptr_t> verify_db;
+#endif /* DEBUG_ON */
 
 void print_merge_info();
 
@@ -126,7 +129,12 @@ void check_results(dpu_results_t* dpu_results, int key_index[NR_DPUS][NR_SEATS_I
     for (uint32_t dpu = 0; dpu < NR_DPUS; dpu++) {
         for (seat_id_t seat = 0; seat < NR_SEATS_IN_DPU; seat++) {
             for (int index = seat == 0 ? 0 : key_index[dpu][seat - 1]; index < key_index[dpu][seat]; index++) {
-                assert(dpu_results[dpu].results[index].get_result == dpu_requests[dpu].requests[index].write_val_ptr);
+                key_int64_t key = dpu_requests[dpu].requests[index].key;
+                auto it = verify_db.lower_bound(key);
+                if (it == verify_db.end() || it->first != key)
+                    assert(dpu_results[dpu].results[index].get_result == 0);
+                else
+                    assert(dpu_results[dpu].results[index].get_result == it->second);
             }
         }
     }
@@ -161,6 +169,9 @@ void initialize_dpus(int num_init_reqs, HostTree* tree)
         if (it != tree->key_to_tree_map.end()) {
             dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]].key = batch_keys[i];
             dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]++].write_val_ptr = batch_keys[i];
+#ifdef DEBUG_ON
+            verify_db.insert(std::make_pair(batch_keys[i], batch_keys[i]));
+#endif /* DEBUG_ON */
         } else {
             printf("ERROR: the key is out of range 2\n");
         }
@@ -316,18 +327,41 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     }
 #endif
     /* 4.2. make requests to send to DPUs*/
-    for (int i = 0; i < num_keys_batch; i++) {
-        auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
-        if (it != host_tree->key_to_tree_map.end()) {
-            dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]].key = batch_keys[i];
-            /* key_index is incremented here, so batch_ctx.key_index[i][j] represents
-             * the first index for seat j in DPU i BEFORE this for loop, then
-             * the first index for seat j+1 in DPU i AFTER this for loop. */
-            dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]++].write_val_ptr = batch_keys[i];
-        } else {
-            PRINT_POSITION_AND_MESSAGE(ERROR
-                                       : the key is out of range);
+    switch(task) {
+    case TASK_GET:
+        for (int i = 0; i < num_keys_batch; i++) {
+            auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
+            if (it != host_tree->key_to_tree_map.end()) {
+                /* key_index is incremented here, so batch_ctx.key_index[i][j] represents
+                * the first index for seat j in DPU i BEFORE this for loop, then
+                * the first index for seat j+1 in DPU i AFTER this for loop. */
+                dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]++].key = batch_keys[i];
+            } else {
+                PRINT_POSITION_AND_MESSAGE(ERROR
+                                        : the key is out of range);
+            }
         }
+        break;
+    case TASK_INSERT:
+        for (int i = 0; i < num_keys_batch; i++) {
+            auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
+            if (it != host_tree->key_to_tree_map.end()) {
+                dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]].key = batch_keys[i];
+                /* key_index is incremented here, so batch_ctx.key_index[i][j] represents
+                * the first index for seat j in DPU i BEFORE this for loop, then
+                * the first index for seat j+1 in DPU i AFTER this for loop. */
+                dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]++].write_val_ptr = batch_keys[i];
+#ifdef DEBUG_ON
+                verify_db.insert(std::make_pair(batch_keys[i], batch_keys[i]));
+#endif /* DEBUG_ON */
+            } else {
+                PRINT_POSITION_AND_MESSAGE(ERROR
+                                        : the key is out of range);
+            }
+        }
+        break;
+    default:
+        abort();
     }
 #ifdef PRINT_DEBUG
     for (uint32_t i = 0; i < NR_DPUS; i++) {
