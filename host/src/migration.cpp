@@ -21,10 +21,13 @@ Migration::Migration(HostTree* tree)
         freeing_seats[i] = 0;
         nr_freeing_seats[i] = 0;
     }
-    std::fill<Position*, Position>(&plan[0][0], &plan[NR_DPUS][0], {-1, -1});
+    for (uint32_t i = 0; i < NR_DPUS; i++)
+        for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
+            plan[i][j] = seat_addr_t(-1, INVALID_SEAT_ID);
 }
 
-seat_id_t Migration::find_available_seat(uint32_t dpu)
+seat_id_t
+Migration::find_available_seat(uint32_t dpu)
 {
     seat_set_t unavail = used_seats[dpu] | freeing_seats[dpu];
     seat_id_t seat = 0;
@@ -33,28 +36,31 @@ seat_id_t Migration::find_available_seat(uint32_t dpu)
     return seat;
 }
 
-Migration::Position Migration::get_source(uint32_t dpu, seat_id_t seat_id)
+seat_addr_t
+Migration::get_source(uint32_t dpu, seat_id_t seat_id)
 {
     if (!(used_seats[dpu] & (1 << seat_id)))
         /* not used */
-        return {-1, -1};
-    while (plan[dpu][seat_id].first != -1) {
-        Position p = plan[dpu][seat_id];
-        dpu = p.first;
-        seat_id = p.second;
+        return seat_addr_t(-1, INVALID_SEAT_ID);
+    while (plan[dpu][seat_id].dpu != -1) {
+        seat_addr_t p = plan[dpu][seat_id];
+        dpu = p.dpu;
+        seat_id = p.seat;
     }
-    return {dpu, seat_id};
+    return seat_addr_t(dpu, seat_id);
 }
 
-int Migration::get_num_queries_for_source(BatchCtx& batch_ctx, uint32_t dpu, seat_id_t seat_id)
+int
+Migration::get_num_queries_for_source(BatchCtx& batch_ctx, uint32_t dpu, seat_id_t seat_id)
 {
-    Position p = get_source(dpu, seat_id);
-    if (p.first != -1)
-        return batch_ctx.num_keys_for_tree[p.first][p.second];
+    seat_addr_t p = get_source(dpu, seat_id);
+    if (p.dpu != -1)
+        return batch_ctx.num_keys_for_tree[p.dpu][p.seat];
     return 0;
 }
 
-void Migration::do_migrate_subtree(uint32_t from_dpu, seat_id_t from, uint32_t to_dpu, seat_id_t to)
+void
+Migration::do_migrate_subtree(uint32_t from_dpu, seat_id_t from, uint32_t to_dpu, seat_id_t to)
 {
     /* Source tree may not be in (from_dpu, from) because it may be planned to
      * move to there in the same migration plan. In that case, the chain of
@@ -62,10 +68,11 @@ void Migration::do_migrate_subtree(uint32_t from_dpu, seat_id_t from, uint32_t t
      * because of the invariant that no used seat at the beginning is not
      * chosen as a destination of a migration.
      */
-    plan[to_dpu][to] = {from_dpu, from};
+    plan[to_dpu][to] = seat_addr_t(from_dpu, from);
 }
 
-void Migration::migrate_subtree(uint32_t from_dpu, seat_id_t from, uint32_t to_dpu, seat_id_t to)
+void
+Migration::migrate_subtree(uint32_t from_dpu, seat_id_t from, uint32_t to_dpu, seat_id_t to)
 {
     do_migrate_subtree(from_dpu, from, to_dpu, to);
     used_seats[from_dpu] &= ~(1 << from);
@@ -76,15 +83,16 @@ void Migration::migrate_subtree(uint32_t from_dpu, seat_id_t from, uint32_t to_d
     nr_used_seats[to_dpu]++;
 }
 
-bool Migration::migrate_subtree_to_balance_load(uint32_t from_dpu, uint32_t to_dpu, int diff, int nkeys_for_trees[NR_DPUS][NR_SEATS_IN_DPU])
+bool
+Migration::migrate_subtree_to_balance_load(uint32_t from_dpu, uint32_t to_dpu, int diff, int nkeys_for_trees[NR_DPUS][NR_SEATS_IN_DPU])
 {
     seat_id_t candidate = INVALID_SEAT_ID;
     int best = std::numeric_limits<int>::max();
     for (seat_id_t from = 0; from < NR_SEATS_IN_DPU; from++) {
         if (!(used_seats[from_dpu] & (1 << from)))
             continue;
-        Position p = get_source(from_dpu, from);
-        int nkeys = nkeys_for_trees[p.first][p.second];
+        seat_addr_t p = get_source(from_dpu, from);
+        int nkeys = nkeys_for_trees[p.dpu][p.seat];
         if (nkeys >= diff)
             continue;
         int score = abs(nkeys * 2 - diff);
@@ -102,7 +110,8 @@ bool Migration::migrate_subtree_to_balance_load(uint32_t from_dpu, uint32_t to_d
     return false;
 }
 
-void Migration::migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migration)
+void
+Migration::migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migration)
 {
     uint32_t dpu_ids[NR_DPUS];
     int nr_keys_for_dpu[NR_DPUS];
@@ -144,7 +153,8 @@ void Migration::migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migr
     }
 }
 
-void Migration::migrate_subtrees(uint32_t from_dpu, uint32_t to_dpu, int n)
+void
+Migration::migrate_subtrees(uint32_t from_dpu, uint32_t to_dpu, int n)
 {
     seat_set_t from_used = used_seats[from_dpu];
     seat_set_t to_used = used_seats[to_dpu];
@@ -176,7 +186,8 @@ void Migration::migrate_subtrees(uint32_t from_dpu, uint32_t to_dpu, int n)
     nr_used_seats[to_dpu] += n;
 }
 
-void Migration::migration_plan_memory_balancing()
+void
+Migration::migration_plan_memory_balancing()
 {
     for (uint32_t i = 0; i < NR_DPUS; i++) {
         if (nr_used_seats[i] > SOFT_LIMIT_NR_TREES_IN_DPU) {
@@ -191,23 +202,25 @@ void Migration::migration_plan_memory_balancing()
                     rem -= n;
                 }
                 j++;
-                assert(j < NR_DPUS);
+                assert(j < NR_DPUS); // all DPUs are almost full
             }
         }
     }
 }
-bool Migration::plan_merge(Position left, Position right, merge_info_t* merge_info)
-{
-    uint32_t dpu = right.first;
-    seat_id_t dest = right.second;
-    seat_id_t src = left.second;
 
-    if (left.first != right.first) {
+bool
+Migration::plan_merge(seat_addr_t left, seat_addr_t right, merge_info_t* merge_info)
+{
+    uint32_t dpu = right.dpu;
+    seat_id_t dest = right.seat;
+    seat_id_t src = left.seat;
+
+    if (left.dpu != right.dpu) {
         if (nr_used_seats[dpu] == NR_SEATS_IN_DPU)
             // destination is full
             return false;
         src = find_available_seat(dpu);
-        migrate_subtree(left.first, left.second, dpu, src);
+        migrate_subtree(left.dpu, left.seat, dpu, src);
     }
     merge_info[dpu].merge_to[src] = dest;
     return true;
@@ -222,9 +235,9 @@ void Migration::migration_plan_for_merge(HostTree* host_tree, merge_info_t* merg
         it_next++;
         if (it_next == host_tree->key_to_tree_map.end())
             break;
-        Position left = it->second;
-        Position right = it_next->second;
-        if (host_tree->num_kvpairs[left.first][left.second] + host_tree->num_kvpairs[right.first][right.second] < MERGE_THRESHOLD) {
+        seat_addr_t left = it->second;
+        seat_addr_t right = it_next->second;
+        if (host_tree->num_kvpairs[left.dpu][left.seat] + host_tree->num_kvpairs[right.dpu][right.seat] < MERGE_THRESHOLD) {
             if (plan_merge(left, right, merge_list)) {
                 it++;
             }
@@ -237,11 +250,11 @@ void Migration::normalize()
 {
     for (uint32_t i = 0; i < NR_DPUS; i++)
         for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
-            if (plan[i][j].first != -1) {
-                Position p = plan[i][j];
-                while (plan[p.first][p.second].first != -1) {
-                    Position q = plan[p.first][p.second];
-                    plan[p.first][p.second] = {-1, -1};
+            if (plan[i][j].dpu != -1) {
+                seat_addr_t p = plan[i][j];
+                while (plan[p.dpu][p.seat].dpu != -1) {
+                    seat_addr_t q = plan[p.dpu][p.seat];
+                    plan[p.dpu][p.seat] = seat_addr_t(-1, INVALID_SEAT_ID);
                     p = q;
                 }
                 plan[i][j] = p;
@@ -249,15 +262,16 @@ void Migration::normalize()
 }
 
 /* execute migration according to migration_plan */
-void Migration::execute()
+void
+Migration::execute()
 {
     normalize();
     /* apply */
     for (uint32_t i = 0; i < NR_DPUS; i++)
         for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
-            if (plan[i][j].first != -1) {
-                uint32_t from_dpu = plan[i][j].first;
-                seat_id_t from = plan[i][j].second;
+            if (plan[i][j].dpu != -1) {
+                uint32_t from_dpu = plan[i][j].dpu;
+                seat_id_t from = plan[i][j].seat;
 #ifdef PRINT_DEBUG
                 printf("do migration: (%d, %d) -> (%d, %d)\n", from_dpu, from, i, j);
 #endif
@@ -276,7 +290,7 @@ void Migration::print_plan()
     for (uint32_t i = 0; i < NR_DPUS; i++) {
         printf("%2d:", i);
         for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
-            printf("%2d,%2d|", plan[i][j].first, plan[i][j].second);
+            printf("%2d,%2d|", plan[i][j].dpu, plan[i][j].seat);
         printf("\n");
     }
 }

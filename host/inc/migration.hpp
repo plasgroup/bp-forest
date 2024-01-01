@@ -7,7 +7,9 @@
 #include <stdlib.h>
 #include <utility>
 #include <vector>
+
 #include "common.h"
+#include "host_data_structures.hpp"
 
 class HostTree;
 class BatchCtx;
@@ -15,27 +17,25 @@ class BatchCtx;
 class Migration
 {
 public:
-    using Position = std::pair<uint32_t, seat_id_t>;
-
-    class MigrationPlanIterator : public std::iterator<std::input_iterator_tag, std::pair<Position, Position>>
+    class MigrationPlanIterator : public std::iterator<std::input_iterator_tag, std::pair<seat_addr_t, seat_addr_t>>
     {
 
         friend Migration;
 
-        typedef std::pair<Position, Position> item_t;
+        typedef std::pair<seat_addr_t, seat_addr_t> item_t;
 
     private:
         Migration* migration;
-        Position p;
+        seat_addr_t p;
 
         bool inc_p()
         {
-            p.second++;
-            if (p.second == NR_SEATS_IN_DPU) {
-                p.first++;
-                p.second = 0;
-                if (p.first == NR_DPUS) {
-                    p = {-1, INVALID_SEAT_ID};
+            p.seat++;
+            if (p.seat == NR_SEATS_IN_DPU) {
+                p.dpu++;
+                p.seat = 0;
+                if (p.dpu == NR_DPUS) {
+                    p = seat_addr_t(-1, INVALID_SEAT_ID);
                     return false;
                 }
             }
@@ -44,7 +44,7 @@ public:
 
         void locate_next()
         {
-            while (migration->plan[p.first][p.second].first == -1)
+            while (migration->plan[p.dpu][p.seat].dpu == -1)
                 if (!inc_p())
                     return;
         }
@@ -58,10 +58,10 @@ public:
         MigrationPlanIterator(Migration* m, bool begin) : migration(m)
         {
             if (begin) {
-                p = {0, 0};
+                p = seat_addr_t(0, 0);
                 locate_next();
             } else
-                p = {-1, INVALID_SEAT_ID};
+                p = seat_addr_t(-1, INVALID_SEAT_ID);
         }
 
     public:
@@ -80,7 +80,7 @@ public:
 
         item_t operator*()
         {
-            return {migration->plan[p.first][p.second], p};
+            return {migration->plan[p.dpu][p.seat], p};
         }
 
         bool operator==(const MigrationPlanIterator& it)
@@ -95,7 +95,7 @@ public:
     };
 
 private:
-    Position plan[NR_DPUS][NR_SEATS_IN_DPU];
+    seat_addr_t plan[NR_DPUS][NR_SEATS_IN_DPU];
     seat_set_t used_seats[NR_DPUS];
     seat_set_t freeing_seats[NR_DPUS];
     int nr_used_seats[NR_DPUS];
@@ -104,7 +104,7 @@ private:
 public:
     Migration(HostTree* tree);
     int get_num_queries_for_source(BatchCtx& batch_ctx, uint32_t dpu, seat_id_t seat_id);
-    Position get_source(uint32_t dpu, seat_id_t seat_id);
+    seat_addr_t get_source(uint32_t dpu, seat_id_t seat_id);
     void migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migration);
     void migration_plan_memory_balancing(void);
     void migration_plan_for_merge(HostTree* host_tree, merge_info_t* merge_list);
@@ -128,7 +128,7 @@ private:
     void migrate_subtree(uint32_t from_dpu, seat_id_t from, uint32_t to_dpu, seat_id_t to);
     bool migrate_subtree_to_balance_load(uint32_t from_dpu, uint32_t to_dpu, int diff, int nkeys_for_trees[NR_DPUS][NR_SEATS_IN_DPU]);
     void migrate_subtrees(uint32_t from_dpu, uint32_t to_dpu, int n);
-    bool plan_merge(Position left, Position right, merge_info_t* merge_list);
+    bool plan_merge(seat_addr_t left, seat_addr_t right, merge_info_t* merge_list);
 };
 
 #endif /* __MIGRATION_HPP__ */

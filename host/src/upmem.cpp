@@ -32,6 +32,57 @@ static BPTreeNode tree_migration_buffer[MAX_NUM_NODES_IN_SEAT];
 
 uint32_t upmem_get_nr_dpus();
 
+#define MEASURE_XFER_BYTES
+#ifdef MEASURE_XFER_BYTES
+typedef struct xfer_summary {
+    xfer_summary() :
+        total_bytes(0),
+        effective_bytes(0),
+        count(0) {}
+    uint64_t total_bytes;
+    uint64_t effective_bytes;
+    uint64_t count;
+} xfer_summary_t;
+std::map<std::string, xfer_summary_t> xfer_stat;
+
+void 
+accumulate_xfer_bytes(const char* symbol,
+                      uint64_t xfer_bytes, uint64_t effective_bytes)
+{
+    std::string key = std::string(symbol);
+    if (xfer_stat.find(key) == xfer_stat.end())
+        xfer_stat.insert(std::make_pair(key, xfer_summary_t()));
+    xfer_stat[key].total_bytes += xfer_bytes;
+    xfer_stat[key].effective_bytes += effective_bytes;
+    xfer_stat[key].count++;
+}
+
+void print_xfer_bytes()
+{
+    printf("==== XFER STATISTICS (MB) ====\n");
+    printf("symbol                    count xfer-bytes    average  effective effeciency(%%) \n");
+    for(auto x: xfer_stat) {
+        const char* symbol = x.first.c_str();
+        uint64_t total_bytes = x.second.total_bytes;
+        uint64_t count = x.second.count;
+        uint64_t effective_bytes = x.second.effective_bytes;
+#define MB(x) (((float) (x)) / 1000 / 1000)
+        printf("%-25s %5lu %10.3f %10.3f %10.3f",
+               symbol, count,
+               MB(total_bytes),
+               MB(total_bytes / count),
+               MB(effective_bytes));
+        if (total_bytes > 0)
+            printf(" %5.3f\n", ((float) effective_bytes) / total_bytes);
+        else
+            printf("  0.000\n");
+#undef MB
+    }
+}
+#else /* MEASURE_XFER_BYTES */
+#define accumulate_xfer_bytes(s,b)
+#endif /* MEASURE_XFER_BYTES */
+
 #ifdef HOST_ONLY
 
 struct Emulation {
@@ -71,11 +122,13 @@ struct Emulation {
     } mram;
 
     std::map<key_int64_t, value_ptr_t> subtree[NR_SEATS_IN_DPU];
+    bool in_use[NR_SEATS_IN_DPU];
 
     void execute()
     {
         switch (TASK_GET_ID(mram.task_no)) {
         case TASK_INIT:
+            task_init(TASK_GET_OPERAND(mram.task_no));
             break;
         case TASK_INSERT:
             task_insert();
@@ -98,6 +151,101 @@ struct Emulation {
     }
 
 private:
+    /* counterpert of Cabin_allocate_seat */
+    seat_id_t allocate_seat(seat_id_t seat_id)
+    {
+        if (seat_id == INVALID_SEAT_ID) {
+            for (seat_id_t i = 0; i < NR_SEATS_IN_DPU; i++)
+                if (!in_use[i]) {
+                    in_use[i] = true;
+                    return i;
+                }
+            abort();
+            return INVALID_SEAT_ID;
+        } else {
+            assert(!in_use[seat_id]);
+            in_use[seat_id] = true;
+            return seat_id;
+        }
+    }
+
+    /* counterpart of Cabin_release_seat */
+    void release_seat(seat_id_t seat_id)
+    {
+        assert(in_use[seat_id]);
+        in_use[seat_id] = false;
+        mram.num_kvpairs_in_seat[seat_id] = 0;
+    }
+
+    int serialize(seat_id_t seat_id, KVPair buf[])
+    {
+        assert(in_use[seat_id]);
+        int n = 0;
+        for (auto x: subtree[seat_id]) {
+            buf[n].key = x.first;
+            buf[n].value = x.second;
+            n++;
+        }
+        return n;
+    }
+
+    void deserialize(seat_id_t seat_id, KVPair buf[], int start, int n)
+    {
+        assert(in_use[seat_id]);
+        assert(subtree[seat_id].size() == 0);
+        for (int i = start; i < start + n; i++) {
+            key_int64_t key = buf[i].key;
+            value_ptr_t val = buf[i].value;
+            assert(subtree[seat_id].find(key) == subtree[seat_id].end());
+            subtree[seat_id].insert(std::make_pair(key, val));
+        }
+    }
+
+    void split_tree(KVPair buf[], int n, split_info_t result[])
+    {
+        int num_trees = (n + NR_ELEMS_AFTER_SPLIT - 1) / NR_ELEMS_AFTER_SPLIT;
+        assert(num_trees <= MAX_NUM_SPLIT);
+        for (int i = 0; i < num_trees; i++) {
+            int start = n * i / num_trees;
+            int end = n * (i + 1) / num_trees;
+            seat_id_t seat_id = allocate_seat(INVALID_SEAT_ID);
+            deserialize(seat_id, buf, start, end - start);
+            result->num_elems[i] = end - start;
+            result->new_tree_index[i] = seat_id;
+        }
+        for (int i = 0; i < num_trees; i++) {
+            int end = n * (i + 1) / num_trees - 1;
+            result->split_key[i] = buf[end].key;
+        }
+        result->num_split = num_trees;
+    }
+
+    void split()
+    {
+        for (int i = 0; i < NR_SEATS_IN_DPU; i++) {
+            assert(subtree[i].size() == mram.num_kvpairs_in_seat[i]);
+            assert(in_use[i] || mram.num_kvpairs_in_seat[i] == 0);
+            if (in_use[i]) {
+                int n = mram.num_kvpairs_in_seat[i];
+                if (n > SPLIT_THRESHOLD) {
+                    serialize(i, mram.tree_transfer_buffer);
+                    release_seat(i);
+                    split_tree(mram.tree_transfer_buffer, n, &mram.split_result[i]);
+                }
+            }
+        }
+    }
+
+    void task_init(int nr_init_trees)
+    {
+        for (int i = 0; i < NR_SEATS_IN_DPU; i++) {
+            mram.num_kvpairs_in_seat[i] = 0;
+            in_use[i] = false;
+        }
+        for (int i = 0; i < nr_init_trees; i++)
+            allocate_seat(i);
+    }
+
     void task_insert()
     {
         /* sanity check */

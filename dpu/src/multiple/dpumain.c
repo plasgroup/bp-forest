@@ -40,10 +40,7 @@ int main()
     int tid = me();
     if (tid == 0) {
         num_invoked++;
-        // printf("%dth invocation\n", num_invoked);
-        task = (uint32_t)task_no;
-        // printf("task_no: %016lx\n", task_no);
-        // printf("split threshold: %d\n", SPLIT_THRESHOLD);
+        task = (uint32_t) TASK_GET_ID(task_no);
 #ifdef DEBUG_ON
         for (int t = 0; t < NR_SEATS_IN_DPU; t++) {
             printf("end_idx[%d] = %d\n", t, end_idx[t]);
@@ -54,8 +51,9 @@ int main()
     switch (task) {
     case TASK_INIT: {
         if (tid == 0) {
+            int nr_init_trees = TASK_GET_OPERAND(task_no);
             Cabin_init();
-            for (seat_id_t seat_id = 0; seat_id < NUM_INIT_TREES_IN_DPU; seat_id++) {
+            for (seat_id_t seat_id = 0; seat_id < nr_init_trees; seat_id++) {
                 Cabin_allocate_seat(seat_id);
                 init_BPTree(seat_id);
             }
