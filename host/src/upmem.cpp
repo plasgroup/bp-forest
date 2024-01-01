@@ -33,7 +33,6 @@ static BPTreeNode tree_migration_buffer[MAX_NUM_NODES_IN_SEAT];
 
 uint32_t upmem_get_nr_dpus();
 
-
 #define MEASURE_XFER_BYTES
 #ifdef MEASURE_XFER_BYTES
 typedef struct xfer_summary {
@@ -61,8 +60,8 @@ accumulate_xfer_bytes(const char* symbol,
 
 void print_xfer_bytes()
 {
-    printf("==== XFER STATISTICS ====\n");
-    printf("symbol                    count xfer-bytes    average  effective effeciency\n");
+    printf("==== XFER STATISTICS (MB) ====\n");
+    printf("symbol                    count xfer-bytes    average  effective effeciency(%%) \n");
     for(auto x: xfer_stat) {
         const char* symbol = x.first.c_str();
         uint64_t total_bytes = x.second.total_bytes;
@@ -130,7 +129,7 @@ struct Emulation {
     {
         switch (TASK_GET_ID(mram.task_no)) {
         case TASK_INIT:
-            task_init();
+            task_init(TASK_GET_OPERAND(mram.task_no));
             break;
         case TASK_INSERT:
             task_insert();
@@ -238,13 +237,13 @@ private:
         }
     }
 
-    void task_init()
+    void task_init(int nr_init_trees)
     {
         for (int i = 0; i < NR_SEATS_IN_DPU; i++) {
             mram.num_kvpairs_in_seat[i] = 0;
             in_use[i] = false;
         }
-        for (int i = 0; i < NUM_INIT_TREES_IN_DPU; i++)
+        for (int i = 0; i < nr_init_trees; i++)
             allocate_seat(i);
     }
 

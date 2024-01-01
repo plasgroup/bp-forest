@@ -30,16 +30,6 @@
 #define ANSI_COLOR_GREEN "\x1b[32m"
 #define ANSI_COLOR_RESET "\x1b[0m"
 
-#define NUM_TOTAL_INIT_TREES (NR_DPUS * NUM_INIT_TREES_IN_DPU)
-#ifndef NUM_INIT_REQS
-#define NUM_INIT_REQS (2000 * NUM_TOTAL_INIT_TREES)
-#endif
-
-// #define MERGE
-
-constexpr key_int64_t RANGE = std::numeric_limits<uint64_t>::max() / (NUM_TOTAL_INIT_TREES);
-
-
 /* for stats */
 uint64_t nb_cycles_insert[NR_DPUS];
 uint64_t nb_cycles_get[NR_DPUS];
@@ -150,10 +140,12 @@ void initialize_dpus(int num_init_reqs, HostTree* tree)
 
     for (int i = 0; i < num_init_reqs; i++) {
         batch_keys[i] = interval * i;
-        std::map<key_int64_t, std::pair<int, int>>::iterator it = tree->key_to_tree_map.lower_bound(batch_keys[i]);
+        auto it = tree->key_to_tree_map.lower_bound(batch_keys[i]);
         if (it != tree->key_to_tree_map.end()) {
-            batch_ctx.num_keys_for_tree[it->second.first][it->second.second]++;
-            batch_ctx.num_keys_for_DPU[it->second.first]++;
+            uint32_t dpu = it->second.dpu;
+            seat_id_t seat = it->second.seat;
+            batch_ctx.num_keys_for_tree[dpu][seat]++;
+            batch_ctx.num_keys_for_DPU[dpu]++;
         } else {
             printf("ERROR: the key is out of range 1\n");
         }
@@ -168,8 +160,12 @@ void initialize_dpus(int num_init_reqs, HostTree* tree)
     for (int i = 0; i < num_init_reqs; i++) {
         auto it = tree->key_to_tree_map.lower_bound(batch_keys[i]);
         if (it != tree->key_to_tree_map.end()) {
-            dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]].key = batch_keys[i];
-            dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]++].write_val_ptr = batch_keys[i];
+            uint32_t dpu = it->second.dpu;
+            seat_id_t seat = it->second.seat;
+            int index = batch_ctx.key_index[dpu][seat]++;
+            each_request_t& req = dpu_requests[dpu].requests[index];
+            req.key = batch_keys[i];
+            req.write_val_ptr = batch_keys[i];
 #ifdef DEBUG_ON
             verify_db.insert(std::make_pair(batch_keys[i], batch_keys[i]));
 #endif /* DEBUG_ON */
@@ -186,7 +182,9 @@ void initialize_dpus(int num_init_reqs, HostTree* tree)
     }
 
     /* init BPTree in DPUs */
-    upmem_send_task(TASK_INIT, batch_ctx, NULL, NULL);
+    upmem_send_task(
+        TASK_WITH_OPERAND(TASK_INIT, NR_INITIAL_TREES_IN_DPU),
+        batch_ctx, NULL, NULL);
 
     /* insert initial keys for each tree */
 #ifdef PRINT_DEBUG
@@ -212,15 +210,16 @@ void update_cpu_struct(HostTree* host_tree)
     for (uint32_t dpu = 0; dpu < NR_DPUS; dpu++) {
         for (seat_id_t old_tree = 0; old_tree < NR_SEATS_IN_DPU; old_tree++) {
             if (split_result[dpu][old_tree].num_split != 0) {
-                host_tree->key_to_tree_map.erase(host_tree->tree_to_key_map[dpu][old_tree]);
-                host_tree->num_seats_used[dpu] += split_result[dpu][old_tree].num_split;
+                seat_addr_t old_sa = seat_addr_t(dpu, old_tree);
+                host_tree->key_to_tree_map.erase(host_tree->inverse(old_sa));
+                host_tree->inv_map_del(old_sa); // TODO: insearted this line. correct?
                 for (int new_tree = 0; new_tree < split_result[dpu][old_tree].num_split; new_tree++) {
                     seat_id_t new_seat_id = split_result[dpu][old_tree].new_tree_index[new_tree];
                     // printf("split: DPU %d seat %d -> seat %d\n", dpu, old_tree, new_seat_id);
-                    key_int64_t border_key = split_result[dpu][old_tree].split_key[new_tree];
-                    host_tree->key_to_tree_map[border_key] = std::make_pair(dpu, new_seat_id);
-                    host_tree->tree_to_key_map[dpu][new_seat_id] = border_key;
-                    host_tree->tree_bitmap[dpu] |= (1 << new_seat_id);
+                    key_int64_t ub = split_result[dpu][old_tree].split_key[new_tree];
+                    seat_addr_t new_sa = seat_addr_t(dpu, new_seat_id);
+                    host_tree->key_to_tree_map[ub] = new_sa;
+                    host_tree->inv_map_add(new_sa, ub);
                 }
             }
         }
@@ -275,7 +274,9 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
         //printf("i: %d, batch_keys[i]:%ld\n", i, batch_keys[i]);
         auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
         if (it != host_tree->key_to_tree_map.end()) {
-            batch_ctx.num_keys_for_tree[it->second.first][it->second.second]++;
+            uint32_t dpu = it->second.dpu;
+            seat_id_t seat = it->second.seat;
+            batch_ctx.num_keys_for_tree[dpu][seat]++;
         } else {
             printf("ERROR: the key is out of range 3: 0x%lx\n", batch_keys[i]);
         }
@@ -332,33 +333,33 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     case TASK_GET:
         for (int i = 0; i < num_keys_batch; i++) {
             auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
-            if (it != host_tree->key_to_tree_map.end()) {
-                /* key_index is incremented here, so batch_ctx.key_index[i][j] represents
-                * the first index for seat j in DPU i BEFORE this for loop, then
-                * the first index for seat j+1 in DPU i AFTER this for loop. */
-                dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]++].key = batch_keys[i];
-            } else {
-                PRINT_POSITION_AND_MESSAGE(ERROR
-                                        : the key is out of range);
-            }
+            assert(it != host_tree->key_to_tree_map.end());
+            uint32_t dpu = it->second.dpu;
+            seat_id_t seat = it->second.seat;
+            /* key_index is incremented here, so batch_ctx.key_index[i][j] represents
+            * the first index for seat j in DPU i BEFORE this for loop, then
+            * the first index for seat j+1 in DPU i AFTER this for loop. */
+            int index = batch_ctx.key_index[dpu][seat]++;
+            each_request_t& req = dpu_requests[dpu].requests[index];
+            req.key = batch_keys[i];
         }
         break;
     case TASK_INSERT:
         for (int i = 0; i < num_keys_batch; i++) {
             auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
-            if (it != host_tree->key_to_tree_map.end()) {
-                dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]].key = batch_keys[i];
-                /* key_index is incremented here, so batch_ctx.key_index[i][j] represents
-                * the first index for seat j in DPU i BEFORE this for loop, then
-                * the first index for seat j+1 in DPU i AFTER this for loop. */
-                dpu_requests[it->second.first].requests[batch_ctx.key_index[it->second.first][it->second.second]++].write_val_ptr = batch_keys[i];
+            assert(it != host_tree->key_to_tree_map.end());
+            uint32_t dpu = it->second.dpu;
+            seat_id_t seat = it->second.seat;
+            /* key_index is incremented here, so batch_ctx.key_index[i][j] represents
+            * the first index for seat j in DPU i BEFORE this for loop, then
+            * the first index for seat j+1 in DPU i AFTER this for loop. */
+            int index = batch_ctx.key_index[dpu][seat]++;
+            each_request_t& req = dpu_requests[dpu].requests[index];
+            req.key = batch_keys[i];
+            req.write_val_ptr = batch_keys[i];
 #ifdef DEBUG_ON
-                verify_db.insert(std::make_pair(batch_keys[i], batch_keys[i]));
+            verify_db.insert(std::make_pair(batch_keys[i], batch_keys[i]));
 #endif /* DEBUG_ON */
-            } else {
-                PRINT_POSITION_AND_MESSAGE(ERROR
-                                        : the key is out of range);
-            }
         }
         break;
     default:
@@ -460,9 +461,13 @@ int main(int argc, char* argv[])
     std::cout << "NR_DPUS:" << NR_DPUS << std::endl
               << "NR_TASKLETS:" << NR_TASKLETS << std::endl
               << "NR_SEATS_PER_DPU:" << NR_SEATS_IN_DPU << std::endl
-              << "NUM Trees per DPU(init):" << NUM_INIT_TREES_IN_DPU << std::endl
-              << "NUM Trees per DPU(max):" << NR_SEATS_IN_DPU << std::endl;
-    printf("no. of requests per batch: %ld\n", (uint64_t)NUM_REQUESTS_PER_BATCH);
+              << "seats per DPU (init):" << NR_INITIAL_TREES_IN_DPU << std::endl
+              << "seats per DPU (max):" << NR_SEATS_IN_DPU << std::endl
+              << "requests per batch:" << NUM_REQUESTS_PER_BATCH << std::endl
+              << "init elements in total:" << NUM_INIT_REQS << std::endl
+              << "init elements per DPU:" << (NUM_INIT_REQS / NR_DPUS) << std::endl
+              << "MAX_NUM_NODES_IN_SEAT:" << MAX_NUM_NODES_IN_SEAT << std::endl
+              << "estm. max elems in seat:" << (MAX_NUM_NODES_IN_SEAT * MAX_CHILD) << std::endl;
 #endif
 
     upmem_init(opt.dpu_binary, opt.is_simulator);
@@ -471,7 +476,7 @@ int main(int argc, char* argv[])
     batch_keys = (key_int64_t*)malloc(keys_array_size * sizeof(key_int64_t));
 
     /* initialization */
-    HostTree* host_tree = new HostTree(RANGE);
+    HostTree* host_tree = new HostTree(NR_INITIAL_TREES_IN_DPU);
     int num_init_reqs = NUM_INIT_REQS;
     initialize_dpus(num_init_reqs, host_tree);
 #ifdef PRINT_DEBUG
@@ -543,12 +548,30 @@ int main(int argc, char* argv[])
     return 0;
 }
 
+void
+HostTree::apply_migration(Migration* m)
+{
+    for (auto it = m->begin(); it != m->end(); ++it) {
+        seat_addr_t from = (*it).first;
+        seat_addr_t to = (*it).second;
+        key_int64_t key = inverse(from);
+        inv_map_del(from);
+        inv_map_add(to, key);
+        key_to_tree_map[key] = to;
+    }
+}
+
+//
+// Printer
+//
+
 static void print_subtree_size(HostTree* host_tree)
 {
     printf("===== subtree size =====\n");
     printf("SEAT ");
     for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
         printf(" %4d ", j);
+    printf("\n");
     for (uint32_t i = 0; i < NR_DPUS; i++) {
         printf("[%3d]", i);
         for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
