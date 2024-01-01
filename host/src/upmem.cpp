@@ -16,6 +16,7 @@ extern "C" {
 #include <map>
 
 #define EMU_MAX_DPUS 3000
+#define EMU_DPUS_IN_RANK 64
 typedef std::bitset<EMU_MAX_DPUS> dpu_set_t;
 typedef uint32_t dpu_id_t;
 
@@ -31,6 +32,58 @@ split_info_t split_result[NR_DPUS][NR_SEATS_IN_DPU];
 static BPTreeNode tree_migration_buffer[MAX_NUM_NODES_IN_SEAT];
 
 uint32_t upmem_get_nr_dpus();
+
+
+#define MEASURE_XFER_BYTES
+#ifdef MEASURE_XFER_BYTES
+typedef struct xfer_summary {
+    xfer_summary() :
+        total_bytes(0),
+        effective_bytes(0),
+        count(0) {}
+    uint64_t total_bytes;
+    uint64_t effective_bytes;
+    uint64_t count;
+} xfer_summary_t;
+std::map<std::string, xfer_summary_t> xfer_stat;
+
+void 
+accumulate_xfer_bytes(const char* symbol,
+                      uint64_t xfer_bytes, uint64_t effective_bytes)
+{
+    std::string key = std::string(symbol);
+    if (xfer_stat.find(key) == xfer_stat.end())
+        xfer_stat.insert(std::make_pair(key, xfer_summary_t()));
+    xfer_stat[key].total_bytes += xfer_bytes;
+    xfer_stat[key].effective_bytes += effective_bytes;
+    xfer_stat[key].count++;
+}
+
+void print_xfer_bytes()
+{
+    printf("==== XFER STATISTICS ====\n");
+    printf("symbol                    count xfer-bytes    average  effective effeciency\n");
+    for(auto x: xfer_stat) {
+        const char* symbol = x.first.c_str();
+        uint64_t total_bytes = x.second.total_bytes;
+        uint64_t count = x.second.count;
+        uint64_t effective_bytes = x.second.effective_bytes;
+#define MB(x) (((float) (x)) / 1000 / 1000)
+        printf("%-25s %5lu %10.3f %10.3f %10.3f",
+               symbol, count,
+               MB(total_bytes),
+               MB(total_bytes / count),
+               MB(effective_bytes));
+        if (total_bytes > 0)
+            printf(" %5.3f\n", ((float) effective_bytes) / total_bytes);
+        else
+            printf("  0.000\n");
+#undef MB
+    }
+}
+#else /* MEASURE_XFER_BYTES */
+#define accumulate_xfer_bytes(s,b)
+#endif /* MEASURE_XFER_BYTES */
 
 #ifdef HOST_ONLY
 
@@ -300,25 +353,46 @@ xfer_foreach(dpu_set_t set, const char* symbol, size_t size,
                 const void* array, size_t elmsize, bool to_dpu)
 {
     uintptr_t addr = (uintptr_t) array;
-    for (int i = 0; i < EMU_MAX_DPUS; i++)
-        if (set[i]) {
-            void* mram_addr = emu[i].get_addr_of_symbol(symbol);
-            if (to_dpu)
-                memcpy(mram_addr, (void*) addr, size);
-            else
-                memcpy((void*) addr, mram_addr, size);
-            addr += elmsize;
+    uint64_t total_xfer_bytes = 0;
+    uint64_t total_effective_bytes = 0;
+    for (int i = 0; i < EMU_MAX_DPUS;) {
+        uint64_t max_xfer_bytes = 0;
+        for (int j = 0; i < EMU_MAX_DPUS && j < EMU_DPUS_IN_RANK; i++, j++) {
+            if (set[i]) {
+                void* mram_addr = emu[i].get_addr_of_symbol(symbol);
+                if (to_dpu)
+                    memcpy(mram_addr, (void*) addr, size);
+                else
+                    memcpy((void*) addr, mram_addr, size);
+                total_effective_bytes += size;
+                if (size > max_xfer_bytes)
+                    max_xfer_bytes = size;
+                addr += elmsize;
+            }
         }
+        total_xfer_bytes += max_xfer_bytes * EMU_DPUS_IN_RANK;
+    }
+    accumulate_xfer_bytes(symbol, total_xfer_bytes, total_effective_bytes);
 }
 
 static void
 broadcast(dpu_set_t set, const char* symbol, const void* addr, size_t size)
 {
-    for (int i = 0; i < EMU_MAX_DPUS; i++)
-        if (set[i]) {
-            void* mram_addr = emu[i].get_addr_of_symbol(symbol);
-            memcpy(mram_addr, addr, size);
+    uint64_t total_xfer_bytes = 0;
+    uint64_t total_effective_bytes = 0;
+    for (int i = 0; i < EMU_MAX_DPUS;) {
+        uint64_t xfer_bytes = 0;
+        for (int j = 0; i < EMU_MAX_DPUS && j < EMU_DPUS_IN_RANK; i++, j++) {
+            if (set[i]) {
+                void* mram_addr = emu[i].get_addr_of_symbol(symbol);
+                memcpy(mram_addr, addr, size);
+                xfer_bytes = size;
+                total_effective_bytes += size;
+            }
         }
+        total_xfer_bytes += xfer_bytes * EMU_DPUS_IN_RANK;
+    }
+    accumulate_xfer_bytes(symbol, total_xfer_bytes, total_effective_bytes);
 }
 
 static void

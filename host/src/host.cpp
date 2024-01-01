@@ -72,7 +72,8 @@ key_int64_t* batch_keys;
 std::map<key_int64_t, value_ptr_t> verify_db;
 #endif /* DEBUG_ON */
 
-void print_merge_info();
+static void print_merge_info();
+static void print_subtree_size(HostTree* host_tree);
 
 struct Option {
     void parse(int argc, char* argv[]) {
@@ -418,18 +419,12 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
         check_results(dpu_results, batch_ctx.key_index);
 #endif /* DEBUG_ON */
     }
-#ifdef PRINT_DEBUG
-    for (uint32_t i = 0; i < NR_DPUS; i++) {
-        printf("num_kvpairs of DPU %d ", i);
-        for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++) {
-            printf("[%d]=%4d ", j, host_tree->num_kvpairs[i][j]);
-        }
-        printf("\n");
-    }
-
-#endif
     gettimeofday(&end, NULL);
     recieve_result_time = time_diff(&start, &end);
+
+#ifdef PRINT_DEBUG
+    print_subtree_size(host_tree);
+#endif /* PRINT_DEBUG */
 
     /* 8. merge small subtrees in DPU*/
     gettimeofday(&start, NULL);
@@ -539,12 +534,30 @@ int main(int argc, char* argv[])
         total_num_keys, total_preprocess_time1, total_preprocess_time2, total_migration_plan_time, total_migration_time, total_send_time,
         total_execution_time, total_recieve_result_time, total_merge_time, total_batch_time, throughput);
 
+#ifdef MEASURE_XFER_BYTES
+    print_xfer_bytes();
+#endif /* MEASURE_XFER_BYTES */
+
     upmem_release();
     delete host_tree;
     return 0;
 }
 
-void print_merge_info()
+static void print_subtree_size(HostTree* host_tree)
+{
+    printf("===== subtree size =====\n");
+    printf("SEAT ");
+    for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
+        printf(" %4d ", j);
+    for (uint32_t i = 0; i < NR_DPUS; i++) {
+        printf("[%3d]", i);
+        for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
+            printf(" %4d ", host_tree->num_kvpairs[i][j]);
+        printf("\n");
+    }
+}
+
+static void print_merge_info()
 {
     printf("===== merge info =====\n");
     for (uint32_t i = 0; i < NR_DPUS; i++) {
