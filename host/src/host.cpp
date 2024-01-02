@@ -25,6 +25,7 @@
 #include "node_defs.hpp"
 #include "upmem.hpp"
 #include "utils.hpp"
+#include "statistics.hpp"
 
 #define ANSI_COLOR_RED "\x1b[31m"
 #define ANSI_COLOR_GREEN "\x1b[32m"
@@ -62,13 +63,17 @@ key_int64_t* batch_keys;
 std::map<key_int64_t, value_ptr_t> verify_db;
 #endif /* DEBUG_ON */
 
+#ifdef MEASURE_XFER_BYTES
+XferStatistics xfer_statistics;
+#endif /* MEASURE_XFER_BYTES */
+
 static void print_merge_info();
 static void print_subtree_size(HostTree* host_tree);
 
 struct Option {
     void parse(int argc, char* argv[]) {
         cmdline::parser a;
-        a.add<int>("keynum", 'n', "maximum num of keys for the experiment", false, NUM_REQUESTS_PER_BATCH * 10);
+        a.add<int>("keynum", 'n', "maximum num of keys for the experiment", false, NUM_REQUESTS_PER_BATCH * 20);
         a.add<std::string>("zipfianconst", 'a', "zipfian consttant", false, "0.99");
         a.add<int>("migration_num", 'm', "migration_num per batch", false, 5);
         a.add<std::string>("directory", 'd', "execution directory, offset from bp-forest directory. ex)bp-forest-exp", false, ".");
@@ -249,6 +254,11 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
         return 0;
     }
     int num_migration;
+
+#ifdef MEASURE_XFER_BYTES
+    xfer_statistics.new_batch();
+#endif /* MEASURE_XFER_BYTES */
+
     if (batch_num == 0) {
         num_migration = 0;  // batch 0: no migration
     } else {
@@ -540,7 +550,7 @@ int main(int argc, char* argv[])
         total_execution_time, total_recieve_result_time, total_merge_time, total_batch_time, throughput);
 
 #ifdef MEASURE_XFER_BYTES
-    print_xfer_bytes();
+    xfer_statistics.print(stdout);
 #endif /* MEASURE_XFER_BYTES */
 
     upmem_release();

@@ -5,6 +5,7 @@
 #include "host_data_structures.hpp"
 #include "node_defs.hpp"
 #include "utils.hpp"
+#include "statistics.hpp"
 
 #ifndef HOST_ONLY
 extern "C" {
@@ -13,7 +14,6 @@ extern "C" {
 }
 #else /* HOST_ONLY */
 #include <bitset>
-#include <map>
 
 #define EMU_MAX_DPUS 3000
 #define EMU_DPUS_IN_RANK 64
@@ -33,56 +33,9 @@ static BPTreeNode tree_migration_buffer[MAX_NUM_NODES_IN_SEAT];
 
 uint32_t upmem_get_nr_dpus();
 
+#ifdef VSCODE_DEFINES
 #define MEASURE_XFER_BYTES
-#ifdef MEASURE_XFER_BYTES
-typedef struct xfer_summary {
-    xfer_summary() :
-        total_bytes(0),
-        effective_bytes(0),
-        count(0) {}
-    uint64_t total_bytes;
-    uint64_t effective_bytes;
-    uint64_t count;
-} xfer_summary_t;
-std::map<std::string, xfer_summary_t> xfer_stat;
-
-void 
-accumulate_xfer_bytes(const char* symbol,
-                      uint64_t xfer_bytes, uint64_t effective_bytes)
-{
-    std::string key = std::string(symbol);
-    if (xfer_stat.find(key) == xfer_stat.end())
-        xfer_stat.insert(std::make_pair(key, xfer_summary_t()));
-    xfer_stat[key].total_bytes += xfer_bytes;
-    xfer_stat[key].effective_bytes += effective_bytes;
-    xfer_stat[key].count++;
-}
-
-void print_xfer_bytes()
-{
-    printf("==== XFER STATISTICS (MB) ====\n");
-    printf("symbol                    count xfer-bytes    average  effective effeciency(%%) \n");
-    for(auto x: xfer_stat) {
-        const char* symbol = x.first.c_str();
-        uint64_t total_bytes = x.second.total_bytes;
-        uint64_t count = x.second.count;
-        uint64_t effective_bytes = x.second.effective_bytes;
-#define MB(x) (((float) (x)) / 1000 / 1000)
-        printf("%-25s %5lu %10.3f %10.3f %10.3f",
-               symbol, count,
-               MB(total_bytes),
-               MB(total_bytes / count),
-               MB(effective_bytes));
-        if (total_bytes > 0)
-            printf(" %5.3f\n", ((float) effective_bytes) / total_bytes);
-        else
-            printf("  0.000\n");
-#undef MB
-    }
-}
-#else /* MEASURE_XFER_BYTES */
-#define accumulate_xfer_bytes(s,b)
-#endif /* MEASURE_XFER_BYTES */
+#endif /* VSCODE_DEFINES */
 
 #ifdef HOST_ONLY
 
@@ -371,7 +324,9 @@ xfer_foreach(dpu_set_t set, const char* symbol, size_t size,
         }
         total_xfer_bytes += max_xfer_bytes * EMU_DPUS_IN_RANK;
     }
-    accumulate_xfer_bytes(symbol, total_xfer_bytes, total_effective_bytes);
+#ifdef MEASURE_XFER_BYTES
+    xfer_statistics.add(symbol, total_xfer_bytes, total_effective_bytes);
+#endif /* MEASURE_XFER_BYTES */
 }
 
 static void
@@ -391,7 +346,9 @@ broadcast(dpu_set_t set, const char* symbol, const void* addr, size_t size)
         }
         total_xfer_bytes += xfer_bytes * EMU_DPUS_IN_RANK;
     }
-    accumulate_xfer_bytes(symbol, total_xfer_bytes, total_effective_bytes);
+#ifdef MEASURE_XFER_BYTES
+    xfer_statistics.add(symbol, total_xfer_bytes, total_effective_bytes);
+#endif /* MEASURE_XFER_BYTES */
 }
 
 static void

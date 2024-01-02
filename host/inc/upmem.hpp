@@ -21,8 +21,4 @@ void upmem_recieve_num_kvpairs(HostTree* host_tree, float* receive_time);
 void upmem_send_nodes_from_dpu_to_dpu(uint32_t from_DPU, seat_id_t from_tree,
                                       uint32_t to_DPU, seat_id_t to_tree);
 
-#ifdef MEASURE_XFER_BYTES
-extern void print_xfer_bytes(void);
-#endif /* MEASURE_XFER_BYTES */
-
 #endif /* __UPMEM_HPP__ */
