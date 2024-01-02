@@ -69,6 +69,7 @@ XferStatistics xfer_statistics;
 
 static void print_merge_info();
 static void print_subtree_size(HostTree* host_tree);
+static void print_nr_queries(BatchCtx* batch_ctx, Migration* mig);
 
 struct Option {
     void parse(int argc, char* argv[]) {
@@ -79,6 +80,8 @@ struct Option {
         a.add<std::string>("directory", 'd', "execution directory, offset from bp-forest directory. ex)bp-forest-exp", false, ".");
         a.add("simulator", 's', "if declared, the binary for simulator is used");
         a.add<std::string>("ops", 'o', "kind of operation ex)get, insert", false, "get");
+        a.add<std::string>("print-load", 'q', "print number of queries sent for each seat", false, "");
+        a.add<std::string>("print-subtree-size", 'e', "print number of elements for each seat", false, "");
         a.parse_check(argc, argv);
 
         std::string alpha = a.get<std::string>("zipfianconst");
@@ -106,7 +109,36 @@ struct Option {
             db += "/build/dpu/dpu_program_UPMEM";
         dpu_binary = strdup(db.c_str());
 #endif /* HOST_ONLY */
+
+        parse_row_column(a.get<std::string>("print-load"), &print_load, &print_load_rc);
+        parse_row_column(a.get<std::string>("print-subtree-size"), &print_subtree_size, &print_subtree_size_rc);
     }
+
+    void parse_row_column(std::string arg, bool* enable, std::pair<int, int>* rc)
+    {
+        char* p;
+        int row, col;
+
+        *enable = false;
+        if (*p == '\0')
+            return;
+        row = strtoul(arg.c_str(), &p, 10);
+        if (row == -1)
+            row = NR_DPUS;
+        if (*p == '\0')
+            col = NR_SEATS_IN_DPU;
+        else {
+            if (*p++ != ',')
+               return;
+            col = strtoul(p, &p, 10);
+            if (*p != '\0')
+                return;
+        }
+        *enable = true;
+        rc->first = row < NR_DPUS ? row : NR_DPUS;
+        rc->second = col < NR_SEATS_IN_DPU ? col : NR_SEATS_IN_DPU;
+    }
+
     const char* dpu_binary;
     const char* workload_file;
     bool is_simulator;
@@ -117,6 +149,10 @@ struct Option {
         OP_TYPE_GET,
         OP_TYPE_INSERT
     } op_type;
+    bool print_load;
+    std::pair<int, int> print_load_rc;
+    bool print_subtree_size;
+    std::pair<int, int> print_subtree_size_rc;
 } opt;
 
 #ifdef DEBUG_ON
@@ -329,15 +365,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
             //printf("key_index[%d][%d] = %d, num_queries_for_source[%d][%d] = %d\n", i, j - 1, batch_ctx.key_index[i][j - 1], i, j - 1, migration_plan.get_num_queries_for_source(batch_ctx, i, j - 1));
         }
     }
-#ifdef PRINT_DEBUG
-    for (uint32_t i = 0; i < NR_DPUS; i++) {
-        printf("key_index before (DPU %d) ", i);
-        for (seat_id_t j = 0; j <= NR_SEATS_IN_DPU; j++) {
-            printf("[%d]=%4d ", j, batch_ctx.key_index[i][j]);
-        }
-        printf("\n");
-    }
-#endif
+
     /* 4.2. make requests to send to DPUs*/
     switch(task) {
     case TASK_GET:
@@ -375,27 +403,11 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     default:
         abort();
     }
+
 #ifdef PRINT_DEBUG
-    for (uint32_t i = 0; i < NR_DPUS; i++) {
-        printf("before (DPU %d) ", i);
-        for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++) {
-            printf("[%d]=%4d ", j, batch_ctx.num_keys_for_tree[i][j]);
-        }
-        printf("\n");
-        printf("after  (DPU %d) ", i);
-        for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++) {
-            printf("[%d]=%4d ", j, j == 0 ? batch_ctx.key_index[i][j] : batch_ctx.key_index[i][j] - batch_ctx.key_index[i][j - 1]);
-        }
-        printf("\n");
-    }
-    for (uint32_t i = 0; i < NR_DPUS; i++) {
-        printf("key_index after (DPU %d) ", i);
-        for (seat_id_t j = 0; j <= NR_SEATS_IN_DPU; j++) {
-            printf("[%d]=%4d ", j, batch_ctx.key_index[i][j]);
-        }
-        printf("\n");
-    }
-#endif
+    print_nr_queries(&batch_ctx, &migration_plan);
+#endif /* PRINT_DEBUG */
+
     /* count the number of requests for each DPU, determine the send size */
     for (uint32_t dpu_i = 0; dpu_i < NR_DPUS; dpu_i++) {
         /* send size: maximum number of requests to a DPU */
@@ -577,14 +589,18 @@ HostTree::apply_migration(Migration* m)
 
 static void print_subtree_size(HostTree* host_tree)
 {
+    if (!opt.print_subtree_size)
+        return;
+    int nr_dpus = opt.print_subtree_size_rc.first;
+    int nr_seats_in_dpu = opt.print_subtree_size_rc.second;
     printf("===== subtree size =====\n");
     printf("SEAT ");
-    for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
+    for (seat_id_t j = 0; j < nr_seats_in_dpu; j++)
         printf(" %4d ", j);
     printf("\n");
-    for (uint32_t i = 0; i < NR_DPUS; i++) {
+    for (uint32_t i = 0; i < nr_dpus; i++) {
         printf("[%3d]", i);
-        for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
+        for (seat_id_t j = 0; j < nr_seats_in_dpu; j++)
             printf(" %4d ", host_tree->num_kvpairs[i][j]);
         printf("\n");
     }
@@ -597,6 +613,25 @@ static void print_merge_info()
         printf("%2d", i);
         for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
             printf(" %2d", merge_info[i].merge_to[j]);
+        printf("\n");
+    }
+}
+
+static void print_nr_queries(BatchCtx* batch_ctx, Migration* mig)
+{
+    if (!opt.print_load)
+        return;
+    int nr_dpus = opt.print_load_rc.first;
+    int nr_seats_in_dpu = opt.print_load_rc.second;
+     printf("===== nr queries =====\n");
+    printf("SEAT ");
+    for (seat_id_t j = 0; j < nr_seats_in_dpu; j++)
+        printf(" %4d ", j);
+    printf("\n");
+    for (uint32_t i = 0; i < nr_dpus; i++) {
+        printf("[%3d]", i);
+        for (seat_id_t j = 0; j < nr_seats_in_dpu; j++)
+            printf(" %4d ", mig->get_num_queries_for_source(*batch_ctx, i, j));
         printf("\n");
     }
 }
