@@ -7,6 +7,10 @@
 #include "utils.hpp"
 #include "statistics.hpp"
 
+#ifdef PRINT_DEBUG
+#include <cstdio>
+#endif /* PRINT_DEBUG */
+
 #ifdef HOST_ONLY
 #include <bitset>
 #include "emulation.hpp"

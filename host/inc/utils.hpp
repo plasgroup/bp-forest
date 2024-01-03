@@ -17,9 +17,9 @@ public:
     static uint32_t rand32() { return mt32(); }
 
 private:
-    static inline std::mt19937_64 mt64;
-    static inline std::mt19937 mt32;
-    static inline std::random_device rnd;
+    static std::mt19937_64 mt64;
+    static std::mt19937 mt32;
+    static std::random_device rnd;
 };
 
 static inline float time_diff(struct timeval* start, struct timeval* end)

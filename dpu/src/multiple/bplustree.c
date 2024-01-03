@@ -221,7 +221,7 @@ bool insert(MBPTptr cur, key_int64_t key, value_ptr_t value, MBPTptr n,
 
 void init_BPTree(seat_id_t seat_id)
 {
-    extern num_kvpairs_in_seat[NR_SEATS_IN_DPU];
+    extern int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
     MBPTptr root = Seat_get_root(seat_id);
     root->numKeys = 0;
     root->isRoot = true;
