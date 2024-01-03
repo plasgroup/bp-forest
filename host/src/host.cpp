@@ -192,6 +192,17 @@ void initialize_dpus(int num_init_reqs, HostTree* tree)
         param.end_inclusive = max_in_range;
         param.interval = interval;
         min_in_range = max_in_range + 1;
+#ifdef DEBUG_ON
+        if (param.start <= param.end_inclusive) {
+            key_int64_t k = param.start;
+            while (true) {
+                verify_db.insert(std::make_pair(k, k));
+                if (param.end_inclusive - k < param.interval)
+                    break;
+                k += param.interval;
+            }
+        }
+#endif /* DEBUG_ON */
     }
 
     /* init BPTree in DPUs */
