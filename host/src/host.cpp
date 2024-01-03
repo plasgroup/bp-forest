@@ -236,6 +236,12 @@ void update_cpu_struct_merge(HostTree* host_tree)
                 host_tree->remove(dpu, i);  // merge to the previous subtree
 }
 
+int prepare_batch_keys(std::ifstream& file_input, key_int64_t* const batch_keys)
+{
+    file_input.read(reinterpret_cast<char*>(batch_keys), sizeof(key_int64_t) * NUM_REQUESTS_PER_BATCH);
+    return file_input.gcount() / sizeof(key_int64_t);
+}
+
 int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, uint64_t& total_num_keys, const int max_key_num, std::ifstream& file_input, HostTree* host_tree, BatchCtx& batch_ctx)
 {
 #ifdef PRINT_DEBUG
@@ -259,17 +265,10 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     }
 
     /* 0. read workload file */
-    int num_keys_batch;
-    if (max_key_num - total_num_keys >= NUM_REQUESTS_PER_BATCH) {
-        num_keys_batch = NUM_REQUESTS_PER_BATCH;
-    } else {
-        num_keys_batch = max_key_num - total_num_keys;
-    }
+    const int num_keys_batch = prepare_batch_keys(file_input, batch_keys);
     if (num_keys_batch == 0) {
         return 0;
     }
-    file_input.read(reinterpret_cast<char*>(batch_keys), sizeof(batch_keys) * num_keys_batch);
-    num_keys_batch = file_input.tellg() / sizeof(key_int64_t) - total_num_keys;
 
     /* 1. count number of queries for each DPU, tree */
     preprocess_time1 = measure_time([&] {
