@@ -23,6 +23,7 @@ __mram KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
 __mram uint64_t tree_transfer_num;
 __mram split_info_t split_result[NR_SEATS_IN_DPU];
 __mram merge_info_t merge_info;
+__mram dpu_init_param_t dpu_init_param[NR_SEATS_IN_DPU];
 
 __host uint64_t task_no;
 __host int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
@@ -51,11 +52,23 @@ int main()
     switch (task) {
     case TASK_INIT: {
         if (tid == 0) {
-            int nr_init_trees = TASK_GET_OPERAND(task_no);
             Cabin_init();
-            for (seat_id_t seat_id = 0; seat_id < nr_init_trees; seat_id++) {
-                Cabin_allocate_seat(seat_id);
-                init_BPTree(seat_id);
+            for (seat_id_t seat_id = 0; seat_id < NR_SEATS_IN_DPU; seat_id++) {
+                __mram_ptr dpu_init_param_t* param = &dpu_init_param[seat_id];
+                if (param->use != 0) {
+                    Cabin_allocate_seat(seat_id);
+                    init_BPTree(seat_id);
+                    if (param->end_inclusive < param->start)
+                        continue;
+                    key_int64_t k = param->start;
+                    while (true) {
+                        value_ptr_t v = k;
+                        BPTreeInsert(k, v, seat_id);
+                        if (param->end_inclusive - k < param->interval)
+                            break;
+                        k += param->interval;
+                    }
+                }
             }
         }
         break;
