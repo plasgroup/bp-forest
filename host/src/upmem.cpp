@@ -125,6 +125,7 @@ execute(dpu_set_t set)
     for (int i = 0; i < EMU_MAX_DPUS; i++)
         if (set[i])
             emu[i].execute();
+    Emulation::wait_all();
 }
 
 #else /* HOST_ONLY */
@@ -233,6 +234,7 @@ void upmem_release()
 {
 #ifdef HOST_ONLY
     dpu_set ^= dpu_set;
+    Emulation::terminate();
 #else /* HOST_ONLY */
     DPU_ASSERT(dpu_free(dpu_set));
 #endif /* HOST_ONLY */

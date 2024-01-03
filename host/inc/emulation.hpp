@@ -13,10 +13,108 @@ extern "C" {
 
 #define EMU_MAX_DPUS 3000
 #define EMU_DPUS_IN_RANK 64
+#define EMU_MULTI_THREAD 16 /* nr worker threads */
 
-struct Emulation {
+#ifdef EMU_MULTI_THREAD
+
+#include <thread>
+#include <condition_variable>
+#include <mutex>
+#include <queue>
+
+class Emulation;
+
+class EmulatorWorkerManager {
+    std::thread* threads[EMU_MULTI_THREAD];
+    bool stop;
+    std::condition_variable cond;
+    std::mutex mtx;
+    std::queue<Emulation*> queue;
+    int nr_running;
+    std::condition_variable  done_cond;
+
+public:
+    EmulatorWorkerManager()
+    {
+        for (int i = 0; i < EMU_MULTI_THREAD; i++)
+            threads[i] = new std::thread([&]{this->run();});
+        nr_running = 0;
+        stop = false;
+    }
+
+    void add_work(Emulation* emu)
+    {
+        std::unique_lock<std::mutex> lk(mtx);
+        queue.push(emu);
+        cond.notify_one();
+    }
+
+    void wait_all()
+    {
+        std::unique_lock<std::mutex> lk(mtx);
+        while (!stop && (nr_running > 0 || !queue.empty()))
+            done_cond.wait(lk);
+    }
+
+    void terminate()
+    {
+        std::unique_lock<std::mutex> lk(mtx);
+        stop = true;
+        cond.notify_all();
+        done_cond.notify_all();
+    }
+
+private:
+    void execute(Emulation* emu);
+
+    void run()
+    {
+        while (true) {
+            std::unique_lock<std::mutex> lk(mtx);
+            while (!stop && queue.empty())
+                cond.wait(lk);
+            if (stop)
+                return;
+            Emulation* emu = queue.front();
+            queue.pop();
+            nr_running++;
+            lk.unlock();
+            execute(emu);
+            lk.lock();
+            nr_running--;
+            if (nr_running == 0 && queue.empty())
+                done_cond.notify_all();
+        }
+    }
+
+};
+
+static EmulatorWorkerManager emu_threads;
+
+#endif /* EMU_MULTI_THREAD */
+
+class Emulation {
+    friend EmulatorWorkerManager;
+
+    struct MRAM {
+        uint64_t task_no;
+        int end_idx[NR_SEATS_IN_DPU];
+        each_request_t request_buffer[MAX_REQ_NUM_IN_A_DPU];
+        merge_info_t merge_info;
+        each_result_t result[MAX_REQ_NUM_IN_A_DPU];
+        split_info_t split_result[NR_SEATS_IN_DPU];
+        int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
+        uint64_t tree_transfer_num;
+        KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
+    } mram;
+
+    std::map<key_int64_t, value_ptr_t> subtree[NR_SEATS_IN_DPU];
+    bool in_use[NR_SEATS_IN_DPU];
+
+public:
     void* get_addr_of_symbol(const char* symbol)
     {
+
 #define MRAM_SYMBOL(S) do {          \
         if (strcmp(symbol, #S) == 0) \
             return &mram.S;          \
@@ -38,22 +136,32 @@ struct Emulation {
         return NULL;
     }
 
-    struct MRAM {
-        uint64_t task_no;
-        int end_idx[NR_SEATS_IN_DPU];
-        each_request_t request_buffer[MAX_REQ_NUM_IN_A_DPU];
-        merge_info_t merge_info;
-        each_result_t result[MAX_REQ_NUM_IN_A_DPU];
-        split_info_t split_result[NR_SEATS_IN_DPU];
-        int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
-        uint64_t tree_transfer_num;
-        KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
-    } mram;
-
-    std::map<key_int64_t, value_ptr_t> subtree[NR_SEATS_IN_DPU];
-    bool in_use[NR_SEATS_IN_DPU];
-
     void execute()
+    {
+#ifdef EMU_MULTI_THREAD
+        emu_threads.add_work(this);
+#else /* EMU_MULTI_THREAD */
+        do_execute();
+#endif /* EMU_MULTI_THREAD */
+    }
+
+    static void wait_all()
+    {
+#ifdef EMU_MULTI_THREAD
+        emu_threads.wait_all();
+#endif /* EMU_MULTI_THREAD */
+    }
+
+    static void terminate()
+    {
+#ifdef EMU_MULTI_THREAD
+        emu_threads.terminate();
+#endif /* EMU_MULTI_THREAD */
+    }
+
+private:
+
+    void do_execute()
     {
         switch (TASK_GET_ID(mram.task_no)) {
         case TASK_INIT:
@@ -79,7 +187,6 @@ struct Emulation {
         }
     }
 
-private:
     /* counterpert of Cabin_allocate_seat */
     seat_id_t allocate_seat(seat_id_t seat_id)
     {
@@ -240,5 +347,13 @@ private:
     }
 
 } emu[EMU_MAX_DPUS];
+
+#ifdef EMU_MULTI_THREAD
+void
+EmulatorWorkerManager::execute(Emulation* emu)
+{
+    emu->do_execute();
+}
+#endif /* EMU_MULTI_THREAD */
 
 #endif /* __EMULATION_HPP__ */
