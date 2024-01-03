@@ -424,7 +424,7 @@ void upmem_receive_results(BatchCtx& batch_ctx, float* receive_time)
         *receive_time = time_diff(&start, &end);
 }
 
-void upmem_recieve_split_info(float* receive_time)
+void upmem_receive_split_info(float* receive_time)
 {
     struct timeval start, end;
 
@@ -438,7 +438,7 @@ void upmem_recieve_split_info(float* receive_time)
         *receive_time = time_diff(&start, &end);
 }
 
-void upmem_recieve_num_kvpairs(HostTree* host_tree, float* receive_time)
+void upmem_receive_num_kvpairs(HostTree* host_tree, float* receive_time)
 {
     struct timeval start, end;
 

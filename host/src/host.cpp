@@ -42,7 +42,7 @@ float migration_time;
 float migration_plan_time;
 float send_time;
 float execution_time;
-float recieve_result_time = 0;
+float receive_result_time = 0;
 float merge_time;
 float batch_time = 0;
 float total_preprocess_time = 0;
@@ -52,7 +52,7 @@ float total_migration_plan_time = 0;
 float total_migration_time = 0;
 float total_send_time = 0;
 float total_execution_time = 0;
-float total_recieve_result_time = 0;
+float total_receive_result_time = 0;
 float total_merge_time = 0;
 float total_batch_time = 0;
 float init_time = 0;
@@ -377,11 +377,11 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     /* 5. query deliver + 6. DPU query execution */
     upmem_send_task(task, batch_ctx, &send_time, &execution_time);
 
-    /* 7. recieve results (and update CPU structs) */
-    recieve_result_time = measure_time([&] {
-        upmem_recieve_num_kvpairs(host_tree, NULL);
+    /* 7. receive results (and update CPU structs) */
+    receive_result_time = measure_time([&] {
+        upmem_receive_num_kvpairs(host_tree, NULL);
         if (task == TASK_INSERT) {
-            upmem_recieve_split_info(NULL);
+            upmem_receive_split_info(NULL);
             update_cpu_struct(host_tree);
         }
         if (task == TASK_GET) {
@@ -459,7 +459,7 @@ int main(int argc, char* argv[])
     int num_keys = 0;
     int batch_num = 0;
     uint64_t total_num_keys = 0;
-    printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time, execution_time, recieve_result_time, merge_time, batch_time, throughput\n");
+    printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time, execution_time, receive_result_time, merge_time, batch_time, throughput\n");
     while (total_num_keys < opt.nr_total_queries) {
         BatchCtx batch_ctx;
         switch (opt.op_type) {
@@ -474,21 +474,21 @@ int main(int argc, char* argv[])
         }
         total_num_keys += num_keys;
         batch_num++;
-        batch_time = preprocess_time1 + preprocess_time2 + migration_plan_time + migration_time + send_time + execution_time + recieve_result_time + merge_time;
+        batch_time = preprocess_time1 + preprocess_time2 + migration_plan_time + migration_time + send_time + execution_time + receive_result_time + merge_time;
         total_preprocess_time1 += preprocess_time1;
         total_preprocess_time2 += preprocess_time2;
         total_migration_plan_time += migration_plan_time;
         total_migration_time += migration_time;
         total_send_time += send_time;
         total_execution_time += execution_time;
-        total_recieve_result_time += recieve_result_time;
+        total_receive_result_time += receive_result_time;
         total_merge_time += merge_time;
         total_batch_time += batch_time;
         double throughput = num_keys / batch_time;
         printf("%.2f, %d, %d, %d, %d, %d, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
             opt.zipfian_const, NR_DPUS, NR_TASKLETS, batch_num,
             num_keys, batch_ctx.send_size, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time,
-            execution_time, recieve_result_time, merge_time, batch_time, throughput);
+            execution_time, receive_result_time, merge_time, batch_time, throughput);
     }
 
 
@@ -502,7 +502,7 @@ int main(int argc, char* argv[])
     printf("%.2f, %d, %d, total, %ld,, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f\n",
         opt.zipfian_const, NR_DPUS, NR_TASKLETS,
         total_num_keys, total_preprocess_time1, total_preprocess_time2, total_migration_plan_time, total_migration_time, total_send_time,
-        total_execution_time, total_recieve_result_time, total_merge_time, total_batch_time, throughput);
+        total_execution_time, total_receive_result_time, total_merge_time, total_batch_time, throughput);
 
 #ifdef MEASURE_XFER_BYTES
     xfer_statistics.print(stdout);
