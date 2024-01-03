@@ -366,12 +366,14 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     print_nr_queries(&batch_ctx, &migration_plan);
 #endif /* PRINT_DEBUG */
 
+#ifndef RANK_ORIENTED_XFER
     /* count the number of requests for each DPU, determine the send size */
     for (uint32_t dpu_i = 0; dpu_i < NR_DPUS; dpu_i++) {
         /* send size: maximum number of requests to a DPU */
         if (batch_ctx.send_size < batch_ctx.key_index[dpu_i][NR_SEATS_IN_DPU])
             batch_ctx.send_size = batch_ctx.key_index[dpu_i][NR_SEATS_IN_DPU];
     }
+#endif /* RANK_ORIENTED_XFER */
     gettimeofday(&end, NULL);
     preprocess_time2 = time_diff(&start, &end);
 
