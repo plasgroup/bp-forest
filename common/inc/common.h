@@ -38,6 +38,10 @@
 #define NUM_REQUESTS_PER_BATCH (1000000)
 #endif
 
+#ifndef DEFAULT_NR_BATCHES
+#define DEFAULT_NR_BATCHES 20
+#endif
+
 #ifndef NUM_INIT_REQS
 #define NUM_INIT_REQS (2000 * (NR_DPUS * NR_INITIAL_TREES_IN_DPU))
 #endif
