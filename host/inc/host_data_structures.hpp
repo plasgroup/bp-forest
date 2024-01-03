@@ -1,9 +1,10 @@
 #ifndef __HOST_DATA_STRUCTURES_HPP__
 #define __HOST_DATA_STRUCTURES_HPP__
 
+#include <stdlib.h>
+#include <assert.h>
 #include <cstring>
 #include <map>
-#include <stdlib.h>
 #include "common.h"
 
 #ifdef PRINT_DEBUG
