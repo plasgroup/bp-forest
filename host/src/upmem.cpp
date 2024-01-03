@@ -99,6 +99,40 @@ xfer_foreach(dpu_set_t set, const char* symbol, size_t size,
 #endif /* MEASURE_XFER_BYTES */
 }
 
+#ifdef RANK_ORIENTED_XFER
+/* variable-length array version */
+static void
+xfer_foreach_va(dpu_set_t set, const char* symbol, const void* array,
+                size_t interval, size_t* xfer_bytes, bool to_dpu)
+{
+    uintptr_t addr = (uintptr_t) array;
+    uint64_t total_xfer_bytes = 0;
+    uint64_t total_effective_bytes = 0;
+    for (int i = 0; i < EMU_MAX_DPUS;) {
+        uint64_t max_xfer_bytes = 0;
+        for (int j = 0; i < EMU_MAX_DPUS && j < EMU_DPUS_IN_RANK; i++, j++)
+            if (set[i]) {
+                if (xfer_bytes[i] > max_xfer_bytes)
+                    max_xfer_bytes = xfer_bytes[i];
+                total_effective_bytes += xfer_bytes[i];
+            }
+        for (int j = 0; i < EMU_MAX_DPUS && j < EMU_DPUS_IN_RANK; i++, j++)
+            if (set[i]) {
+                void* mram_addr = emu[i].get_addr_of_symbol(symbol);
+                if (to_dpu)
+                    memcpy(mram_addr, (void*) addr, max_xfer_bytes);
+                else
+                    memcpy((void*) addr, mram_addr, max_xfer_bytes);
+                addr += interval;
+            }
+        total_xfer_bytes += max_xfer_bytes * EMU_DPUS_IN_RANK;
+    }
+#ifdef MEASURE_XFER_BYTES
+    xfer_statistics.add(symbol, total_xfer_bytes, total_effective_bytes);
+#endif /* MEASURE_XFER_BYTES */
+}
+#endif /* RANK_ORIENTED_XFER */
+
 static void
 broadcast(dpu_set_t set, const char* symbol, const void* addr, size_t size)
 {
@@ -166,6 +200,35 @@ xfer_foreach(dpu_set_t set, const char* symbol, size_t size,
 }
 
 static void
+xfer_foreach_va(dpu_set_t set, const char* symbol, const void* array,
+               size_t interval, size_t* xfer_bytes, bool to_dpu)
+{
+    dpu_set_t rank, dpu;
+    dpu_xfer_t dir = to_dpu ? DPU_XFER_TO_DPU : DPU_XFER_FROM_DPU;
+    uintptr_t addr = (uintptr_t) array;
+
+    /* 
+     * We assume DPU_RANK_FOREACH & DPU_FOREACH yields the dpus in the
+     * same order as a single DPU_FOREACH.
+     */
+    uint32_t dpu_index = 0;
+    DPU_RANK_FOREACH(dpu_set, rank) {
+        size_t max_xfer_bytes = 0;
+        DPU_FOREACH(rank, dpu) {
+            DPU_ASSERT(dpu_prepare_xfer(dpu, (void*) addr));
+            addr += interval;
+            size_t b = xfer_bytes[dpu_index];
+            if (b > max_xfer_bytes)
+                max_xfer_bytes = b;
+            dpu_index++;
+        }
+        DPU_ASSERT(dpu_push_xfer(
+            rank, dir, symbol, 0, max_xfer_bytes, DPU_XFER_ASYNC));
+    }
+    DPU_ASSERT(dpu_sync(dpu_set));
+}
+
+static void
 broadcast(dpu_set_t set, const char* symbol, const void* addr, size_t size)
 {
     DPU_ASSERT(dpu_broadcast_to(
@@ -197,6 +260,8 @@ xfer_single(dpu_set_t set, const char* symbol, size_t size,
 
 #define SEND_FOREACH(set,sym,size,ary) \
     xfer_foreach(set, sym, size, ary, sizeof((ary)[0]), true)
+#define SEND_FOREACH_VA(set,sym,ary,sizes) \
+    xfer_foreach_va(set, sym, ary, sizeof((ary)[0]), sizes, true)
 #define RECV_FOREACH(set,sym,size,ary) \
     xfer_foreach(set, sym, size, ary, sizeof((ary)[0]), false)
 #define SEND_SINGLE(set,sym,size,addr) \
@@ -271,14 +336,28 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
                      dpu_init_param);
         break;
     case TASK_GET:
-    case TASK_INSERT:
+    case TASK_INSERT: {
+#ifdef RANK_ORIENTED_XFER
+        static size_t send_bytes[NR_DPUS];
+        for (int i = 0; i < NR_DPUS; i++) {
+            size_t nr_reqs = batch_ctx.key_index[i][NR_SEATS_IN_DPU];
+            send_bytes[i] = nr_reqs * sizeof(each_request_t);
+        }
+        SEND_FOREACH(dpu_set, "end_idx",
+                     sizeof(int) * NR_SEATS_IN_DPU,
+                     batch_ctx.key_index);
+        SEND_FOREACH_VA(dpu_set, "request_buffer",
+                        dpu_requests, send_bytes);
+#else /* RANK_ORIENTED_XFER */
         SEND_FOREACH(dpu_set, "end_idx",
                      sizeof(int) * NR_SEATS_IN_DPU,
                      batch_ctx.key_index);
         SEND_FOREACH(dpu_set, "request_buffer",
                      sizeof(each_request_t) * batch_ctx.send_size,
                      dpu_requests);
+#endif /* RANK_ORIENTED_XFER */
         break;
+    }
     case TASK_MERGE:
         SEND_FOREACH(dpu_set, "merge_info",
                      sizeof(merge_info_t), merge_info);

@@ -372,11 +372,6 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
         if (batch_ctx.send_size < batch_ctx.key_index[dpu_i][NR_SEATS_IN_DPU])
             batch_ctx.send_size = batch_ctx.key_index[dpu_i][NR_SEATS_IN_DPU];
     }
-#ifdef PRINT_DEBUG
-// for (key_int64_t x : num_keys) {
-//     std::cout << x << std::endl;
-// }
-#endif
     gettimeofday(&end, NULL);
     preprocess_time2 = time_diff(&start, &end);
 
