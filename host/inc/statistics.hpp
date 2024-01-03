@@ -4,6 +4,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <chrono>
 
 class XferStatistics {
     struct XferEntry {
@@ -81,5 +82,15 @@ private:
 #ifdef MEASURE_XFER_BYTES
 extern XferStatistics xfer_statistics;
 #endif /* MEASURE_XFER_BYTES */   
+
+
+template <class Func>
+inline std::chrono::duration<float> measure_time(Func&& func) {
+    using namespace std::chrono;
+    const auto begin_time = high_resolution_clock::now();
+    (std::forward<Func>(func))();
+    const auto end_time = high_resolution_clock::now();
+    return duration_cast<duration<float>>(end_time - begin_time);
+}
 
 #endif /* __STATISTICS_HPP__ */
