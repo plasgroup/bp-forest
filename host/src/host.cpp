@@ -120,7 +120,7 @@ struct Option {
         int row, col;
 
         *enable = false;
-        if (*p == '\0')
+        if (arg.length() == 0)
             return;
         row = strtoul(arg.c_str(), &p, 10);
         if (row == -1)
@@ -465,9 +465,6 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
 #endif /* MERGE */
     gettimeofday(&end, NULL);
     merge_time = time_diff(&start, &end);
-#ifdef PRINT_DEBUG
-    printf("[4/4] batch postprocess finished: %0.5fsec\n", time_diff(&start, &end));
-#endif
 
     return num_keys_batch;
 }
