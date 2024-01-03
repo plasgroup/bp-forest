@@ -1,8 +1,8 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
-#include <cassert>
 #include <algorithm>
+#include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -23,9 +23,9 @@
 #include "host_data_structures.hpp"
 #include "migration.hpp"
 #include "node_defs.hpp"
+#include "statistics.hpp"
 #include "upmem.hpp"
 #include "utils.hpp"
-#include "statistics.hpp"
 
 #define ANSI_COLOR_RED "\x1b[31m"
 #define ANSI_COLOR_GREEN "\x1b[32m"
@@ -72,7 +72,8 @@ static void print_subtree_size(HostTree* host_tree);
 static void print_nr_queries(BatchCtx* batch_ctx, Migration* mig);
 
 struct Option {
-    void parse(int argc, char* argv[]) {
+    void parse(int argc, char* argv[])
+    {
         cmdline::parser a;
         a.add<int>("keynum", 'n', "maximum num of keys for the experiment", false, NUM_REQUESTS_PER_BATCH * DEFAULT_NR_BATCHES);
         a.add<std::string>("zipfianconst", 'a', "zipfian consttant", false, "0.99");
@@ -101,7 +102,7 @@ struct Option {
         }
 #ifdef HOST_ONLY
         dpu_binary = NULL;
-#else /* HOST_ONLY */
+#else  /* HOST_ONLY */
         std::string db = a.get<std::string>("directory");
         if (is_simulator)
             db += "/build/dpu/dpu_program_simulator";
@@ -129,7 +130,7 @@ struct Option {
             col = NR_SEATS_IN_DPU;
         else {
             if (*p++ != ',')
-               return;
+                return;
             col = strtoul(p, &p, 10);
             if (*p != '\0')
                 return;
@@ -180,9 +181,9 @@ void initialize_dpus(int num_init_reqs, HostTree* tree)
     for (int i = 0; i < NR_DPUS; i++)
         for (int j = 0; j < NR_SEATS_IN_DPU; j++)
             dpu_init_param[i][j].use = 0;
-    
+
     key_int64_t min_in_range = 0;
-    for (auto& it: tree->key_to_tree_map) {
+    for (auto& it : tree->key_to_tree_map) {
         key_int64_t max_in_range = it.first;
         seat_addr_t& sa = it.second;
         dpu_init_param_t& param = dpu_init_param[sa.dpu][sa.seat];
@@ -211,7 +212,7 @@ void update_cpu_struct(HostTree* host_tree)
             if (split_result[dpu][old_tree].num_split != 0) {
                 seat_addr_t old_sa = seat_addr_t(dpu, old_tree);
                 host_tree->key_to_tree_map.erase(host_tree->inverse(old_sa));
-                host_tree->inv_map_del(old_sa); // TODO: insearted this line. correct?
+                host_tree->inv_map_del(old_sa);  // TODO: insearted this line. correct?
                 for (int new_tree = 0; new_tree < split_result[dpu][old_tree].num_split; new_tree++) {
                     seat_id_t new_seat_id = split_result[dpu][old_tree].new_tree_index[new_tree];
                     // printf("split: DPU %d seat %d -> seat %d\n", dpu, old_tree, new_seat_id);
@@ -271,7 +272,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     }
     file_input.read(reinterpret_cast<char*>(batch_keys), sizeof(batch_keys) * num_keys_batch);
     num_keys_batch = file_input.tellg() / sizeof(key_int64_t) - total_num_keys;
-    
+
     gettimeofday(&start, NULL);
     /* 1. count number of queries for each DPU, tree */
     for (int i = 0; i < num_keys_batch; i++) {
@@ -325,7 +326,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     }
 
     /* 4.2. make requests to send to DPUs*/
-    switch(task) {
+    switch (task) {
     case TASK_GET:
         for (int i = 0; i < num_keys_batch; i++) {
             auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
@@ -384,7 +385,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     upmem_send_task(task, batch_ctx, &send_time, &execution_time);
 
     /* 7. recieve results (and update CPU structs) */
-    
+
     gettimeofday(&start, NULL);
     upmem_recieve_num_kvpairs(host_tree, NULL);
     if (task == TASK_INSERT) {
@@ -427,7 +428,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
 int main(int argc, char* argv[])
 {
     opt.parse(argc, argv);
-    
+
     /* In current implementation, bitmap word is 64 bit. So NR_SEAT_IN_DPU must not be greater than 64. */
     assert(NR_SEATS_IN_DPU <= 64);
     assert(sizeof(dpu_requests_t) == sizeof(dpu_requests[0]));
@@ -522,8 +523,7 @@ int main(int argc, char* argv[])
     return 0;
 }
 
-void
-HostTree::apply_migration(Migration* m)
+void HostTree::apply_migration(Migration* m)
 {
     for (auto it = m->begin(); it != m->end(); ++it) {
         seat_addr_t from = (*it).first;
@@ -575,7 +575,7 @@ static void print_nr_queries(BatchCtx* batch_ctx, Migration* mig)
         return;
     int nr_dpus = opt.print_load_rc.first;
     int nr_seats_in_dpu = opt.print_load_rc.second;
-     printf("===== nr queries =====\n");
+    printf("===== nr queries =====\n");
     printf("SEAT ");
     for (seat_id_t j = 0; j < nr_seats_in_dpu; j++)
         printf(" %4d ", j);
