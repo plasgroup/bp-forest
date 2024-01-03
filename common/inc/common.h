@@ -97,6 +97,13 @@ typedef struct {
     each_result_t results[MAX_REQ_NUM_IN_A_DPU];
 } dpu_results_t;
 
+typedef struct {
+    int use;
+    key_int64_t start;
+    key_int64_t end_inclusive;
+    key_int64_t interval;
+} dpu_init_param_t;
+
 #ifdef VARY_REQUESTNUM
 typedef struct {  // for returning the result of the experiment
     int x;

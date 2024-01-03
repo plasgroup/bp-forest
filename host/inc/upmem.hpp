@@ -8,6 +8,7 @@ extern dpu_requests_t* dpu_requests;
 extern dpu_results_t* dpu_results;
 extern merge_info_t merge_info[NR_DPUS];
 extern split_info_t split_result[NR_DPUS][NR_SEATS_IN_DPU];
+extern dpu_init_param_t dpu_init_param[NR_DPUS][NR_SEATS_IN_DPU];
 
 void upmem_init(const char* binary, bool is_simulator);
 void upmem_release(void);

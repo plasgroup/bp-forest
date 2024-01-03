@@ -106,12 +106,23 @@ class Emulation {
         int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
         uint64_t tree_transfer_num;
         KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
+        dpu_init_param_t dpu_init_param[NR_SEATS_IN_DPU];
     } mram;
 
     std::map<key_int64_t, value_ptr_t> subtree[NR_SEATS_IN_DPU];
     bool in_use[NR_SEATS_IN_DPU];
+    uint32_t dpu_id;
 
 public:
+    void init(uint32_t id)
+    {
+        dpu_id = id;
+        for (int i = 0; i < NR_SEATS_IN_DPU; i++) {
+            in_use[i] = false;
+            subtree[i].clear();
+        }
+    }
+
     void* get_addr_of_symbol(const char* symbol)
     {
 
@@ -129,6 +140,7 @@ public:
         MRAM_SYMBOL(num_kvpairs_in_seat);
         MRAM_SYMBOL(tree_transfer_num);
         MRAM_SYMBOL(tree_transfer_buffer);
+        MRAM_SYMBOL(dpu_init_param);
 
 #undef MRAM_SYMBOL
 
@@ -165,7 +177,7 @@ private:
     {
         switch (TASK_GET_ID(mram.task_no)) {
         case TASK_INIT:
-            task_init(TASK_GET_OPERAND(mram.task_no));
+            task_init();
             break;
         case TASK_INSERT:
             task_insert();
@@ -272,14 +284,28 @@ private:
         }
     }
 
-    void task_init(int nr_init_trees)
+    void task_init()
     {
         for (int i = 0; i < NR_SEATS_IN_DPU; i++) {
             mram.num_kvpairs_in_seat[i] = 0;
             in_use[i] = false;
         }
-        for (int i = 0; i < nr_init_trees; i++)
-            allocate_seat(i);
+        for (int i = 0; i < NR_SEATS_IN_DPU; i++) {
+            dpu_init_param_t& param = mram.dpu_init_param[i];
+            if (param.use != 0) {
+                allocate_seat(i);
+                if (param.end_inclusive < param.start)
+                    continue;
+                key_int64_t k = param.start;
+                while (true) {
+                    value_ptr_t v = k;
+                    subtree[i].insert(std::make_pair(k, v));
+                    if (param.end_inclusive - k < param.interval)
+                        break;
+                    k += param.interval;
+                }
+            }
+        }
     }
 
     void task_insert()
@@ -346,7 +372,7 @@ private:
         mram.num_kvpairs_in_seat[seat_id] = mram.tree_transfer_num;
     }
 
-} emu[EMU_MAX_DPUS];
+};
 
 #ifdef EMU_MULTI_THREAD
 void

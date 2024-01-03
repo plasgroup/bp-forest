@@ -13,6 +13,7 @@
 
 typedef std::bitset<EMU_MAX_DPUS> dpu_set_t;
 typedef uint32_t dpu_id_t;
+Emulation emu[EMU_MAX_DPUS];
 #else /* HOST_ONLY */
 extern "C" {
 #include <dpu.h>
@@ -27,6 +28,7 @@ dpu_requests_t* dpu_requests;
 dpu_results_t* dpu_results;
 merge_info_t merge_info[NR_DPUS];
 split_info_t split_result[NR_DPUS][NR_SEATS_IN_DPU];
+dpu_init_param_t dpu_init_param[NR_DPUS][NR_SEATS_IN_DPU];
 static BPTreeNode tree_migration_buffer[MAX_NUM_NODES_IN_SEAT];
 
 uint32_t upmem_get_nr_dpus();
@@ -214,8 +216,10 @@ void upmem_init(const char* binary, bool is_simulator)
     dpu_results = (dpu_results_t*)malloc((NR_DPUS) * sizeof(dpu_results_t));
 
 #ifdef HOST_ONLY
-    for (int i = 0; i < NR_DPUS; i++)
+    for (int i = 0; i < NR_DPUS; i++) {
         dpu_set[i] = true;
+        emu[i].init(i);
+    }
 #else /* HOST_ONLY */
     if (is_simulator) {
         DPU_ASSERT(dpu_alloc(NR_DPUS, "backend=simulator", &dpu_set));
@@ -261,6 +265,11 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
 
     /* send data */
     switch (task) {
+    case TASK_INIT:
+        SEND_FOREACH(dpu_set, "dpu_init_param",
+                     sizeof(dpu_init_param_t) * NR_SEATS_IN_DPU,
+                     dpu_init_param);
+        break;
     case TASK_GET:
     case TASK_INSERT:
         SEND_FOREACH(dpu_set, "end_idx",

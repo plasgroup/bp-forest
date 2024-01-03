@@ -175,69 +175,27 @@ void check_results(dpu_results_t* dpu_results, int key_index[NR_DPUS][NR_SEATS_I
 
 void initialize_dpus(int num_init_reqs, HostTree* tree)
 {
-    BatchCtx batch_ctx;
-
     key_int64_t interval = (key_int64_t)std::numeric_limits<uint64_t>::max() / num_init_reqs;
 
-    for (int i = 0; i < num_init_reqs; i++) {
-        batch_keys[i] = interval * i;
-        auto it = tree->key_to_tree_map.lower_bound(batch_keys[i]);
-        if (it != tree->key_to_tree_map.end()) {
-            uint32_t dpu = it->second.dpu;
-            seat_id_t seat = it->second.seat;
-            batch_ctx.num_keys_for_tree[dpu][seat]++;
-            batch_ctx.num_keys_for_DPU[dpu]++;
-        } else {
-            printf("ERROR: the key is out of range 1\n");
-        }
-    }
-    /* compute key_index */
-    for (uint32_t i = 0; i < NR_DPUS; i++) {
-        for (seat_id_t j = 1; j <= NR_SEATS_IN_DPU; j++) {
-            batch_ctx.key_index[i][j] = batch_ctx.key_index[i][j - 1] + batch_ctx.num_keys_for_tree[i][j - 1];
-        }
-    }
-    /* make requests to send to DPUs */
-    for (int i = 0; i < num_init_reqs; i++) {
-        auto it = tree->key_to_tree_map.lower_bound(batch_keys[i]);
-        if (it != tree->key_to_tree_map.end()) {
-            uint32_t dpu = it->second.dpu;
-            seat_id_t seat = it->second.seat;
-            int index = batch_ctx.key_index[dpu][seat]++;
-            each_request_t& req = dpu_requests[dpu].requests[index];
-            req.key = batch_keys[i];
-            req.write_val_ptr = batch_keys[i];
-#ifdef DEBUG_ON
-            verify_db.insert(std::make_pair(batch_keys[i], batch_keys[i]));
-#endif /* DEBUG_ON */
-        } else {
-            printf("ERROR: the key is out of range 2\n");
-        }
-    }
-
-    /* count the number of requests for each DPU, determine the send size */
-    for (uint32_t dpu_i = 0; dpu_i < NR_DPUS; dpu_i++) {
-        /* send size: maximum number of requests to a DPU */
-        if (batch_ctx.num_keys_for_DPU[dpu_i] > batch_ctx.send_size)
-            batch_ctx.send_size = batch_ctx.num_keys_for_DPU[dpu_i];
+    for (int i = 0; i < NR_DPUS; i++)
+        for (int j = 0; j < NR_SEATS_IN_DPU; j++)
+            dpu_init_param[i][j].use = 0;
+    
+    key_int64_t min_in_range = 0;
+    for (auto& it: tree->key_to_tree_map) {
+        key_int64_t max_in_range = it.first;
+        seat_addr_t& sa = it.second;
+        dpu_init_param_t& param = dpu_init_param[sa.dpu][sa.seat];
+        param.use = 1;
+        param.start = (min_in_range + interval - 1) / interval * interval;
+        param.end_inclusive = max_in_range;
+        param.interval = interval;
+        min_in_range = max_in_range + 1;
     }
 
     /* init BPTree in DPUs */
-    upmem_send_task(
-        TASK_WITH_OPERAND(TASK_INIT, NR_INITIAL_TREES_IN_DPU),
-        batch_ctx, NULL, NULL);
-
-    /* insert initial keys for each tree */
-#ifdef PRINT_DEBUG
-    PRINT_POSITION_AND_MESSAGE(inserting initial keys);
-#endif
-    upmem_send_task(TASK_INSERT, batch_ctx, NULL, &init_time);
-
-#ifdef DEBUG_ON
-    /* checking result of search for inserted keys */
-    upmem_receive_results(batch_ctx, NULL);
-    check_results(dpu_results, batch_ctx.key_index);
-#endif /* DEBUG_ON */
+    BatchCtx dummy;
+    upmem_send_task(TASK_INIT, dummy, NULL, NULL);
 
 #ifdef PRINT_DEBUG
     printf("DPU initialization:%0.5f\n", init_time);
