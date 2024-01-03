@@ -6,6 +6,10 @@
 #include <stdlib.h>
 #include "common.h"
 
+#ifdef PRINT_DEBUG
+#include <cstdio>
+#endif /* PRINT_DEBUG */
+
 class Migration;
 
 typedef struct seat_addr_t {
