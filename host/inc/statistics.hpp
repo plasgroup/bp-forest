@@ -72,7 +72,7 @@ private:
             MB(total),
             count > 0 ? MB(total / count) : 0.0,
             MB(effective),
-            total > 0 ? ((float) effective) / total : 0.0
+            total > 0 ? ((float) effective) / total * 100: 0.0
             );
 #undef MB
     }

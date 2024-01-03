@@ -268,6 +268,8 @@ xfer_single(dpu_set_t set, const char* symbol, size_t size,
     xfer_foreach_va(set, sym, ary, sizeof((ary)[0]), sizes, true)
 #define RECV_FOREACH(set,sym,size,ary) \
     xfer_foreach(set, sym, size, ary, sizeof((ary)[0]), false)
+#define RECV_FOREACH_VA(set,sym,ary,sizes) \
+    xfer_foreach_va(set, sym, ary, sizeof((ary)[0]), sizes, false)
 #define SEND_SINGLE(set,sym,size,addr) \
     xfer_single(set, sym, size, addr, true)
 #define RECV_SINGLE(set,sym,size,addr) \
@@ -405,9 +407,17 @@ void upmem_receive_results(BatchCtx& batch_ctx, float* receive_time)
            sizeof(each_result_t) * MAX_REQ_NUM_IN_A_DPU);
 #endif /* PRINT_DEBUG */
 
+#ifdef RANK_ORIENTED_XFER
+    static size_t recv_bytes[NR_DPUS];
+    for (int i = 0; i < NR_DPUS; i++) {
+        size_t nr_reqs = batch_ctx.key_index[i][NR_SEATS_IN_DPU];
+        recv_bytes[i] = nr_reqs * sizeof(each_result_t);
+    }
+    RECV_FOREACH_VA(dpu_set, "result", dpu_results, recv_bytes);
+#else /* RANK_ORIENTED_XFER */
     RECV_FOREACH(dpu_set, "result",
                  sizeof(each_result_t) * batch_ctx.send_size, dpu_results);
-
+#endif /* RANK_ORIENTED_XFER */
 
     gettimeofday(&end, NULL);
     if (receive_time != NULL)
