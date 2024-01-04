@@ -105,12 +105,12 @@ struct Option {
         dpu_binary = NULL;
 #else  /* HOST_ONLY */
         std::string db = a.get<std::string>("directory");
-	db += "/build/" + a.get<std::string>("variant");
+        db += "/build/" + a.get<std::string>("variant");
         if (is_simulator)
             db += "/dpu/dpu_program_simulator";
         else
             db += "/dpu/dpu_program_UPMEM";
-	printf("binary: %s\n", db.c_str());
+        printf("binary: %s\n", db.c_str());
         dpu_binary = strdup(db.c_str());
 #endif /* HOST_ONLY */
 
@@ -259,7 +259,8 @@ int prepare_batch_keys(std::ifstream& file_input, key_int64_t* const batch_keys)
 #ifdef HOST_MULTI_THREAD
 #include <thread>
 
-class PreprocessWorker {
+class PreprocessWorker
+{
     key_int64_t* requests;
     int start, end;
     HostTree* host_tree;
@@ -267,7 +268,6 @@ class PreprocessWorker {
     int count[NR_DPUS][NR_SEATS_IN_DPU];
 
 public:
- 
     void initialize(key_int64_t* r, int s, int e, HostTree* h)
     {
         for (int i = 0; i < NR_DPUS; i++)
@@ -282,7 +282,7 @@ public:
 
     void count_requests()
     {
-        t = new std::thread([&]{
+        t = new std::thread([&] {
             for (int i = start; i < end; i++) {
                 key_int64_t key = requests[i];
                 auto it = host_tree->key_to_tree_map.lower_bound(key);
@@ -301,10 +301,10 @@ public:
                 end_index[i][j] -= count[i][j];
                 count[i][j] = end_index[i][j];
             }
-        t = new std::thread([&, task]{
+        t = new std::thread([&, task] {
             switch (task) {
             case TASK_GET:
-                for (int i = start; i < end; i ++) {
+                for (int i = start; i < end; i++) {
                     key_int64_t key = requests[i];
                     auto it = host_tree->key_to_tree_map.lower_bound(key);
                     assert(it != host_tree->key_to_tree_map.end());
@@ -315,7 +315,7 @@ public:
                 }
                 break;
             case TASK_INSERT:
-                for (int i = start; i < end; i ++) {
+                for (int i = start; i < end; i++) {
                     key_int64_t key = requests[i];
                     auto it = host_tree->key_to_tree_map.lower_bound(key);
                     assert(it != host_tree->key_to_tree_map.end());
@@ -390,7 +390,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
             ppwk[i].join();
             ppwk[i].add_request_count(batch_ctx.num_keys_for_tree);
         }
-#else /* HOST_MULTI_THREAD */
+#else  /* HOST_MULTI_THREAD */
         for (int i = 0; i < num_keys_batch; i++) {
             //printf("i: %d, batch_keys[i]:%ld\n", i, batch_keys[i]);
             auto it = host_tree->key_to_tree_map.lower_bound(batch_keys[i]);
@@ -448,14 +448,12 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
             for (int i = 0; i < num_keys_batch; i++)
                 verify_db.insert(std::make_pair(batch_keys[i], batch_keys[i]));
 #endif /* DEBUG_ON */
-#else /* HOST_MULTI_THREAD */
+#else  /* HOST_MULTI_THREAD */
         /* 4.1 key_index (starting index for queries to the j-th seat of the i-th DPU) */
         for (uint32_t i = 0; i < NR_DPUS; i++) {
             batch_ctx.key_index[i][0] = 0;
             for (seat_id_t j = 1; j <= NR_SEATS_IN_DPU; j++) {
-                batch_ctx.key_index[i][j] =
-                    batch_ctx.key_index[i][j - 1] +
-                    migration_plan.get_num_queries_for_source(batch_ctx, i, j - 1);
+                batch_ctx.key_index[i][j] = batch_ctx.key_index[i][j - 1] + migration_plan.get_num_queries_for_source(batch_ctx, i, j - 1);
             }
         }
 
