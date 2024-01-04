@@ -2,8 +2,13 @@
 cd $(dirname $0)/..
 echo cd $(pwd)
 mkdir -p workload
-
-for zipfianconst in 0 0.4 0.6 0.99 1.2
+#default: 100000000 else: first argment
+num_keys=${1:-100000000}
+zipf_constant=(0 0.2 0.4 0.6 0.8 0.99 1.2)
+i=1
+for alpha in "${zipf_constant[@]}"
 do
-    build/workload_gen/workload_gen --keynum 100000000 --zipfianconst ${zipfianconst} --elementnum 2048
+    echo $i/${#zipf_constant[@]} generating ${num_keys} keys for workload/zipf_const_${alpha}.bin...
+    build/xfer-flat/workload_gen/workload_gen --keynum ${num_keys} --zipfianconst ${alpha} --elementnum 2500
+    let i++
 done

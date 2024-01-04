@@ -47,15 +47,21 @@ int main(int argc, char* argv[])
     }
     std::uniform_int_distribution<uint64_t> rand_in_range(0, range);
     uint64_t distribution[num_devide];
+    clock_t start_time;
+    double time_elapsed;
+
+    start_time = clock();
+
     for (int i = 0; i < key_num; i++) {
+        time_elapsed = (double)(clock() - start_time) / CLOCKS_PER_SEC;
+        if (time_elapsed >= 3.0) {
+            printf("[zipfianconst = %.2f] %.2f%% completed\n", zipfian_const, (i / (double)key_num) * 100);
+            start_time = clock();
+        }
         uint64_t which_range = generator->Next();
         uint64_t in_range = rand_in_range(mt);
         generated_keys[i] = which_range * range + in_range;
         distribution[which_range]++;
-        if (a.exist("showinfo")) {
-            // std::cout << which_range << "th range, offset: " << in_range << std::endl;
-            // std::cout << "generated key = " << generated_keys[i] << std::endl;
-        }
     }
     for (int i = 0; i < 10; i++) {
         if (a.exist("showinfo")) {
@@ -75,7 +81,7 @@ int main(int argc, char* argv[])
         }
         writing_file.write((const char*)generated_keys, sizeof(key_int64_t) * key_num);
         free(generated_keys);
-        std::cout << filename << " written, num of reqs = " << key_num << std::endl;
+        std::cout << filename << "has been written, num of reqs = " << key_num << ", size = " << key_num * sizeof(uint64_t) << " B" << std::endl;
     }
     return 0;
 }
