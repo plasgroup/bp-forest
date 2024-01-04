@@ -112,17 +112,19 @@ xfer_foreach_va(dpu_set_t set, const char* symbol, const void* array,
     uintptr_t addr = (uintptr_t) array;
     uint64_t total_xfer_bytes = 0;
     uint64_t total_effective_bytes = 0;
-    for (int i = 0; i < EMU_MAX_DPUS;) {
+    for (int i = 0; i < EMU_MAX_DPUS; i += EMU_DPUS_IN_RANK) {
         uint64_t max_xfer_bytes = 0;
-        for (int j = 0; i < EMU_MAX_DPUS && j < EMU_DPUS_IN_RANK; i++, j++)
-            if (set[i]) {
-                if (xfer_bytes[i] > max_xfer_bytes)
-                    max_xfer_bytes = xfer_bytes[i];
-                total_effective_bytes += xfer_bytes[i];
+        int dpu_in_rank = 0;
+        for (int j = 0; i + j < EMU_MAX_DPUS && j < EMU_DPUS_IN_RANK; j++)
+            if (set[i + j]) {
+                if (xfer_bytes[i + j] > max_xfer_bytes)
+                    max_xfer_bytes = xfer_bytes[i + j];
+                total_effective_bytes += xfer_bytes[i + j];
+                dpu_in_rank++;
             }
-        for (int j = 0; i < EMU_MAX_DPUS && j < EMU_DPUS_IN_RANK; i++, j++)
-            if (set[i]) {
-                void* mram_addr = emu[i].get_addr_of_symbol(symbol);
+        for (int j = 0; i + j < EMU_MAX_DPUS && j < EMU_DPUS_IN_RANK; j++)
+            if (set[i + j]) {
+                void* mram_addr = emu[i + j].get_addr_of_symbol(symbol);
                 if (to_dpu)
                     memcpy(mram_addr, (void*) addr, max_xfer_bytes);
                 else

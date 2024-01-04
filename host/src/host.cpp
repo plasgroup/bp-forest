@@ -440,7 +440,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
 #ifdef HOST_MULTI_THREAD
         for (int i = 0; i < HOST_MULTI_THREAD; i++) {
             int start = num_keys_batch * i / HOST_MULTI_THREAD;
-            int end = num_keys_batch * (i + 1) / HOST_MULTI_THREAD - 1;
+            int end = num_keys_batch * (i + 1) / HOST_MULTI_THREAD;
             ppwk[i].initialize(batch_keys, start, end, host_tree);
             ppwk[i].count_requests();
         }
