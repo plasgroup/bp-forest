@@ -83,7 +83,7 @@ struct Option {
         a.add<std::string>("ops", 'o', "kind of operation ex)get, insert", false, "get");
         a.add<std::string>("print-load", 'q', "print number of queries sent for each seat", false, "");
         a.add<std::string>("print-subtree-size", 'e', "print number of elements for each seat", false, "");
-        a.add<std::string>("variant", 'b', "build variant", false, "release");
+        a.add<std::string>("variant", 'b', "build variant", false, "");
         a.parse_check(argc, argv);
 
         std::string alpha = a.get<std::string>("zipfianconst");
