@@ -151,7 +151,8 @@ struct Option {
     int nr_migrations_per_batch;
     enum OpType {
         OP_TYPE_GET,
-        OP_TYPE_INSERT
+        OP_TYPE_INSERT,
+        OP_TYPE_SUCC
     } op_type;
     bool print_load;
     std::pair<int, int> print_load_rc;
@@ -160,7 +161,7 @@ struct Option {
 } opt;
 
 #ifdef DEBUG_ON
-void check_results(dpu_results_t* dpu_results, int key_index[NR_DPUS][NR_SEATS_IN_DPU + 1])
+void check_get_results(dpu_results_t* dpu_results, int key_index[NR_DPUS][NR_SEATS_IN_DPU + 1])
 {
     for (uint32_t dpu = 0; dpu < NR_DPUS; dpu++) {
         for (seat_id_t seat = 0; seat < NR_SEATS_IN_DPU; seat++) {
@@ -168,9 +169,27 @@ void check_results(dpu_results_t* dpu_results, int key_index[NR_DPUS][NR_SEATS_I
                 key_int64_t key = dpu_requests[dpu].requests[index].key;
                 auto it = verify_db.lower_bound(key);
                 if (it == verify_db.end() || it->first != key)
-                    assert(dpu_results[dpu].results[index].get_result == 0);
+                    assert(dpu_results[dpu].get.results[index].get_result == 0);
                 else
-                    assert(dpu_results[dpu].results[index].get_result == it->second);
+                    assert(dpu_results[dpu].get.results[index].get_result == it->second);
+            }
+        }
+    }
+}
+
+void check_succ_results(dpu_results_t* dpu_results, int key_index[NR_DPUS][NR_SEATS_IN_DPU + 1])
+{
+    for (uint32_t dpu = 0; dpu < NR_DPUS; dpu++) {
+        for (seat_id_t seat = 0; seat < NR_SEATS_IN_DPU; seat++) {
+            for (int index = seat == 0 ? 0 : key_index[dpu][seat - 1]; index < key_index[dpu][seat]; index++) {
+                key_int64_t key = dpu_requests[dpu].requests[index].key;
+                auto it = verify_db.upper_bound(key);
+                if (it == verify_db.end()) {
+                    assert(dpu_results[dpu].succ.results[index].succ_val_ptr == 0);
+                } else {
+                    assert(dpu_results[dpu].succ.results[index].succ_key == it->first);
+                    assert(dpu_results[dpu].succ.results[index].succ_val_ptr == it->second);
+                }
             }
         }
     }
@@ -358,6 +377,19 @@ private:
             dpu_requests[dpu].requests[index].write_val_ptr = key;
         }
     }
+    void fill_succ_requests_job()
+    {
+        for (int i = start; i < end; i++) {
+            key_int64_t key = requests[i];
+            auto it = host_tree->key_to_tree_map.upper_bound(key);
+            if (it != host_tree->key_to_tree_map.end()) {
+                uint32_t dpu = it->second.dpu;
+                seat_id_t seat = it->second.seat;
+                int index = count[dpu][seat]++;
+                dpu_requests[dpu].requests[index].key = key;
+            }
+        }
+    }
 
 public:
     void fill_requests(uint64_t task, int end_index[][NR_SEATS_IN_DPU])
@@ -376,6 +408,9 @@ public:
             break;
         case TASK_INSERT:
             job = &PreprocessWorker::fill_insert_requests_job;
+            break;
+        case TASK_SUCC:
+            job = &PreprocessWorker::fill_succ_requests_job;
             break;
         default:
             abort();
@@ -524,8 +559,8 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
                 uint32_t dpu = it->second.dpu;
                 seat_id_t seat = it->second.seat;
                 /* key_index is incremented here, so batch_ctx.key_index[i][j] represents
-            * the first index for seat j in DPU i BEFORE this for loop, then
-            * the first index for seat j+1 in DPU i AFTER this for loop. */
+                * the first index for seat j in DPU i BEFORE this for loop, then
+                * the first index for seat j+1 in DPU i AFTER this for loop. */
                 int index = batch_ctx.key_index[dpu][seat]++;
                 each_request_t& req = dpu_requests[dpu].requests[index];
                 req.key = batch_keys[i];
@@ -538,8 +573,8 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
                 uint32_t dpu = it->second.dpu;
                 seat_id_t seat = it->second.seat;
                 /* key_index is incremented here, so batch_ctx.key_index[i][j] represents
-            * the first index for seat j in DPU i BEFORE this for loop, then
-            * the first index for seat j+1 in DPU i AFTER this for loop. */
+                * the first index for seat j in DPU i BEFORE this for loop, then
+                * the first index for seat j+1 in DPU i AFTER this for loop. */
                 int index = batch_ctx.key_index[dpu][seat]++;
                 each_request_t& req = dpu_requests[dpu].requests[index];
                 req.key = batch_keys[i];
@@ -547,6 +582,21 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
 #ifdef DEBUG_ON
                 verify_db.insert(std::make_pair(batch_keys[i], batch_keys[i]));
 #endif /* DEBUG_ON */
+            }
+            break;
+        case TASK_SUCC:
+            for (int i = 0; i < num_keys_batch; i++) {
+                auto it = host_tree->key_to_tree_map.upper_bound(batch_keys[i]);
+                if (it != host_tree->key_to_tree_map.end()) {
+                    uint32_t dpu = it->second.dpu;
+                    seat_id_t seat = it->second.seat;
+                    /* key_index is incremented here, so batch_ctx.key_index[i][j] represents
+                    * the first index for seat j in DPU i BEFORE this for loop, then
+                    * the first index for seat j+1 in DPU i AFTER this for loop. */
+                    int index = batch_ctx.key_index[dpu][seat]++;
+                    each_request_t& req = dpu_requests[dpu].requests[index];
+                    req.key = batch_keys[i];
+                }
             }
             break;
         default:
@@ -579,9 +629,15 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
             update_cpu_struct(host_tree);
         }
         if (task == TASK_GET) {
-            upmem_receive_results(batch_ctx, NULL);
+            upmem_receive_get_results(batch_ctx, NULL);
 #ifdef DEBUG_ON
-            check_results(dpu_results, batch_ctx.key_index);
+            check_get_results(dpu_results, batch_ctx.key_index);
+#endif /* DEBUG_ON */
+        }
+        if (task == TASK_SUCC) {
+            upmem_receive_succ_results(batch_ctx, NULL);
+#ifdef DEBUG_ON
+            check_succ_results(dpu_results, batch_ctx.key_index);
 #endif /* DEBUG_ON */
         }
     }).count();
@@ -662,6 +718,9 @@ int main(int argc, char* argv[])
             break;
         case Option::OP_TYPE_INSERT:
             num_keys = do_one_batch(TASK_INSERT, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, file_input, host_tree, batch_ctx);
+            break;
+        case Option::OP_TYPE_SUCC:
+            num_keys = do_one_batch(TASK_SUCC, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, file_input, host_tree, batch_ctx);
             break;
         default:
             abort();

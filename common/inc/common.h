@@ -95,10 +95,24 @@ typedef struct {
 
 typedef struct {
     value_ptr_t get_result;
-} each_result_t;
+} each_get_result_t;
 
 typedef struct {
-    each_result_t results[MAX_REQ_NUM_IN_A_DPU];
+    each_get_result_t results[MAX_REQ_NUM_IN_A_DPU];
+} dpu_get_results_t;
+
+typedef struct {
+    key_int64_t succ_key;
+    value_ptr_t succ_val_ptr;
+} each_succ_result_t;
+
+typedef struct {
+    each_succ_result_t results[MAX_REQ_NUM_IN_A_DPU];
+} dpu_succ_results_t;
+
+typedef union {
+    dpu_get_results_t get;
+    dpu_succ_results_t succ;
 } dpu_results_t;
 
 typedef struct {
@@ -150,6 +164,7 @@ typedef struct KVPair {
 #define TASK_GET (10ULL)
 #define TASK_INSERT (11ULL)
 #define TASK_DELETE (12ULL)
+#define TASK_SUCC (13ULL)
 #define TASK_FROM (100ULL)
 #define TASK_TO (101ULL)
 #define TASK_MERGE (102ULL)

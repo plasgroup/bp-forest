@@ -94,14 +94,14 @@ static EmulatorWorkerManager emu_threads;
 #endif /* EMU_MULTI_THREAD */
 
 class Emulation {
-    friend EmulatorWorkerManager;
+    friend class EmulatorWorkerManager;
 
     struct MRAM {
         uint64_t task_no;
         int end_idx[NR_SEATS_IN_DPU];
         each_request_t request_buffer[MAX_REQ_NUM_IN_A_DPU];
         merge_info_t merge_info;
-        each_result_t result[MAX_REQ_NUM_IN_A_DPU];
+        each_get_result_t result[MAX_REQ_NUM_IN_A_DPU];
         split_info_t split_result[NR_SEATS_IN_DPU];
         int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
         uint64_t tree_transfer_num;
