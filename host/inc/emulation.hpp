@@ -246,6 +246,7 @@ private:
             value_ptr_t val = buf[i].value;
             assert(subtree[seat_id].find(key) == subtree[seat_id].end());
             subtree[seat_id].insert(std::make_pair(key, val));
+            mram.num_kvpairs_in_seat[seat_id]++;
         }
     }
 
@@ -277,6 +278,7 @@ private:
                 int n = mram.num_kvpairs_in_seat[i];
                 if (n > SPLIT_THRESHOLD) {
                     serialize(i, mram.tree_transfer_buffer);
+                    subtree[i].clear();
                     release_seat(i);
                     split_tree(mram.tree_transfer_buffer, n, &mram.split_result[i]);
                 }
@@ -300,6 +302,7 @@ private:
                 while (true) {
                     value_ptr_t v = k;
                     subtree[i].insert(std::make_pair(k, v));
+                    mram.num_kvpairs_in_seat[i]++;
                     if (param.end_inclusive - k < param.interval)
                         break;
                     k += param.interval;
@@ -329,6 +332,7 @@ private:
                     mram.num_kvpairs_in_seat[i]++;
                 } else
                     t[key] = val;
+                assert(t.size() == mram.num_kvpairs_in_seat[i]);
             }
         }
         
