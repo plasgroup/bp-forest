@@ -256,6 +256,7 @@ int prepare_batch_keys(std::ifstream& file_input, key_int64_t* const batch_keys)
     return file_input.gcount() / sizeof(key_int64_t);
 }
 
+#define HOST_MULTI_THREAD 16
 #ifdef HOST_MULTI_THREAD
 #include <thread>
 
@@ -338,7 +339,7 @@ public:
     {
         for (int i = 0; i < NR_DPUS; i++)
             for (int j = 0; j < NR_SEATS_IN_DPU; j++)
-                acc_count[i][j] = count[i][j];
+                acc_count[i][j] += count[i][j];
     }
 };
 
