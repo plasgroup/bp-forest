@@ -83,6 +83,7 @@ struct Option {
         a.add<std::string>("ops", 'o', "kind of operation ex)get, insert", false, "get");
         a.add<std::string>("print-load", 'q', "print number of queries sent for each seat", false, "");
         a.add<std::string>("print-subtree-size", 'e', "print number of elements for each seat", false, "");
+        a.add<std::string>("variant", 'b', "build variant", false, "release");
         a.parse_check(argc, argv);
 
         std::string alpha = a.get<std::string>("zipfianconst");
@@ -104,10 +105,12 @@ struct Option {
         dpu_binary = NULL;
 #else  /* HOST_ONLY */
         std::string db = a.get<std::string>("directory");
+	db += "/build/" + a.get<std::string>("variant");
         if (is_simulator)
-            db += "/build/dpu/dpu_program_simulator";
+            db += "/dpu/dpu_program_simulator";
         else
-            db += "/build/dpu/dpu_program_UPMEM";
+            db += "/dpu/dpu_program_UPMEM";
+	printf("binary: %s\n", db.c_str());
         dpu_binary = strdup(db.c_str());
 #endif /* HOST_ONLY */
 

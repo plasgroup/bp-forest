@@ -5,6 +5,8 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+MBPTptr root[NR_SEATS_IN_DPU];
+
 // #define USE_LINEAR_SEARCH
 #define BITMAP_NUM_ELEMS (MAX_NUM_NODES_IN_SEAT / 32)
 
