@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <cstring>
+#include <cstdio>
 #include <map>
 #include "common.h"
 

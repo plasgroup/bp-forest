@@ -257,6 +257,8 @@ int prepare_batch_keys(std::ifstream& file_input, key_int64_t* const batch_keys)
 }
 
 #ifdef HOST_MULTI_THREAD
+#include <condition_variable>
+#include <mutex>
 #include <thread>
 
 class PreprocessWorker
@@ -264,10 +266,39 @@ class PreprocessWorker
     key_int64_t* requests;
     int start, end;
     HostTree* host_tree;
-    std::thread* t;
+    std::thread t;
     int count[NR_DPUS][NR_SEATS_IN_DPU];
+    std::condition_variable cond;
+    std::mutex mtx;
+    bool finished = false;
+    void (PreprocessWorker::*job)() = nullptr;
 
 public:
+    PreprocessWorker() : t{
+        [this] {
+            std::unique_lock<std::mutex> lock{mtx};
+            for (;;) {
+                cond.wait(lock, [&] { return finished || job; });
+                assert(!(finished && job));
+                if (job) {
+                    (this->*job)();
+                    job = nullptr;
+                } else {
+                    assert(finished);
+                    break;
+                }
+            }
+        }} {}
+    ~PreprocessWorker()
+    {
+        {
+            std::unique_lock<std::mutex> lock{mtx};
+            finished = true;
+            cond.notify_one();
+        }
+        t.join();
+    }
+
     void initialize(key_int64_t* r, int s, int e, HostTree* h)
     {
         for (int i = 0; i < NR_DPUS; i++)
@@ -277,23 +308,58 @@ public:
         start = s;
         end = e;
         host_tree = h;
-        t = NULL;
     }
 
+private:
+    void count_requests_job()
+    {
+        for (int i = start; i < end; i++) {
+            key_int64_t key = requests[i];
+            auto it = host_tree->key_to_tree_map.lower_bound(key);
+            assert(it != host_tree->key_to_tree_map.end());
+            uint32_t dpu = it->second.dpu;
+            seat_id_t seat = it->second.seat;
+            count[dpu][seat]++;
+        }
+    }
+
+public:
     void count_requests()
     {
-        t = new std::thread([&] {
-            for (int i = start; i < end; i++) {
-                key_int64_t key = requests[i];
-                auto it = host_tree->key_to_tree_map.lower_bound(key);
-                assert(it != host_tree->key_to_tree_map.end());
-                uint32_t dpu = it->second.dpu;
-                seat_id_t seat = it->second.seat;
-                count[dpu][seat]++;
-            }
-        });
+        std::lock_guard<std::mutex> lock{mtx};
+        assert(job == nullptr);
+        job = &PreprocessWorker::count_requests_job;
+        cond.notify_one();
     }
 
+private:
+    void fill_get_requests_job()
+    {
+        for (int i = start; i < end; i++) {
+            key_int64_t key = requests[i];
+            auto it = host_tree->key_to_tree_map.lower_bound(key);
+            assert(it != host_tree->key_to_tree_map.end());
+            uint32_t dpu = it->second.dpu;
+            seat_id_t seat = it->second.seat;
+            int index = count[dpu][seat]++;
+            dpu_requests[dpu].requests[index].key = key;
+        }
+    }
+    void fill_insert_requests_job()
+    {
+        for (int i = start; i < end; i++) {
+            key_int64_t key = requests[i];
+            auto it = host_tree->key_to_tree_map.lower_bound(key);
+            assert(it != host_tree->key_to_tree_map.end());
+            uint32_t dpu = it->second.dpu;
+            seat_id_t seat = it->second.seat;
+            int index = count[dpu][seat]++;
+            dpu_requests[dpu].requests[index].key = key;
+            dpu_requests[dpu].requests[index].write_val_ptr = key;
+        }
+    }
+
+public:
     void fill_requests(uint64_t task, int end_index[][NR_SEATS_IN_DPU])
     {
         for (int i = 0; i < NR_DPUS; i++)
@@ -301,41 +367,33 @@ public:
                 end_index[i][j] -= count[i][j];
                 count[i][j] = end_index[i][j];
             }
-        t = new std::thread([&, task] {
-            switch (task) {
-            case TASK_GET:
-                for (int i = start; i < end; i++) {
-                    key_int64_t key = requests[i];
-                    auto it = host_tree->key_to_tree_map.lower_bound(key);
-                    assert(it != host_tree->key_to_tree_map.end());
-                    uint32_t dpu = it->second.dpu;
-                    seat_id_t seat = it->second.seat;
-                    int index = count[dpu][seat]++;
-                    dpu_requests[dpu].requests[index].key = key;
-                }
-                break;
-            case TASK_INSERT:
-                for (int i = start; i < end; i++) {
-                    key_int64_t key = requests[i];
-                    auto it = host_tree->key_to_tree_map.lower_bound(key);
-                    assert(it != host_tree->key_to_tree_map.end());
-                    uint32_t dpu = it->second.dpu;
-                    seat_id_t seat = it->second.seat;
-                    int index = count[dpu][seat]++;
-                    dpu_requests[dpu].requests[index].key = key;
-                    dpu_requests[dpu].requests[index].write_val_ptr = key;
-                }
-                break;
-            default:
-                abort();
-            }
-        });
+
+        std::lock_guard<std::mutex> lock{mtx};
+        assert(job == nullptr);
+        switch (task) {
+        case TASK_GET:
+            job = &PreprocessWorker::fill_get_requests_job;
+            break;
+        case TASK_INSERT:
+            job = &PreprocessWorker::fill_insert_requests_job;
+            break;
+        default:
+            abort();
+        }
+        cond.notify_one();
     }
 
     void join()
     {
-        t->join();
-        t = NULL;
+        for (;;) {
+            {
+                std::lock_guard<std::mutex> lock{mtx};
+                if (job == nullptr) {
+                    break;
+                }
+            }
+            std::this_thread::yield();
+        }
     }
 
     void add_request_count(int acc_count[][NR_SEATS_IN_DPU])
