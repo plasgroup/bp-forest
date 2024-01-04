@@ -256,7 +256,6 @@ int prepare_batch_keys(std::ifstream& file_input, key_int64_t* const batch_keys)
     return file_input.gcount() / sizeof(key_int64_t);
 }
 
-#define HOST_MULTI_THREAD 16
 #ifdef HOST_MULTI_THREAD
 #include <thread>
 
@@ -265,15 +264,19 @@ class PreprocessWorker {
     int start, end;
     HostTree* host_tree;
     std::thread* t;
+    int count[NR_DPUS][NR_SEATS_IN_DPU];
 
 public:
-    int count[NR_DPUS][NR_SEATS_IN_DPU];
  
     void initialize(key_int64_t* r, int s, int e, HostTree* h)
     {
         for (int i = 0; i < NR_DPUS; i++)
             for (int j = 0; j < NR_SEATS_IN_DPU; j++)
                 count[i][j] = 0;
+        requests = r;
+        start = s;
+        end = e;
+        host_tree = h;
         t = NULL;
     }
 
@@ -291,7 +294,7 @@ public:
         });
     }
 
-    void fill_requests(uint64_t task, int (*end_index)[NR_SEATS_IN_DPU])
+    void fill_requests(uint64_t task, int end_index[][NR_SEATS_IN_DPU])
     {
         for (int i = 0; i < NR_DPUS; i++)
             for (int j = 0; j < NR_SEATS_IN_DPU; j++) {
@@ -335,7 +338,7 @@ public:
         t = NULL;
     }
 
-    void add_request_count(int (*acc_count)[NR_SEATS_IN_DPU])
+    void add_request_count(int acc_count[][NR_SEATS_IN_DPU])
     {
         for (int i = 0; i < NR_DPUS; i++)
             for (int j = 0; j < NR_SEATS_IN_DPU; j++)
@@ -432,7 +435,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
             batch_ctx.key_index[i][NR_SEATS_IN_DPU] = acc;
         }
         /* 4.2. make requests to send to DPUs*/
-        int end_index[NR_DPUS][NR_SEATS_IN_DPU];
+        static int end_index[NR_DPUS][NR_SEATS_IN_DPU];
         for (int i = 0; i < NR_DPUS; i++)
             for (int j = 0; j < NR_SEATS_IN_DPU; j++)
                 end_index[i][j] = batch_ctx.key_index[i][j];
@@ -441,8 +444,9 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
         for (int i = HOST_MULTI_THREAD - 1; i >= 0; i--)
             ppwk[i].join();
 #ifdef DEBUG_ON
-        for (int i = 0; i < num_keys_batch; i++)
-            verify_db.insert(std::make_pair(batch_keys[i], batch_keys[i]));
+        if (task == TASK_INSERT)
+            for (int i = 0; i < num_keys_batch; i++)
+                verify_db.insert(std::make_pair(batch_keys[i], batch_keys[i]));
 #endif /* DEBUG_ON */
 #else /* HOST_MULTI_THREAD */
         /* 4.1 key_index (starting index for queries to the j-th seat of the i-th DPU) */
