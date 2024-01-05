@@ -344,7 +344,8 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
                      dpu_init_param);
         break;
     case TASK_GET:
-    case TASK_INSERT: {
+    case TASK_INSERT:
+    case TASK_SUCC: {
 #ifdef RANK_ORIENTED_XFER
         static size_t send_bytes[NR_DPUS];
         for (int i = 0; i < NR_DPUS; i++) {
@@ -397,7 +398,7 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
 #endif /* PRINT_DEBUG */
 }
 
-void upmem_receive_results(BatchCtx& batch_ctx, float* receive_time)
+void upmem_receive_get_results(BatchCtx& batch_ctx, float* receive_time)
 {
     struct timeval start, end;
 
@@ -405,20 +406,49 @@ void upmem_receive_results(BatchCtx& batch_ctx, float* receive_time)
 
 #ifdef PRINT_DEBUG
     printf("send_size: %ld / buffer_size: %ld\n",
-           sizeof(each_result_t) * batch_ctx.send_size,
-           sizeof(each_result_t) * MAX_REQ_NUM_IN_A_DPU);
+           sizeof(each_get_result_t) * batch_ctx.send_size,
+           sizeof(each_get_result_t) * MAX_REQ_NUM_IN_A_DPU);
 #endif /* PRINT_DEBUG */
 
 #ifdef RANK_ORIENTED_XFER
     static size_t recv_bytes[NR_DPUS];
     for (int i = 0; i < NR_DPUS; i++) {
         size_t nr_reqs = batch_ctx.key_index[i][NR_SEATS_IN_DPU];
-        recv_bytes[i] = nr_reqs * sizeof(each_result_t);
+        recv_bytes[i] = nr_reqs * sizeof(each_get_result_t);
     }
-    RECV_FOREACH_VA(dpu_set, "result", dpu_results, recv_bytes);
+    RECV_FOREACH_VA(dpu_set, "results", dpu_results, recv_bytes);
 #else /* RANK_ORIENTED_XFER */
-    RECV_FOREACH(dpu_set, "result",
-                 sizeof(each_result_t) * batch_ctx.send_size, dpu_results);
+    RECV_FOREACH(dpu_set, "results",
+                 sizeof(each_get_result_t) * batch_ctx.send_size, dpu_results);
+#endif /* RANK_ORIENTED_XFER */
+
+    gettimeofday(&end, NULL);
+    if (receive_time != NULL)
+        *receive_time = time_diff(&start, &end);
+}
+
+void upmem_receive_succ_results(BatchCtx& batch_ctx, float* receive_time)
+{
+    struct timeval start, end;
+
+    gettimeofday(&start, NULL);
+
+#ifdef PRINT_DEBUG
+    printf("send_size: %ld / buffer_size: %ld\n",
+           sizeof(each_succ_result_t) * batch_ctx.send_size,
+           sizeof(each_succ_result_t) * MAX_REQ_NUM_IN_A_DPU);
+#endif /* PRINT_DEBUG */
+
+#ifdef RANK_ORIENTED_XFER
+    static size_t recv_bytes[NR_DPUS];
+    for (int i = 0; i < NR_DPUS; i++) {
+        size_t nr_reqs = batch_ctx.key_index[i][NR_SEATS_IN_DPU];
+        recv_bytes[i] = nr_reqs * sizeof(each_succ_result_t);
+    }
+    RECV_FOREACH_VA(dpu_set, "results", dpu_results, recv_bytes);
+#else /* RANK_ORIENTED_XFER */
+    RECV_FOREACH(dpu_set, "results",
+                 sizeof(each_succ_result_t) * batch_ctx.send_size, dpu_results);
 #endif /* RANK_ORIENTED_XFER */
 
     gettimeofday(&end, NULL);

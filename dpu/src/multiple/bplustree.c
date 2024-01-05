@@ -71,6 +71,18 @@ int findKeyPos(MBPTptr n, key_int64_t key)
     }
     return l;
 }
+int findFirstGreaterKey(MBPTptr n, key_int64_t key)
+{
+    int l = -1, r = n->numKeys;
+    while (l < r - 1) {
+        int mid = (l + r) / 2;
+        if (n->key[mid] > key)
+            r = mid;
+        else
+            l = mid;
+    }
+    return r;
+}
 #endif
 
 #ifdef USE_LINEAR_SEARCH
@@ -285,6 +297,54 @@ value_ptr_t BPTreeGet(key_int64_t key, seat_id_t seat_id)
 #endif
     return 0;
 }
+
+KVPair getFirstPair(MBPTptr subtree)
+{
+    if (subtree->isLeaf) {
+        KVPair res;
+        res.key = subtree->key[0];
+        res.value = subtree->ptrs.lf.value[0];
+        return res;
+    } else {
+        return getFirstPair(subtree->ptrs.inl.children[0]);
+    }
+}
+bool findSucc(key_int64_t key, MBPTptr subtree, KVPair* succ)
+{
+    const int first_greater_idx = findFirstGreaterKey(subtree, key);
+    if (first_greater_idx < subtree->numKeys) {
+        if (subtree->isLeaf) {
+            succ->key = subtree->key[first_greater_idx];
+            succ->value = subtree->ptrs.lf.value[first_greater_idx];
+        } else {
+            if (!findSucc(key, subtree->ptrs.inl.children[first_greater_idx], succ)) {
+                *succ = getFirstPair(subtree->ptrs.inl.children[first_greater_idx + 1]);
+            }
+        }
+        return true;
+    } else {
+        if (subtree->isLeaf) {
+            return false;
+        } else {
+            return findSucc(key, subtree->ptrs.inl.children[subtree->numKeys], succ);
+        }
+    }
+}
+/**
+ * @brief
+ * get the pair with the smallest key greater than the given key.
+ * @param key key
+ * @param seat_id seat_id of the subtree
+ * @return value related to the key
+ */
+KVPair BPTreeSucc(key_int64_t key, seat_id_t seat_id)
+{
+    KVPair res;
+    findSucc(key, Seat_get_root(seat_id), &res);
+    return res;
+}
+
+
 #ifdef DEBUG_ON
 void showNode(MBPTptr cur, int nodeNo)
 {  // show single node

@@ -17,7 +17,7 @@ SEMAPHORE_INIT(my_semaphore, 1);
 
 __mram each_request_t request_buffer[MAX_REQ_NUM_IN_A_DPU];
 __mram int end_idx[NR_SEATS_IN_DPU];
-__mram each_result_t result[MAX_REQ_NUM_IN_A_DPU];
+__mram dpu_results_t results;
 __mram_ptr void* ptr;
 __mram KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
 __mram uint64_t tree_transfer_num;
@@ -136,12 +136,12 @@ int main()
         while (true) {
             if (end_idx[tree] < end_index) { /* not last tree */
                 for (; index < end_idx[tree]; index++) {
-                    result[index].get_result = BPTreeGet(request_buffer[index].key, tree);
+                    results.get.results[index].get_result = BPTreeGet(request_buffer[index].key, tree);
                 }
                 tree++;
             } else { /* last tree */
                 for (; index < end_index; index++) {
-                    result[index].get_result = BPTreeGet(request_buffer[index].key, tree);
+                    results.get.results[index].get_result = BPTreeGet(request_buffer[index].key, tree);
                 }
                 break;
             }
@@ -178,12 +178,44 @@ int main()
         while (true) {
             if (end_idx[tree] < end_index) { /* not last tree */
                 for (; index < end_idx[tree]; index++) {
-                    result[index].get_result = BPTreeGet(request_buffer[index].key, tree);
+                    results.get.results[index].get_result = BPTreeGet(request_buffer[index].key, tree);
                 }
                 tree++;
             } else { /* last tree */
                 for (; index < end_index; index++) {
-                    result[index].get_result = BPTreeGet(request_buffer[index].key, tree);
+                    results.get.results[index].get_result = BPTreeGet(request_buffer[index].key, tree);
+                }
+                break;
+            }
+        }
+        break;
+    }
+    case TASK_SUCC: {
+        if (tid == 0) {
+            queries_per_tasklet = end_idx[NR_SEATS_IN_DPU - 1] / NR_TASKLETS;
+        }
+        barrier_wait(&my_barrier);
+        // DPU側で負荷分散する
+        int start_index = queries_per_tasklet * tid;
+        int end_index = tid == NR_TASKLETS - 1 ? end_idx[NR_SEATS_IN_DPU - 1] : queries_per_tasklet * (tid + 1);
+        int tree = 0;
+        while (end_idx[tree] <= start_index) {
+            tree++;
+        }
+        int index = start_index;
+        while (true) {
+            if (end_idx[tree] < end_index) { /* not last tree */
+                for (; index < end_idx[tree]; index++) {
+                    KVPair succ = BPTreeSucc(request_buffer[index].key, tree);
+                    results.succ.results[index].succ_key = succ.key;
+                    results.succ.results[index].succ_val_ptr = succ.value;
+                }
+                tree++;
+            } else { /* last tree */
+                for (; index < end_index; index++) {
+                    KVPair succ = BPTreeSucc(request_buffer[index].key, tree);
+                    results.succ.results[index].succ_key = succ.key;
+                    results.succ.results[index].succ_val_ptr = succ.value;
                 }
                 break;
             }
