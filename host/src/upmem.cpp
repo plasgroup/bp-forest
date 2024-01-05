@@ -344,7 +344,8 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
                      dpu_init_param);
         break;
     case TASK_GET:
-    case TASK_INSERT: {
+    case TASK_INSERT:
+    case TASK_SUCC: {
 #ifdef RANK_ORIENTED_XFER
         static size_t send_bytes[NR_DPUS];
         for (int i = 0; i < NR_DPUS; i++) {
@@ -415,9 +416,9 @@ void upmem_receive_get_results(BatchCtx& batch_ctx, float* receive_time)
         size_t nr_reqs = batch_ctx.key_index[i][NR_SEATS_IN_DPU];
         recv_bytes[i] = nr_reqs * sizeof(each_get_result_t);
     }
-    RECV_FOREACH_VA(dpu_set, "result", dpu_results, recv_bytes);
+    RECV_FOREACH_VA(dpu_set, "results", dpu_results, recv_bytes);
 #else /* RANK_ORIENTED_XFER */
-    RECV_FOREACH(dpu_set, "result",
+    RECV_FOREACH(dpu_set, "results",
                  sizeof(each_get_result_t) * batch_ctx.send_size, dpu_results);
 #endif /* RANK_ORIENTED_XFER */
 
@@ -444,9 +445,9 @@ void upmem_receive_succ_results(BatchCtx& batch_ctx, float* receive_time)
         size_t nr_reqs = batch_ctx.key_index[i][NR_SEATS_IN_DPU];
         recv_bytes[i] = nr_reqs * sizeof(each_succ_result_t);
     }
-    RECV_FOREACH_VA(dpu_set, "result", dpu_results, recv_bytes);
+    RECV_FOREACH_VA(dpu_set, "results", dpu_results, recv_bytes);
 #else /* RANK_ORIENTED_XFER */
-    RECV_FOREACH(dpu_set, "result",
+    RECV_FOREACH(dpu_set, "results",
                  sizeof(each_succ_result_t) * batch_ctx.send_size, dpu_results);
 #endif /* RANK_ORIENTED_XFER */
 

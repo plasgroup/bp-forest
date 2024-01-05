@@ -52,6 +52,7 @@ extern bool BPTreeInsert(key_int64_t key, value_ptr_t value, seat_id_t seat_id);
  *    @param key key to search
  **/
 extern value_ptr_t BPTreeGet(key_int64_t key, seat_id_t seat_id);
+extern KVPair BPTreeSucc(key_int64_t key, seat_id_t seat_id);
 extern void BPTreeGetRange(key_int64_t, int);
 extern void BPTreeDelete(key_int64_t);
 extern void BPTreePrintLeaves();

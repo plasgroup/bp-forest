@@ -80,7 +80,7 @@ struct Option {
         a.add<int>("migration_num", 'm', "migration_num per batch", false, 5);
         a.add<std::string>("directory", 'd', "execution directory, offset from bp-forest directory. ex)bp-forest-exp", false, ".");
         a.add("simulator", 's', "if declared, the binary for simulator is used");
-        a.add<std::string>("ops", 'o', "kind of operation ex)get, insert", false, "get");
+        a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, succ", false, "get");
         a.add<std::string>("print-load", 'q', "print number of queries sent for each seat", false, "");
         a.add<std::string>("print-subtree-size", 'e', "print number of elements for each seat", false, "");
         a.add<std::string>("variant", 'b', "build variant", false, "");
@@ -97,6 +97,8 @@ struct Option {
             op_type = OP_TYPE_GET;
         else if (a.get<std::string>("ops") == "insert")
             op_type = OP_TYPE_INSERT;
+        else if (a.get<std::string>("ops") == "succ")
+            op_type = OP_TYPE_SUCC;
         else {
             fprintf(stderr, "invalid operation type: %s\n", a.get<std::string>("ops").c_str());
             exit(1);
@@ -177,7 +179,7 @@ void check_get_results(dpu_results_t* dpu_results, int key_index[NR_DPUS][NR_SEA
     }
 }
 
-void check_succ_results(dpu_results_t* dpu_results, int key_index[NR_DPUS][NR_SEATS_IN_DPU + 1])
+void check_succ_results(dpu_results_t* dpu_results, int key_index[NR_DPUS][NR_SEATS_IN_DPU + 1], HostTree* host_tree)
 {
     for (uint32_t dpu = 0; dpu < NR_DPUS; dpu++) {
         for (seat_id_t seat = 0; seat < NR_SEATS_IN_DPU; seat++) {
@@ -637,7 +639,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
         if (task == TASK_SUCC) {
             upmem_receive_succ_results(batch_ctx, NULL);
 #ifdef DEBUG_ON
-            check_succ_results(dpu_results, batch_ctx.key_index);
+            check_succ_results(dpu_results, batch_ctx.key_index, host_tree);
 #endif /* DEBUG_ON */
         }
     }).count();
