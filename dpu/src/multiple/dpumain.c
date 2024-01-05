@@ -161,6 +161,7 @@ int main()
             }
 #endif
         }
+        break;
     }
     case TASK_GET: {
         if (tid == 0) {
