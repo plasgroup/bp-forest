@@ -101,7 +101,7 @@ class Emulation {
         int end_idx[NR_SEATS_IN_DPU];
         each_request_t request_buffer[MAX_REQ_NUM_IN_A_DPU];
         merge_info_t merge_info;
-        each_get_result_t result[MAX_REQ_NUM_IN_A_DPU];
+        dpu_results_t results;
         split_info_t split_result[NR_SEATS_IN_DPU];
         int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
         uint64_t tree_transfer_num;
@@ -135,7 +135,7 @@ public:
         MRAM_SYMBOL(end_idx);
         MRAM_SYMBOL(request_buffer);
         MRAM_SYMBOL(merge_info);
-        MRAM_SYMBOL(result);
+        MRAM_SYMBOL(results);
         MRAM_SYMBOL(split_result);
         MRAM_SYMBOL(num_kvpairs_in_seat);
         MRAM_SYMBOL(tree_transfer_num);
@@ -187,6 +187,9 @@ private:
             break;
         case TASK_GET:
             task_get();
+            break;
+        case TASK_SUCC:
+            task_succ();
             break;
         case TASK_FROM:
             task_from(TASK_GET_OPERAND(mram.task_no));
@@ -354,9 +357,33 @@ private:
                 key_int64_t key = mram.request_buffer[j].key;
                 auto it = subtree[i].lower_bound(key);
                 if (it != subtree[i].end() && it->first == key)
-                    mram.result[j].get_result = subtree[i].at(key);
+                    mram.results.get.results[j].get_result = subtree[i].at(key);
                 else
-                    mram.result[j].get_result = 0;
+                    mram.results.get.results[j].get_result = 0;
+            }
+    }
+
+    void task_succ()
+    {
+        /* sanity check */
+        assert(mram.end_idx[0] >= 0);
+        assert(mram.end_idx[0] == 0 || in_use[0]);
+        for (int i = 1; i < NR_SEATS_IN_DPU; i++) {
+            assert(mram.end_idx[i - 1] <= mram.end_idx[i]);
+            assert(mram.end_idx[i - 1] == mram.end_idx[i] || in_use[i]);
+        }
+
+        for (int i = 0, j = 0; i < NR_SEATS_IN_DPU; i++)
+            for (; j < mram.end_idx[i]; j++) {
+                key_int64_t key = mram.request_buffer[j].key;
+                auto it = subtree[i].upper_bound(key);
+                if (it != subtree[i].end()) {
+                    mram.results.succ.results[j].succ_key = it->first;
+                    mram.results.succ.results[j].succ_val_ptr = it->second;
+                } else{
+                    mram.results.succ.results[j].succ_key = 0;
+                    mram.results.succ.results[j].succ_val_ptr = 0;
+                }
             }
     }
 
