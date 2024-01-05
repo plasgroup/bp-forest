@@ -11,9 +11,9 @@ extern "C" {
 #include "common.h"
 }
 
-#define EMU_MAX_DPUS 3000
+#define EMU_MAX_DPUS 2550
 #define EMU_DPUS_IN_RANK 64
-#define EMU_MULTI_THREAD 16 /* nr worker threads */
+#define EMU_MULTI_THREAD 1 /* nr worker threads */
 
 #ifdef EMU_MULTI_THREAD
 
@@ -250,14 +250,26 @@ private:
         }
     }
 
+    int count_available_seats()
+    {
+        int n = 0;
+        for (int i = 0; i < NR_SEATS_IN_DPU; i++)
+            if (!in_use[i])
+                n++;
+        return 0;
+    }
+
     void split_tree(KVPair buf[], int n, split_info_t result[])
     {
         int num_trees = (n + NR_ELEMS_AFTER_SPLIT - 1) / NR_ELEMS_AFTER_SPLIT;
         assert(num_trees <= MAX_NUM_SPLIT);
+        if (num_trees > count_available_seats())
+            num_trees = count_available_seats();
         for (int i = 0; i < num_trees; i++) {
             int start = n * i / num_trees;
             int end = n * (i + 1) / num_trees;
             seat_id_t seat_id = allocate_seat(INVALID_SEAT_ID);
+            printf("split[%d] => %d\n", dpu_id, seat_id);
             deserialize(seat_id, buf, start, end - start);
             result->num_elems[i] = end - start;
             result->new_tree_index[i] = seat_id;
@@ -274,7 +286,7 @@ private:
         for (int i = 0; i < NR_SEATS_IN_DPU; i++) {
             assert(subtree[i].size() == mram.num_kvpairs_in_seat[i]);
             assert(in_use[i] || mram.num_kvpairs_in_seat[i] == 0);
-            if (in_use[i]) {
+            if (in_use[i] && count_available_seats() > 0) {
                 int n = mram.num_kvpairs_in_seat[i];
                 if (n > SPLIT_THRESHOLD) {
                     serialize(i, mram.tree_transfer_buffer);

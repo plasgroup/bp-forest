@@ -121,6 +121,15 @@ void Cabin_release_seat(seat_id_t seat_id)
     num_kvpairs_in_seat[seat_id] = 0;
 }
 
+int Cabin_get_nr_available_seats()
+{
+    int n = 0;
+    for (int i = 0; i < NR_SEATS_IN_DPU; i++)
+        if (!cabin[i].in_use)
+            n++;
+    return n;
+}
+
 /*** Seat ***/
 
 static void Seat_init(seat_id_t seat_id)

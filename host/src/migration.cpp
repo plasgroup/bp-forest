@@ -163,6 +163,8 @@ Migration::migrate_subtrees(uint32_t from_dpu, uint32_t to_dpu, int n)
     seat_set_t moving_to = 0;
     seat_id_t from = 0, to = 0;
 
+    printf("migrate_subtrees %d -> %d n=%d\n", from_dpu, to_dpu, n);
+
     for (int i = 0; i < n; i++) {
         while (!(from_used & (1 << from)))
             from++;
