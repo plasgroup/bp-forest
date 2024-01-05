@@ -136,12 +136,12 @@ int main()
         while (true) {
             if (end_idx[tree] < end_index) { /* not last tree */
                 for (; index < end_idx[tree]; index++) {
-                    result[index].get_result = BPTreeGet(request_buffer[index].key, tree);
+                    results.get.results[index].get_result = BPTreeGet(request_buffer[index].key, tree);
                 }
                 tree++;
             } else { /* last tree */
                 for (; index < end_index; index++) {
-                    result[index].get_result = BPTreeGet(request_buffer[index].key, tree);
+                    results.get.results[index].get_result = BPTreeGet(request_buffer[index].key, tree);
                 }
                 break;
             }
