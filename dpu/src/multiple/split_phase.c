@@ -27,7 +27,10 @@ static seat_id_t create_split_tree(KVPairPtr buffer, int start, int end)
 static void split_tree(KVPairPtr buffer, int n, __mram_ptr split_info_t* result)
 {
     int num_trees = (n + NR_ELEMS_AFTER_SPLIT - 1) / NR_ELEMS_AFTER_SPLIT;
+    int available = Cabin_get_nr_available_seats();
     assert(num_trees <= MAX_NUM_SPLIT);
+    if (num_trees > available)
+        num_trees = available;
     for (int i = 0; i < num_trees; i++) {
         int start = n * i / num_trees;
         int end = n * (i + 1) / num_trees;
@@ -46,8 +49,9 @@ static void split_tree(KVPairPtr buffer, int n, __mram_ptr split_info_t* result)
 void split_phase()
 {
     clear_split_result();
+
     for (seat_id_t seat_id = 0; seat_id < NR_SEATS_IN_DPU; seat_id++)
-        if (Seat_is_used(seat_id)) {
+        if (Seat_is_used(seat_id) && Cabin_get_nr_available_seats() > 0) {
             int n = num_kvpairs_in_seat[seat_id];
             if (n > SPLIT_THRESHOLD) {
                 printf("split: seat %d -> ", seat_id);

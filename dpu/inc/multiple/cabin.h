@@ -9,6 +9,7 @@ typedef struct BPTreeNode Node;
 extern void Cabin_init();
 extern seat_id_t Cabin_allocate_seat(seat_id_t seat_id);
 extern void Cabin_release_seat(seat_id_t seat_id);
+extern int Cabin_get_nr_available_seats();
 extern __mram_ptr Node* Seat_get_root(seat_id_t seat_id);
 extern void Seat_set_root(seat_id_t seat_id, __mram_ptr Node* new_root);
 extern __mram_ptr Node* Seat_allocate_node(seat_id_t seat_id);

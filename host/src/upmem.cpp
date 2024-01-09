@@ -497,14 +497,14 @@ void upmem_send_nodes_from_dpu_to_dpu(uint32_t from_DPU, seat_id_t from_tree,
     execute(dpu);
     RECV_SINGLE(dpu, "tree_transfer_num", sizeof(uint64_t), &n);
     RECV_SINGLE(dpu, "tree_transfer_buffer",
-                n * sizeof(BPTreeNode), &tree_migration_buffer);
+                n * sizeof(KVPair), &tree_migration_buffer);
     
     select_dpu(&dpu, to_DPU);
     task = TASK_WITH_OPERAND(TASK_TO, to_tree);
     SEND_SINGLE(dpu, "task_no", sizeof(uint64_t), &task);
     SEND_SINGLE(dpu, "tree_transfer_num", sizeof(uint64_t), &n);
     SEND_SINGLE(dpu, "tree_transfer_buffer",
-                n * sizeof(BPTreeNode), &tree_migration_buffer);
+                n * sizeof(KVPair), &tree_migration_buffer);
     execute(dpu);
 }
 
