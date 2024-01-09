@@ -13,7 +13,7 @@ extern "C" {
 
 #define EMU_MAX_DPUS 2550
 #define EMU_DPUS_IN_RANK 64
-#define EMU_MULTI_THREAD 1 /* nr worker threads */
+#define EMU_MULTI_THREAD 16 /* nr worker threads */
 
 #ifdef EMU_MULTI_THREAD
 
