@@ -94,7 +94,9 @@ static EmulatorWorkerManager emu_threads;
 #endif /* EMU_MULTI_THREAD */
 
 class Emulation {
+#ifdef EMU_MULTI_THREAD
     friend EmulatorWorkerManager;
+#endif /* EMU_MULTI_THREAD */
 
     struct MRAM {
         uint64_t task_no;
