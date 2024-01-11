@@ -13,6 +13,8 @@
 #define min2(a, b) ((a) < (b) ? (a) : (b))
 #define min3(a, b, c) ((a) < (b) ? min2(a, c) : min2(b, c))
 
+#define MIN_DIFF_NR_QUERIES_TO_MIGRATE (SPLIT_THRESHOLD / 100)
+
 Migration::Migration(HostTree* tree)
 {
     for (uint32_t i = 0; i < NR_DPUS; i++) {
@@ -135,14 +137,15 @@ Migration::migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migration
         if (l >= r)
             break;
         if (nr_used_seats[dpu_ids[l]] <= 1) {
-            l++;
-            continue;
+            break;
         }
         if (nr_used_seats[dpu_ids[r]] >= SOFT_LIMIT_NR_TREES_IN_DPU || nr_used_seats[dpu_ids[r]] + nr_freeing_seats[dpu_ids[r]] >= NR_SEATS_IN_DPU) {
             r--;
             continue;
         }
         int diff = nr_keys_for_dpu[dpu_ids[l]] - nr_keys_for_dpu[dpu_ids[r]];
+        if (diff < MIN_DIFF_NR_QUERIES_TO_MIGRATE)
+            break;
         if (!migrate_subtree_to_balance_load(dpu_ids[l], dpu_ids[r], diff, batch_ctx.num_keys_for_tree)) {
             l++;
             continue;

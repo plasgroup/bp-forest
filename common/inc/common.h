@@ -39,7 +39,7 @@
 #endif
 
 #ifndef DEFAULT_NR_BATCHES
-#define DEFAULT_NR_BATCHES 20
+#define DEFAULT_NR_BATCHES 50
 #endif
 
 #ifndef NUM_INIT_REQS
@@ -73,7 +73,7 @@
 // #define STATS_ON
 // #define PRINT_ON
 // #define WRITE_CSV
-#define PRINT_DISTRIBUTION
+// #define PRINT_DISTRIBUTION
 
 #ifdef VARY_REQUESTNUM  // for experiment: xaxis is requestnum
 #define NUM_VARS (8)    // number of point of xs
