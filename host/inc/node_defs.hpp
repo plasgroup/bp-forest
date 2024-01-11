@@ -8,7 +8,7 @@ typedef struct MBPTptr {
     uint64_t x : 48;
 } __attribute__((packed)) MBPTptr;
 
-#define MAX_CHILD 12
+#define MAX_CHILD 126
 extern MBPTptr root;
 
 typedef struct InternalNodePtrs {

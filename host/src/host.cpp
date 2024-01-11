@@ -67,6 +67,10 @@ std::map<key_int64_t, value_ptr_t> verify_db;
 XferStatistics xfer_statistics;
 #endif /* MEASURE_XFER_BYTES */
 
+#ifdef PRINT_DISTRIBUTION
+    extern int numofnodes[NR_DPUS][NR_SEATS_IN_DPU];
+#endif /* PRINT_DISTRIBUTION */
+
 static void print_merge_info();
 static void print_subtree_size(HostTree* host_tree);
 static void print_nr_queries(BatchCtx* batch_ctx, Migration* mig);
@@ -644,9 +648,16 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
         }
     }).count();
 
-#ifdef PRINT_DEBUG
-    print_subtree_size(host_tree);
-#endif /* PRINT_DEBUG */
+#ifdef PRINT_DISTRIBUTION
+    upmem_receive_numofnodes();
+    for (int dpu = 0; dpu < NR_DPUS; dpu++) {
+        int nnodes_in_dpu = 0;
+        for (seat_id_t seat = 0; seat < NR_SEATS_IN_DPU; seat++) {
+            nnodes_in_dpu += numofnodes[dpu][seat];
+        }
+        printf("%d, %d, %d, %d\n", batch_num, dpu, batch_ctx.key_index[dpu][NR_SEATS_IN_DPU], nnodes_in_dpu);
+    }
+#endif /* PRINT_DISTRIBUTION */
 
     /* 8. merge small subtrees in DPU*/
     merge_time = measure_time([&] {
@@ -683,8 +694,10 @@ int main(int argc, char* argv[])
               << "requests per batch:" << NUM_REQUESTS_PER_BATCH << std::endl
               << "init elements in total:" << NUM_INIT_REQS << std::endl
               << "init elements per DPU:" << (NUM_INIT_REQS / NR_DPUS) << std::endl
+              << "size of BPTREENode:" << sizeof(BPTreeNode) << std::endl
               << "MAX_NUM_NODES_IN_SEAT:" << MAX_NUM_NODES_IN_SEAT << std::endl
               << "estm. max elems in seat:" << (MAX_NUM_NODES_IN_SEAT * MAX_CHILD) << std::endl;
+              
 #endif
 
     upmem_init(opt.dpu_binary, opt.is_simulator);
@@ -711,7 +724,12 @@ int main(int argc, char* argv[])
     int num_keys = 0;
     int batch_num = 0;
     uint64_t total_num_keys = 0;
+#ifdef PRINT_DISTRIBUTION
+    printf("batch, DPU, nqueries, nnodes\n");
+#endif /* PRINT_DISTRIBUTION */
+#ifndef PRINT_DISTRIBUTION
     printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time, execution_time, receive_result_time, merge_time, batch_time, throughput\n");
+#endif /* PRINT_DISTRIBUTION */
     while (total_num_keys < opt.nr_total_queries) {
         BatchCtx batch_ctx;
         switch (opt.op_type) {
@@ -740,10 +758,12 @@ int main(int argc, char* argv[])
         total_merge_time += merge_time;
         total_batch_time += batch_time;
         double throughput = num_keys / batch_time;
+#ifndef PRINT_DISTRIBUTION
         printf("%.2f, %d, %d, %d, %d, %d, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
             opt.zipfian_const, NR_DPUS, NR_TASKLETS, batch_num,
             num_keys, batch_ctx.send_size, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time,
             execution_time, receive_result_time, merge_time, batch_time, throughput);
+#endif /* PRINT_DISTRIBUTION */
     }
 
 
@@ -754,10 +774,13 @@ int main(int argc, char* argv[])
     //printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, send_time, cpu_time,
     //    execution_time, 100 * cpu_time / execution_time, send_and_execution_time, total_time, throughput);
     double throughput = total_num_keys / total_batch_time;
+
+#ifndef PRINT_DISTRIBUTION
     printf("%.2f, %d, %d, total, %ld,, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f\n",
         opt.zipfian_const, NR_DPUS, NR_TASKLETS,
         total_num_keys, total_preprocess_time1, total_preprocess_time2, total_migration_plan_time, total_migration_time, total_send_time,
         total_execution_time, total_receive_result_time, total_merge_time, total_batch_time, throughput);
+#endif /* PRINT_DISTRIBUTION */
 
 #ifdef MEASURE_XFER_BYTES
     xfer_statistics.print(stdout);

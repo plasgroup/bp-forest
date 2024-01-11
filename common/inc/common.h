@@ -8,8 +8,8 @@
  * MRAM Layout
  */
 
-#define MRAM_CABIN_BYTES           (30 * 1024 * 1024)
-#define MRAM_REQUEST_BUFFER_BYTES  (15 * 1024 * 1024)
+#define MRAM_CABIN_BYTES           (45 * 1024 * 1024)
+#define MRAM_REQUEST_BUFFER_BYTES  (10 * 1024 * 1024)
 
 /*
  * Parameters
@@ -35,7 +35,7 @@
 #endif
 
 #ifndef NUM_REQUESTS_PER_BATCH
-#define NUM_REQUESTS_PER_BATCH (1000000)
+#define NUM_REQUESTS_PER_BATCH (100000)
 #endif
 
 #ifndef DEFAULT_NR_BATCHES
@@ -63,7 +63,7 @@
  * split related parameter
  */
 #define MAX_NUM_SPLIT (5)
-#define SPLIT_THRESHOLD (4000)
+#define SPLIT_THRESHOLD (40000)
 #define NR_ELEMS_AFTER_SPLIT (SPLIT_THRESHOLD / 2)
 
 
@@ -73,6 +73,7 @@
 // #define STATS_ON
 // #define PRINT_ON
 // #define WRITE_CSV
+#define PRINT_DISTRIBUTION
 
 #ifdef VARY_REQUESTNUM  // for experiment: xaxis is requestnum
 #define NUM_VARS (8)    // number of point of xs

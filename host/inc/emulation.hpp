@@ -109,6 +109,9 @@ class Emulation {
         uint64_t tree_transfer_num;
         KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
         dpu_init_param_t dpu_init_param[NR_SEATS_IN_DPU];
+#ifdef PRINT_DISTRIBUTION
+        int numofnodes[NR_SEATS_IN_DPU];
+#endif /* PRINT_DISTRIBUTION */
     } mram;
 
     std::map<key_int64_t, value_ptr_t> subtree[NR_SEATS_IN_DPU];
@@ -143,6 +146,9 @@ public:
         MRAM_SYMBOL(tree_transfer_num);
         MRAM_SYMBOL(tree_transfer_buffer);
         MRAM_SYMBOL(dpu_init_param);
+#ifdef PRINT_DISTRIBUTION
+        MRAM_SYMBOL(numofnodes);
+#endif /* PRINT_DISTRIBUTION */
 
 #undef MRAM_SYMBOL
 

@@ -81,7 +81,7 @@ int main(int argc, char* argv[])
         }
         writing_file.write((const char*)generated_keys, sizeof(key_int64_t) * key_num);
         free(generated_keys);
-        std::cout << filename << "has been written, num of reqs = " << key_num << ", size = " << key_num * sizeof(uint64_t) << " B" << std::endl;
+        std::cout << filename << " has been written, num of reqs = " << key_num << ", size = " << key_num * sizeof(uint64_t) << "B" << std::endl;
     }
     return 0;
 }

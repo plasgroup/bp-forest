@@ -31,7 +31,9 @@ int queries_per_tasklet;
 seat_id_t current_tree;
 uint32_t task;
 int num_invoked = 0;
-
+#ifdef PRINT_DISTRIBUTION
+__host int numofnodes[NR_SEATS_IN_DPU];
+#endif
 #ifdef DEBUG_ON
 __mram_ptr void* getval;
 #endif
@@ -151,6 +153,14 @@ int main()
         barrier_wait(&my_barrier);
         if (tid == 0) {
             split_phase();
+#ifdef PRINT_DISTRIBUTION
+            for (seat_id_t seat_id = 0; seat_id < NR_SEATS_IN_DPU; seat_id++) {
+                if (Seat_is_used(seat_id)) 
+                    numofnodes[seat_id] = Seat_get_n_nodes(seat_id);
+                else 
+                    numofnodes[seat_id] = 0;
+            }
+#endif
 #ifdef PRINT_DEBUG
             for (seat_id_t seat_id = 0; seat_id < NR_SEATS_IN_DPU; seat_id++) {
                 if (Seat_is_used(seat_id)) {
@@ -189,6 +199,14 @@ int main()
                 break;
             }
         }
+#ifdef PRINT_DISTRIBUTION
+            for (seat_id_t seat_id = 0; seat_id < NR_SEATS_IN_DPU; seat_id++) {
+                if (Seat_is_used(seat_id)) 
+                    numofnodes[seat_id] = Seat_get_n_nodes(seat_id);
+                else 
+                    numofnodes[seat_id] = 0;
+            }
+#endif
         break;
     }
     case TASK_SUCC: {

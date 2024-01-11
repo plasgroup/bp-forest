@@ -34,6 +34,9 @@ merge_info_t merge_info[NR_DPUS];
 split_info_t split_result[NR_DPUS][NR_SEATS_IN_DPU];
 dpu_init_param_t dpu_init_param[NR_DPUS][NR_SEATS_IN_DPU];
 static BPTreeNode tree_migration_buffer[MAX_NUM_NODES_IN_SEAT];
+#ifdef PRINT_DISTRIBUTION
+    int numofnodes[NR_DPUS][NR_SEATS_IN_DPU];
+#endif
 
 uint32_t upmem_get_nr_dpus();
 
@@ -483,6 +486,14 @@ void upmem_receive_num_kvpairs(HostTree* host_tree, float* receive_time)
     if (receive_time != NULL)
         *receive_time = time_diff(&start, &end);
 }
+
+#ifdef PRINT_DISTRIBUTION
+void upmem_receive_numofnodes()
+{
+    RECV_FOREACH(dpu_set, "numofnodes",
+                 sizeof(int) * NR_SEATS_IN_DPU, numofnodes);
+}
+#endif /* PRINT_DISTRIBUTION */
 
 void upmem_send_nodes_from_dpu_to_dpu(uint32_t from_DPU, seat_id_t from_tree,
                                       uint32_t to_DPU, seat_id_t to_tree)
