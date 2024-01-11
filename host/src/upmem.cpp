@@ -251,10 +251,10 @@ execute(dpu_set_t dpu_set)
     DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
     dpu_sync(dpu_set);
 #ifdef PRINT_DEBUG
-    DPU_FOREACH(dpu_set, dpu)
-    {
-        DPU_ASSERT(dpu_log_read(dpu, stdout));
-    }
+    // DPU_FOREACH(dpu_set, dpu)
+    // {
+    //     DPU_ASSERT(dpu_log_read(dpu, stdout));
+    // }
 #endif /* PRINT_DEBUG */
 }
 #endif /* HOST_ONLY */
