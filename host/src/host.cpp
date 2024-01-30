@@ -16,16 +16,18 @@
 // extern "C" {
 // #include "bplustree.h"
 // }
-#include <map>
 
 #include "cmdline.h"
 #include "common.h"
 #include "host_data_structures.hpp"
 #include "migration.hpp"
 #include "node_defs.hpp"
+#include "host_params.hpp"
 #include "statistics.hpp"
 #include "upmem.hpp"
 #include "utils.hpp"
+
+#include <map>
 
 #define ANSI_COLOR_RED "\x1b[31m"
 #define ANSI_COLOR_GREEN "\x1b[32m"

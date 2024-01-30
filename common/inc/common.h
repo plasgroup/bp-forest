@@ -1,63 +1,42 @@
 #ifndef __COMMON_H__
 #define __COMMON_H__
 
-#include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif  // ifdef __cplusplus
+
+
 #include "workload_types.h"
+
+#include <stdint.h>
+
 
 /*
  * MRAM Layout
  */
 
-#define MRAM_CABIN_BYTES           (30 * 1024 * 1024)
-#define MRAM_REQUEST_BUFFER_BYTES  (15 * 1024 * 1024)
+#define MRAM_CABIN_BYTES (30 * 1024 * 1024)
+#define MRAM_REQUEST_BUFFER_BYTES (15 * 1024 * 1024)
+
 
 /*
  * Parameters
  */
 
-#ifndef NR_DPUS
-#define NR_DPUS (4)
-#endif
-
 #ifndef NR_TASKLETS
-#define NR_TASKLETS (2)
+#error NR_TASKLETS is always used but never defined
 #endif
 
 #ifndef NR_SEATS_IN_DPU
 #define NR_SEATS_IN_DPU (20)
 #endif
 
-#ifndef NR_INITIAL_TREES_IN_DPU
-#define NR_INITIAL_TREES_IN_DPU (12)
-#endif
-#if NR_SEATS_IN_DPU < NR_INITIAL_TREES_IN_DPU
-#error parameter error: NR_SEAT_IN_DPU < NR_INITIAL_TREES_IN_DPU
-#endif
-
-#ifndef NUM_REQUESTS_PER_BATCH
-#define NUM_REQUESTS_PER_BATCH (1000000)
-#endif
-
-#ifndef DEFAULT_NR_BATCHES
-#define DEFAULT_NR_BATCHES 20
-#endif
-
-#ifndef NUM_INIT_REQS
-#define NUM_INIT_REQS (2000 * (NR_DPUS * NR_INITIAL_TREES_IN_DPU))
-#endif
-
 #define MAX_NUM_NODES_IN_SEAT (MRAM_CABIN_BYTES / NR_SEATS_IN_DPU / sizeof(BPTreeNode))
-
-#ifndef SOFT_LIMIT_NR_TREES_IN_DPU
-#define SOFT_LIMIT_NR_TREES_IN_DPU (NR_SEATS_IN_DPU - MAX_NUM_SPLIT - 1)
-#endif
-
-#define MERGE_THRESHOLD (1500)
-#define NUM_ELEMS_AFTER_MERGE (2000)
 
 #ifndef MAX_REQ_NUM_IN_A_DPU
 #define MAX_REQ_NUM_IN_A_DPU (MRAM_REQUEST_BUFFER_BYTES / sizeof(each_request_t) / 2)
 #endif
+
 
 /*
  * split related parameter
@@ -68,15 +47,9 @@
 
 
 // #define PRINT_DEBUG
-// #define VARY_REQUESTNUM
 // #define DEBUG_ON
-// #define STATS_ON
 // #define PRINT_ON
-// #define WRITE_CSV
 
-#ifdef VARY_REQUESTNUM  // for experiment: xaxis is requestnum
-#define NUM_VARS (8)    // number of point of xs
-#endif
 
 /*
  * Shared Data Structures
@@ -122,20 +95,6 @@ typedef struct {
     key_int64_t interval;
 } dpu_init_param_t;
 
-#ifdef VARY_REQUESTNUM
-typedef struct {  // for returning the result of the experiment
-    int x;
-    int cycle_insert;
-    int cycle_get;
-} dpu_stats_t;
-
-typedef struct {  // for specifing the points of x in the experiment
-    int vars[NUM_VARS];
-    int gap;
-    int DPUnum;
-} dpu_experiment_var_t;
-#endif
-
 typedef int seat_id_t;
 #define INVALID_SEAT_ID (-1)
 typedef uint64_t seat_set_t;
@@ -160,27 +119,31 @@ typedef struct KVPair {
 } KVPair;
 
 /* Tasks */
-#define TASK_INIT (0ULL)
-#define TASK_GET (10ULL)
-#define TASK_INSERT (11ULL)
-#define TASK_DELETE (12ULL)
-#define TASK_SUCC (13ULL)
-#define TASK_FROM (100ULL)
-#define TASK_TO (101ULL)
-#define TASK_MERGE (102ULL)
+#define TASK_INIT (UINT32_C(0))
+#define TASK_GET (UINT32_C(10))
+#define TASK_INSERT (UINT32_C(11))
+#define TASK_DELETE (UINT32_C(12))
+#define TASK_SUCC (UINT32_C(13))
+#define TASK_FROM (UINT32_C(100))
+#define TASK_TO (UINT32_C(101))
+#define TASK_MERGE (UINT32_C(102))
 
 #define TASK_OPERAND_SHIFT 32
-#define TASK_ID_MASK ((1ULL << TASK_OPERAND_SHIFT) - 1)
-#define TASK_WITH_OPERAND(task,rand) \
-    ((task) | (((uint64_t) (rand)) << TASK_OPERAND_SHIFT))
-#define TASK_GET_ID(task) ((task) & TASK_ID_MASK)
+#define TASK_ID_MASK ((UINT64_C(1) << TASK_OPERAND_SHIFT) - 1)
+#define TASK_WITH_OPERAND(task, rand) \
+    ((task) | (((uint64_t)(rand)) << TASK_OPERAND_SHIFT))
+#define TASK_GET_ID(task) ((task)&TASK_ID_MASK)
 #define TASK_GET_OPERAND(task) ((task) >> TASK_OPERAND_SHIFT)
-
 
 
 #define PRINT_POSITION_AND_VARIABLE(NAME, FORMAT) \
     printf("[Debug at %s:%d] " #NAME " = " #FORMAT "\n", __FILE__, __LINE__, NAME);
 #define PRINT_POSITION_AND_MESSAGE(MESSAGE) \
     printf("[Debug at %s:%d] " #MESSAGE "\n", __FILE__, __LINE__);
+
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif  // ifdef __cplusplus
 
 #endif /* __COMMON_H__ */

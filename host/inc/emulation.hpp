@@ -7,9 +7,7 @@
 #include <map>
 
 #include "node_defs.hpp"
-extern "C" {
 #include "common.h"
-}
 
 #define EMU_MAX_DPUS 2550
 #define EMU_DPUS_IN_RANK 64

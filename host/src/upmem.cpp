@@ -1,11 +1,14 @@
-#include <stdlib.h>
-#include <sys/time.h>
-#include <assert.h>
 #include "common.h"
+#include "host_params.hpp"
 #include "host_data_structures.hpp"
 #include "node_defs.hpp"
 #include "utils.hpp"
 #include "statistics.hpp"
+
+#include <sys/time.h>
+
+#include <cstdlib>
+#include <cassert>
 
 #ifdef PRINT_DEBUG
 #include <cstdio>

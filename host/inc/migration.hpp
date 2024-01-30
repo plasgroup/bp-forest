@@ -1,15 +1,16 @@
 #ifndef __MIGRATION_HPP__
 #define __MIGRATION_HPP__
 
-#include <iostream>
-#include <map>
-#include <stdio.h>
-#include <stdlib.h>
-#include <utility>
-#include <vector>
-
 #include "common.h"
 #include "host_data_structures.hpp"
+#include "host_params.hpp"
+
+#include <cstdio>
+#include <cstdlib>
+#include <iostream>
+#include <map>
+#include <utility>
+#include <vector>
 
 class HostTree;
 class BatchCtx;

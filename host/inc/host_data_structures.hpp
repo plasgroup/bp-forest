@@ -1,12 +1,14 @@
 #ifndef __HOST_DATA_STRUCTURES_HPP__
 #define __HOST_DATA_STRUCTURES_HPP__
 
-#include <stdlib.h>
-#include <assert.h>
-#include <cstring>
-#include <cstdio>
-#include <map>
 #include "common.h"
+#include "host_params.hpp"
+
+#include <assert.h>
+#include <cstdio>
+#include <cstring>
+#include <map>
+#include <stdlib.h>
 
 #ifdef PRINT_DEBUG
 #include <cstdio>
@@ -78,7 +80,7 @@ public:
     {
         tree_bitmap[seat_addr.dpu] &= ~(1 << seat_addr.seat);
         num_seats_used[seat_addr.dpu]--;
-        tree_to_key_map[seat_addr.dpu][seat_addr.seat] = 0; // invalid kye?
+        tree_to_key_map[seat_addr.dpu][seat_addr.seat] = 0;  // invalid kye?
     }
 
     seat_set_t get_used_seats(int dpu)
