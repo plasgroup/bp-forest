@@ -21,7 +21,7 @@ public:
     {
         const auto next_consumed = std::min(consumed + request, buffer.size());
         const auto res = std::make_pair(buffer.data() + consumed, next_consumed - consumed);
-        consumed += next_consumed;
+        consumed = next_consumed;
         return res;
     }
 };
