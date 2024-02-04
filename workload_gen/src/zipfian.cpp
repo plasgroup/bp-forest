@@ -51,12 +51,12 @@ int main(int argc, char* argv[])
         generator.reset(new ycsbc::ScrambledZipfianGenerator(min, num_partitions, zipfian_const));
         generated.metadata.densities.resize(num_partitions);
         for (uint64_t idx_part = 0; idx_part < num_partitions; idx_part++) {
-            generated.metadata.densities.at(utils::FNVHash64(idx_part) % num_partitions) = std::pow(idx_part, -zipfian_const);
+            generated.metadata.densities.at(utils::FNVHash64(idx_part) % num_partitions) = std::pow(idx_part + 1, -zipfian_const);
         }
     } else {
         generator.reset(new ycsbc::ZipfianGenerator(min, num_partitions, zipfian_const));
         for (uint64_t idx_part = 0; idx_part < num_partitions; idx_part++) {
-            generated.metadata.densities.push_back(std::pow(idx_part, -zipfian_const));
+            generated.metadata.densities.push_back(std::pow(idx_part + 1, -zipfian_const));
         }
     }
 
