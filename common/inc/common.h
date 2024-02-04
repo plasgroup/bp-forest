@@ -42,7 +42,11 @@ extern "C" {
  * split related parameter
  */
 #define MAX_NUM_SPLIT (5)
+
+#ifndef SPLIT_THRESHOLD
 #define SPLIT_THRESHOLD (4000)
+#endif  // ifndef SPLIT_THRESHOLD
+
 #define NR_ELEMS_AFTER_SPLIT (SPLIT_THRESHOLD / 2)
 
 
