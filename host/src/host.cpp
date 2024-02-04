@@ -1,6 +1,22 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+
+#include "piecewise_constant_workload.hpp"
+#include "common.h"
+#include "host_data_structures.hpp"
+#include "migration.hpp"
+#include "node_defs.hpp"
+#include "workload_buffer.hpp"
+#include "host_params.hpp"
+#include "statistics.hpp"
+#include "upmem.hpp"
+#include "utils.hpp"
+
+#include <cereal/archives/binary.hpp>
+
+#include <cmdline.h>
+
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
@@ -8,25 +24,11 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
-#include <math.h>
+#include <cmath>
 #include <pthread.h>
 #include <sched.h>
 #include <sys/time.h>
 #include <vector>
-// extern "C" {
-// #include "bplustree.h"
-// }
-
-#include "cmdline.h"
-#include "common.h"
-#include "host_data_structures.hpp"
-#include "migration.hpp"
-#include "node_defs.hpp"
-#include "host_params.hpp"
-#include "statistics.hpp"
-#include "upmem.hpp"
-#include "utils.hpp"
-
 #include <map>
 
 #define ANSI_COLOR_RED "\x1b[31m"
@@ -59,8 +61,6 @@ float total_merge_time = 0;
 float total_batch_time = 0;
 float init_time = 0;
 
-key_int64_t* batch_keys;
-
 #ifdef DEBUG_ON
 std::map<key_int64_t, value_ptr_t> verify_db;
 #endif /* DEBUG_ON */
@@ -78,7 +78,7 @@ struct Option {
     {
         cmdline::parser a;
         a.add<int>("keynum", 'n', "maximum num of keys for the experiment", false, NUM_REQUESTS_PER_BATCH * DEFAULT_NR_BATCHES);
-        a.add<std::string>("zipfianconst", 'a', "zipfian consttant", false, "0.99");
+        a.add<std::string>("zipfianconst", 'a', "zipfian constant", false, "0.99");
         a.add<int>("migration_num", 'm', "migration_num per batch", false, 5);
         a.add<std::string>("directory", 'd', "execution directory, offset from bp-forest directory. ex)bp-forest-exp", false, ".");
         a.add("simulator", 's', "if declared, the binary for simulator is used");
@@ -273,12 +273,6 @@ void update_cpu_struct_merge(HostTree* host_tree)
                 host_tree->remove(dpu, i);  // merge to the previous subtree
 }
 
-int prepare_batch_keys(std::ifstream& file_input, key_int64_t* const batch_keys)
-{
-    file_input.read(reinterpret_cast<char*>(batch_keys), sizeof(key_int64_t) * NUM_REQUESTS_PER_BATCH);
-    return file_input.gcount() / sizeof(key_int64_t);
-}
-
 #ifdef HOST_MULTI_THREAD
 #include <condition_variable>
 #include <mutex>
@@ -446,7 +440,7 @@ public:
 PreprocessWorker ppwk[HOST_MULTI_THREAD];
 #endif /* HOST_MULTI_THREAD */
 
-int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, uint64_t& total_num_keys, const int max_key_num, std::ifstream& file_input, HostTree* host_tree, BatchCtx& batch_ctx)
+int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, uint64_t& total_num_keys, const int max_key_num, WorkloadBuffer& workload_buffer, HostTree* host_tree, BatchCtx& batch_ctx)
 {
 #ifdef PRINT_DEBUG
     printf("======= batch %d =======\n", batch_num);
@@ -469,7 +463,9 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     }
 
     /* 0. read workload file */
-    const int num_keys_batch = prepare_batch_keys(file_input, batch_keys);
+    const auto tmp_input = workload_buffer.take(NUM_REQUESTS_PER_BATCH);
+    const auto batch_keys = tmp_input.first;
+    const auto num_keys_batch = tmp_input.second;
     if (num_keys_batch == 0) {
         return 0;
     }
@@ -692,7 +688,6 @@ int main(int argc, char* argv[])
     upmem_init(opt.dpu_binary, opt.is_simulator);
 
     int keys_array_size = NUM_INIT_REQS > NUM_REQUESTS_PER_BATCH ? NUM_INIT_REQS : NUM_REQUESTS_PER_BATCH;
-    batch_keys = (key_int64_t*)malloc(keys_array_size * sizeof(key_int64_t));
 
     /* initialization */
     HostTree* host_tree = new HostTree(NR_INITIAL_TREES_IN_DPU);
@@ -703,11 +698,18 @@ int main(int argc, char* argv[])
 #endif
 
     /* load workload file */
-    std::ifstream file_input(opt.workload_file, std::ios_base::binary);
-    if (!file_input) {
-        printf("cannot open file\n");
-        return 1;
+    PiecewiseConstantWorkload workload;
+    {
+        std::ifstream file_input(opt.workload_file, std::ios_base::binary);
+        if (!file_input) {
+            printf("cannot open file\n");
+            return 1;
+        }
+
+        cereal::BinaryInputArchive iarchive(file_input);
+        iarchive(workload);
     }
+    WorkloadBuffer workload_buffer{std::move(workload.data)};
 
     /* main routine */
     int num_keys = 0;
@@ -718,13 +720,13 @@ int main(int argc, char* argv[])
         BatchCtx batch_ctx;
         switch (opt.op_type) {
         case Option::OP_TYPE_GET:
-            num_keys = do_one_batch(TASK_GET, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, file_input, host_tree, batch_ctx);
+            num_keys = do_one_batch(TASK_GET, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, workload_buffer, host_tree, batch_ctx);
             break;
         case Option::OP_TYPE_INSERT:
-            num_keys = do_one_batch(TASK_INSERT, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, file_input, host_tree, batch_ctx);
+            num_keys = do_one_batch(TASK_INSERT, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, workload_buffer, host_tree, batch_ctx);
             break;
         case Option::OP_TYPE_SUCC:
-            num_keys = do_one_batch(TASK_SUCC, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, file_input, host_tree, batch_ctx);
+            num_keys = do_one_batch(TASK_SUCC, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, workload_buffer, host_tree, batch_ctx);
             break;
         default:
             abort();

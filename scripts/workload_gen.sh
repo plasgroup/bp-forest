@@ -9,6 +9,6 @@ i=1
 for alpha in "${zipf_constant[@]}"
 do
     echo $i/${#zipf_constant[@]} generating ${num_keys} keys for workload/zipf_const_${alpha}.bin...
-    build/release/workload_gen/workload_gen --keynum ${num_keys} --zipfianconst ${alpha} --elementnum 2500
+    build/release/workload_gen/workload_gen --keynum ${num_keys} --zipfianconst ${alpha} --elementnum 2500 --filename workload/zipf_const_${alpha}.bin
     let i++
 done

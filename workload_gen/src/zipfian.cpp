@@ -1,19 +1,29 @@
-#include "cmdline.h"
+#include "piecewise_constant_workload.hpp"
 #include "workload_types.h"
-#include "generator.h"
-#include "scrambled_zipfian_generator.h"
-#include "zipfian_generator.h"
+
+#include <cereal/archives/binary.hpp>
+
+#include <cmdline.h>
+
+#include <generator.h>
+#include <scrambled_zipfian_generator.h>
+#include <utils.h>
+#include <zipfian_generator.h>
+
+#include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <limits>
+#include <memory>
 #include <random>
-#include <sstream>
 #include <string>
+#include <vector>
 
 int main(int argc, char* argv[])
 {
     cmdline::parser a;
-    a.add<std::string>("filename", 'f', "workload file name", false, "test");
+    a.add<std::string>("filename", 'f', "workload file name", true);
     a.add<int>("keynum", 'n', "num of generated_keys to generate", false, 100000000);
     a.add<double>("zipfianconst", 'a', "zipfianconst", false, 0.99);
     a.add<uint64_t>("elementnum", 'e', "num of elements of zipfian dist.", false, 2500);
@@ -23,30 +33,41 @@ int main(int argc, char* argv[])
     a.parse_check(argc, argv);
     // a.add<int>("elementnum", 'e', "num of elements of zipfian dist.", true, (1ULL << 31) - 1;); // 32bit zipfian dist.
 
-    double zipfian_const = a.get<double>("zipfianconst");
-    int key_num = a.get<int>("keynum");
-    uint64_t min = 0;
-    uint64_t num_devide = a.get<uint64_t>("elementnum");
+    const double zipfian_const = a.get<double>("zipfianconst");
+    const int key_num = a.get<int>("keynum");
+    const uint64_t min = 0;
+    const uint64_t num_partitions = a.get<uint64_t>("elementnum");
+    const uint64_t range = std::numeric_limits<uint64_t>::max() / num_partitions;  // key range per 1 division
 
-    ycsbc::Generator<uint64_t>* generator;
-    if (a.exist("scramble")) {
-        generator = new ycsbc::ScrambledZipfianGenerator(min, num_devide, zipfian_const);
-    } else
-        generator = new ycsbc::ZipfianGenerator(min, num_devide, zipfian_const);
-
-    key_int64_t* generated_keys = (key_int64_t*)malloc(sizeof(key_int64_t) * key_num);
-    if (generated_keys == NULL) {
-        std::cerr << "Memory cannot be allocated." << std::endl;
-        return 1;
+    PiecewiseConstantWorkload generated;
+    generated.metadata.intervals.reserve(num_partitions + 1u);
+    for (uint64_t idx_part = 0; idx_part < num_partitions + 1u; idx_part++) {
+        generated.metadata.intervals.push_back(idx_part * range);
     }
+    generated.metadata.densities.reserve(num_partitions);
+
+    std::unique_ptr<ycsbc::Generator<uint64_t>> generator;
+    if (a.exist("scramble")) {
+        generator.reset(new ycsbc::ScrambledZipfianGenerator(min, num_partitions, zipfian_const));
+        generated.metadata.densities.resize(num_partitions);
+        for (uint64_t idx_part = 0; idx_part < num_partitions; idx_part++) {
+            generated.metadata.densities.at(utils::FNVHash64(idx_part) % num_partitions) = std::pow(idx_part, -zipfian_const);
+        }
+    } else {
+        generator.reset(new ycsbc::ZipfianGenerator(min, num_partitions, zipfian_const));
+        for (uint64_t idx_part = 0; idx_part < num_partitions; idx_part++) {
+            generated.metadata.densities.push_back(std::pow(idx_part, -zipfian_const));
+        }
+    }
+
+    generated.data.reserve(key_num);
     std::random_device rnd;
     std::mt19937_64 mt(rnd());
-    uint64_t range = std::numeric_limits<uint64_t>::max() / num_devide;  // key range per 1 division
     if (a.exist("showinfo")) {
         std::cout << "range: " << range << std::endl;
     }
-    std::uniform_int_distribution<uint64_t> rand_in_range(0, range);
-    uint64_t distribution[num_devide];
+    std::uniform_int_distribution<uint64_t> rand_in_range(0, range - 1u);
+    std::vector<uint64_t> distribution(num_partitions);
     clock_t start_time;
     double time_elapsed;
 
@@ -60,7 +81,7 @@ int main(int argc, char* argv[])
         }
         uint64_t which_range = generator->Next();
         uint64_t in_range = rand_in_range(mt);
-        generated_keys[i] = which_range * range + in_range;
+        generated.data.push_back(which_range * range + in_range);
         distribution[which_range]++;
     }
     for (int i = 0; i < 10; i++) {
@@ -70,18 +91,18 @@ int main(int argc, char* argv[])
     }
 
     if (!a.exist("nowrite")) {
-        std::ofstream writing_file;
-        std::stringstream ss;
-        ss << "./workload/zipf_const_" << zipfian_const << ".bin";
-        std::string filename = ss.str();
-        writing_file.open(filename, std::ios::binary);
+        const std::string& filename = a.get<std::string>("filename");
+        std::ofstream writing_file{filename, std::ios::binary};
         if (!writing_file) {
             std::cerr << "cannot open file " << filename << std::endl;
             return 1;
         }
-        writing_file.write((const char*)generated_keys, sizeof(key_int64_t) * key_num);
-        free(generated_keys);
-        std::cout << filename << "has been written, num of reqs = " << key_num << ", size = " << key_num * sizeof(uint64_t) << " B" << std::endl;
+        {
+            cereal::BinaryOutputArchive oarchive(writing_file);
+            oarchive(generated);
+        }
+
+        std::cout << filename << "has been written, num of reqs = " << key_num << ", size = " << writing_file.tellp() << " B" << std::endl;
     }
     return 0;
 }

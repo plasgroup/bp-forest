@@ -16,7 +16,7 @@ foreach(build_version IN LISTS targets)
         target_compile_options(host_app_${build_version} PRIVATE CYCLIC_DIST)
     endif(CYCLIC_DIST)
 
-    target_link_libraries(host_app_${build_version} common_${build_version} cmdline Threads::Threads)
+    target_link_libraries(host_app_${build_version} common_${build_version} workload_mgmt cmdline cereal Threads::Threads)
     if(NOT "${build_version}" STREQUAL "host_only")
         target_link_libraries(host_app_${build_version} PkgConfig::DPU_CONFIG)
     endif()

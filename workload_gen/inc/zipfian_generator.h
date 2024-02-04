@@ -9,6 +9,8 @@
 #ifndef YCSB_C_ZIPFIAN_GENERATOR_H_
 #define YCSB_C_ZIPFIAN_GENERATOR_H_
 
+#include "generator.h"
+
 #include "utils.h"
 #include <cassert>
 #include <cmath>
