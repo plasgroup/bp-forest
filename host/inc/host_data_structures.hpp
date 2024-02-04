@@ -3,12 +3,17 @@
 
 #include "common.h"
 #include "host_params.hpp"
+#include "piecewise_constant_workload.hpp"
+#include "workload_types.h"
 
-#include <assert.h>
+#include <cassert>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <map>
-#include <stdlib.h>
+#include <numeric>
 
 #ifdef PRINT_DEBUG
 #include <cstdio>
@@ -36,31 +41,86 @@ public:
 
     /* reverse map of host tree */
 private:
-    key_int64_t tree_to_key_map[NR_DPUS][NR_SEATS_IN_DPU];
+    key_int64_t tree_to_key_map[NR_DPUS][NR_SEATS_IN_DPU] = {};
 
 public:
     uint64_t tree_bitmap[NR_DPUS];
     int num_seats_used[NR_DPUS];
-    int num_kvpairs[NR_DPUS][NR_SEATS_IN_DPU];
-    HostTree(int init_trees_per_dpu)
+    int num_kvpairs[NR_DPUS][NR_SEATS_IN_DPU] = {};
+    HostTree(int init_trees_per_dpu, int num_init_reqs, PiecewiseConstantWorkloadMetadata& workload_dist)
     {
         assert(KEY_MIN == 0);
-        int nr_init_trees = NR_DPUS * init_trees_per_dpu;
+        const auto sum_density
+            = std::accumulate(workload_dist.densities.cbegin(), workload_dist.densities.cend(),
+                decltype(workload_dist.densities)::value_type{0});
+        const int nr_init_trees = NR_DPUS * init_trees_per_dpu;
+        const auto density_for_each_tree = sum_density / nr_init_trees;
 
-        memset(&tree_to_key_map, 0, sizeof(tree_to_key_map));
-        memset(&num_kvpairs, 0, sizeof(num_kvpairs));
+        // the initial keys are key_interval * {0, 1, 2, ..., num_init_reqs - 1}
+        const key_int64_t key_interval = KEY_MAX / num_init_reqs;
+        key_int64_t last_key = key_int64_t{0} - key_interval;
 
-        key_int64_t q = KEY_MAX / nr_init_trees;
-        key_int64_t r = KEY_MAX % nr_init_trees;
-        for (int i = 0; i < NR_DPUS; i++) {
-            for (int j = 0; j < init_trees_per_dpu; j++) {
-                int nth = i * init_trees_per_dpu + j + 1;
-                key_int64_t ub = q * nth + (r * nth) / nr_init_trees;
-                key_to_tree_map[ub] = seat_addr_t(i, j);
-                tree_to_key_map[i][j] = ub;
+        size_t idx_dist_piece = 0;
+        double left_density_in_the_piece = workload_dist.densities.at(idx_dist_piece);
+        for (uint32_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
+            uint64_t tree_bitmap_for_this_dpu = 0;
+            int num_seats_used_for_this_dpu = 0;
+            for (seat_id_t idx_tree = 0; idx_tree < init_trees_per_dpu; idx_tree++) {
+                auto density_left = density_for_each_tree;
+                while (density_left >= left_density_in_the_piece) {
+                    if (idx_dist_piece == workload_dist.densities.size() - 1) {
+                        assert(idx_dpu == NR_DPUS - 1);
+                        assert(idx_tree == init_trees_per_dpu - 1);
+                        break;
+                    }
+                    density_left -= left_density_in_the_piece;
+                    idx_dist_piece++;
+                    left_density_in_the_piece = workload_dist.densities.at(idx_dist_piece);
+                }
+                left_density_in_the_piece -= density_left;
+                const auto max_key = static_cast<key_int64_t>(
+                                         workload_dist.intervals.at(idx_dist_piece + 1)
+                                         - (workload_dist.intervals.at(idx_dist_piece + 1) - workload_dist.intervals.at(idx_dist_piece))
+                                               * left_density_in_the_piece / workload_dist.densities.at(idx_dist_piece))
+                                     / key_interval * key_interval;
+                if (max_key == last_key) {
+                    continue;
+                }
+                last_key = max_key;
+
+                key_to_tree_map.emplace(max_key, seat_addr_t{idx_dpu, idx_tree});
+                tree_to_key_map[idx_dpu][idx_tree] = max_key;
+                tree_bitmap_for_this_dpu |= (1 << idx_tree);
             }
-            tree_bitmap[i] = (1 << init_trees_per_dpu) - 1;
-            num_seats_used[i] = init_trees_per_dpu;
+            tree_bitmap[idx_dpu] = tree_bitmap_for_this_dpu;
+            num_seats_used[idx_dpu] = num_seats_used_for_this_dpu;
+        }
+
+        // adjust the number of KV pairs
+        const key_int64_t max_key = key_interval * (num_init_reqs - 1);
+        auto it = key_to_tree_map.lower_bound(max_key);
+        if (it == key_to_tree_map.end()) {
+            it--;
+            key_to_tree_map.emplace(max_key, it->second);
+            tree_to_key_map[it->second.dpu][it->second.seat] = max_key;
+            key_to_tree_map.erase(it);
+        } else {
+            if (it->first != max_key) {
+                auto new_it = key_to_tree_map.emplace(max_key, it->second).first;
+                tree_to_key_map[it->second.dpu][it->second.seat] = max_key;
+                key_to_tree_map.erase(it);
+                it = std::move(new_it);
+            }
+            it++;
+            while (it != key_to_tree_map.end()) {
+                tree_to_key_map[it->second.dpu][it->second.seat] = 0;  // invalid key?
+                tree_bitmap[it->second.dpu] &= ~(1u << it->second.seat);
+                num_seats_used[it->second.dpu]--;
+
+                auto next = std::next(it);
+                key_to_tree_map.erase(it);
+                it = std::move(next);
+            }
         }
     }
 
@@ -80,7 +140,7 @@ public:
     {
         tree_bitmap[seat_addr.dpu] &= ~(1 << seat_addr.seat);
         num_seats_used[seat_addr.dpu]--;
-        tree_to_key_map[seat_addr.dpu][seat_addr.seat] = 0;  // invalid kye?
+        tree_to_key_map[seat_addr.dpu][seat_addr.seat] = 0;  // invalid key?
     }
 
     seat_set_t get_used_seats(int dpu)

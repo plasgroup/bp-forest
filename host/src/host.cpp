@@ -2,16 +2,17 @@
 #define _GNU_SOURCE
 #endif
 
-#include "piecewise_constant_workload.hpp"
 #include "common.h"
 #include "host_data_structures.hpp"
+#include "host_params.hpp"
 #include "migration.hpp"
 #include "node_defs.hpp"
-#include "workload_buffer.hpp"
-#include "host_params.hpp"
+#include "piecewise_constant_workload.hpp"
 #include "statistics.hpp"
 #include "upmem.hpp"
 #include "utils.hpp"
+#include "workload_buffer.hpp"
+#include "workload_types.h"
 
 #include <cereal/archives/binary.hpp>
 
@@ -19,17 +20,17 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <limits>
-#include <cmath>
+#include <map>
 #include <pthread.h>
 #include <sched.h>
 #include <sys/time.h>
 #include <vector>
-#include <map>
 
 #define ANSI_COLOR_RED "\x1b[31m"
 #define ANSI_COLOR_GREEN "\x1b[32m"
@@ -202,7 +203,7 @@ void check_succ_results(dpu_results_t* dpu_results, int key_index[NR_DPUS][NR_SE
 
 void initialize_dpus(int num_init_reqs, HostTree* tree)
 {
-    key_int64_t interval = (key_int64_t)std::numeric_limits<uint64_t>::max() / num_init_reqs;
+    key_int64_t interval = KEY_MAX / num_init_reqs;
 
     for (int i = 0; i < NR_DPUS; i++)
         for (int j = 0; j < NR_SEATS_IN_DPU; j++)
@@ -687,28 +688,26 @@ int main(int argc, char* argv[])
 
     upmem_init(opt.dpu_binary, opt.is_simulator);
 
-    int keys_array_size = NUM_INIT_REQS > NUM_REQUESTS_PER_BATCH ? NUM_INIT_REQS : NUM_REQUESTS_PER_BATCH;
-
-    /* initialization */
-    HostTree* host_tree = new HostTree(NR_INITIAL_TREES_IN_DPU);
-    int num_init_reqs = NUM_INIT_REQS;
-    initialize_dpus(num_init_reqs, host_tree);
-#ifdef PRINT_DEBUG
-    printf("initialization finished\n");
-#endif
-
     /* load workload file */
     PiecewiseConstantWorkload workload;
     {
         std::ifstream file_input(opt.workload_file, std::ios_base::binary);
         if (!file_input) {
             printf("cannot open file\n");
-            return 1;
+            std::quick_exit(1);
         }
 
         cereal::BinaryInputArchive iarchive(file_input);
         iarchive(workload);
     }
+
+    /* initialization */
+    HostTree host_tree{NR_INITIAL_TREES_IN_DPU, NUM_INIT_REQS, workload.metadata};
+    initialize_dpus(NUM_INIT_REQS, &host_tree);
+#ifdef PRINT_DEBUG
+    printf("initialization finished\n");
+#endif
+
     WorkloadBuffer workload_buffer{std::move(workload.data)};
 
     /* main routine */
@@ -720,13 +719,13 @@ int main(int argc, char* argv[])
         BatchCtx batch_ctx;
         switch (opt.op_type) {
         case Option::OP_TYPE_GET:
-            num_keys = do_one_batch(TASK_GET, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, workload_buffer, host_tree, batch_ctx);
+            num_keys = do_one_batch(TASK_GET, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, workload_buffer, &host_tree, batch_ctx);
             break;
         case Option::OP_TYPE_INSERT:
-            num_keys = do_one_batch(TASK_INSERT, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, workload_buffer, host_tree, batch_ctx);
+            num_keys = do_one_batch(TASK_INSERT, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, workload_buffer, &host_tree, batch_ctx);
             break;
         case Option::OP_TYPE_SUCC:
-            num_keys = do_one_batch(TASK_SUCC, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, workload_buffer, host_tree, batch_ctx);
+            num_keys = do_one_batch(TASK_SUCC, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, workload_buffer, &host_tree, batch_ctx);
             break;
         default:
             abort();
@@ -768,7 +767,6 @@ int main(int argc, char* argv[])
 #endif /* MEASURE_XFER_BYTES */
 
     upmem_release();
-    delete host_tree;
     return 0;
 }
 
