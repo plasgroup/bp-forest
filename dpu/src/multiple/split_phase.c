@@ -4,9 +4,9 @@
 #include <assert.h>
 #include <stdio.h>
 
-extern __mram KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
-extern __mram split_info_t split_result[NR_SEATS_IN_DPU];
-extern __host int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
+extern __mram_ptr KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
+extern __mram_ptr split_info_t split_result[NR_SEATS_IN_DPU];
+extern int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
 
 
 static void clear_split_result()

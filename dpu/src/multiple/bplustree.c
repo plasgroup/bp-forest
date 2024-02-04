@@ -179,7 +179,7 @@ bool insert(MBPTptr cur, key_int64_t key, value_ptr_t value, MBPTptr n,
     seat_id_t seat_id)
 {
     bool is_updated = false;
-    extern __host int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
+    extern int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
     int i, ins;
     ins = findKeyPos(cur, key);
     if (cur->isLeaf == true) {                       // inserted into a Leaf node
