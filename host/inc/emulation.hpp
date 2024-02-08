@@ -1,13 +1,15 @@
 #ifndef __EMULATION_HPP__
 #define __EMULATION_HPP__
 
-#include <assert.h>
-#include <stdlib.h>
-#include <string.h>
+#include <algorithm>
+#include <cassert>
+#include <cstdlib>
+#include <cstring>
+#include <iterator>
 #include <map>
 
-#include "node_defs.hpp"
 #include "common.h"
+#include "node_defs.hpp"
 
 #define EMU_MAX_DPUS 2550
 #define EMU_DPUS_IN_RANK 64
@@ -15,27 +17,28 @@
 
 #ifdef EMU_MULTI_THREAD
 
-#include <thread>
 #include <condition_variable>
 #include <mutex>
 #include <queue>
+#include <thread>
 
 class Emulation;
 
-class EmulatorWorkerManager {
+class EmulatorWorkerManager
+{
     std::thread* threads[EMU_MULTI_THREAD];
     bool stop;
     std::condition_variable cond;
     std::mutex mtx;
     std::queue<Emulation*> queue;
     int nr_running;
-    std::condition_variable  done_cond;
+    std::condition_variable done_cond;
 
 public:
     EmulatorWorkerManager()
     {
         for (int i = 0; i < EMU_MULTI_THREAD; i++)
-            threads[i] = new std::thread([&]{this->run();});
+            threads[i] = new std::thread([&] { this->run(); });
         nr_running = 0;
         stop = false;
     }
@@ -84,21 +87,21 @@ private:
                 done_cond.notify_all();
         }
     }
-
 };
 
 static EmulatorWorkerManager emu_threads;
 
 #endif /* EMU_MULTI_THREAD */
 
-class Emulation {
+class Emulation
+{
 #ifdef EMU_MULTI_THREAD
     friend class EmulatorWorkerManager;
 #endif /* EMU_MULTI_THREAD */
 
     struct MRAM {
         uint64_t task_no;
-        int end_idx[NR_SEATS_IN_DPU];
+        unsigned end_idx;
         each_request_t request_buffer[MAX_REQ_NUM_IN_A_DPU];
         merge_info_t merge_info;
         dpu_results_t results;
@@ -126,10 +129,11 @@ public:
     void* get_addr_of_symbol(const char* symbol)
     {
 
-#define MRAM_SYMBOL(S) do {          \
+#define MRAM_SYMBOL(S)               \
+    do {                             \
         if (strcmp(symbol, #S) == 0) \
             return &mram.S;          \
-} while (0)
+    } while (0)
 
         MRAM_SYMBOL(task_no);
         MRAM_SYMBOL(end_idx);
@@ -152,7 +156,7 @@ public:
     {
 #ifdef EMU_MULTI_THREAD
         emu_threads.add_work(this);
-#else /* EMU_MULTI_THREAD */
+#else  /* EMU_MULTI_THREAD */
         do_execute();
 #endif /* EMU_MULTI_THREAD */
     }
@@ -172,7 +176,6 @@ public:
     }
 
 private:
-
     void do_execute()
     {
         switch (TASK_GET_ID(mram.task_no)) {
@@ -232,7 +235,7 @@ private:
     {
         assert(in_use[seat_id]);
         int n = 0;
-        for (auto x: subtree[seat_id]) {
+        for (auto x : subtree[seat_id]) {
             buf[n].key = x.first;
             buf[n].value = x.second;
             n++;
@@ -328,75 +331,44 @@ private:
 
     void task_insert()
     {
-        /* sanity check */
-        assert(mram.end_idx[0] >= 0);
-        assert(mram.end_idx[0] == 0 || in_use[0]);
-        for (int i = 1; i < NR_SEATS_IN_DPU; i++) {
-            assert(mram.end_idx[i - 1] <= mram.end_idx[i]);
-            assert(mram.end_idx[i - 1] == mram.end_idx[i] || in_use[i]);
+        using std::begin, std::end;
+
+        for (unsigned idx_req = 0; idx_req < mram.end_idx; idx_req++) {
+            key_int64_t key = mram.request_buffer[idx_req].key;
+            const auto one_after_the_target = std::upper_bound(begin(subtree) + 1, end(subtree), key, [](auto key, auto& subtree) {
+                return key >= subtree.cbegin()->first;
+            });
+            const auto target_subtree = one_after_the_target - 1;
+            if (target_subtree->insert_or_assign(key, mram.request_buffer[idx_req].write_val_ptr).second) {
+                mram.num_kvpairs_in_seat[target_subtree - begin(subtree)]++;
+            }
+            assert(target_subtree->size() == mram.num_kvpairs_in_seat[target_subtree - begin(subtree)]);
         }
 
-        /* insert */
-        for (int i = 0, j = 0; i < NR_SEATS_IN_DPU; i++) {
-            auto& t = subtree[i];
-            for (; j < mram.end_idx[i]; j++) {
-                key_int64_t key = mram.request_buffer[j].key;
-                value_ptr_t val = mram.request_buffer[j].write_val_ptr;
-                if (t.find(key) == t.end()) {
-                    t.insert(std::make_pair(key, val));
-                    mram.num_kvpairs_in_seat[i]++;
-                } else
-                    t[key] = val;
-                assert(t.size() == mram.num_kvpairs_in_seat[i]);
-            }
-        }
-        
         split();
     }
 
     void task_get()
     {
-        /* sanity check */
-        assert(mram.end_idx[0] >= 0);
-        assert(mram.end_idx[0] == 0 || in_use[0]);
-        for (int i = 1; i < NR_SEATS_IN_DPU; i++) {
-            assert(mram.end_idx[i - 1] <= mram.end_idx[i]);
-            assert(mram.end_idx[i - 1] == mram.end_idx[i] || in_use[i]);
-        }
+        using std::cbegin, std::cend;
 
-        for (int i = 0, j = 0; i < NR_SEATS_IN_DPU; i++)
-            for (; j < mram.end_idx[i]; j++) {
-                key_int64_t key = mram.request_buffer[j].key;
-                auto it = subtree[i].lower_bound(key);
-                if (it != subtree[i].end() && it->first == key)
-                    mram.results.get.results[j].get_result = subtree[i].at(key);
-                else
-                    mram.results.get.results[j].get_result = 0;
-            }
+        for (unsigned idx_req = 0; idx_req < mram.end_idx; idx_req++) {
+            key_int64_t key = mram.request_buffer[idx_req].key;
+            const auto one_after_the_target = std::upper_bound(cbegin(subtree) + 1, cend(subtree), key, [](auto key, auto& subtree) {
+                return key >= subtree.cbegin()->first;
+            });
+            const auto target_subtree = one_after_the_target - 1;
+            const auto it = target_subtree->find(key);
+            if (it != target_subtree->end())
+                mram.results.get[idx_req].get_result = it->second;
+            else
+                mram.results.get[idx_req].get_result = 0;
+        }
     }
 
     void task_succ()
     {
-        /* sanity check */
-        assert(mram.end_idx[0] >= 0);
-        assert(mram.end_idx[0] == 0 || in_use[0]);
-        for (int i = 1; i < NR_SEATS_IN_DPU; i++) {
-            assert(mram.end_idx[i - 1] <= mram.end_idx[i]);
-            assert(mram.end_idx[i - 1] == mram.end_idx[i] || in_use[i]);
-        }
-
-        for (int i = 0, j = 0; i < NR_SEATS_IN_DPU; i++)
-            for (; j < mram.end_idx[i]; j++) {
-                key_int64_t key = mram.request_buffer[j].key;
-                auto it = subtree[i].upper_bound(key);
-                if (it != subtree[i].end()) {
-                    mram.results.succ.results[j].succ_key = it->first;
-                    mram.results.succ.results[j].succ_val_ptr = it->second;
-                } else{
-                    mram.results.succ.results[j].succ_key = 0;
-                    mram.results.succ.results[j].succ_val_ptr = 0;
-                }
-            }
+        // TODO
     }
 
     void task_from(seat_id_t seat_id)
@@ -414,12 +386,10 @@ private:
         deserialize(seat_id, mram.tree_transfer_buffer, 0, mram.tree_transfer_num);
         mram.num_kvpairs_in_seat[seat_id] = mram.tree_transfer_num;
     }
-
 };
 
 #ifdef EMU_MULTI_THREAD
-void
-EmulatorWorkerManager::execute(Emulation* emu)
+void EmulatorWorkerManager::execute(Emulation* emu)
 {
     emu->do_execute();
 }

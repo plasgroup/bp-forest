@@ -66,26 +66,20 @@ typedef struct {
 } each_request_t;
 
 /* requests for a DPU in a batch */
-typedef struct {
-    each_request_t requests[MAX_REQ_NUM_IN_A_DPU];
-} dpu_requests_t;
+typedef each_request_t dpu_requests_t[MAX_REQ_NUM_IN_A_DPU];
 
 typedef struct {
     value_ptr_t get_result;
 } each_get_result_t;
 
-typedef struct {
-    each_get_result_t results[MAX_REQ_NUM_IN_A_DPU];
-} dpu_get_results_t;
+typedef each_get_result_t dpu_get_results_t[MAX_REQ_NUM_IN_A_DPU];
 
 typedef struct {
     key_int64_t succ_key;
     value_ptr_t succ_val_ptr;
 } each_succ_result_t;
 
-typedef struct {
-    each_succ_result_t results[MAX_REQ_NUM_IN_A_DPU];
-} dpu_succ_results_t;
+typedef each_succ_result_t dpu_succ_results_t[MAX_REQ_NUM_IN_A_DPU];
 
 typedef union {
     dpu_get_results_t get;
@@ -128,6 +122,7 @@ typedef struct KVPair {
 #define TASK_INSERT (UINT32_C(11))
 #define TASK_DELETE (UINT32_C(12))
 #define TASK_SUCC (UINT32_C(13))
+#define TASK_PRED (UINT32_C(14))
 #define TASK_FROM (UINT32_C(100))
 #define TASK_TO (UINT32_C(101))
 #define TASK_MERGE (UINT32_C(102))

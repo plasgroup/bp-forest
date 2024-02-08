@@ -1,25 +1,26 @@
+#include "upmem.hpp"
+
 #include "common.h"
-#include "host_params.hpp"
+#include "dpu_set.hpp"
 #include "host_data_structures.hpp"
+#include "host_params.hpp"
 #include "node_defs.hpp"
-#include "utils.hpp"
 #include "statistics.hpp"
+#include "utils.hpp"
 
 #include <sys/time.h>
 
-#include <cstdlib>
 #include <cassert>
+#include <cstdint>
+#include <cstdlib>
 
 #ifdef PRINT_DEBUG
 #include <cstdio>
 #endif /* PRINT_DEBUG */
 
 #ifdef HOST_ONLY
-#include <bitset>
 #include "emulation.hpp"
 
-typedef std::bitset<EMU_MAX_DPUS> dpu_set_t;
-typedef uint32_t dpu_id_t;
 Emulation emu[EMU_MAX_DPUS];
 #else /* HOST_ONLY */
 extern "C" {
@@ -31,12 +32,10 @@ extern "C" {
 static dpu_set_t dpu_set;
 
 /* buffer */
-dpu_requests_t* dpu_requests;
-dpu_results_t* dpu_results;
+std::unique_ptr<dpu_requests_t[]> dpu_requests{new dpu_requests_t[NR_DPUS]};
+std::unique_ptr<DPUResultsUnion> dpu_results{new DPUResultsUnion};
 merge_info_t merge_info[NR_DPUS];
-split_info_t split_result[NR_DPUS][NR_SEATS_IN_DPU];
 dpu_init_param_t dpu_init_param[NR_DPUS][NR_SEATS_IN_DPU];
-static BPTreeNode tree_migration_buffer[MAX_NUM_NODES_IN_SEAT];
 
 uint32_t upmem_get_nr_dpus();
 
@@ -47,14 +46,22 @@ uint32_t upmem_get_nr_dpus();
 static const char* task_name(uint64_t task)
 {
     switch (TASK_GET_ID(task)) {
-    case TASK_INIT:   return "INIT";
-    case TASK_GET:    return "GET";
-    case TASK_INSERT: return "INSERT";
-    case TASK_DELETE: return "DELETE";
-    case TASK_FROM:   return "FROM";
-    case TASK_TO:     return "TO";
-    case TASK_MERGE:   return "MERGE";
-    default: return "unknown-task";
+    case TASK_INIT:
+        return "INIT";
+    case TASK_GET:
+        return "GET";
+    case TASK_INSERT:
+        return "INSERT";
+    case TASK_DELETE:
+        return "DELETE";
+    case TASK_FROM:
+        return "FROM";
+    case TASK_TO:
+        return "TO";
+    case TASK_MERGE:
+        return "MERGE";
+    default:
+        return "unknown-task";
     }
 }
 
@@ -79,9 +86,9 @@ select_dpu(dpu_set_t* dst, uint32_t index)
 
 static void
 xfer_foreach(dpu_set_t set, const char* symbol, size_t size,
-                const void* array, size_t elmsize, bool to_dpu)
+    const void* array, size_t elmsize, bool to_dpu)
 {
-    uintptr_t addr = (uintptr_t) array;
+    uintptr_t addr = (uintptr_t)array;
     uint64_t total_xfer_bytes = 0;
     uint64_t total_effective_bytes = 0;
     for (int i = 0; i < EMU_MAX_DPUS;) {
@@ -90,9 +97,9 @@ xfer_foreach(dpu_set_t set, const char* symbol, size_t size,
             if (set[i]) {
                 void* mram_addr = emu[i].get_addr_of_symbol(symbol);
                 if (to_dpu)
-                    memcpy(mram_addr, (void*) addr, size);
+                    memcpy(mram_addr, (void*)addr, size);
                 else
-                    memcpy((void*) addr, mram_addr, size);
+                    memcpy((void*)addr, mram_addr, size);
                 total_effective_bytes += size;
                 if (size > max_xfer_bytes)
                     max_xfer_bytes = size;
@@ -110,9 +117,9 @@ xfer_foreach(dpu_set_t set, const char* symbol, size_t size,
 /* variable-length array version */
 static void
 xfer_foreach_va(dpu_set_t set, const char* symbol, const void* array,
-                size_t interval, size_t* xfer_bytes, bool to_dpu)
+    size_t interval, size_t* xfer_bytes, bool to_dpu)
 {
-    uintptr_t addr = (uintptr_t) array;
+    uintptr_t addr = (uintptr_t)array;
     uint64_t total_xfer_bytes = 0;
     uint64_t total_effective_bytes = 0;
     for (int i = 0; i < EMU_MAX_DPUS; i += EMU_DPUS_IN_RANK) {
@@ -129,9 +136,9 @@ xfer_foreach_va(dpu_set_t set, const char* symbol, const void* array,
             if (set[i + j]) {
                 void* mram_addr = emu[i + j].get_addr_of_symbol(symbol);
                 if (to_dpu)
-                    memcpy(mram_addr, (void*) addr, max_xfer_bytes);
+                    memcpy(mram_addr, (void*)addr, max_xfer_bytes);
                 else
-                    memcpy((void*) addr, mram_addr, max_xfer_bytes);
+                    memcpy((void*)addr, mram_addr, max_xfer_bytes);
                 addr += interval;
             }
         total_xfer_bytes += max_xfer_bytes * EMU_DPUS_IN_RANK;
@@ -187,21 +194,22 @@ select_dpu(dpu_set_t* dst, uint32_t index)
 {
     uint32_t each_dpu;
     DPU_FOREACH(dpu_set, *dst, each_dpu)
-        if (index == each_dpu)
-            return;
+    if (index == each_dpu)
+        return;
     abort();
 }
 
 static void
 xfer_foreach(dpu_set_t set, const char* symbol, size_t size,
-                const void* array, size_t elmsize, bool to_dpu)
+    const void* array, size_t elmsize, bool to_dpu)
 {
     dpu_set_t dpu;
     dpu_xfer_t dir = to_dpu ? DPU_XFER_TO_DPU : DPU_XFER_FROM_DPU;
 
-    uintptr_t addr = (uintptr_t) array;
-    DPU_FOREACH(dpu_set, dpu) {
-        DPU_ASSERT(dpu_prepare_xfer(dpu, (void*) addr));
+    uintptr_t addr = (uintptr_t)array;
+    DPU_FOREACH(dpu_set, dpu)
+    {
+        DPU_ASSERT(dpu_prepare_xfer(dpu, (void*)addr));
         addr += elmsize;
     }
     DPU_ASSERT(dpu_push_xfer(
@@ -210,21 +218,23 @@ xfer_foreach(dpu_set_t set, const char* symbol, size_t size,
 
 static void
 xfer_foreach_va(dpu_set_t set, const char* symbol, const void* array,
-               size_t interval, size_t* xfer_bytes, bool to_dpu)
+    size_t interval, size_t* xfer_bytes, bool to_dpu)
 {
     dpu_set_t rank, dpu;
     dpu_xfer_t dir = to_dpu ? DPU_XFER_TO_DPU : DPU_XFER_FROM_DPU;
-    uintptr_t addr = (uintptr_t) array;
+    uintptr_t addr = (uintptr_t)array;
 
     /* 
      * We assume DPU_RANK_FOREACH & DPU_FOREACH yields the dpus in the
      * same order as a single DPU_FOREACH.
      */
     uint32_t dpu_index = 0;
-    DPU_RANK_FOREACH(dpu_set, rank) {
+    DPU_RANK_FOREACH(dpu_set, rank)
+    {
         size_t max_xfer_bytes = 0;
-        DPU_FOREACH(rank, dpu) {
-            DPU_ASSERT(dpu_prepare_xfer(dpu, (void*) addr));
+        DPU_FOREACH(rank, dpu)
+        {
+            DPU_ASSERT(dpu_prepare_xfer(dpu, (void*)addr));
             addr += interval;
             size_t b = xfer_bytes[dpu_index];
             if (b > max_xfer_bytes)
@@ -261,23 +271,23 @@ execute(dpu_set_t dpu_set)
 
 static void
 xfer_single(dpu_set_t set, const char* symbol, size_t size,
-                const void* addr, bool to_dpu)
+    const void* addr, bool to_dpu)
 {
     assert(nr_dpus_in_set(set) == 1);
     xfer_foreach(set, symbol, size, addr, 0, to_dpu);
 }
 
-#define SEND_FOREACH(set,sym,size,ary) \
+#define SEND_FOREACH(set, sym, size, ary) \
     xfer_foreach(set, sym, size, ary, sizeof((ary)[0]), true)
-#define SEND_FOREACH_VA(set,sym,ary,sizes) \
+#define SEND_FOREACH_VA(set, sym, ary, sizes) \
     xfer_foreach_va(set, sym, ary, sizeof((ary)[0]), sizes, true)
-#define RECV_FOREACH(set,sym,size,ary) \
+#define RECV_FOREACH(set, sym, size, ary) \
     xfer_foreach(set, sym, size, ary, sizeof((ary)[0]), false)
-#define RECV_FOREACH_VA(set,sym,ary,sizes) \
+#define RECV_FOREACH_VA(set, sym, ary, sizes) \
     xfer_foreach_va(set, sym, ary, sizeof((ary)[0]), sizes, false)
-#define SEND_SINGLE(set,sym,size,addr) \
+#define SEND_SINGLE(set, sym, size, addr) \
     xfer_single(set, sym, size, addr, true)
-#define RECV_SINGLE(set,sym,size,addr) \
+#define RECV_SINGLE(set, sym, size, addr) \
     xfer_single(set, sym, size, addr, false)
 
 //
@@ -286,17 +296,12 @@ xfer_single(dpu_set_t set, const char* symbol, size_t size,
 
 void upmem_init(const char* binary, bool is_simulator)
 {
-    int nr_dpus_allocated;
-
-    dpu_requests = (dpu_requests_t*)malloc((NR_DPUS) * sizeof(dpu_requests_t));
-    dpu_results = (dpu_results_t*)malloc((NR_DPUS) * sizeof(dpu_results_t));
-
 #ifdef HOST_ONLY
     for (int i = 0; i < NR_DPUS; i++) {
         dpu_set[i] = true;
         emu[i].init(i);
     }
-#else /* HOST_ONLY */
+#else  /* HOST_ONLY */
     if (is_simulator) {
         DPU_ASSERT(dpu_alloc(NR_DPUS, "backend=simulator", &dpu_set));
     } else {
@@ -315,7 +320,7 @@ void upmem_release()
 #ifdef HOST_ONLY
     dpu_set ^= dpu_set;
     Emulation::terminate();
-#else /* HOST_ONLY */
+#else  /* HOST_ONLY */
     DPU_ASSERT(dpu_free(dpu_set));
 #endif /* HOST_ONLY */
 }
@@ -326,12 +331,12 @@ uint32_t upmem_get_nr_dpus()
 }
 
 void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
-                     float* send_time, float* exec_time)
+    float* send_time, float* exec_time)
 {
     struct timeval start, end;
 
 #ifdef PRINT_DEBUG
-    printf("send task [%s]\n", task_name(task));
+    std::printf("send task [%s]\n", task_name(task));
 #endif /* PRINT_DEBUG */
 
     gettimeofday(&start, NULL);
@@ -343,36 +348,34 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
     switch (task) {
     case TASK_INIT:
         SEND_FOREACH(dpu_set, "dpu_init_param",
-                     sizeof(dpu_init_param_t) * NR_SEATS_IN_DPU,
-                     dpu_init_param);
+            sizeof(dpu_init_param_t) * NR_SEATS_IN_DPU,
+            dpu_init_param);
         break;
     case TASK_GET:
     case TASK_INSERT:
     case TASK_SUCC: {
+        SEND_FOREACH(dpu_set, "end_idx",
+            sizeof(int),
+            batch_ctx.num_keys_for_DPU.data());
 #ifdef RANK_ORIENTED_XFER
-        static size_t send_bytes[NR_DPUS];
-        for (int i = 0; i < NR_DPUS; i++) {
-            size_t nr_reqs = batch_ctx.key_index[i][NR_SEATS_IN_DPU];
-            send_bytes[i] = nr_reqs * sizeof(each_request_t);
+        size_t send_bytes[NR_DPUS];
+        for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
+            send_bytes[idx_dpu] = sizeof(each_request_t) * batch_ctx.num_keys_for_DPU[idx_dpu];
         }
-        SEND_FOREACH(dpu_set, "end_idx",
-                     sizeof(int) * NR_SEATS_IN_DPU,
-                     batch_ctx.key_index);
         SEND_FOREACH_VA(dpu_set, "request_buffer",
-                        dpu_requests, send_bytes);
-#else /* RANK_ORIENTED_XFER */
-        SEND_FOREACH(dpu_set, "end_idx",
-                     sizeof(int) * NR_SEATS_IN_DPU,
-                     batch_ctx.key_index);
+            dpu_requests.get(), send_bytes);
+#else  /* RANK_ORIENTED_XFER */
         SEND_FOREACH(dpu_set, "request_buffer",
-                     sizeof(each_request_t) * batch_ctx.send_size,
-                     dpu_requests);
+            sizeof(each_request_t) * batch_ctx.send_size,
+            dpu_requests.get());
 #endif /* RANK_ORIENTED_XFER */
         break;
+    default:
+        abort();
     }
     case TASK_MERGE:
         SEND_FOREACH(dpu_set, "merge_info",
-                     sizeof(merge_info_t), merge_info);
+            sizeof(merge_info_t), merge_info);
         break;
     }
 
@@ -381,9 +384,9 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
         *send_time = time_diff(&start, &end);
 
 #ifdef PRINT_DEBUG
-    printf("send task [%s] done; %0.5f sec\n",
-           task_name(task), time_diff(&start, &end));
-    printf("execute task [%s]\n", task_name(task));
+    std::printf("send task [%s] done; %0.5f sec\n",
+        task_name(task), time_diff(&start, &end));
+    std::printf("execute task [%s]\n", task_name(task));
 #endif /* PRINT_DEBUG */
 
     gettimeofday(&start, NULL);
@@ -396,8 +399,8 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
         *exec_time = time_diff(&start, &end);
 
 #ifdef PRINT_DEBUG
-    printf("execute task [%s] done; %0.5f sec\n",
-           task_name(task), time_diff(&start, &end));
+    std::printf("execute task [%s] done; %0.5f sec\n",
+        task_name(task), time_diff(&start, &end));
 #endif /* PRINT_DEBUG */
 }
 
@@ -408,21 +411,20 @@ void upmem_receive_get_results(BatchCtx& batch_ctx, float* receive_time)
     gettimeofday(&start, NULL);
 
 #ifdef PRINT_DEBUG
-    printf("send_size: %ld / buffer_size: %ld\n",
-           sizeof(each_get_result_t) * batch_ctx.send_size,
-           sizeof(each_get_result_t) * MAX_REQ_NUM_IN_A_DPU);
+    std::printf("send_size: %ld / buffer_size: %ld\n",
+        sizeof(each_get_result_t) * batch_ctx.send_size,
+        sizeof(each_get_result_t) * MAX_REQ_NUM_IN_A_DPU);
 #endif /* PRINT_DEBUG */
 
 #ifdef RANK_ORIENTED_XFER
-    static size_t recv_bytes[NR_DPUS];
-    for (int i = 0; i < NR_DPUS; i++) {
-        size_t nr_reqs = batch_ctx.key_index[i][NR_SEATS_IN_DPU];
-        recv_bytes[i] = nr_reqs * sizeof(each_get_result_t);
+    size_t recv_bytes[NR_DPUS];
+    for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
+        recv_bytes[idx_dpu] = sizeof(each_get_result_t) * batch_ctx.num_keys_for_DPU[idx_dpu];
     }
-    RECV_FOREACH_VA(dpu_set, "results", dpu_results, recv_bytes);
-#else /* RANK_ORIENTED_XFER */
+    RECV_FOREACH_VA(dpu_set, "results", dpu_results->get, recv_bytes);
+#else  /* RANK_ORIENTED_XFER */
     RECV_FOREACH(dpu_set, "results",
-                 sizeof(each_get_result_t) * batch_ctx.send_size, dpu_results);
+        sizeof(each_get_result_t) * batch_ctx.send_size, dpu_results->get);
 #endif /* RANK_ORIENTED_XFER */
 
     gettimeofday(&end, NULL);
@@ -437,36 +439,21 @@ void upmem_receive_succ_results(BatchCtx& batch_ctx, float* receive_time)
     gettimeofday(&start, NULL);
 
 #ifdef PRINT_DEBUG
-    printf("send_size: %ld / buffer_size: %ld\n",
-           sizeof(each_succ_result_t) * batch_ctx.send_size,
-           sizeof(each_succ_result_t) * MAX_REQ_NUM_IN_A_DPU);
+    std::printf("send_size: %ld / buffer_size: %ld\n",
+        sizeof(each_succ_result_t) * batch_ctx.send_size,
+        sizeof(each_succ_result_t) * MAX_REQ_NUM_IN_A_DPU);
 #endif /* PRINT_DEBUG */
 
 #ifdef RANK_ORIENTED_XFER
-    static size_t recv_bytes[NR_DPUS];
-    for (int i = 0; i < NR_DPUS; i++) {
-        size_t nr_reqs = batch_ctx.key_index[i][NR_SEATS_IN_DPU];
-        recv_bytes[i] = nr_reqs * sizeof(each_succ_result_t);
+    size_t recv_bytes[NR_DPUS];
+    for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
+        recv_bytes[idx_dpu] = sizeof(each_succ_result_t) * batch_ctx.num_keys_for_DPU[idx_dpu];
     }
-    RECV_FOREACH_VA(dpu_set, "results", dpu_results, recv_bytes);
-#else /* RANK_ORIENTED_XFER */
+    RECV_FOREACH_VA(dpu_set, "results", dpu_results->succ, recv_bytes);
+#else  /* RANK_ORIENTED_XFER */
     RECV_FOREACH(dpu_set, "results",
-                 sizeof(each_succ_result_t) * batch_ctx.send_size, dpu_results);
+        sizeof(each_succ_result_t) * batch_ctx.send_size, dpu_results->succ);
 #endif /* RANK_ORIENTED_XFER */
-
-    gettimeofday(&end, NULL);
-    if (receive_time != NULL)
-        *receive_time = time_diff(&start, &end);
-}
-
-void upmem_receive_split_info(float* receive_time)
-{
-    struct timeval start, end;
-
-    gettimeofday(&start, NULL);
-
-    RECV_FOREACH(dpu_set, "split_result",
-                 sizeof(split_info_t) * NR_SEATS_IN_DPU, split_result);
 
     gettimeofday(&end, NULL);
     if (receive_time != NULL)
@@ -480,7 +467,7 @@ void upmem_receive_num_kvpairs(HostTree* host_tree, float* receive_time)
     gettimeofday(&start, NULL);
 
     RECV_FOREACH(dpu_set, "num_kvpairs_in_seat",
-                 sizeof(int) * NR_SEATS_IN_DPU, host_tree->num_kvpairs);
+        sizeof(uint32_t), host_tree->num_kvpairs.data());
 
     gettimeofday(&end, NULL);
     if (receive_time != NULL)
@@ -488,8 +475,10 @@ void upmem_receive_num_kvpairs(HostTree* host_tree, float* receive_time)
 }
 
 void upmem_send_nodes_from_dpu_to_dpu(uint32_t from_DPU, seat_id_t from_tree,
-                                      uint32_t to_DPU, seat_id_t to_tree)
+    uint32_t to_DPU, seat_id_t to_tree)
 {
+    static KVPair tree_migration_buffer[MAX_NUM_NODES_IN_SEAT];
+
     dpu_set_t dpu;
     uint64_t n;
     uint64_t task;
@@ -500,14 +489,13 @@ void upmem_send_nodes_from_dpu_to_dpu(uint32_t from_DPU, seat_id_t from_tree,
     execute(dpu);
     RECV_SINGLE(dpu, "tree_transfer_num", sizeof(uint64_t), &n);
     RECV_SINGLE(dpu, "tree_transfer_buffer",
-                n * sizeof(KVPair), &tree_migration_buffer);
-    
+        n * sizeof(KVPair), &tree_migration_buffer);
+
     select_dpu(&dpu, to_DPU);
     task = TASK_WITH_OPERAND(TASK_TO, to_tree);
     SEND_SINGLE(dpu, "task_no", sizeof(uint64_t), &task);
     SEND_SINGLE(dpu, "tree_transfer_num", sizeof(uint64_t), &n);
     SEND_SINGLE(dpu, "tree_transfer_buffer",
-                n * sizeof(KVPair), &tree_migration_buffer);
+        n * sizeof(KVPair), &tree_migration_buffer);
     execute(dpu);
 }
-

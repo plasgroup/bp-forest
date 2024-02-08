@@ -5,10 +5,15 @@
 #include "host_data_structures.hpp"
 #include "host_params.hpp"
 
-extern dpu_requests_t* dpu_requests;
-extern dpu_results_t* dpu_results;
+#include <memory>
+
+extern std::unique_ptr<dpu_requests_t[]> dpu_requests;
+union DPUResultsUnion {
+    dpu_get_results_t get[NR_DPUS];
+    dpu_succ_results_t succ[NR_DPUS];
+};
+extern std::unique_ptr<DPUResultsUnion> dpu_results;
 extern merge_info_t merge_info[NR_DPUS];
-extern split_info_t split_result[NR_DPUS][NR_SEATS_IN_DPU];
 extern dpu_init_param_t dpu_init_param[NR_DPUS][NR_SEATS_IN_DPU];
 
 void upmem_init(const char* binary, bool is_simulator);

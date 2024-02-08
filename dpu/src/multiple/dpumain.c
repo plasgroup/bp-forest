@@ -136,12 +136,12 @@ int main()
         while (true) {
             if (end_idx[tree] < end_index) { /* not last tree */
                 for (; index < end_idx[tree]; index++) {
-                    results.get.results[index].get_result = BPTreeGet(request_buffer[index].key, tree);
+                    results.get[index].get_result = BPTreeGet(request_buffer[index].key, tree);
                 }
                 tree++;
             } else { /* last tree */
                 for (; index < end_index; index++) {
-                    results.get.results[index].get_result = BPTreeGet(request_buffer[index].key, tree);
+                    results.get[index].get_result = BPTreeGet(request_buffer[index].key, tree);
                 }
                 break;
             }
@@ -179,12 +179,12 @@ int main()
         while (true) {
             if (end_idx[tree] < end_index) { /* not last tree */
                 for (; index < end_idx[tree]; index++) {
-                    results.get.results[index].get_result = BPTreeGet(request_buffer[index].key, tree);
+                    results.get[index].get_result = BPTreeGet(request_buffer[index].key, tree);
                 }
                 tree++;
             } else { /* last tree */
                 for (; index < end_index; index++) {
-                    results.get.results[index].get_result = BPTreeGet(request_buffer[index].key, tree);
+                    results.get[index].get_result = BPTreeGet(request_buffer[index].key, tree);
                 }
                 break;
             }
@@ -208,15 +208,15 @@ int main()
             if (end_idx[tree] < end_index) { /* not last tree */
                 for (; index < end_idx[tree]; index++) {
                     KVPair succ = BPTreeSucc(request_buffer[index].key, tree);
-                    results.succ.results[index].succ_key = succ.key;
-                    results.succ.results[index].succ_val_ptr = succ.value;
+                    results.succ[index].succ_key = succ.key;
+                    results.succ[index].succ_val_ptr = succ.value;
                 }
                 tree++;
             } else { /* last tree */
                 for (; index < end_index; index++) {
                     KVPair succ = BPTreeSucc(request_buffer[index].key, tree);
-                    results.succ.results[index].succ_key = succ.key;
-                    results.succ.results[index].succ_val_ptr = succ.value;
+                    results.succ[index].succ_key = succ.key;
+                    results.succ[index].succ_val_ptr = succ.value;
                 }
                 break;
             }

@@ -102,7 +102,7 @@ int main(int argc, char* argv[])
             oarchive(generated);
         }
 
-        std::cout << filename << "has been written, num of reqs = " << key_num << ", size = " << writing_file.tellp() << " B" << std::endl;
+        std::cout << filename << " has been written, num of reqs = " << key_num << ", size = " << writing_file.tellp() << " B" << std::endl;
     }
     return 0;
 }
