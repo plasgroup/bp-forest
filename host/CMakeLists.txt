@@ -1,6 +1,6 @@
 set(PKG_CONFIG_EXECUTABLE dpu-pkg-config)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(DPU_CONFIG REQUIRED IMPORTED_TARGET dpu)
+pkg_check_modules(DPU_CONFIG IMPORTED_TARGET dpu)
 
 file(GLOB HOST_SOURCE
     ${CMAKE_CURRENT_LIST_DIR}/src/*.c
