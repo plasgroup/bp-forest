@@ -15,11 +15,28 @@
 
 #define MIN_DIFF_NR_QUERIES_TO_MIGRATE (SPLIT_THRESHOLD / 100)
 
+uint64_t pop_count_64bit(uint64_t x) 
+{ 
+    x = ((x & 0xaaaaaaaaaaaaaaaaUL) >> 1) 
+      +  (x & 0x5555555555555555UL); 
+    x = ((x & 0xccccccccccccccccUL) >> 2) 
+      +  (x & 0x3333333333333333UL); 
+    x = ((x & 0xf0f0f0f0f0f0f0f0UL) >> 4) 
+      +  (x & 0x0f0f0f0f0f0f0f0fUL); 
+    x = ((x & 0xff00ff00ff00ff00UL) >> 8) 
+      +  (x & 0x00ff00ff00ff00ffUL); 
+    x = ((x & 0xffff0000ffff0000UL) >> 16) 
+      +  (x & 0x0000ffff0000ffffUL); 
+    x = ((x & 0xffffffff00000000UL) >> 32) 
+      +  (x & 0x00000000ffffffffUL); 
+    return x; 
+} 
+
 Migration::Migration(HostTree* tree)
 {
     for (uint32_t i = 0; i < NR_DPUS; i++) {
         used_seats[i] = tree->get_used_seats(i);
-        nr_used_seats[i] = __builtin_popcount(used_seats[i]);
+        nr_used_seats[i] = pop_count_64bit(used_seats[i]);
         freeing_seats[i] = 0;
         nr_freeing_seats[i] = 0;
     }
@@ -33,7 +50,7 @@ Migration::find_available_seat(uint32_t dpu)
 {
     seat_set_t unavail = used_seats[dpu] | freeing_seats[dpu];
     seat_id_t seat = 0;
-    while ((unavail & (1 << seat)))
+    while ((unavail & (1ULL << seat)))
         seat++;
     return seat;
 }
@@ -41,7 +58,7 @@ Migration::find_available_seat(uint32_t dpu)
 seat_addr_t
 Migration::get_source(uint32_t dpu, seat_id_t seat_id)
 {
-    if (!(used_seats[dpu] & (1 << seat_id)))
+    if (!(used_seats[dpu] & (1ULL << seat_id)))
         /* not used */
         return seat_addr_t(-1, INVALID_SEAT_ID);
     while (plan[dpu][seat_id].dpu != -1) {
@@ -77,9 +94,9 @@ void
 Migration::migrate_subtree(uint32_t from_dpu, seat_id_t from, uint32_t to_dpu, seat_id_t to)
 {
     do_migrate_subtree(from_dpu, from, to_dpu, to);
-    used_seats[from_dpu] &= ~(1 << from);
-    freeing_seats[from_dpu] |= 1 << from;
-    used_seats[to_dpu] |= 1 << to;
+    used_seats[from_dpu] &= ~(1ULL << from);
+    freeing_seats[from_dpu] |= 1ULL << from;
+    used_seats[to_dpu] |= 1ULL << to;
     nr_used_seats[from_dpu]--;
     nr_freeing_seats[from_dpu]++;
     nr_used_seats[to_dpu]++;
@@ -91,7 +108,7 @@ Migration::migrate_subtree_to_balance_load(uint32_t from_dpu, uint32_t to_dpu, i
     seat_id_t candidate = INVALID_SEAT_ID;
     int best = std::numeric_limits<int>::max();
     for (seat_id_t from = 0; from < NR_SEATS_IN_DPU; from++) {
-        if (!(used_seats[from_dpu] & (1 << from)))
+        if (!(used_seats[from_dpu] & (1ULL << from)))
             continue;
         seat_addr_t p = get_source(from_dpu, from);
         int nkeys = nkeys_for_trees[p.dpu][p.seat];
@@ -146,6 +163,8 @@ Migration::migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migration
         int diff = nr_keys_for_dpu[dpu_ids[l]] - nr_keys_for_dpu[dpu_ids[r]];
         if (diff < MIN_DIFF_NR_QUERIES_TO_MIGRATE)
             break;
+        if (diff < MIN_DIFF_NR_QUERIES_TO_MIGRATE)
+            break;
         if (!migrate_subtree_to_balance_load(dpu_ids[l], dpu_ids[r], diff, batch_ctx.num_keys_for_tree)) {
             l++;
             continue;
@@ -169,16 +188,16 @@ Migration::migrate_subtrees(uint32_t from_dpu, uint32_t to_dpu, int n)
     printf("migrate_subtrees %d -> %d n=%d\n", from_dpu, to_dpu, n);
 
     for (int i = 0; i < n; i++) {
-        while (!(from_used & (1 << from)))
+        while (!(from_used & (1ULL << from)))
             from++;
         assert(from < NR_SEATS_IN_DPU);
-        while (((to_used | freeing) & (1 << to)))
+        while (((to_used | freeing) & (1ULL << to)))
             to++;
         assert(to < NR_SEATS_IN_DPU);
 
         /* migrate tree (from_dpu, form) -> (to_dpu, to) */
-        moving_from |= 1 << from;
-        moving_to |= 1 << to;
+        moving_from |= 1ULL << from;
+        moving_to |= 1ULL << to;
         do_migrate_subtree(from_dpu, from, to_dpu, to);
         from++;
         to++;

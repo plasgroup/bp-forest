@@ -57,7 +57,7 @@ public:
                 key_to_tree_map[ub] = seat_addr_t(i, j);
                 tree_to_key_map[i][j] = ub;
             }
-            tree_bitmap[i] = (1 << init_trees_per_dpu) - 1;
+            tree_bitmap[i] = (1ULL << init_trees_per_dpu) - 1;
             num_seats_used[i] = init_trees_per_dpu;
         }
     }
@@ -69,14 +69,14 @@ public:
 
     void inv_map_add(seat_addr_t seat_addr, key_int64_t ub)
     {
-        tree_bitmap[seat_addr.dpu] |= 1 << seat_addr.seat;
+        tree_bitmap[seat_addr.dpu] |= 1ULL << seat_addr.seat;
         num_seats_used[seat_addr.dpu]++;
         tree_to_key_map[seat_addr.dpu][seat_addr.seat] = ub;
     }
 
     void inv_map_del(seat_addr_t seat_addr)
     {
-        tree_bitmap[seat_addr.dpu] &= ~(1 << seat_addr.seat);
+        tree_bitmap[seat_addr.dpu] &= ~(1ULL << seat_addr.seat);
         num_seats_used[seat_addr.dpu]--;
         tree_to_key_map[seat_addr.dpu][seat_addr.seat] = 0; // invalid kye?
     }
@@ -95,7 +95,7 @@ public:
         key_to_tree_map.erase(lb);
         tree_to_key_map[dpu][seat] = 0;
         num_seats_used[dpu]--;
-        tree_bitmap[dpu] &= ~(1 << seat);
+        tree_bitmap[dpu] &= ~(1ULL << seat);
     }
 
 private:
