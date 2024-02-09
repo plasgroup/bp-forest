@@ -154,17 +154,17 @@ Migration::migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migration
         if (l >= r)
             break;
         if (nr_used_seats[dpu_ids[l]] <= 1) {
-            break;
+            l++;
+            continue;
+            /* break; */
         }
         if (nr_used_seats[dpu_ids[r]] >= SOFT_LIMIT_NR_TREES_IN_DPU || nr_used_seats[dpu_ids[r]] + nr_freeing_seats[dpu_ids[r]] >= NR_SEATS_IN_DPU) {
             r--;
             continue;
         }
         int diff = nr_keys_for_dpu[dpu_ids[l]] - nr_keys_for_dpu[dpu_ids[r]];
-        if (diff < MIN_DIFF_NR_QUERIES_TO_MIGRATE)
-            break;
-        if (diff < MIN_DIFF_NR_QUERIES_TO_MIGRATE)
-            break;
+/*         if (diff < MIN_DIFF_NR_QUERIES_TO_MIGRATE)
+            break; */
         if (!migrate_subtree_to_balance_load(dpu_ids[l], dpu_ids[r], diff, batch_ctx.num_keys_for_tree)) {
             l++;
             continue;
@@ -185,7 +185,9 @@ Migration::migrate_subtrees(uint32_t from_dpu, uint32_t to_dpu, int n)
     seat_set_t moving_to = 0;
     seat_id_t from = 0, to = 0;
 
+#ifdef PRINT_DEBUG
     printf("migrate_subtrees %d -> %d n=%d\n", from_dpu, to_dpu, n);
+#endif /* PRINT_DEBUG */
 
     for (int i = 0; i < n; i++) {
         while (!(from_used & (1ULL << from)))

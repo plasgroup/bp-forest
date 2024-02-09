@@ -24,7 +24,7 @@
 #endif
 
 #ifndef NR_SEATS_IN_DPU
-#define NR_SEATS_IN_DPU (63)
+#define NR_SEATS_IN_DPU (64)
 #endif
 
 #ifndef NR_INITIAL_TREES_IN_DPU
@@ -39,12 +39,12 @@
 #endif
 
 #ifndef DEFAULT_NR_BATCHES
-#define DEFAULT_NR_BATCHES 50
+#define DEFAULT_NR_BATCHES 100
 #endif
 
 #ifndef NUM_INIT_REQS
 #define NUM_INIT_REQS (500000000)
-/* #define NUM_INIT_REQS (2000 * (NR_DPUS * NR_INITIAL_TREES_IN_DPU)) */
+/* #define NUM_INIT_REQS (200 * (NR_DPUS * NR_INITIAL_TREES_IN_DPU)) */
 #endif
 
 #define MAX_NUM_NODES_IN_SEAT (MRAM_CABIN_BYTES / NR_SEATS_IN_DPU / sizeof(BPTreeNode))

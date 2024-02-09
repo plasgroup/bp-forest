@@ -48,4 +48,4 @@ build*/
 workload/
 .vscode/
 data/
-log
+log*

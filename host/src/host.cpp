@@ -116,7 +116,9 @@ struct Option {
             db += "/dpu/dpu_program_simulator";
         else
             db += "/dpu/dpu_program_UPMEM";
+#ifdef PRINT_DEBUG
         printf("binary: %s\n", db.c_str());
+#endif /* PRINT_DEBUG */
         dpu_binary = strdup(db.c_str());
 #endif /* HOST_ONLY */
 
@@ -477,7 +479,6 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     }
 
     /* 1. count number of queries for each DPU, tree */
-    preprocess_time1 = measure_time([&] {
 #ifdef HOST_MULTI_THREAD
         for (int i = 0; i < HOST_MULTI_THREAD; i++) {
             int start = num_keys_batch * i / HOST_MULTI_THREAD;
@@ -502,7 +503,6 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
             }
         }
 #endif /* HOST_MULTI_THREAD */
-    }).count();
 
     /* 2. migration planning */
     Migration migration_plan(host_tree);
@@ -651,18 +651,23 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
 #ifdef PRINT_DISTRIBUTION
     upmem_receive_numofnodes();
     int max_num_nodes_tree = 0;
+    int max_num_elems_in_dpu = 0;
     for (uint32_t dpu = 0; dpu < NR_DPUS; dpu++) {
         if (batch_ctx.send_size < batch_ctx.key_index[dpu][NR_SEATS_IN_DPU])
             batch_ctx.send_size = batch_ctx.key_index[dpu][NR_SEATS_IN_DPU];
         int nnodes_in_dpu = 0;
+        int num_elems_in_dpu = 0;
         for (seat_id_t seat = 0; seat < NR_SEATS_IN_DPU; seat++) {
             if (numofnodes[dpu][seat] > max_num_nodes_tree)
                 max_num_nodes_tree = numofnodes[dpu][seat];
             nnodes_in_dpu += numofnodes[dpu][seat];
+            num_elems_in_dpu += host_tree->num_kvpairs[dpu][seat];
         }
-        printf("%d, %d, %d, %d\n", batch_num, dpu, batch_ctx.key_index[dpu][NR_SEATS_IN_DPU], nnodes_in_dpu);
+        if (max_num_elems_in_dpu < num_elems_in_dpu)
+            max_num_elems_in_dpu = num_elems_in_dpu;
+        printf("%d, %d, %d, %d, %d\n", batch_num, dpu, batch_ctx.key_index[dpu][NR_SEATS_IN_DPU], num_elems_in_dpu, nnodes_in_dpu);
     }
-    printf("%d, -1, %d, %d\n", batch_num, batch_ctx.send_size, max_num_nodes_tree);
+    printf("%d, -1, %d, %d, %d\n", batch_num, batch_ctx.send_size, max_num_elems_in_dpu, max_num_nodes_tree);
 #endif /* PRINT_DISTRIBUTION */
 
     /* 8. merge small subtrees in DPU*/
