@@ -267,7 +267,7 @@ private:
         for (int i = 0; i < NR_SEATS_IN_DPU; i++)
             if (!in_use[i])
                 n++;
-        return 0;
+        return n;
     }
 
     void split_tree(KVPair buf[], int n, split_info_t result[])
@@ -297,7 +297,7 @@ private:
         for (int i = 0; i < NR_SEATS_IN_DPU; i++) {
             assert(subtree[i].size() == mram.num_kvpairs_in_seat[i]);
             assert(in_use[i] || mram.num_kvpairs_in_seat[i] == 0);
-            if (in_use[i] && count_available_seats() > 0) {
+            if (in_use[i] && (count_available_seats() > 0)) {
                 int n = mram.num_kvpairs_in_seat[i];
                 if (n > SPLIT_THRESHOLD) {
                     serialize(i, mram.tree_transfer_buffer);

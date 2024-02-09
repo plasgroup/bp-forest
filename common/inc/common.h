@@ -24,11 +24,11 @@
 #endif
 
 #ifndef NR_SEATS_IN_DPU
-#define NR_SEATS_IN_DPU (20)
+#define NR_SEATS_IN_DPU (63)
 #endif
 
 #ifndef NR_INITIAL_TREES_IN_DPU
-#define NR_INITIAL_TREES_IN_DPU (12)
+#define NR_INITIAL_TREES_IN_DPU (50)
 #endif
 #if NR_SEATS_IN_DPU < NR_INITIAL_TREES_IN_DPU
 #error parameter error: NR_SEAT_IN_DPU < NR_INITIAL_TREES_IN_DPU
@@ -43,7 +43,8 @@
 #endif
 
 #ifndef NUM_INIT_REQS
-#define NUM_INIT_REQS (2000 * (NR_DPUS * NR_INITIAL_TREES_IN_DPU))
+#define NUM_INIT_REQS (500000000)
+/* #define NUM_INIT_REQS (2000 * (NR_DPUS * NR_INITIAL_TREES_IN_DPU)) */
 #endif
 
 #define MAX_NUM_NODES_IN_SEAT (MRAM_CABIN_BYTES / NR_SEATS_IN_DPU / sizeof(BPTreeNode))
