@@ -301,21 +301,24 @@ class PreprocessWorker
     void (PreprocessWorker::*job)() = nullptr;
 
 public:
-    PreprocessWorker() : t{
-        [this] {
-            std::unique_lock<std::mutex> lock{mtx};
-            for (;;) {
-                cond.wait(lock, [&] { return finished || job; });
-                assert(!(finished && job));
-                if (job) {
-                    (this->*job)();
-                    job = nullptr;
-                } else {
-                    assert(finished);
-                    break;
+    PreprocessWorker()
+    {
+        t = std::thread{
+            [this] {
+                std::unique_lock<std::mutex> lock{mtx};
+                for (;;) {
+                    cond.wait(lock, [&] { return finished || job; });
+                    assert(!(finished && job));
+                    if (job) {
+                        (this->*job)();
+                        job = nullptr;
+                    } else {
+                        assert(finished);
+                        break;
+                    }
                 }
-            }
-        }} {}
+            }};
+    }
     ~PreprocessWorker()
     {
         {
