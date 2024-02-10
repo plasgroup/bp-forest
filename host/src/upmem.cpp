@@ -1,5 +1,6 @@
 #include "upmem.hpp"
 
+#include "batch_transfer_buffer.hpp"
 #include "common.h"
 #include "dpu_set.hpp"
 #include "host_data_structures.hpp"
@@ -10,26 +11,12 @@
 
 #include <sys/time.h>
 
-#include <cassert>
 #include <cstdint>
-#include <cstdlib>
 
 #ifdef PRINT_DEBUG
 #include <cstdio>
 #endif /* PRINT_DEBUG */
 
-#ifdef HOST_ONLY
-#include "emulation.hpp"
-
-Emulation emu[EMU_MAX_DPUS];
-#else /* HOST_ONLY */
-extern "C" {
-#include <dpu.h>
-#include <dpu_log.h>
-}
-#endif /* HOST_ONLY */
-
-static dpu_set_t dpu_set;
 
 /* buffer */
 std::unique_ptr<dpu_requests_t[]> dpu_requests{new dpu_requests_t[NR_DPUS]};
@@ -37,12 +24,65 @@ std::unique_ptr<DPUResultsUnion> dpu_results{new DPUResultsUnion};
 merge_info_t merge_info[NR_DPUS];
 dpu_init_param_t dpu_init_param[NR_DPUS][NR_SEATS_IN_DPU];
 
-uint32_t upmem_get_nr_dpus();
 
-#ifdef VSCODE_DEFINES
-#define MEASURE_XFER_BYTES
-#endif /* VSCODE_DEFINES */
+//
+// Low level DPU ACCESS
+//
+static void upmem_init_impl(const char* binary, bool is_simulator);
+static void upmem_release_impl();
 
+static uint32_t nr_dpus_in_set(const DPUSet& set);
+static void select_dpu(DPUSet* dst, dpu_id_t index);
+
+template <bool ToDPU, class BatchTransferBuffer>
+static void xfer_with_dpu(const DPUSet& set, const char* symbol, BatchTransferBuffer&& buf);
+template <typename T>
+static void broadcast_to_dpu(const DPUSet& set, const char* symbol, const Single<T>& datum);
+
+static void execute(const DPUSet& set);
+
+#ifdef HOST_ONLY
+#include "upmem_impl_host_only.ipp"
+#else
+#include "upmem_impl_dpu.ipp"
+#endif
+
+template <class BatchTransferBuffer>
+static void send_to_dpu(const DPUSet& set, const char* symbol, BatchTransferBuffer&& buf)
+{
+    xfer_with_dpu<true>(set, symbol, buf);
+}
+template <class BatchTransferBuffer>
+static void recv_from_dpu(const DPUSet& set, const char* symbol, BatchTransferBuffer&& buf)
+{
+    xfer_with_dpu<false>(set, symbol, buf);
+}
+
+
+//
+//  UPMEM module interface
+//
+void upmem_init(const char* binary, bool is_simulator)
+{
+    upmem_init_impl(binary, is_simulator);
+
+#ifdef PRINT_DEBUG
+    std::printf("Allocated %d DPU(s)\n", upmem_get_nr_dpus());
+#endif /* PRINT_DEBUG */
+}
+
+void upmem_release()
+{
+    upmem_release_impl();
+}
+
+uint32_t upmem_get_nr_dpus()
+{
+    return nr_dpus_in_set(all_dpu);
+}
+
+
+#ifdef PRINT_DEBUG
 static const char* task_name(uint64_t task)
 {
     switch (TASK_GET_ID(task)) {
@@ -64,271 +104,7 @@ static const char* task_name(uint64_t task)
         return "unknown-task";
     }
 }
-
-//
-// Low level DPU ACCESS
-//
-
-#ifdef HOST_ONLY
-static uint32_t
-nr_dpus_in_set(dpu_set_t set)
-{
-    return set.count();
-}
-
-static void
-select_dpu(dpu_set_t* dst, uint32_t index)
-{
-    dpu_set_t mask;
-    mask[index] = true;
-    *dst = dpu_set & mask;
-}
-
-static void
-xfer_foreach(dpu_set_t set, const char* symbol, size_t size,
-    const void* array, size_t elmsize, bool to_dpu)
-{
-    uintptr_t addr = (uintptr_t)array;
-    uint64_t total_xfer_bytes = 0;
-    uint64_t total_effective_bytes = 0;
-    for (int i = 0; i < EMU_MAX_DPUS;) {
-        uint64_t max_xfer_bytes = 0;
-        for (int j = 0; i < EMU_MAX_DPUS && j < EMU_DPUS_IN_RANK; i++, j++) {
-            if (set[i]) {
-                void* mram_addr = emu[i].get_addr_of_symbol(symbol);
-                if (to_dpu)
-                    memcpy(mram_addr, (void*)addr, size);
-                else
-                    memcpy((void*)addr, mram_addr, size);
-                total_effective_bytes += size;
-                if (size > max_xfer_bytes)
-                    max_xfer_bytes = size;
-                addr += elmsize;
-            }
-        }
-        total_xfer_bytes += max_xfer_bytes * EMU_DPUS_IN_RANK;
-    }
-#ifdef MEASURE_XFER_BYTES
-    xfer_statistics.add(symbol, total_xfer_bytes, total_effective_bytes);
-#endif /* MEASURE_XFER_BYTES */
-}
-
-#ifdef RANK_ORIENTED_XFER
-/* variable-length array version */
-static void
-xfer_foreach_va(dpu_set_t set, const char* symbol, const void* array,
-    size_t interval, size_t* xfer_bytes, bool to_dpu)
-{
-    uintptr_t addr = (uintptr_t)array;
-    uint64_t total_xfer_bytes = 0;
-    uint64_t total_effective_bytes = 0;
-    for (int i = 0; i < EMU_MAX_DPUS; i += EMU_DPUS_IN_RANK) {
-        uint64_t max_xfer_bytes = 0;
-        int dpu_in_rank = 0;
-        for (int j = 0; i + j < EMU_MAX_DPUS && j < EMU_DPUS_IN_RANK; j++)
-            if (set[i + j]) {
-                if (xfer_bytes[i + j] > max_xfer_bytes)
-                    max_xfer_bytes = xfer_bytes[i + j];
-                total_effective_bytes += xfer_bytes[i + j];
-                dpu_in_rank++;
-            }
-        for (int j = 0; i + j < EMU_MAX_DPUS && j < EMU_DPUS_IN_RANK; j++)
-            if (set[i + j]) {
-                void* mram_addr = emu[i + j].get_addr_of_symbol(symbol);
-                if (to_dpu)
-                    memcpy(mram_addr, (void*)addr, max_xfer_bytes);
-                else
-                    memcpy((void*)addr, mram_addr, max_xfer_bytes);
-                addr += interval;
-            }
-        total_xfer_bytes += max_xfer_bytes * EMU_DPUS_IN_RANK;
-    }
-#ifdef MEASURE_XFER_BYTES
-    xfer_statistics.add(symbol, total_xfer_bytes, total_effective_bytes);
-#endif /* MEASURE_XFER_BYTES */
-}
-#endif /* RANK_ORIENTED_XFER */
-
-static void
-broadcast(dpu_set_t set, const char* symbol, const void* addr, size_t size)
-{
-    uint64_t total_xfer_bytes = 0;
-    uint64_t total_effective_bytes = 0;
-    for (int i = 0; i < EMU_MAX_DPUS;) {
-        uint64_t xfer_bytes = 0;
-        for (int j = 0; i < EMU_MAX_DPUS && j < EMU_DPUS_IN_RANK; i++, j++) {
-            if (set[i]) {
-                void* mram_addr = emu[i].get_addr_of_symbol(symbol);
-                memcpy(mram_addr, addr, size);
-                xfer_bytes = size;
-                total_effective_bytes += size;
-            }
-        }
-        total_xfer_bytes += xfer_bytes * EMU_DPUS_IN_RANK;
-    }
-#ifdef MEASURE_XFER_BYTES
-    xfer_statistics.add(symbol, total_xfer_bytes, total_effective_bytes);
-#endif /* MEASURE_XFER_BYTES */
-}
-
-static void
-execute(dpu_set_t set)
-{
-    for (int i = 0; i < EMU_MAX_DPUS; i++)
-        if (set[i])
-            emu[i].execute();
-    Emulation::wait_all();
-}
-
-#else /* HOST_ONLY */
-static uint32_t
-nr_dpus_in_set(dpu_set_t set)
-{
-    uint32_t nr_dpus;
-    DPU_ASSERT(dpu_get_nr_dpus(set, &nr_dpus));
-    return nr_dpus;
-}
-
-static void
-select_dpu(dpu_set_t* dst, uint32_t index)
-{
-    uint32_t each_dpu;
-    DPU_FOREACH(dpu_set, *dst, each_dpu)
-    if (index == each_dpu)
-        return;
-    abort();
-}
-
-static void
-xfer_foreach(dpu_set_t set, const char* symbol, size_t size,
-    const void* array, size_t elmsize, bool to_dpu)
-{
-    dpu_set_t dpu;
-    dpu_xfer_t dir = to_dpu ? DPU_XFER_TO_DPU : DPU_XFER_FROM_DPU;
-
-    uintptr_t addr = (uintptr_t)array;
-    DPU_FOREACH(dpu_set, dpu)
-    {
-        DPU_ASSERT(dpu_prepare_xfer(dpu, (void*)addr));
-        addr += elmsize;
-    }
-    DPU_ASSERT(dpu_push_xfer(
-        dpu_set, dir, symbol, 0, size, DPU_XFER_DEFAULT));
-}
-
-static void
-xfer_foreach_va(dpu_set_t set, const char* symbol, const void* array,
-    size_t interval, size_t* xfer_bytes, bool to_dpu)
-{
-    dpu_set_t rank, dpu;
-    dpu_xfer_t dir = to_dpu ? DPU_XFER_TO_DPU : DPU_XFER_FROM_DPU;
-    uintptr_t addr = (uintptr_t)array;
-
-    /* 
-     * We assume DPU_RANK_FOREACH & DPU_FOREACH yields the dpus in the
-     * same order as a single DPU_FOREACH.
-     */
-    uint32_t dpu_index = 0;
-    DPU_RANK_FOREACH(dpu_set, rank)
-    {
-        size_t max_xfer_bytes = 0;
-        DPU_FOREACH(rank, dpu)
-        {
-            DPU_ASSERT(dpu_prepare_xfer(dpu, (void*)addr));
-            addr += interval;
-            size_t b = xfer_bytes[dpu_index];
-            if (b > max_xfer_bytes)
-                max_xfer_bytes = b;
-            dpu_index++;
-        }
-        DPU_ASSERT(dpu_push_xfer(
-            rank, dir, symbol, 0, max_xfer_bytes, DPU_XFER_ASYNC));
-    }
-    DPU_ASSERT(dpu_sync(dpu_set));
-}
-
-static void
-broadcast(dpu_set_t set, const char* symbol, const void* addr, size_t size)
-{
-    DPU_ASSERT(dpu_broadcast_to(
-        dpu_set, symbol, 0, addr, size, DPU_XFER_DEFAULT));
-}
-
-static void
-execute(dpu_set_t dpu_set)
-{
-    dpu_set_t dpu;
-    DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
-    dpu_sync(dpu_set);
-#ifdef PRINT_DEBUG
-    DPU_FOREACH(dpu_set, dpu)
-    {
-        DPU_ASSERT(dpu_log_read(dpu, stdout));
-    }
 #endif /* PRINT_DEBUG */
-}
-#endif /* HOST_ONLY */
-
-static void
-xfer_single(dpu_set_t set, const char* symbol, size_t size,
-    const void* addr, bool to_dpu)
-{
-    assert(nr_dpus_in_set(set) == 1);
-    xfer_foreach(set, symbol, size, addr, 0, to_dpu);
-}
-
-#define SEND_FOREACH(set, sym, size, ary) \
-    xfer_foreach(set, sym, size, ary, sizeof((ary)[0]), true)
-#define SEND_FOREACH_VA(set, sym, ary, sizes) \
-    xfer_foreach_va(set, sym, ary, sizeof((ary)[0]), sizes, true)
-#define RECV_FOREACH(set, sym, size, ary) \
-    xfer_foreach(set, sym, size, ary, sizeof((ary)[0]), false)
-#define RECV_FOREACH_VA(set, sym, ary, sizes) \
-    xfer_foreach_va(set, sym, ary, sizeof((ary)[0]), sizes, false)
-#define SEND_SINGLE(set, sym, size, addr) \
-    xfer_single(set, sym, size, addr, true)
-#define RECV_SINGLE(set, sym, size, addr) \
-    xfer_single(set, sym, size, addr, false)
-
-//
-//  UPMEM module interface
-//
-
-void upmem_init(const char* binary, bool is_simulator)
-{
-#ifdef HOST_ONLY
-    for (int i = 0; i < NR_DPUS; i++) {
-        dpu_set[i] = true;
-        emu[i].init(i);
-    }
-#else  /* HOST_ONLY */
-    if (is_simulator) {
-        DPU_ASSERT(dpu_alloc(NR_DPUS, "backend=simulator", &dpu_set));
-    } else {
-        DPU_ASSERT(dpu_alloc(NR_DPUS, NULL, &dpu_set));
-    }
-    DPU_ASSERT(dpu_load(dpu_set, binary, NULL));
-#endif /* HOST_ONLY */
-
-#ifdef PRINT_DEBUG
-    printf("Allocated %d DPU(s)\n", upmem_get_nr_dpus());
-#endif /* PRINT_DEBUG */
-}
-
-void upmem_release()
-{
-#ifdef HOST_ONLY
-    dpu_set ^= dpu_set;
-    Emulation::terminate();
-#else  /* HOST_ONLY */
-    DPU_ASSERT(dpu_free(dpu_set));
-#endif /* HOST_ONLY */
-}
-
-uint32_t upmem_get_nr_dpus()
-{
-    return nr_dpus_in_set(dpu_set);
-}
 
 void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
     float* send_time, float* exec_time)
@@ -342,40 +118,28 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
     gettimeofday(&start, NULL);
 
     /* send task ID */
-    broadcast(dpu_set, "task_no", &task, sizeof(uint64_t));
+    broadcast_to_dpu(all_dpu, "task_no", Single{task});
 
     /* send data */
     switch (task) {
     case TASK_INIT:
-        SEND_FOREACH(dpu_set, "dpu_init_param",
-            sizeof(dpu_init_param_t) * NR_SEATS_IN_DPU,
-            dpu_init_param);
+        send_to_dpu(all_dpu, "dpu_init_param", EachInArray{dpu_init_param});
         break;
     case TASK_GET:
     case TASK_INSERT:
     case TASK_SUCC: {
-        SEND_FOREACH(dpu_set, "end_idx",
-            sizeof(int),
-            batch_ctx.num_keys_for_DPU.data());
+        send_to_dpu(all_dpu, "end_idx", EachInArray{batch_ctx.num_keys_for_DPU.data()});
 #ifdef RANK_ORIENTED_XFER
-        size_t send_bytes[NR_DPUS];
-        for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
-            send_bytes[idx_dpu] = sizeof(each_request_t) * batch_ctx.num_keys_for_DPU[idx_dpu];
-        }
-        SEND_FOREACH_VA(dpu_set, "request_buffer",
-            dpu_requests.get(), send_bytes);
+        send_to_dpu(all_dpu, "request_buffer", VariousSizeIn2DArray{dpu_requests.get(), batch_ctx.num_keys_for_DPU.data()});
 #else  /* RANK_ORIENTED_XFER */
-        SEND_FOREACH(dpu_set, "request_buffer",
-            sizeof(each_request_t) * batch_ctx.send_size,
-            dpu_requests.get());
+        send_to_dpu(all_dpu, "request_buffer", SameSizeIn2DArray{dpu_requests.get(), batch_ctx.send_size});
 #endif /* RANK_ORIENTED_XFER */
         break;
     default:
         abort();
     }
     case TASK_MERGE:
-        SEND_FOREACH(dpu_set, "merge_info",
-            sizeof(merge_info_t), merge_info);
+        send_to_dpu(all_dpu, "merge_info", EachInArray{merge_info});
         break;
     }
 
@@ -392,7 +156,7 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
     gettimeofday(&start, NULL);
 
     /* launch DPU */
-    execute(dpu_set);
+    execute(all_dpu);
 
     gettimeofday(&end, NULL);
     if (exec_time != NULL)
@@ -417,14 +181,9 @@ void upmem_receive_get_results(BatchCtx& batch_ctx, float* receive_time)
 #endif /* PRINT_DEBUG */
 
 #ifdef RANK_ORIENTED_XFER
-    size_t recv_bytes[NR_DPUS];
-    for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
-        recv_bytes[idx_dpu] = sizeof(each_get_result_t) * batch_ctx.num_keys_for_DPU[idx_dpu];
-    }
-    RECV_FOREACH_VA(dpu_set, "results", dpu_results->get, recv_bytes);
+    recv_from_dpu(all_dpu, "results", VariousSizeIn2DArray{dpu_results->get, batch_ctx.num_keys_for_DPU.data()});
 #else  /* RANK_ORIENTED_XFER */
-    RECV_FOREACH(dpu_set, "results",
-        sizeof(each_get_result_t) * batch_ctx.send_size, dpu_results->get);
+    recv_from_dpu(all_dpu, "results", SameSizeIn2DArray{dpu_results->get, batch_ctx.send_size});
 #endif /* RANK_ORIENTED_XFER */
 
     gettimeofday(&end, NULL);
@@ -445,14 +204,9 @@ void upmem_receive_succ_results(BatchCtx& batch_ctx, float* receive_time)
 #endif /* PRINT_DEBUG */
 
 #ifdef RANK_ORIENTED_XFER
-    size_t recv_bytes[NR_DPUS];
-    for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
-        recv_bytes[idx_dpu] = sizeof(each_succ_result_t) * batch_ctx.num_keys_for_DPU[idx_dpu];
-    }
-    RECV_FOREACH_VA(dpu_set, "results", dpu_results->succ, recv_bytes);
+    recv_from_dpu(all_dpu, "results", VariousSizeIn2DArray{dpu_results->succ, batch_ctx.num_keys_for_DPU.data()});
 #else  /* RANK_ORIENTED_XFER */
-    RECV_FOREACH(dpu_set, "results",
-        sizeof(each_succ_result_t) * batch_ctx.send_size, dpu_results->succ);
+    recv_from_dpu(all_dpu, "results", SameSizeIn2DArray{dpu_results->succ, batch_ctx.send_size});
 #endif /* RANK_ORIENTED_XFER */
 
     gettimeofday(&end, NULL);
@@ -466,8 +220,7 @@ void upmem_receive_num_kvpairs(HostTree* host_tree, float* receive_time)
 
     gettimeofday(&start, NULL);
 
-    RECV_FOREACH(dpu_set, "num_kvpairs_in_seat",
-        sizeof(uint32_t), host_tree->num_kvpairs.data());
+    recv_from_dpu(all_dpu, "num_kvpairs_in_seat", EachInArray{host_tree->num_kvpairs.data()});
 
     gettimeofday(&end, NULL);
     if (receive_time != NULL)
@@ -479,23 +232,21 @@ void upmem_send_nodes_from_dpu_to_dpu(uint32_t from_DPU, seat_id_t from_tree,
 {
     static KVPair tree_migration_buffer[MAX_NUM_NODES_IN_SEAT];
 
-    dpu_set_t dpu;
+    DPUSet dpu;
     uint64_t n;
     uint64_t task;
 
     select_dpu(&dpu, from_DPU);
     task = TASK_WITH_OPERAND(TASK_FROM, from_tree);
-    SEND_SINGLE(dpu, "task_no", sizeof(uint64_t), &task);
+    send_to_dpu(dpu, "task_no", Single{task});
     execute(dpu);
-    RECV_SINGLE(dpu, "tree_transfer_num", sizeof(uint64_t), &n);
-    RECV_SINGLE(dpu, "tree_transfer_buffer",
-        n * sizeof(KVPair), &tree_migration_buffer);
+    recv_from_dpu(dpu, "tree_transfer_num", Single{n});
+    recv_from_dpu(dpu, "tree_transfer_buffer", Single{tree_migration_buffer, n});
 
     select_dpu(&dpu, to_DPU);
     task = TASK_WITH_OPERAND(TASK_TO, to_tree);
-    SEND_SINGLE(dpu, "task_no", sizeof(uint64_t), &task);
-    SEND_SINGLE(dpu, "tree_transfer_num", sizeof(uint64_t), &n);
-    SEND_SINGLE(dpu, "tree_transfer_buffer",
-        n * sizeof(KVPair), &tree_migration_buffer);
+    send_to_dpu(dpu, "task_no", Single{task});
+    send_to_dpu(dpu, "tree_transfer_num", Single{n});
+    send_to_dpu(dpu, "tree_transfer_buffer", Single{tree_migration_buffer, n});
     execute(dpu);
 }

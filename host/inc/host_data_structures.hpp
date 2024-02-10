@@ -6,11 +6,11 @@
 #include "piecewise_constant_workload.hpp"
 #include "workload_types.h"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
-#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
@@ -23,9 +23,6 @@
 #endif /* PRINT_DEBUG */
 
 class Migration;
-
-using dpu_id_t = uint32_t;
-constexpr dpu_id_t INVALID_DPU_ID = std::numeric_limits<dpu_id_t>::max();
 
 typedef struct seat_addr_t {
     dpu_id_t dpu;
@@ -50,27 +47,32 @@ private:
     friend void upmem_receive_num_kvpairs(HostTree* host_tree, float* receive_time);
 
 public:
-    key_int64_t get_lower_bound(dpu_id_t idx_dpu) {
+    key_int64_t get_lower_bound(dpu_id_t idx_dpu)
+    {
         assert(0 <= idx_dpu && idx_dpu < lower_bounds.size());
         return lower_bounds[idx_dpu];
     }
-    uint32_t get_num_kvpairs(dpu_id_t idx_dpu) {
+    uint32_t get_num_kvpairs(dpu_id_t idx_dpu)
+    {
         assert(0 <= idx_dpu && idx_dpu < lower_bounds.size());
         return num_kvpairs[idx_dpu];
     }
 
-    dpu_id_t dpu_resposible_for_get_query_with(key_int64_t key) {
+    dpu_id_t dpu_resposible_for_get_query_with(key_int64_t key)
+    {
         // `one_after_the_target` refers to the first lower-bound greater than `key`
         //     ==> it corresponds to the left-most DPU whose KV pairs are all to the right of `key`
         //     ==> `one_after_the_target - 1` corresponds to the DPU whose range includes `key`
         const auto one_after_the_target = std::upper_bound(lower_bounds.cbegin() + 1, lower_bounds.cend(), key);
         return static_cast<dpu_id_t>(one_after_the_target - (lower_bounds.cbegin() + 1));
     }
-    dpu_id_t dpu_resposible_for_insert_query_with(key_int64_t key) {
+    dpu_id_t dpu_resposible_for_insert_query_with(key_int64_t key)
+    {
         return dpu_resposible_for_get_query_with(key);
     }
 
-    dpu_id_t dpu_resposible_for_pred_query_with(key_int64_t key) {
+    dpu_id_t dpu_resposible_for_pred_query_with(key_int64_t key)
+    {
         // `one_after_the_target` refers to the first lower-bound not less than `key`
         //     ==> it corresponds to the left-most DPU where even the first KV pair is not to left of `key`
         //     ==> `one_after_the_target - 1` corresponds to the DPU whose range includes `key`

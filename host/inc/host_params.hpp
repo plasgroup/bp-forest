@@ -3,10 +3,16 @@
 #include "common.h"
 
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 
 
 #ifndef NR_DPUS
 constexpr size_t NR_DPUS = 4;
+#endif
+
+#ifndef NR_DPUS_IN_RANK
+constexpr size_t NR_DPUS_IN_RANK = 64;
 #endif
 
 #ifndef NR_INITIAL_TREES_IN_DPU
@@ -32,3 +38,7 @@ constexpr size_t SOFT_LIMIT_NR_TREES_IN_DPU = NR_SEATS_IN_DPU - MAX_NUM_SPLIT - 
 
 constexpr size_t MERGE_THRESHOLD = 1500;
 constexpr size_t NUM_ELEMS_AFTER_MERGE = 2000;
+
+
+using dpu_id_t = uint32_t;
+constexpr dpu_id_t INVALID_DPU_ID = std::numeric_limits<dpu_id_t>::max();

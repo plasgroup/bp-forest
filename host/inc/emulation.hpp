@@ -9,10 +9,10 @@
 #include <map>
 
 #include "common.h"
+#include "host_params.hpp"
 #include "node_defs.hpp"
 
 #define EMU_MAX_DPUS 2550
-#define EMU_DPUS_IN_RANK 64
 #define EMU_MULTI_THREAD 16 /* nr worker threads */
 
 #ifdef EMU_MULTI_THREAD
@@ -26,7 +26,7 @@ class Emulation;
 
 class EmulatorWorkerManager
 {
-    std::thread* threads[EMU_MULTI_THREAD];
+    std::thread threads[EMU_MULTI_THREAD];
     bool stop;
     std::condition_variable cond;
     std::mutex mtx;
@@ -38,7 +38,7 @@ public:
     EmulatorWorkerManager()
     {
         for (int i = 0; i < EMU_MULTI_THREAD; i++)
-            threads[i] = new std::thread([&] { this->run(); });
+            threads[i] = std::thread([&] { this->run(); });
         nr_running = 0;
         stop = false;
     }
@@ -110,7 +110,8 @@ class Emulation
         uint64_t tree_transfer_num;
         KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
         dpu_init_param_t dpu_init_param[NR_SEATS_IN_DPU];
-    } mram;
+    };
+    std::unique_ptr<MRAM> mram{new MRAM};
 
     std::map<key_int64_t, value_ptr_t> subtree[NR_SEATS_IN_DPU];
     bool in_use[NR_SEATS_IN_DPU];
@@ -132,7 +133,7 @@ public:
 #define MRAM_SYMBOL(S)               \
     do {                             \
         if (strcmp(symbol, #S) == 0) \
-            return &mram.S;          \
+            return &mram->S;         \
     } while (0)
 
         MRAM_SYMBOL(task_no);
@@ -178,7 +179,7 @@ public:
 private:
     void do_execute()
     {
-        switch (TASK_GET_ID(mram.task_no)) {
+        switch (TASK_GET_ID(mram->task_no)) {
         case TASK_INIT:
             task_init();
             break;
@@ -195,10 +196,10 @@ private:
             task_succ();
             break;
         case TASK_FROM:
-            task_from(TASK_GET_OPERAND(mram.task_no));
+            task_from(TASK_GET_OPERAND(mram->task_no));
             break;
         case TASK_TO:
-            task_to(TASK_GET_OPERAND(mram.task_no));
+            task_to(TASK_GET_OPERAND(mram->task_no));
             break;
         default:
             abort();
@@ -228,7 +229,7 @@ private:
     {
         assert(in_use[seat_id]);
         in_use[seat_id] = false;
-        mram.num_kvpairs_in_seat[seat_id] = 0;
+        mram->num_kvpairs_in_seat[seat_id] = 0;
     }
 
     int serialize(seat_id_t seat_id, KVPair buf[])
@@ -252,7 +253,7 @@ private:
             value_ptr_t val = buf[i].value;
             assert(subtree[seat_id].find(key) == subtree[seat_id].end());
             subtree[seat_id].insert(std::make_pair(key, val));
-            mram.num_kvpairs_in_seat[seat_id]++;
+            mram->num_kvpairs_in_seat[seat_id]++;
         }
     }
 
@@ -290,15 +291,15 @@ private:
     void split()
     {
         for (int i = 0; i < NR_SEATS_IN_DPU; i++) {
-            assert(subtree[i].size() == mram.num_kvpairs_in_seat[i]);
-            assert(in_use[i] || mram.num_kvpairs_in_seat[i] == 0);
+            assert(subtree[i].size() == mram->num_kvpairs_in_seat[i]);
+            assert(in_use[i] || mram->num_kvpairs_in_seat[i] == 0);
             if (in_use[i] && count_available_seats() > 0) {
-                int n = mram.num_kvpairs_in_seat[i];
+                int n = mram->num_kvpairs_in_seat[i];
                 if (n > SPLIT_THRESHOLD) {
-                    serialize(i, mram.tree_transfer_buffer);
+                    serialize(i, mram->tree_transfer_buffer);
                     subtree[i].clear();
                     release_seat(i);
-                    split_tree(mram.tree_transfer_buffer, n, &mram.split_result[i]);
+                    split_tree(mram->tree_transfer_buffer, n, &mram->split_result[i]);
                 }
             }
         }
@@ -307,11 +308,11 @@ private:
     void task_init()
     {
         for (int i = 0; i < NR_SEATS_IN_DPU; i++) {
-            mram.num_kvpairs_in_seat[i] = 0;
+            mram->num_kvpairs_in_seat[i] = 0;
             in_use[i] = false;
         }
         for (int i = 0; i < NR_SEATS_IN_DPU; i++) {
-            dpu_init_param_t& param = mram.dpu_init_param[i];
+            dpu_init_param_t& param = mram->dpu_init_param[i];
             if (param.use != 0) {
                 allocate_seat(i);
                 if (param.end_inclusive < param.start)
@@ -320,7 +321,7 @@ private:
                 while (true) {
                     value_ptr_t v = k;
                     subtree[i].insert(std::make_pair(k, v));
-                    mram.num_kvpairs_in_seat[i]++;
+                    mram->num_kvpairs_in_seat[i]++;
                     if (param.end_inclusive - k < param.interval)
                         break;
                     k += param.interval;
@@ -333,16 +334,16 @@ private:
     {
         using std::begin, std::end;
 
-        for (unsigned idx_req = 0; idx_req < mram.end_idx; idx_req++) {
-            key_int64_t key = mram.request_buffer[idx_req].key;
+        for (unsigned idx_req = 0; idx_req < mram->end_idx; idx_req++) {
+            key_int64_t key = mram->request_buffer[idx_req].key;
             const auto one_after_the_target = std::upper_bound(begin(subtree) + 1, end(subtree), key, [](auto key, auto& subtree) {
                 return key >= subtree.cbegin()->first;
             });
             const auto target_subtree = one_after_the_target - 1;
-            if (target_subtree->insert_or_assign(key, mram.request_buffer[idx_req].write_val_ptr).second) {
-                mram.num_kvpairs_in_seat[target_subtree - begin(subtree)]++;
+            if (target_subtree->insert_or_assign(key, mram->request_buffer[idx_req].write_val_ptr).second) {
+                mram->num_kvpairs_in_seat[target_subtree - begin(subtree)]++;
             }
-            assert(target_subtree->size() == mram.num_kvpairs_in_seat[target_subtree - begin(subtree)]);
+            assert(target_subtree->size() == mram->num_kvpairs_in_seat[target_subtree - begin(subtree)]);
         }
 
         split();
@@ -352,17 +353,17 @@ private:
     {
         using std::cbegin, std::cend;
 
-        for (unsigned idx_req = 0; idx_req < mram.end_idx; idx_req++) {
-            key_int64_t key = mram.request_buffer[idx_req].key;
+        for (unsigned idx_req = 0; idx_req < mram->end_idx; idx_req++) {
+            key_int64_t key = mram->request_buffer[idx_req].key;
             const auto one_after_the_target = std::upper_bound(cbegin(subtree) + 1, cend(subtree), key, [](auto key, auto& subtree) {
                 return key >= subtree.cbegin()->first;
             });
             const auto target_subtree = one_after_the_target - 1;
             const auto it = target_subtree->find(key);
             if (it != target_subtree->end())
-                mram.results.get[idx_req].get_result = it->second;
+                mram->results.get[idx_req].get_result = it->second;
             else
-                mram.results.get[idx_req].get_result = 0;
+                mram->results.get[idx_req].get_result = 0;
         }
     }
 
@@ -374,8 +375,8 @@ private:
     void task_from(seat_id_t seat_id)
     {
         assert(in_use[seat_id]);
-        int n = serialize(seat_id, mram.tree_transfer_buffer);
-        mram.tree_transfer_num = n;
+        int n = serialize(seat_id, mram->tree_transfer_buffer);
+        mram->tree_transfer_num = n;
         subtree[seat_id].clear();
         release_seat(seat_id);
     }
@@ -383,13 +384,13 @@ private:
     void task_to(seat_id_t seat_id)
     {
         allocate_seat(seat_id);
-        deserialize(seat_id, mram.tree_transfer_buffer, 0, mram.tree_transfer_num);
-        mram.num_kvpairs_in_seat[seat_id] = mram.tree_transfer_num;
+        deserialize(seat_id, mram->tree_transfer_buffer, 0, mram->tree_transfer_num);
+        mram->num_kvpairs_in_seat[seat_id] = mram->tree_transfer_num;
     }
 };
 
 #ifdef EMU_MULTI_THREAD
-void EmulatorWorkerManager::execute(Emulation* emu)
+inline void EmulatorWorkerManager::execute(Emulation* emu)
 {
     emu->do_execute();
 }
