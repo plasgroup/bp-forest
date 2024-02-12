@@ -1,36 +1,36 @@
+#include "migration.hpp"
+#include "common.h"
+#include "host_data_structures.hpp"
+#include "node_defs.hpp"
+#include "upmem.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <map>
-#include "migration.hpp"
-#include "common.h"
-#include "upmem.hpp"
-#include "host_data_structures.hpp"
-#include "node_defs.hpp"
 
 #define min2(a, b) ((a) < (b) ? (a) : (b))
 #define min3(a, b, c) ((a) < (b) ? min2(a, c) : min2(b, c))
 
 #define MIN_DIFF_NR_QUERIES_TO_MIGRATE (SPLIT_THRESHOLD / 100)
 
-uint64_t pop_count_64bit(uint64_t x) 
-{ 
-    x = ((x & 0xaaaaaaaaaaaaaaaaUL) >> 1) 
-      +  (x & 0x5555555555555555UL); 
-    x = ((x & 0xccccccccccccccccUL) >> 2) 
-      +  (x & 0x3333333333333333UL); 
-    x = ((x & 0xf0f0f0f0f0f0f0f0UL) >> 4) 
-      +  (x & 0x0f0f0f0f0f0f0f0fUL); 
-    x = ((x & 0xff00ff00ff00ff00UL) >> 8) 
-      +  (x & 0x00ff00ff00ff00ffUL); 
-    x = ((x & 0xffff0000ffff0000UL) >> 16) 
-      +  (x & 0x0000ffff0000ffffUL); 
-    x = ((x & 0xffffffff00000000UL) >> 32) 
-      +  (x & 0x00000000ffffffffUL); 
-    return x; 
-} 
+uint64_t pop_count_64bit(uint64_t x)
+{
+    x = ((x & 0xaaaaaaaaaaaaaaaaUL) >> 1)
+        + (x & 0x5555555555555555UL);
+    x = ((x & 0xccccccccccccccccUL) >> 2)
+        + (x & 0x3333333333333333UL);
+    x = ((x & 0xf0f0f0f0f0f0f0f0UL) >> 4)
+        + (x & 0x0f0f0f0f0f0f0f0fUL);
+    x = ((x & 0xff00ff00ff00ff00UL) >> 8)
+        + (x & 0x00ff00ff00ff00ffUL);
+    x = ((x & 0xffff0000ffff0000UL) >> 16)
+        + (x & 0x0000ffff0000ffffUL);
+    x = ((x & 0xffffffff00000000UL) >> 32)
+        + (x & 0x00000000ffffffffUL);
+    return x;
+}
 
 Migration::Migration(HostTree* tree)
 {
@@ -69,8 +69,7 @@ Migration::get_source(uint32_t dpu, seat_id_t seat_id)
     return seat_addr_t(dpu, seat_id);
 }
 
-int
-Migration::get_num_queries_for_source(BatchCtx& batch_ctx, uint32_t dpu, seat_id_t seat_id)
+int Migration::get_num_queries_for_source(BatchCtx& batch_ctx, uint32_t dpu, seat_id_t seat_id)
 {
     seat_addr_t p = get_source(dpu, seat_id);
     if (p.dpu != -1)
@@ -78,8 +77,7 @@ Migration::get_num_queries_for_source(BatchCtx& batch_ctx, uint32_t dpu, seat_id
     return 0;
 }
 
-void
-Migration::do_migrate_subtree(uint32_t from_dpu, seat_id_t from, uint32_t to_dpu, seat_id_t to)
+void Migration::do_migrate_subtree(uint32_t from_dpu, seat_id_t from, uint32_t to_dpu, seat_id_t to)
 {
     /* Source tree may not be in (from_dpu, from) because it may be planned to
      * move to there in the same migration plan. In that case, the chain of
@@ -90,8 +88,7 @@ Migration::do_migrate_subtree(uint32_t from_dpu, seat_id_t from, uint32_t to_dpu
     plan[to_dpu][to] = seat_addr_t(from_dpu, from);
 }
 
-void
-Migration::migrate_subtree(uint32_t from_dpu, seat_id_t from, uint32_t to_dpu, seat_id_t to)
+void Migration::migrate_subtree(uint32_t from_dpu, seat_id_t from, uint32_t to_dpu, seat_id_t to)
 {
     do_migrate_subtree(from_dpu, from, to_dpu, to);
     used_seats[from_dpu] &= ~(1ULL << from);
@@ -102,8 +99,7 @@ Migration::migrate_subtree(uint32_t from_dpu, seat_id_t from, uint32_t to_dpu, s
     nr_used_seats[to_dpu]++;
 }
 
-bool
-Migration::migrate_subtree_to_balance_load(uint32_t from_dpu, uint32_t to_dpu, int diff, int nkeys_for_trees[NR_DPUS][NR_SEATS_IN_DPU])
+bool Migration::migrate_subtree_to_balance_load(uint32_t from_dpu, uint32_t to_dpu, int diff, int nkeys_for_trees[NR_DPUS][NR_SEATS_IN_DPU])
 {
     seat_id_t candidate = INVALID_SEAT_ID;
     int best = std::numeric_limits<int>::max();
@@ -129,8 +125,7 @@ Migration::migrate_subtree_to_balance_load(uint32_t from_dpu, uint32_t to_dpu, i
     return false;
 }
 
-void
-Migration::migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migration)
+void Migration::migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migration)
 {
     uint32_t dpu_ids[NR_DPUS];
     int nr_keys_for_dpu[NR_DPUS];
@@ -154,17 +149,22 @@ Migration::migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migration
         if (l >= r)
             break;
         if (nr_used_seats[dpu_ids[l]] <= 1) {
+#ifndef EXTRA_MIGRATION
             l++;
             continue;
-            /* break; */
+#else  /* EXTRA_MIGRATION */
+            break;
+#endif /* EXTRA_MIGRATION */
         }
         if (nr_used_seats[dpu_ids[r]] >= SOFT_LIMIT_NR_TREES_IN_DPU || nr_used_seats[dpu_ids[r]] + nr_freeing_seats[dpu_ids[r]] >= NR_SEATS_IN_DPU) {
             r--;
             continue;
         }
         int diff = nr_keys_for_dpu[dpu_ids[l]] - nr_keys_for_dpu[dpu_ids[r]];
-/*         if (diff < MIN_DIFF_NR_QUERIES_TO_MIGRATE)
-            break; */
+#ifndef EXTRA_MIGRATION
+        if (diff < MIN_DIFF_NR_QUERIES_TO_MIGRATE)
+            break;
+#endif /* EXTRA_MIGRATION */
         if (!migrate_subtree_to_balance_load(dpu_ids[l], dpu_ids[r], diff, batch_ctx.num_keys_for_tree)) {
             l++;
             continue;
@@ -175,8 +175,7 @@ Migration::migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migration
     }
 }
 
-void
-Migration::migrate_subtrees(uint32_t from_dpu, uint32_t to_dpu, int n)
+void Migration::migrate_subtrees(uint32_t from_dpu, uint32_t to_dpu, int n)
 {
     seat_set_t from_used = used_seats[from_dpu];
     seat_set_t to_used = used_seats[to_dpu];
@@ -212,8 +211,7 @@ Migration::migrate_subtrees(uint32_t from_dpu, uint32_t to_dpu, int n)
     nr_used_seats[to_dpu] += n;
 }
 
-void
-Migration::migration_plan_memory_balancing()
+void Migration::migration_plan_memory_balancing()
 {
     for (uint32_t i = 0; i < NR_DPUS; i++) {
         if (nr_used_seats[i] > SOFT_LIMIT_NR_TREES_IN_DPU) {
@@ -228,14 +226,13 @@ Migration::migration_plan_memory_balancing()
                     rem -= n;
                 }
                 j++;
-                assert(j < NR_DPUS); // all DPUs are almost full
+                assert(j < NR_DPUS);  // all DPUs are almost full
             }
         }
     }
 }
 
-bool
-Migration::plan_merge(seat_addr_t left, seat_addr_t right, merge_info_t* merge_info)
+bool Migration::plan_merge(seat_addr_t left, seat_addr_t right, merge_info_t* merge_info)
 {
     uint32_t dpu = right.dpu;
     seat_id_t dest = right.seat;
@@ -288,8 +285,7 @@ void Migration::normalize()
 }
 
 /* execute migration according to migration_plan */
-void
-Migration::execute()
+void Migration::execute()
 {
     normalize();
     /* apply */

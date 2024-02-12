@@ -58,11 +58,17 @@ tar -xvf upmem-2021.4.0-Linux-x86_64.tar.gz
 source ./upmem-2021.4.0-Linux-x86_64/upmem_env.sh
 ```
 We use [CMake](https://cmake.org/) to build B+-Forest.
-To build the project, run follow commands on the root of the cloned repository. 
+
+To build the project, run follow commands on the root of the cloned repository， 
 ```bash
 cmake -S . -B ./build -DCMAKE_CXX_FLAGS="(FLAGS_HOST)" -DCMAKE_C_FLAGS="(FLAGS_DPU)=(Value)"
 cmake --build ./build
 ```
+or run 
+```bash
+bash ./scripts/build.sh
+```
+for a quick build.
 
 Here are the list of arguments that can be specified in building host binary (FLAGS_HOST).
 
@@ -72,6 +78,7 @@ Here are the list of arguments that can be specified in building host binary (FL
 |`-DHOST_MULTI_THREAD` | Specify the number of threads in the CPU application| -DHOST_MULTI_THREAD=1| 
 |`-DMEASURE_XFER_BYTES` | Measure bytes transferred between the CPU and DPUs| -DMEASURE_XFER_BYTES| 
 |`-DRANK_ORIENTED_XFER` | Enable optimization for communication (change bytes to transfer for each rank)| -DRANK_ORIENTED_XFER| 
+|`-DEXTRA_MIGRATION` | Use another algorithm for subtree migration. This is for our experiment and may cause performance degradation.| -DEXTRA_MIGRATION| 
 
 Here are the list of arguments that can be specified in building DPU binary (FLAGS_DPU).
 
