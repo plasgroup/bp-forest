@@ -24,11 +24,11 @@
 #endif
 
 #ifndef NR_SEATS_IN_DPU
-#define NR_SEATS_IN_DPU (64)
+#define NR_SEATS_IN_DPU (20)
 #endif
 
 #ifndef NR_INITIAL_TREES_IN_DPU
-#define NR_INITIAL_TREES_IN_DPU (50)
+#define NR_INITIAL_TREES_IN_DPU (12)
 #endif
 #if NR_SEATS_IN_DPU < NR_INITIAL_TREES_IN_DPU
 #error parameter error: NR_SEAT_IN_DPU < NR_INITIAL_TREES_IN_DPU
@@ -43,7 +43,7 @@
 #endif
 
 #ifndef NUM_INIT_REQS
-#define NUM_INIT_REQS (500000000)
+#define NUM_INIT_REQS (60000000)
 /* #define NUM_INIT_REQS (200 * (NR_DPUS * NR_INITIAL_TREES_IN_DPU)) */
 #endif
 
@@ -64,7 +64,9 @@
  * split related parameter
  */
 #define MAX_NUM_SPLIT (5)
+#ifndef SPLIT_THRESHOLD
 #define SPLIT_THRESHOLD (40000)
+#endif
 #define NR_ELEMS_AFTER_SPLIT (SPLIT_THRESHOLD / 2)
 
 
