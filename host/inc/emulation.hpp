@@ -26,7 +26,6 @@ class Emulation;
 
 class EmulatorWorkerManager
 {
-    std::thread threads[EMU_MULTI_THREAD];
     bool stop;
     std::condition_variable cond;
     std::mutex mtx;
@@ -38,7 +37,7 @@ public:
     EmulatorWorkerManager()
     {
         for (int i = 0; i < EMU_MULTI_THREAD; i++)
-            threads[i] = std::thread([&] { this->run(); });
+            std::thread([&] { this->run(); }).detach();
         nr_running = 0;
         stop = false;
     }
@@ -356,10 +355,11 @@ private:
         for (unsigned idx_req = 0; idx_req < mram->end_idx; idx_req++) {
             key_int64_t key = mram->request_buffer[idx_req].key;
             const auto one_after_the_target = std::upper_bound(cbegin(subtree) + 1, cend(subtree), key, [](auto key, auto& subtree) {
-                return key >= subtree.cbegin()->first;
+                return key < subtree.cbegin()->first;
             });
             const auto target_subtree = one_after_the_target - 1;
             const auto it = target_subtree->find(key);
+            mram->results.get[idx_req].key = key;
             if (it != target_subtree->end())
                 mram->results.get[idx_req].get_result = it->second;
             else

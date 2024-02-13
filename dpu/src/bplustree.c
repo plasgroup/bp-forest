@@ -1,11 +1,13 @@
 #include "bplustree.h"
 #include "cabin.h"
 #include "common.h"
+#include "workload_types.h"
 #include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
 
 MBPTptr root[NR_SEATS_IN_DPU];
+key_int64_t lower_bounds[NR_SEATS_IN_DPU];
 
 // #define USE_LINEAR_SEARCH
 #define BITMAP_NUM_ELEMS (MAX_NUM_NODES_IN_SEAT / 32)

@@ -169,13 +169,36 @@ struct Option {
 } opt;
 
 #ifdef DEBUG_ON
+struct CompByKey {
+    template <class LHS, class RHS>
+    constexpr bool operator()(const LHS& lhs, const RHS& rhs)
+    {
+        return lhs.key < rhs.key;
+    }
+};
+struct EqualByKey {
+    template <class LHS, class RHS>
+    constexpr bool operator()(const LHS& lhs, const RHS& rhs)
+    {
+        return lhs.key == rhs.key;
+    }
+};
+
 void check_get_results(dpu_get_results_t dpu_get_results[], std::array<unsigned, NR_DPUS>& num_keys_for_DPU)
 {
     for (dpu_id_t dpu = 0; dpu < NR_DPUS; dpu++) {
-        for (unsigned index = 0; index < num_keys_for_DPU.at(dpu); index++) {
-            key_int64_t key = dpu_requests[dpu][index].key;
-            auto it = verify_db.lower_bound(key);
-            if (it == verify_db.end() || it->first != key)
+        const auto num_queries = num_keys_for_DPU.at(dpu);
+
+        std::sort(&dpu_requests[dpu][0], &dpu_requests[dpu][num_queries], CompByKey{});
+        std::sort(&dpu_get_results[dpu][0], &dpu_get_results[dpu][num_queries], CompByKey{});
+        assert(std::equal(
+            &dpu_requests[dpu][0], &dpu_requests[dpu][num_queries],
+            &dpu_get_results[dpu][0], &dpu_get_results[dpu][num_queries], EqualByKey{}));
+
+        for (unsigned index = 0; index < num_queries; index++) {
+            key_int64_t key = dpu_get_results[dpu][index].key;
+            const auto it = verify_db.find(key);
+            if (it == verify_db.end())
                 assert(dpu_get_results[dpu][index].get_result == 0);
             else
                 assert(dpu_get_results[dpu][index].get_result == it->second);
@@ -342,19 +365,19 @@ private:
     void count_get_requests_job()
     {
         for (unsigned i = start; i < end; i++) {
-            count[host_tree->dpu_resposible_for_get_query_with(requests[i])]++;
+            count[host_tree->dpu_responsible_for_get_query_with(requests[i])]++;
         }
     }
     void count_insert_requests_job()
     {
         for (unsigned i = start; i < end; i++) {
-            count[host_tree->dpu_resposible_for_insert_query_with(requests[i])]++;
+            count[host_tree->dpu_responsible_for_insert_query_with(requests[i])]++;
         }
     }
     void count_pred_requests_job()
     {
         for (unsigned i = start; i < end; i++) {
-            count[host_tree->dpu_resposible_for_pred_query_with(requests[i])]++;
+            count[host_tree->dpu_responsible_for_pred_query_with(requests[i])]++;
         }
     }
 
@@ -384,7 +407,7 @@ private:
     {
         for (int i = start; i < end; i++) {
             const key_int64_t key = requests[i];
-            const auto idx_dpu = host_tree->dpu_resposible_for_get_query_with(key);
+            const auto idx_dpu = host_tree->dpu_responsible_for_get_query_with(key);
             const auto idx_in_buf = count[idx_dpu]++;
             dpu_requests[idx_dpu][idx_in_buf].key = key;
         }
@@ -393,7 +416,7 @@ private:
     {
         for (int i = start; i < end; i++) {
             const key_int64_t key = requests[i];
-            const auto idx_dpu = host_tree->dpu_resposible_for_insert_query_with(key);
+            const auto idx_dpu = host_tree->dpu_responsible_for_insert_query_with(key);
             const auto idx_in_buf = count[idx_dpu]++;
             dpu_requests[idx_dpu][idx_in_buf].key = key;
             dpu_requests[idx_dpu][idx_in_buf].write_val_ptr = key;
@@ -403,7 +426,7 @@ private:
     {
         for (int i = start; i < end; i++) {
             const key_int64_t key = requests[i];
-            const auto idx_dpu = host_tree->dpu_resposible_for_pred_query_with(key);
+            const auto idx_dpu = host_tree->dpu_responsible_for_pred_query_with(key);
             const auto idx_in_buf = count[idx_dpu]++;
             dpu_requests[idx_dpu][idx_in_buf].key = key;
         }
@@ -490,6 +513,12 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     if (num_keys_batch == 0) {
         return 0;
     }
+#ifdef DEBUG_ON
+    constexpr key_int64_t KeyInterval = (KEY_MAX - KEY_MIN) / NUM_INIT_REQS;
+    for (size_t i = 0; i < num_keys_batch; i += 2u) {
+        batch_keys[i] = batch_keys[i] / KeyInterval * KeyInterval;
+    }
+#endif /* DEBUG_ON */
 
     /* 1. count number of queries for each DPU */
     auto count_requests = [&] {
@@ -508,17 +537,17 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
         switch (task) {
         case TASK_GET:
             for (int i = 0; i < num_keys_batch; i++) {
-                batch_ctx.num_keys_for_DPU[host_tree.dpu_resposible_for_get_query_with(batch_keys[i])]++;
+                batch_ctx.num_keys_for_DPU[host_tree.dpu_responsible_for_get_query_with(batch_keys[i])]++;
             }
             break;
         case TASK_INSERT:
             for (int i = 0; i < num_keys_batch; i++) {
-                batch_ctx.num_keys_for_DPU[host_tree.dpu_resposible_for_insert_query_with(batch_keys[i])]++;
+                batch_ctx.num_keys_for_DPU[host_tree.dpu_responsible_for_insert_query_with(batch_keys[i])]++;
             }
             break;
         case TASK_PRED:
             for (int i = 0; i < num_keys_batch; i++) {
-                batch_ctx.num_keys_for_DPU[host_tree.dpu_resposible_for_pred_query_with(batch_keys[i])]++;
+                batch_ctx.num_keys_for_DPU[host_tree.dpu_responsible_for_pred_query_with(batch_keys[i])]++;
             }
             break;
         default:
@@ -546,11 +575,11 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     preprocess_time2 = measure_time([&] {
 #ifdef HOST_MULTI_THREAD
         std::array<unsigned, NR_DPUS> request_count_accumulator{};
-        for (int i = HOST_MULTI_THREAD - 1; i >= 0; i--)
+        for (int i = 0; i < HOST_MULTI_THREAD; i++)
             ppwk[i].set_partial_sum_of_request_counts(request_count_accumulator);
-        for (int i = HOST_MULTI_THREAD - 1; i >= 0; i--)
+        for (int i = 0; i < HOST_MULTI_THREAD; i++)
             ppwk[i].fill_requests(task);
-        for (int i = HOST_MULTI_THREAD - 1; i >= 0; i--)
+        for (int i = 0; i < HOST_MULTI_THREAD; i++)
             ppwk[i].join();
 #else  /* HOST_MULTI_THREAD */
         std::array<unsigned, NR_DPUS> request_count{};
@@ -558,7 +587,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
         case TASK_GET:
             for (int i = 0; i < num_keys_batch; i++) {
                 const key_int64_t key = batch_keys[i];
-                const auto idx_dpu = host_tree.dpu_resposible_for_get_query_with(key);
+                const auto idx_dpu = host_tree.dpu_responsible_for_get_query_with(key);
                 const auto idx_in_buf = request_count[idx_dpu]++;
                 dpu_requests[idx_dpu][idx_in_buf].key = key;
             }
@@ -566,7 +595,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
         case TASK_INSERT:
             for (int i = 0; i < num_keys_batch; i++) {
                 const key_int64_t key = batch_keys[i];
-                const auto idx_dpu = host_tree.dpu_resposible_for_insert_query_with(key);
+                const auto idx_dpu = host_tree.dpu_responsible_for_insert_query_with(key);
                 const auto idx_in_buf = request_count[idx_dpu]++;
                 dpu_requests[idx_dpu][idx_in_buf].key = key;
                 dpu_requests[idx_dpu][idx_in_buf].write_val_ptr = key;
@@ -575,7 +604,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
         case TASK_PRED:
             for (int i = 0; i < num_keys_batch; i++) {
                 const key_int64_t key = batch_keys[i];
-                const auto idx_dpu = host_tree.dpu_resposible_for_pred_query_with(key);
+                const auto idx_dpu = host_tree.dpu_responsible_for_pred_query_with(key);
                 const auto idx_in_buf = request_count[idx_dpu]++;
                 dpu_requests[idx_dpu][idx_in_buf].key = key;
             }

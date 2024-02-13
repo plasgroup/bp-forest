@@ -7,6 +7,7 @@ extern "C" {
 
 
 #include "workload_types.h"
+#include "bit_ops_macro.h"
 
 #include <stdint.h>
 
@@ -34,7 +35,7 @@ extern "C" {
 #define MAX_NUM_NODES_IN_SEAT (MRAM_CABIN_BYTES / NR_SEATS_IN_DPU / sizeof(BPTreeNode))
 
 #ifndef MAX_REQ_NUM_IN_A_DPU
-#define MAX_REQ_NUM_IN_A_DPU (MRAM_REQUEST_BUFFER_BYTES / sizeof(each_request_t) / 2)
+#define MAX_REQ_NUM_IN_A_DPU (BIT_CEIL_UINT32(MRAM_REQUEST_BUFFER_BYTES / sizeof(each_request_t) / 2))
 #endif
 
 
@@ -69,6 +70,7 @@ typedef struct {
 typedef each_request_t dpu_requests_t[MAX_REQ_NUM_IN_A_DPU];
 
 typedef struct {
+    key_int64_t key;
     value_ptr_t get_result;
 } each_get_result_t;
 
@@ -139,6 +141,9 @@ typedef struct KVPair {
     printf("[Debug at %s:%d] " #NAME " = " #FORMAT "\n", __FILE__, __LINE__, NAME);
 #define PRINT_POSITION_AND_MESSAGE(MESSAGE) \
     printf("[Debug at %s:%d] " #MESSAGE "\n", __FILE__, __LINE__);
+
+
+_Static_assert(HAS_SINGLE_BIT_UINT(MAX_REQ_NUM_IN_A_DPU), "BIT_CEIL_UINT32 macro is broken");
 
 
 #ifdef __cplusplus

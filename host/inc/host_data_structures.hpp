@@ -13,14 +13,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iomanip>
+#include <iosfwd>
 #include <iterator>
 #include <limits>
 #include <map>
 #include <numeric>
 
-#ifdef PRINT_DEBUG
-#include <cstdio>
-#endif /* PRINT_DEBUG */
 
 class Migration;
 
@@ -58,7 +57,7 @@ public:
         return num_kvpairs[idx_dpu];
     }
 
-    dpu_id_t dpu_resposible_for_get_query_with(key_int64_t key)
+    dpu_id_t dpu_responsible_for_get_query_with(key_int64_t key)
     {
         // `one_after_the_target` refers to the first lower-bound greater than `key`
         //     ==> it corresponds to the left-most DPU whose KV pairs are all to the right of `key`
@@ -66,18 +65,31 @@ public:
         const auto one_after_the_target = std::upper_bound(lower_bounds.cbegin() + 1, lower_bounds.cend(), key);
         return static_cast<dpu_id_t>(one_after_the_target - (lower_bounds.cbegin() + 1));
     }
-    dpu_id_t dpu_resposible_for_insert_query_with(key_int64_t key)
+    dpu_id_t dpu_responsible_for_insert_query_with(key_int64_t key)
     {
-        return dpu_resposible_for_get_query_with(key);
+        return dpu_responsible_for_get_query_with(key);
     }
 
-    dpu_id_t dpu_resposible_for_pred_query_with(key_int64_t key)
+    dpu_id_t dpu_responsible_for_pred_query_with(key_int64_t key)
     {
         // `one_after_the_target` refers to the first lower-bound not less than `key`
         //     ==> it corresponds to the left-most DPU where even the first KV pair is not to left of `key`
         //     ==> `one_after_the_target - 1` corresponds to the DPU whose range includes `key`
         const auto one_after_the_target = std::lower_bound(lower_bounds.cbegin() + 1, lower_bounds.cend(), key);
         return static_cast<dpu_id_t>(one_after_the_target - (lower_bounds.cbegin() + 1));
+    }
+
+    friend std::ostream& operator<<(std::ostream& os, HostTree& tree)
+    {
+        constexpr auto digits = std::numeric_limits<key_int64_t>::digits10 + 1;
+        for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
+            std::cout << "DPU[" << idx_dpu << "]: "
+                      << tree.num_kvpairs.at(idx_dpu) << " pairs for ["
+                      << std::setw(digits) << tree.lower_bounds.at(idx_dpu) << ", "
+                      << std::setw(digits) << (idx_dpu + 1u == NR_DPUS ? KEY_MAX : tree.lower_bounds.at(idx_dpu + 1u)) << ")" << std::endl;
+        }
+
+        return os;
     }
 };
 

@@ -11,6 +11,7 @@
 typedef __mram_ptr struct BPTreeNode* MBPTptr;
 typedef __mram_ptr KVPair* KVPairPtr;
 extern MBPTptr root[NR_SEATS_IN_DPU];
+extern key_int64_t lower_bounds[NR_SEATS_IN_DPU];
 
 typedef struct InternalNodePtrs {
     MBPTptr children[MAX_CHILD + 1];
