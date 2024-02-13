@@ -150,10 +150,10 @@ void Migration::migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migr
             break;
         if (nr_used_seats[dpu_ids[l]] <= 1) {
 #ifndef EXTRA_MIGRATION
+            break;
+#else  /* EXTRA_MIGRATION */
             l++;
             continue;
-#else  /* EXTRA_MIGRATION */
-            break;
 #endif /* EXTRA_MIGRATION */
         }
         if (nr_used_seats[dpu_ids[r]] >= SOFT_LIMIT_NR_TREES_IN_DPU || nr_used_seats[dpu_ids[r]] + nr_freeing_seats[dpu_ids[r]] >= NR_SEATS_IN_DPU) {
