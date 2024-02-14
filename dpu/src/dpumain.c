@@ -167,12 +167,13 @@ int main()
         //         break;
         //     }
     case TASK_GET: {
-        parallel_sort_requests(end_idx, &my_barrier);
-        barrier_wait(&my_barrier);
-
         // DPU側で負荷分散する
         const unsigned start_index = end_idx * tid / NR_TASKLETS;
         const unsigned end_index = end_idx * (tid + 1) / NR_TASKLETS;
+
+#ifdef DPU_SORT_QUERIES
+        parallel_sort_requests(end_idx, &my_barrier);
+        barrier_wait(&my_barrier);
 
         if (start_index < end_index) {
             unsigned idx_req = start_index;
@@ -194,6 +195,18 @@ int main()
                 results.get[idx_req].get_result = BPTreeGet(key, idx_tree);
             }
         }
+#else /* DPU_SORT_QUERIES */
+        for (unsigned idx_req = start_index; idx_req < end_index; idx_req++) {
+            const key_int64_t key = request_buffer[idx_req].key;
+            const unsigned idx_tree = tree_responsible_for_get_request_with(key);
+            results.get[idx_req].key = key;
+            if (idx_tree == UINT_MAX) {
+                results.get[idx_req].get_result = 0;
+            } else {
+                results.get[idx_req].get_result = BPTreeGet(key, idx_tree);
+            }
+        }
+#endif /* DPU_SORT_QUERIES */
         break;
     }
     // case TASK_SUCC: {
