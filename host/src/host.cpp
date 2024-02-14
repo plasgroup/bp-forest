@@ -739,7 +739,7 @@ int main(int argc, char* argv[])
     int batch_num = 0;
     uint64_t total_num_keys = 0;
 #ifdef PRINT_DISTRIBUTION
-    printf("batch, DPU, nqueries, nnodes\n");
+    printf("batch, DPU, nqueries, nkvpairs, nnodes\n");
 #endif /* PRINT_DISTRIBUTION */
 #ifndef PRINT_DISTRIBUTION
     printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time, execution_time, receive_result_time, merge_time, batch_time, throughput\n");
