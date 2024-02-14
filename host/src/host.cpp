@@ -243,7 +243,7 @@ void check_succ_results(dpu_succ_results_t dpu_succ_results[], std::array<unsign
     };
 
     [[maybe_unused]] const auto num_pieces = workload_dist.densities.size();
-    const auto sum_weight = std::reduce(workload_dist.densities.cbegin(), workload_dist.densities.cend());
+    const auto sum_weight = std::accumulate(workload_dist.densities.cbegin(), workload_dist.densities.cend(), double{0});
     const auto weight_for_each_tree = sum_weight / NrInitTrees;
 
     HostTree host_struct;
@@ -484,6 +484,9 @@ public:
 PreprocessWorker ppwk[HOST_MULTI_THREAD];
 #endif /* HOST_MULTI_THREAD */
 
+#ifdef TOUCH_QUERIES_IN_ADVANCE
+key_int64_t accumulated_key_numbers = 0;
+#endif /* TOUCH_QUERIES_IN_ADVANCE */
 int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, uint64_t& total_num_keys, const int max_key_num, WorkloadBuffer& workload_buffer, HostTree& host_tree, BatchCtx& batch_ctx)
 {
 #ifdef PRINT_DEBUG
@@ -513,6 +516,9 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     if (num_keys_batch == 0) {
         return 0;
     }
+#ifdef TOUCH_QUERIES_IN_ADVANCE
+    accumulated_key_numbers = std::accumulate(&batch_keys[0], &batch_keys[num_keys_batch], key_int64_t{0});
+#endif /* TOUCH_QUERIES_IN_ADVANCE */
 #ifdef DEBUG_ON
     constexpr key_int64_t KeyInterval = (KEY_MAX - KEY_MIN) / NUM_INIT_REQS;
     for (size_t i = 0; i < num_keys_batch; i += 2u) {

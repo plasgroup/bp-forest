@@ -18,7 +18,7 @@ constexpr size_t NR_DPUS_IN_RANK = 64;
 #ifndef NR_INITIAL_TREES_IN_DPU
 constexpr size_t NR_INITIAL_TREES_IN_DPU = 12;
 #endif
-static_assert(NR_SEATS_IN_DPU >= NR_INITIAL_TREES_IN_DPU, "parameter error: NR_SEAT_IN_DPU < NR_INITIAL_TREES_IN_DPU");
+static_assert(NR_SEATS_IN_DPU == NR_INITIAL_TREES_IN_DPU, "parameter error: NR_SEAT_IN_DPU != NR_INITIAL_TREES_IN_DPU");
 
 #ifndef NUM_REQUESTS_PER_BATCH
 constexpr size_t NUM_REQUESTS_PER_BATCH = 1000000;
