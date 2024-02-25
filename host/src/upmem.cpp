@@ -1,5 +1,6 @@
 #include "upmem.hpp"
 
+#include "scattered_batch_transfer_buffer.hpp"
 #include "batch_transfer_buffer.hpp"
 #include "common.h"
 #include "dpu_set.hpp"
@@ -12,6 +13,7 @@
 #include <sys/time.h>
 
 #include <cstdint>
+#include <utility>
 
 #ifdef PRINT_DEBUG
 #include <cstdio>
@@ -38,6 +40,8 @@ template <bool ToDPU, class BatchTransferBuffer>
 static void xfer_with_dpu(const DPUSet& set, const char* symbol, BatchTransferBuffer&& buf);
 template <typename T>
 static void broadcast_to_dpu(const DPUSet& set, const char* symbol, const Single<T>& datum);
+template <bool ToDPU, class ScatteredBatchTransferBuffer>
+static void scatter_gather_with_dpu(const DPUSet& set, const char* symbol, ScatteredBatchTransferBuffer&& buf);
 
 static void execute(const DPUSet& set);
 
@@ -50,12 +54,23 @@ static void execute(const DPUSet& set);
 template <class BatchTransferBuffer>
 static void send_to_dpu(const DPUSet& set, const char* symbol, BatchTransferBuffer&& buf)
 {
-    xfer_with_dpu<true>(set, symbol, buf);
+    xfer_with_dpu<true>(set, symbol, std::forward<BatchTransferBuffer>(buf));
 }
 template <class BatchTransferBuffer>
 static void recv_from_dpu(const DPUSet& set, const char* symbol, BatchTransferBuffer&& buf)
 {
-    xfer_with_dpu<false>(set, symbol, buf);
+    xfer_with_dpu<false>(set, symbol, std::forward<BatchTransferBuffer>(buf));
+}
+
+template <class ScatteredBatchTransferBuffer>
+static void gather_to_dpu(const DPUSet& set, const char* symbol, ScatteredBatchTransferBuffer&& buf)
+{
+    scatter_gather_with_dpu<true>(set, symbol, std::forward<ScatteredBatchTransferBuffer>(buf));
+}
+template <class ScatteredBatchTransferBuffer>
+static void scatter_from_dpu(const DPUSet& set, const char* symbol, ScatteredBatchTransferBuffer&& buf)
+{
+    scatter_gather_with_dpu<false>(set, symbol, std::forward<ScatteredBatchTransferBuffer>(buf));
 }
 
 
@@ -129,11 +144,15 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
     case TASK_INSERT:
     case TASK_SUCC: {
         send_to_dpu(all_dpu, "end_idx", EachInArray{batch_ctx.num_keys_for_DPU.data()});
+#if defined(HOST_MULTI_THREAD) && defined(QUERY_GATHER_XFER)
+        gather_to_dpu(all_dpu, "request_buffer", ArrayOfScatteredArray{dpu_requests.get(), batch_ctx.num_keys_for_DPU.data()});
+#else
 #ifdef RANK_ORIENTED_XFER
         send_to_dpu(all_dpu, "request_buffer", VariousSizeIn2DArray{dpu_requests.get(), batch_ctx.num_keys_for_DPU.data()});
 #else  /* RANK_ORIENTED_XFER */
         send_to_dpu(all_dpu, "request_buffer", SameSizeIn2DArray{dpu_requests.get(), batch_ctx.send_size});
 #endif /* RANK_ORIENTED_XFER */
+#endif /* HOST_MULTI_THREAD && QUERY_GATHER_XFER */
         break;
     default:
         abort();

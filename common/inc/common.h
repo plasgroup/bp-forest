@@ -66,9 +66,6 @@ typedef struct {
     value_ptr_t write_val_ptr;  // write pointer to the value if request is write
 } each_request_t;
 
-/* requests for a DPU in a batch */
-typedef each_request_t dpu_requests_t[MAX_REQ_NUM_IN_A_DPU];
-
 typedef struct {
     key_int64_t key;
     value_ptr_t get_result;

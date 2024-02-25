@@ -1,5 +1,6 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#include <memory>
 #endif
 
 #include "common.h"
@@ -32,6 +33,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <vector>
 
@@ -184,15 +186,30 @@ struct EqualByKey {
     }
 };
 
+#if defined(HOST_MULTI_THREAD) && defined(QUERY_GATHER_XFER)
+static std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]> dpu_req_copy{new each_request_t[NR_DPUS][MAX_REQ_NUM_IN_A_DPU]};
+#endif
+
 void check_get_results(dpu_get_results_t dpu_get_results[], std::array<unsigned, NR_DPUS>& num_keys_for_DPU)
 {
     for (dpu_id_t dpu = 0; dpu < NR_DPUS; dpu++) {
         const auto num_queries = num_keys_for_DPU.at(dpu);
 
-        std::sort(&dpu_requests[dpu][0], &dpu_requests[dpu][num_queries], CompByKey{});
-        std::sort(&dpu_get_results[dpu][0], &dpu_get_results[dpu][num_queries], CompByKey{});
+#if defined(HOST_MULTI_THREAD) && defined(QUERY_GATHER_XFER)
+        for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
+            each_request_t* output = &dpu_req_copy[idx_dpu][0];
+            for (block_id_t idx_block = 0; idx_block < HOST_MULTI_THREAD; idx_block++) {
+                const SizedBuffer<each_request_t, QUERY_BUFFER_BLOCK_SIZE>& block = dpu_requests[idx_dpu][idx_block];
+                output = std::copy_n(block.buf.cbegin(), block.size_in_elems, output);
+            }
+        }
+        std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& orig_requests = dpu_req_copy;
+#else  /* HOST_MULTI_THREAD && QUERY_GATHER_XFER */
+        std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& orig_requests = dpu_requests;
+#endif /* HOST_MULTI_THREAD && QUERY_GATHER_XFER */
+
         assert(std::equal(
-            &dpu_requests[dpu][0], &dpu_requests[dpu][num_queries],
+            &orig_requests[dpu][0], &orig_requests[dpu][num_queries],
             &dpu_get_results[dpu][0], &dpu_get_results[dpu][num_queries], EqualByKey{}));
 
         for (unsigned index = 0; index < num_queries; index++) {
@@ -208,9 +225,22 @@ void check_get_results(dpu_get_results_t dpu_get_results[], std::array<unsigned,
 
 void check_succ_results(dpu_succ_results_t dpu_succ_results[], std::array<unsigned, NR_DPUS>& num_keys_for_DPU)
 {
+#if defined(HOST_MULTI_THREAD) && defined(QUERY_GATHER_XFER)
+    for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
+        each_request_t* output = &dpu_req_copy[idx_dpu][0];
+        for (block_id_t idx_block = 0; idx_block < HOST_MULTI_THREAD; idx_block++) {
+            const SizedBuffer<each_request_t, QUERY_BUFFER_BLOCK_SIZE>& block = dpu_requests[idx_dpu][idx_block];
+            output = std::copy_n(block.buf.cbegin(), block.size_in_elems, output);
+        }
+    }
+    std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& orig_requests = dpu_req_copy;
+#else  /* HOST_MULTI_THREAD && QUERY_GATHER_XFER */
+    std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& orig_requests = dpu_requests;
+#endif /* HOST_MULTI_THREAD && QUERY_GATHER_XFER */
+
     for (dpu_id_t dpu = 0; dpu < NR_DPUS; dpu++) {
         for (unsigned index = 0; index < num_keys_for_DPU.at(dpu); index++) {
-            key_int64_t key = dpu_requests[dpu][index].key;
+            key_int64_t key = orig_requests[dpu][index].key;
             auto it = verify_db.upper_bound(key);
             if (it == verify_db.end()) {
                 assert(dpu_succ_results[dpu][index].succ_val_ptr == 0);
@@ -316,6 +346,7 @@ class PreprocessWorker
     key_int64_t* requests;
     unsigned start, end;
     HostTree* host_tree;
+    unsigned worker_idx;
     std::thread t;
     std::array<unsigned, NR_DPUS> count;
     std::condition_variable cond;
@@ -352,13 +383,14 @@ public:
         t.join();
     }
 
-    void initialize(key_int64_t* r, unsigned s, unsigned e, HostTree& h)
+    void initialize(key_int64_t* r, unsigned s, unsigned e, HostTree& h, unsigned w)
     {
         count.fill(0);
         requests = r;
         start = s;
         end = e;
         host_tree = &h;
+        worker_idx = w;
     }
 
 private:
@@ -405,31 +437,59 @@ public:
 private:
     void fill_get_requests_job()
     {
-        for (int i = start; i < end; i++) {
+        for (unsigned i = start; i < end; i++) {
             const key_int64_t key = requests[i];
             const auto idx_dpu = host_tree->dpu_responsible_for_get_query_with(key);
             const auto idx_in_buf = count[idx_dpu]++;
+#ifdef QUERY_GATHER_XFER
+            dpu_requests[idx_dpu][worker_idx].buf[idx_in_buf].key = key;
+#else
             dpu_requests[idx_dpu][idx_in_buf].key = key;
+#endif
         }
+#ifdef QUERY_GATHER_XFER
+        for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
+            dpu_requests[idx_dpu][worker_idx].size_in_elems = count[idx_dpu];
+        }
+#endif
     }
     void fill_insert_requests_job()
     {
-        for (int i = start; i < end; i++) {
+        for (unsigned i = start; i < end; i++) {
             const key_int64_t key = requests[i];
             const auto idx_dpu = host_tree->dpu_responsible_for_insert_query_with(key);
             const auto idx_in_buf = count[idx_dpu]++;
+#ifdef QUERY_GATHER_XFER
+            dpu_requests[idx_dpu][worker_idx].buf[idx_in_buf].key = key;
+            dpu_requests[idx_dpu][worker_idx].buf[idx_in_buf].write_val_ptr = key;
+#else
             dpu_requests[idx_dpu][idx_in_buf].key = key;
             dpu_requests[idx_dpu][idx_in_buf].write_val_ptr = key;
+#endif
         }
+#ifdef QUERY_GATHER_XFER
+        for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
+            dpu_requests[idx_dpu][worker_idx].size_in_elems = count[idx_dpu];
+        }
+#endif
     }
     void fill_pred_requests_job()
     {
-        for (int i = start; i < end; i++) {
+        for (unsigned i = start; i < end; i++) {
             const key_int64_t key = requests[i];
             const auto idx_dpu = host_tree->dpu_responsible_for_pred_query_with(key);
             const auto idx_in_buf = count[idx_dpu]++;
+#ifdef QUERY_GATHER_XFER
+            dpu_requests[idx_dpu][worker_idx].buf[idx_in_buf].key = key;
+#else
             dpu_requests[idx_dpu][idx_in_buf].key = key;
+#endif
         }
+#ifdef QUERY_GATHER_XFER
+        for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
+            dpu_requests[idx_dpu][worker_idx].size_in_elems = count[idx_dpu];
+        }
+#endif
     }
 
 public:
@@ -529,15 +589,17 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     /* 1. count number of queries for each DPU */
     auto count_requests = [&] {
 #ifdef HOST_MULTI_THREAD
-        for (int i = 0; i < HOST_MULTI_THREAD; i++) {
-            int start = num_keys_batch * i / HOST_MULTI_THREAD;
-            int end = num_keys_batch * (i + 1) / HOST_MULTI_THREAD;
-            ppwk[i].initialize(batch_keys, start, end, host_tree);
+        for (unsigned i = 0; i < HOST_MULTI_THREAD; i++) {
+            unsigned start = num_keys_batch * i / HOST_MULTI_THREAD;
+            unsigned end = num_keys_batch * (i + 1) / HOST_MULTI_THREAD;
+            ppwk[i].initialize(batch_keys, start, end, host_tree, i);
+#ifndef QUERY_GATHER_XFER
             ppwk[i].count_requests(task);
         }
         for (int i = 0; i < HOST_MULTI_THREAD; i++) {
             ppwk[i].join();
             ppwk[i].add_request_count(batch_ctx.num_keys_for_DPU);
+#endif
         }
 #else  /* HOST_MULTI_THREAD */
         switch (task) {
@@ -580,13 +642,19 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     /* 4. prepare requests to send to DPUs */
     preprocess_time2 = measure_time([&] {
 #ifdef HOST_MULTI_THREAD
+#ifndef QUERY_GATHER_XFER
         std::array<unsigned, NR_DPUS> request_count_accumulator{};
         for (int i = 0; i < HOST_MULTI_THREAD; i++)
             ppwk[i].set_partial_sum_of_request_counts(request_count_accumulator);
+#endif
         for (int i = 0; i < HOST_MULTI_THREAD; i++)
             ppwk[i].fill_requests(task);
-        for (int i = 0; i < HOST_MULTI_THREAD; i++)
+        for (int i = 0; i < HOST_MULTI_THREAD; i++) {
             ppwk[i].join();
+#ifdef QUERY_GATHER_XFER
+            ppwk[i].add_request_count(batch_ctx.num_keys_for_DPU);
+#endif
+        }
 #else  /* HOST_MULTI_THREAD */
         std::array<unsigned, NR_DPUS> request_count{};
         switch (task) {

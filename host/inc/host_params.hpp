@@ -2,6 +2,8 @@
 
 #include "common.h"
 
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -42,3 +44,19 @@ constexpr size_t NUM_ELEMS_AFTER_MERGE = 2000;
 
 using dpu_id_t = uint32_t;
 constexpr dpu_id_t INVALID_DPU_ID = std::numeric_limits<dpu_id_t>::max();
+
+using block_id_t = uint32_t;
+
+template <class T, size_t BlockSize>
+struct SizedBuffer {
+    uint32_t size_in_elems;
+    std::array<T, BlockSize> buf;
+};
+
+/* requests for a DPU in a batch */
+#if defined(HOST_MULTI_THREAD) && defined(QUERY_GATHER_XFER)
+constexpr size_t QUERY_BUFFER_BLOCK_SIZE = MAX_REQ_NUM_IN_A_DPU / HOST_MULTI_THREAD + MAX_REQ_NUM_IN_A_DPU / 100;
+using dpu_requests_t = SizedBuffer<each_request_t, QUERY_BUFFER_BLOCK_SIZE>[HOST_MULTI_THREAD];
+#else
+using dpu_requests_t = each_request_t[MAX_REQ_NUM_IN_A_DPU];
+#endif

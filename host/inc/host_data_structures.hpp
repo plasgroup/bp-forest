@@ -94,20 +94,9 @@ public:
 };
 
 /* Data structures in host for managing queries in a batch */
-class BatchCtx
-{
-public:
-    int DPU_idx[NR_DPUS]{};
+struct BatchCtx {
     std::array<unsigned, NR_DPUS> num_keys_for_DPU{};
     unsigned send_size{};
-    BatchCtx()
-    {
-        for (int i = 0; i < NR_DPUS; i++) {
-            DPU_idx[i] = i;
-        }
-    }
-
-private:
 };
 
 #endif /* __HOST_DATA_STRUCTURES_HPP__ */

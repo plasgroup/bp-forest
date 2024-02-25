@@ -10,6 +10,7 @@ extern "C" {
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <sstream>
 #include <type_traits>
 
 
@@ -23,7 +24,19 @@ static std::array<dpu_set_t, NR_DPUS> each_dpu_impl;
 
 static void upmem_init_impl(const char* binary, bool is_simulator)
 {
-    DPU_ASSERT(dpu_alloc(NR_DPUS, (is_simulator ? "backend=simulator" : NULL), &all_dpu_impl));
+    std::ostringstream sstr;
+#if defined(HOST_MULTI_THREAD) && defined(QUERY_GATHER_XFER)
+    sstr << "sgXferEnable=true,sgXferMaxBlocksPerDpu=" << HOST_MULTI_THREAD << ",";
+#endif
+    if (is_simulator) {
+        sstr << "backend=simulator,";
+    }
+    std::string profile = sstr.str();
+    if (!profile.empty()) {
+        profile.pop_back();  // remove trailing comma
+    }
+
+    DPU_ASSERT(dpu_alloc(NR_DPUS, profile.c_str(), &all_dpu_impl));
     all_dpu.idx_begin = 0;
     all_dpu.idx_end = NR_DPUS;
     all_dpu.impl = all_dpu_impl;
@@ -99,6 +112,36 @@ template <typename T>
 static void broadcast_to_dpu(const DPUSet& set, const char* symbol, const Single<T>& datum)
 {
     DPU_ASSERT(dpu_broadcast_to(set.impl, symbol, 0, datum.for_dpu(0), datum.bytes_for_dpu(0), DPU_XFER_DEFAULT));
+}
+
+template <class F>
+static bool get_block_func_wrapper(sg_block_info* out, uint32_t dpu_index, uint32_t block_index, void* impl)
+{
+    return (*reinterpret_cast<F*>(impl))(out, dpu_index, block_index);
+}
+
+template <bool ToDPU, class ScatteredBatchTransferBuffer>
+static void scatter_gather_with_dpu(const DPUSet& set, const char* symbol, ScatteredBatchTransferBuffer&& buf)
+{
+    static_assert(std::is_trivially_copyable_v<std::remove_reference_t<ScatteredBatchTransferBuffer>>,
+        "callable object for scatter_gather_with_dpu should be trivially copyable");
+
+    constexpr dpu_xfer_t Direction = ToDPU ? DPU_XFER_TO_DPU : DPU_XFER_FROM_DPU;
+    assert(set.idx_begin % NR_DPUS_IN_RANK == 0);
+    assert(set.idx_end % NR_DPUS_IN_RANK == 0);
+
+    const dpu_id_t idx_dpu_end = set.idx_end;
+    for (dpu_id_t idx_dpu = set.idx_begin, idx_rank = idx_dpu / NR_DPUS_IN_RANK; idx_dpu < idx_dpu_end; idx_rank++) {
+        const dpu_id_t idx_dpu_end_in_rank = idx_dpu + NR_DPUS_IN_RANK;
+        size_t max_xfer_bytes_in_rank = 0;
+        for (; idx_dpu < idx_dpu_end && idx_dpu < idx_dpu_end_in_rank; idx_dpu++) {
+            max_xfer_bytes_in_rank = std::max(max_xfer_bytes_in_rank, buf.bytes_for_dpu(idx_dpu));
+        }
+        get_block_t get_block{&get_block_func_wrapper<std::remove_reference_t<ScatteredBatchTransferBuffer>>, &buf, sizeof(buf)};
+        DPU_ASSERT(dpu_push_sg_xfer(each_rank_impl[idx_rank], Direction, symbol, 0, max_xfer_bytes_in_rank, &get_block,
+            static_cast<dpu_sg_xfer_flags_t>(DPU_SG_XFER_DISABLE_LENGTH_CHECK | DPU_SG_XFER_ASYNC)));
+    }
+    DPU_ASSERT(dpu_sync(set.impl));
 }
 
 static void execute(const DPUSet& set)
