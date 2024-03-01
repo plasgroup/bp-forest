@@ -29,7 +29,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -83,7 +82,7 @@ struct Option {
     {
         cmdline::parser a;
         a.add<std::string>("zipfianconst", 'a', "zipfian constant", false, "0.99");
-        a.add<std::filesystem::path>("workload_dir", 'w', "directory containing workload files", false, "./workload");
+        a.add<std::string>("workload_dir", 'w', "directory containing workload files", false, "workload");
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
         a.add<int>("migration_num", 'm', "migration_num per batch", false, 5);
         a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, succ", false, "get");
@@ -92,7 +91,7 @@ struct Option {
         a.parse_check(argc, argv);
 
         alpha = a.get<std::string>("zipfianconst");
-        workload_file = a.get<std::filesystem::path>("workload_dir") / ("zipf_const_" + alpha + ".bin");
+        workload_file = a.get<std::string>("workload_dir") + ("/zipf_const_" + alpha + ".bin");
         nr_batches = a.get<int>("num_batches");
         nr_migrations_per_batch = a.get<int>("migration_num");
 
@@ -112,7 +111,7 @@ struct Option {
     }
 
     std::string alpha;
-    std::filesystem::path workload_file;
+    std::string workload_file;
     int nr_batches;
     int nr_migrations_per_batch;
     enum OpType {
