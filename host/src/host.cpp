@@ -615,7 +615,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, W
 #endif
         }
 #else  /* HOST_MULTI_THREAD */
-        std::array<unsigned, NR_DPUS> request_count{};
+        std::array<unsigned, MAX_NR_DPUS> request_count{};
         switch (task) {
         case TASK_GET:
             for (int i = 0; i < num_keys_batch; i++) {
