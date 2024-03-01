@@ -35,7 +35,7 @@ extern "C" {
 #define MAX_NUM_NODES_IN_SEAT (MRAM_CABIN_BYTES / NR_SEATS_IN_DPU / sizeof(BPTreeNode))
 
 #ifndef MAX_REQ_NUM_IN_A_DPU
-#define MAX_REQ_NUM_IN_A_DPU (BIT_CEIL_UINT32(MRAM_REQUEST_BUFFER_BYTES / sizeof(each_request_t) / 2))
+#define MAX_REQ_NUM_IN_A_DPU (BIT_FLOOR_UINT32(MRAM_REQUEST_BUFFER_BYTES / sizeof(each_request_t) / 2))
 #endif
 
 

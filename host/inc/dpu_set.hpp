@@ -1,27 +1,34 @@
 #pragma once
 
+#include "host_params.hpp"
+
+
 #ifdef HOST_ONLY
 
-#include "emulation.hpp"
 #include <bitset>
 
-typedef std::bitset<EMU_MAX_DPUS> DPUSet;
+typedef std::bitset<MAX_NR_DPUS> DPUSet;
 
 
 #else /* HOST_ONLY */
-
-#include "host_params.hpp"
 
 extern "C" {
 #include <dpu.h>
 }
 
-struct DPUSet {
-    dpu_id_t idx_begin, idx_end;
-    dpu_set_t impl;
+#include <variant>
+
+struct DPUSetAll {
 };
+struct DPUSetRanks {
+    dpu_id_t idx_rank_begin, idx_rank_end;
+};
+struct DPUSetSingle {
+    dpu_id_t idx_dpu;
+};
+using DPUSet = std::variant<DPUSetAll, DPUSetRanks, DPUSetSingle>;
 
 #endif /* HOST_ONLY */
 
 
-static DPUSet all_dpu;
+inline DPUSet all_dpu;

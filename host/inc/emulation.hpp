@@ -12,7 +12,6 @@
 #include "host_params.hpp"
 #include "node_defs.hpp"
 
-#define EMU_MAX_DPUS 2550
 #define EMU_MULTI_THREAD 16 /* nr worker threads */
 
 #ifdef EMU_MULTI_THREAD

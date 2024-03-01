@@ -13,12 +13,14 @@
 #include <type_traits>
 
 
-Emulation emu[EMU_MAX_DPUS];
+Emulation emu[MAX_NR_DPUS];
+static constexpr dpu_id_t NrDPUs = MAX_NR_DPUS;
+static constexpr dpu_id_t NrDPUsInRank = MAX_NR_DPUS_IN_RANK;
 
 
-static void upmem_init_impl(const char*, bool)
+static void upmem_init_impl()
 {
-    for (dpu_id_t i = 0; i < NR_DPUS; i++) {
+    for (dpu_id_t i = 0; i < NrDPUs; i++) {
         all_dpu[i] = true;
         emu[i].init(i);
     }
@@ -30,9 +32,13 @@ static void upmem_release_impl()
 }
 
 
-static uint32_t nr_dpus_in_set(const DPUSet& set)
+static dpu_id_t nr_dpus_in_set(const DPUSet& set)
 {
     return set.count();
+}
+dpu_id_t upmem_get_nr_dpus()
+{
+    return NrDPUs;
 }
 
 static void select_dpu(DPUSet* dst, dpu_id_t index)
@@ -48,9 +54,9 @@ static void xfer_with_dpu(const DPUSet& set, const char* symbol, BatchTransferBu
 {
     uint64_t total_xfer_bytes = 0;
     uint64_t total_effective_bytes = 0;
-    for (dpu_id_t i = 0; i < EMU_MAX_DPUS;) {
+    for (dpu_id_t i = 0; i < MAX_NR_DPUS;) {
         size_t max_xfer_bytes = 0;
-        for (dpu_id_t j = 0; i < EMU_MAX_DPUS && j < NR_DPUS_IN_RANK; i++, j++) {
+        for (dpu_id_t j = 0; i < MAX_NR_DPUS && j < NrDPUsInRank; i++, j++) {
             if (set[i]) {
                 auto* const ptr = buf.for_dpu(i);
                 const auto size = buf.bytes_for_dpu(i);
@@ -66,7 +72,7 @@ static void xfer_with_dpu(const DPUSet& set, const char* symbol, BatchTransferBu
                 max_xfer_bytes = std::max(max_xfer_bytes, size);
             }
         }
-        total_xfer_bytes += max_xfer_bytes * NR_DPUS_IN_RANK;
+        total_xfer_bytes += max_xfer_bytes * NrDPUsInRank;
     }
 #ifdef MEASURE_XFER_BYTES
     xfer_statistics.add(symbol, total_xfer_bytes, total_effective_bytes);
@@ -84,9 +90,9 @@ static void scatter_gather_with_dpu(const DPUSet& set, const char* symbol, Scatt
 {
     uint64_t total_xfer_bytes = 0;
     uint64_t total_effective_bytes = 0;
-    for (dpu_id_t i = 0; i < EMU_MAX_DPUS;) {
+    for (dpu_id_t i = 0; i < MAX_NR_DPUS;) {
         size_t max_xfer_bytes = 0;
-        for (dpu_id_t j = 0; i < EMU_MAX_DPUS && j < NR_DPUS_IN_RANK; i++, j++) {
+        for (dpu_id_t j = 0; i < MAX_NR_DPUS && j < NrDPUsInRank; i++, j++) {
             if (set[i]) {
                 uintptr_t mram_addr = reinterpret_cast<uintptr_t>(emu[i].get_addr_of_symbol(symbol));
                 const size_t xfer_bytes = buf.bytes_for_dpu(i);
@@ -106,7 +112,7 @@ static void scatter_gather_with_dpu(const DPUSet& set, const char* symbol, Scatt
                 max_xfer_bytes = std::max(max_xfer_bytes, xfer_bytes);
             }
         }
-        total_xfer_bytes += max_xfer_bytes * NR_DPUS_IN_RANK;
+        total_xfer_bytes += max_xfer_bytes * NrDPUsInRank;
     }
 #ifdef MEASURE_XFER_BYTES
     xfer_statistics.add(symbol, total_xfer_bytes, total_effective_bytes);
@@ -115,7 +121,7 @@ static void scatter_gather_with_dpu(const DPUSet& set, const char* symbol, Scatt
 
 static void execute(const DPUSet& set)
 {
-    for (dpu_id_t i = 0; i < EMU_MAX_DPUS; i++)
+    for (dpu_id_t i = 0; i < MAX_NR_DPUS; i++)
         if (set[i])
             emu[i].execute();
     Emulation::wait_all();

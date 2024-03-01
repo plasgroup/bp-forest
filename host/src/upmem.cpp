@@ -21,19 +21,20 @@
 
 
 /* buffer */
-std::unique_ptr<dpu_requests_t[]> dpu_requests{new dpu_requests_t[NR_DPUS]};
+std::unique_ptr<dpu_requests_t[]> dpu_requests;
 std::unique_ptr<DPUResultsUnion> dpu_results{new DPUResultsUnion};
-merge_info_t merge_info[NR_DPUS];
-dpu_init_param_t dpu_init_param[NR_DPUS][NR_SEATS_IN_DPU];
+merge_info_t merge_info[MAX_NR_DPUS];
+dpu_init_param_t dpu_init_param[MAX_NR_DPUS][NR_SEATS_IN_DPU];
 
 
 //
 // Low level DPU ACCESS
 //
-static void upmem_init_impl(const char* binary, bool is_simulator);
+static void upmem_init_impl();
 static void upmem_release_impl();
 
-static uint32_t nr_dpus_in_set(const DPUSet& set);
+static dpu_id_t nr_dpus_in_set(const DPUSet& set);
+dpu_id_t upmem_get_nr_dpus();
 static void select_dpu(DPUSet* dst, dpu_id_t index);
 
 template <bool ToDPU, class BatchTransferBuffer>
@@ -77,23 +78,21 @@ static void scatter_from_dpu(const DPUSet& set, const char* symbol, ScatteredBat
 //
 //  UPMEM module interface
 //
-void upmem_init(const char* binary, bool is_simulator)
+void upmem_init()
 {
-    upmem_init_impl(binary, is_simulator);
+    upmem_init_impl();
+
+    const dpu_id_t nr_dpus = upmem_get_nr_dpus();
+    dpu_requests.reset(new dpu_requests_t[nr_dpus]);
 
 #ifdef PRINT_DEBUG
-    std::printf("Allocated %d DPU(s)\n", upmem_get_nr_dpus());
+    std::printf("Allocated %d DPU(s)\n", nr_dpus);
 #endif /* PRINT_DEBUG */
 }
 
 void upmem_release()
 {
     upmem_release_impl();
-}
-
-uint32_t upmem_get_nr_dpus()
-{
-    return nr_dpus_in_set(all_dpu);
 }
 
 
@@ -246,8 +245,8 @@ void upmem_receive_num_kvpairs(HostTree* host_tree, float* receive_time)
         *receive_time = time_diff(&start, &end);
 }
 
-void upmem_send_nodes_from_dpu_to_dpu(uint32_t from_DPU, seat_id_t from_tree,
-    uint32_t to_DPU, seat_id_t to_tree)
+void upmem_send_nodes_from_dpu_to_dpu(dpu_id_t from_DPU, seat_id_t from_tree,
+    dpu_id_t to_DPU, seat_id_t to_tree)
 {
     static KVPair tree_migration_buffer[MAX_NUM_NODES_IN_SEAT];
 

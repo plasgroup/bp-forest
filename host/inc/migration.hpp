@@ -20,7 +20,7 @@ class Migration
 private:
     // DPU#i will have  `plan[i]` more KV pairs after migration (if plan[i] > 0)
     //                 `-plan[i]` less KV pairs                 (if plan[i] < 0)
-    std::array<int32_t, NR_DPUS> plan{};
+    std::array<int32_t, MAX_NR_DPUS> plan{};
 
 public:
     Migration() {}

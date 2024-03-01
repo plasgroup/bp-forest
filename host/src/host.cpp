@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -42,8 +43,6 @@
 #define ANSI_COLOR_RESET "\x1b[0m"
 
 /* for stats */
-uint64_t nb_cycles_insert[NR_DPUS];
-uint64_t nb_cycles_get[NR_DPUS];
 uint64_t total_cycles_insert;
 float preprocess_time1;
 float preprocess_time2;
@@ -83,24 +82,20 @@ struct Option {
     void parse(int argc, char* argv[])
     {
         cmdline::parser a;
-        a.add<int>("keynum", 'n', "maximum num of keys for the experiment", false, NUM_REQUESTS_PER_BATCH * DEFAULT_NR_BATCHES);
         a.add<std::string>("zipfianconst", 'a', "zipfian constant", false, "0.99");
+        a.add<std::filesystem::path>("workload_dir", 'w', "directory containing workload files", false, "./workload");
+        a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
         a.add<int>("migration_num", 'm', "migration_num per batch", false, 5);
-        a.add<std::string>("directory", 'd', "execution directory, offset from bp-forest directory. ex)bp-forest-exp", false, ".");
-        a.add("simulator", 's', "if declared, the binary for simulator is used");
         a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, succ", false, "get");
-        a.add<std::string>("print-load", 'q', "print number of queries sent for each seat", false, "");
-        a.add<std::string>("print-subtree-size", 'e', "print number of elements for each seat", false, "");
-        a.add<std::string>("variant", 'b', "build variant", false, "");
+        a.add<dpu_id_t>("print-load", 'q', "print number of queries sent for each dpu", false, 0);
+        a.add<dpu_id_t>("print-subtree-size", 'e', "print number of elements for each dpu", false, 0);
         a.parse_check(argc, argv);
 
-        std::string alpha = a.get<std::string>("zipfianconst");
-        zipfian_const = atof(alpha.c_str());
-        std::string wlf = a.get<std::string>("directory") + "/workload/zipf_const_" + alpha + ".bin";
-        workload_file = strdup(wlf.c_str());
-        nr_total_queries = a.get<int>("keynum");
+        alpha = a.get<std::string>("zipfianconst");
+        workload_file = a.get<std::filesystem::path>("workload_dir") / ("zipf_const_" + alpha + ".bin");
+        nr_batches = a.get<int>("num_batches");
         nr_migrations_per_batch = a.get<int>("migration_num");
-        is_simulator = a.exist("simulator");
+
         if (a.get<std::string>("ops") == "get")
             op_type = OP_TYPE_GET;
         else if (a.get<std::string>("ops") == "insert")
@@ -111,63 +106,22 @@ struct Option {
             fprintf(stderr, "invalid operation type: %s\n", a.get<std::string>("ops").c_str());
             exit(1);
         }
-#ifdef HOST_ONLY
-        dpu_binary = NULL;
-#else  /* HOST_ONLY */
-        std::string db = a.get<std::string>("directory");
-        db += "/build/" + a.get<std::string>("variant");
-        if (is_simulator)
-            db += "/dpu/dpu_program_simulator";
-        else
-            db += "/dpu/dpu_program_UPMEM";
-        printf("binary: %s\n", db.c_str());
-        dpu_binary = strdup(db.c_str());
-#endif /* HOST_ONLY */
 
-        parse_row_column(a.get<std::string>("print-load"), &print_load, &print_load_rc);
-        parse_row_column(a.get<std::string>("print-subtree-size"), &print_subtree_size, &print_subtree_size_rc);
+        print_load = a.get<dpu_id_t>("print-load");
+        print_subtree_size = a.get<dpu_id_t>("print-subtree-size");
     }
 
-    void parse_row_column(std::string arg, bool* enable, std::pair<int, int>* rc)
-    {
-        char* p;
-        int row, col;
-
-        *enable = false;
-        if (arg.length() == 0)
-            return;
-        row = strtoul(arg.c_str(), &p, 10);
-        if (row == -1)
-            row = NR_DPUS;
-        if (*p == '\0')
-            col = NR_SEATS_IN_DPU;
-        else {
-            if (*p++ != ',')
-                return;
-            col = strtoul(p, &p, 10);
-            if (*p != '\0')
-                return;
-        }
-        *enable = true;
-        rc->first = row < NR_DPUS ? row : NR_DPUS;
-        rc->second = col < NR_SEATS_IN_DPU ? col : NR_SEATS_IN_DPU;
-    }
-
-    const char* dpu_binary;
-    const char* workload_file;
-    bool is_simulator;
-    float zipfian_const;
-    int nr_total_queries;
+    std::string alpha;
+    std::filesystem::path workload_file;
+    int nr_batches;
     int nr_migrations_per_batch;
     enum OpType {
         OP_TYPE_GET,
         OP_TYPE_INSERT,
         OP_TYPE_SUCC
     } op_type;
-    bool print_load;
-    std::pair<int, int> print_load_rc;
-    bool print_subtree_size;
-    std::pair<int, int> print_subtree_size_rc;
+    dpu_id_t print_load;
+    dpu_id_t print_subtree_size;
 } opt;
 
 #ifdef DEBUG_ON
@@ -187,23 +141,27 @@ struct EqualByKey {
 };
 
 #if defined(HOST_MULTI_THREAD) && defined(QUERY_GATHER_XFER)
-static std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]> dpu_req_copy{new each_request_t[NR_DPUS][MAX_REQ_NUM_IN_A_DPU]};
+static std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& dpu_req_copy_impl(dpu_id_t nr_dpus)
+{
+    static std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]> impl{new each_request_t[nr_dpus][MAX_REQ_NUM_IN_A_DPU]};
+    return impl;
+}
 #endif
 
-void check_get_results(dpu_get_results_t dpu_get_results[], std::array<unsigned, NR_DPUS>& num_keys_for_DPU)
+void check_get_results(dpu_id_t nr_dpus, dpu_get_results_t dpu_get_results[], std::array<unsigned, MAX_NR_DPUS>& num_keys_for_DPU)
 {
-    for (dpu_id_t dpu = 0; dpu < NR_DPUS; dpu++) {
+    for (dpu_id_t dpu = 0; dpu < nr_dpus; dpu++) {
         const auto num_queries = num_keys_for_DPU.at(dpu);
 
 #if defined(HOST_MULTI_THREAD) && defined(QUERY_GATHER_XFER)
-        for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
-            each_request_t* output = &dpu_req_copy[idx_dpu][0];
+        std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& orig_requests = dpu_req_copy_impl(nr_dpus);
+        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_dpus; idx_dpu++) {
+            each_request_t* output = &orig_requests[idx_dpu][0];
             for (block_id_t idx_block = 0; idx_block < HOST_MULTI_THREAD; idx_block++) {
                 const SizedBuffer<each_request_t, QUERY_BUFFER_BLOCK_SIZE>& block = dpu_requests[idx_dpu][idx_block];
                 output = std::copy_n(block.buf.cbegin(), block.size_in_elems, output);
             }
         }
-        std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& orig_requests = dpu_req_copy;
 #else  /* HOST_MULTI_THREAD && QUERY_GATHER_XFER */
         std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& orig_requests = dpu_requests;
 #endif /* HOST_MULTI_THREAD && QUERY_GATHER_XFER */
@@ -223,22 +181,22 @@ void check_get_results(dpu_get_results_t dpu_get_results[], std::array<unsigned,
     }
 }
 
-void check_succ_results(dpu_succ_results_t dpu_succ_results[], std::array<unsigned, NR_DPUS>& num_keys_for_DPU)
+void check_succ_results(dpu_id_t nr_dpus, dpu_succ_results_t dpu_succ_results[], std::array<unsigned, MAX_NR_DPUS>& num_keys_for_DPU)
 {
 #if defined(HOST_MULTI_THREAD) && defined(QUERY_GATHER_XFER)
-    for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
-        each_request_t* output = &dpu_req_copy[idx_dpu][0];
+    std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& orig_requests = dpu_req_copy_impl(nr_dpus);
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_dpus; idx_dpu++) {
+        each_request_t* output = &orig_requests[idx_dpu][0];
         for (block_id_t idx_block = 0; idx_block < HOST_MULTI_THREAD; idx_block++) {
             const SizedBuffer<each_request_t, QUERY_BUFFER_BLOCK_SIZE>& block = dpu_requests[idx_dpu][idx_block];
             output = std::copy_n(block.buf.cbegin(), block.size_in_elems, output);
         }
     }
-    std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& orig_requests = dpu_req_copy;
 #else  /* HOST_MULTI_THREAD && QUERY_GATHER_XFER */
     std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& orig_requests = dpu_requests;
 #endif /* HOST_MULTI_THREAD && QUERY_GATHER_XFER */
 
-    for (dpu_id_t dpu = 0; dpu < NR_DPUS; dpu++) {
+    for (dpu_id_t dpu = 0; dpu < nr_dpus; dpu++) {
         for (unsigned index = 0; index < num_keys_for_DPU.at(dpu); index++) {
             key_int64_t key = orig_requests[dpu][index].key;
             auto it = verify_db.upper_bound(key);
@@ -257,9 +215,10 @@ void check_succ_results(dpu_succ_results_t dpu_succ_results[], std::array<unsign
 {
     // the initial keys are: KEY_MIN + KeyInterval * {0, 1, 2, ..., NUM_INIT_REQS - 1}
     constexpr key_int64_t KeyInterval = (KEY_MAX - KEY_MIN) / NUM_INIT_REQS;
-    constexpr auto NrInitTrees = NR_DPUS * NR_INITIAL_TREES_IN_DPU;
+    const dpu_id_t nr_dpus = upmem_get_nr_dpus();
+    const auto nr_init_trees = nr_dpus * NR_INITIAL_TREES_IN_DPU;
 
-    auto initialize_subtree = [](dpu_id_t idx_dpu, seat_id_t idx_tree, key_int64_t first_key, key_int64_t last_key) {
+    constexpr auto initialize_subtree = [](dpu_id_t idx_dpu, seat_id_t idx_tree, key_int64_t first_key, key_int64_t last_key) {
         dpu_init_param_t& param = dpu_init_param[idx_dpu][idx_tree];
         param.use = 1;
         param.start = first_key;
@@ -274,19 +233,20 @@ void check_succ_results(dpu_succ_results_t dpu_succ_results[], std::array<unsign
 
     [[maybe_unused]] const auto num_pieces = workload_dist.densities.size();
     const auto sum_weight = std::accumulate(workload_dist.densities.cbegin(), workload_dist.densities.cend(), double{0});
-    const auto weight_for_each_tree = sum_weight / NrInitTrees;
+    const auto weight_for_each_tree = sum_weight / nr_init_trees;
 
     HostTree host_struct;
+    host_struct.nr_dpus = nr_dpus;
 
     key_int64_t next_key = KEY_MIN;
     size_t idx_dist_piece = 0;
     auto weight_of_the_piece = workload_dist.densities.at(idx_dist_piece),
          left_weight_in_the_piece = weight_of_the_piece;
-    for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_dpus; idx_dpu++) {
         const auto first_key_in_this_dpu = next_key;
 
         for (seat_id_t idx_tree = 0; idx_tree < NR_INITIAL_TREES_IN_DPU; idx_tree++) {
-            if (idx_dpu == NR_DPUS - 1 && idx_tree == NR_INITIAL_TREES_IN_DPU - 1) {  // last tree
+            if (idx_dpu == nr_dpus - 1 && idx_tree == NR_INITIAL_TREES_IN_DPU - 1) {  // last tree
                 constexpr key_int64_t LastKey = KeyInterval * (NUM_INIT_REQS - 1);
                 assert(next_key <= LastKey);
                 initialize_subtree(idx_dpu, idx_tree, next_key, LastKey);
@@ -348,7 +308,7 @@ class PreprocessWorker
     HostTree* host_tree;
     unsigned worker_idx;
     std::thread t;
-    std::array<unsigned, NR_DPUS> count;
+    std::array<unsigned, MAX_NR_DPUS> count;
     std::condition_variable cond;
     std::mutex mtx;
     bool finished = false;
@@ -448,7 +408,7 @@ private:
 #endif
         }
 #ifdef QUERY_GATHER_XFER
-        for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
+        for (dpu_id_t idx_dpu = 0; idx_dpu < host_tree->get_nr_dpus(); idx_dpu++) {
             dpu_requests[idx_dpu][worker_idx].size_in_elems = count[idx_dpu];
         }
 #endif
@@ -468,7 +428,7 @@ private:
 #endif
         }
 #ifdef QUERY_GATHER_XFER
-        for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
+        for (dpu_id_t idx_dpu = 0; idx_dpu < host_tree->get_nr_dpus(); idx_dpu++) {
             dpu_requests[idx_dpu][worker_idx].size_in_elems = count[idx_dpu];
         }
 #endif
@@ -486,7 +446,7 @@ private:
 #endif
         }
 #ifdef QUERY_GATHER_XFER
-        for (dpu_id_t idx_dpu = 0; idx_dpu < NR_DPUS; idx_dpu++) {
+        for (dpu_id_t idx_dpu = 0; idx_dpu < host_tree->get_nr_dpus(); idx_dpu++) {
             dpu_requests[idx_dpu][worker_idx].size_in_elems = count[idx_dpu];
         }
 #endif
@@ -526,7 +486,7 @@ public:
         }
     }
 
-    void set_partial_sum_of_request_counts(std::array<unsigned, NR_DPUS>& acc_count)
+    void set_partial_sum_of_request_counts(std::array<unsigned, MAX_NR_DPUS>& acc_count)
     {
         for (unsigned idx = 0; idx < acc_count.size(); idx++) {
             const auto orig_cnt = acc_count[idx];
@@ -534,9 +494,9 @@ public:
             count[idx] = orig_cnt;
         }
     }
-    void add_request_count(std::array<unsigned, NR_DPUS>& acc_count)
+    void add_request_count(std::array<unsigned, MAX_NR_DPUS>& acc_count)
     {
-        for (dpu_id_t i = 0; i < NR_DPUS; i++)
+        for (dpu_id_t i = 0; i < host_tree->get_nr_dpus(); i++)
             acc_count[i] += count[i];
     }
 };
@@ -547,7 +507,7 @@ PreprocessWorker ppwk[HOST_MULTI_THREAD];
 #ifdef TOUCH_QUERIES_IN_ADVANCE
 key_int64_t accumulated_key_numbers = 0;
 #endif /* TOUCH_QUERIES_IN_ADVANCE */
-int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, uint64_t& total_num_keys, const int max_key_num, WorkloadBuffer& workload_buffer, HostTree& host_tree, BatchCtx& batch_ctx)
+int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, WorkloadBuffer& workload_buffer, HostTree& host_tree, BatchCtx& batch_ctx)
 {
 #ifdef PRINT_DEBUG
     printf("======= batch %d =======\n", batch_num);
@@ -643,7 +603,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
     preprocess_time2 = measure_time([&] {
 #ifdef HOST_MULTI_THREAD
 #ifndef QUERY_GATHER_XFER
-        std::array<unsigned, NR_DPUS> request_count_accumulator{};
+        std::array<unsigned, MAX_NR_DPUS> request_count_accumulator{};
         for (int i = 0; i < HOST_MULTI_THREAD; i++)
             ppwk[i].set_partial_sum_of_request_counts(request_count_accumulator);
 #endif
@@ -712,13 +672,13 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, u
         if (task == TASK_GET) {
             upmem_receive_get_results(batch_ctx, NULL);
 #ifdef DEBUG_ON
-            check_get_results(dpu_results->get, batch_ctx.num_keys_for_DPU);
+            check_get_results(host_tree.get_nr_dpus(), dpu_results->get, batch_ctx.num_keys_for_DPU);
 #endif /* DEBUG_ON */
         }
         if (task == TASK_SUCC) {
             upmem_receive_succ_results(batch_ctx, NULL);
 #ifdef DEBUG_ON
-            check_succ_results(dpu_results->succ, batch_ctx.num_keys_for_DPU);
+            check_succ_results(host_tree.get_nr_dpus(), dpu_results->succ, batch_ctx.num_keys_for_DPU);
 #endif /* DEBUG_ON */
         }
     }).count();
@@ -750,26 +710,25 @@ int main(int argc, char* argv[])
     assert(NR_SEATS_IN_DPU <= 64);
     assert(sizeof(dpu_requests_t) == sizeof(dpu_requests[0]));
 #ifdef PRINT_DEBUG
-    std::cout << "NR_DPUS:" << NR_DPUS << std::endl
+    std::cout << "NR_RANKS:" << NR_RANKS << std::endl
               << "NR_TASKLETS:" << NR_TASKLETS << std::endl
               << "NR_SEATS_PER_DPU:" << NR_SEATS_IN_DPU << std::endl
               << "seats per DPU (init):" << NR_INITIAL_TREES_IN_DPU << std::endl
               << "seats per DPU (max):" << NR_SEATS_IN_DPU << std::endl
               << "requests per batch:" << NUM_REQUESTS_PER_BATCH << std::endl
               << "init elements in total:" << NUM_INIT_REQS << std::endl
-              << "init elements per DPU:" << (NUM_INIT_REQS / NR_DPUS) << std::endl
               << "MAX_NUM_NODES_IN_SEAT:" << MAX_NUM_NODES_IN_SEAT << std::endl
               << "estm. max elems in seat:" << (MAX_NUM_NODES_IN_SEAT * MAX_CHILD) << std::endl;
 #endif
 
-    upmem_init(opt.dpu_binary, opt.is_simulator);
+    upmem_init();
 
     /* load workload file */
     PiecewiseConstantWorkload workload;
     {
         std::ifstream file_input(opt.workload_file, std::ios_base::binary);
         if (!file_input) {
-            printf("cannot open file\n");
+            std::cerr << "cannot open file: " << opt.workload_file << std::endl;
             std::quick_exit(1);
         }
 
@@ -786,27 +745,25 @@ int main(int argc, char* argv[])
     WorkloadBuffer workload_buffer{std::move(workload.data)};
 
     /* main routine */
-    int num_keys = 0;
-    int batch_num = 0;
     uint64_t total_num_keys = 0;
-    printf("zipfian_const, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time, execution_time, receive_result_time, merge_time, batch_time, throughput\n");
-    while (total_num_keys < opt.nr_total_queries) {
+    printf("alpha, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time, execution_time, receive_result_time, merge_time, batch_time, throughput\n");
+    for (int idx_batch = 0; idx_batch < opt.nr_batches; idx_batch++) {
+        int num_keys;
         BatchCtx batch_ctx;
         switch (opt.op_type) {
         case Option::OP_TYPE_GET:
-            num_keys = do_one_batch(TASK_GET, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, workload_buffer, host_tree, batch_ctx);
+            num_keys = do_one_batch(TASK_GET, idx_batch, opt.nr_migrations_per_batch, workload_buffer, host_tree, batch_ctx);
             break;
         case Option::OP_TYPE_INSERT:
-            num_keys = do_one_batch(TASK_INSERT, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, workload_buffer, host_tree, batch_ctx);
+            num_keys = do_one_batch(TASK_INSERT, idx_batch, opt.nr_migrations_per_batch, workload_buffer, host_tree, batch_ctx);
             break;
         case Option::OP_TYPE_SUCC:
-            num_keys = do_one_batch(TASK_SUCC, batch_num, opt.nr_migrations_per_batch, total_num_keys, opt.nr_total_queries, workload_buffer, host_tree, batch_ctx);
+            num_keys = do_one_batch(TASK_SUCC, idx_batch, opt.nr_migrations_per_batch, workload_buffer, host_tree, batch_ctx);
             break;
         default:
             abort();
         }
         total_num_keys += num_keys;
-        batch_num++;
         batch_time = preprocess_time1 + preprocess_time2 + migration_plan_time + migration_time + send_time + execution_time + receive_result_time + merge_time;
         total_preprocess_time1 += preprocess_time1;
         total_preprocess_time2 += preprocess_time2;
@@ -818,23 +775,23 @@ int main(int argc, char* argv[])
         total_merge_time += merge_time;
         total_batch_time += batch_time;
         double throughput = num_keys / batch_time;
-        printf("%.2f, %d, %d, %d, %d, %d, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
-            opt.zipfian_const, NR_DPUS, NR_TASKLETS, batch_num,
+        printf("%s, %d, %d, %d, %d, %d, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
+            opt.alpha.c_str(), host_tree.get_nr_dpus(), NR_TASKLETS, idx_batch,
             num_keys, batch_ctx.send_size, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time,
             execution_time, receive_result_time, merge_time, batch_time, throughput);
     }
 
 
 #ifdef PRINT_DEBUG
-    printf("zipfian_const, num_dpus_redundant, num_dpus_multiple, num_tasklets, num_CPU_Trees, num_DPU_Trees, num_queries, num_reqs_for_cpu, num_reqs_for_dpu, num_reqs_{cpu/(cpu+dpu)}, send_time, execution_time_cpu, execution_time_cpu_and_dpu, exec_time_{cpu/(cpu&dpu)}[%%], send_and_execution_time, total_time, throughput\n");
+    printf("alpha, num_dpus_redundant, num_dpus_multiple, num_tasklets, num_CPU_Trees, num_DPU_Trees, num_queries, num_reqs_for_cpu, num_reqs_for_dpu, num_reqs_{cpu/(cpu+dpu)}, send_time, execution_time_cpu, execution_time_cpu_and_dpu, exec_time_{cpu/(cpu&dpu)}[%%], send_and_execution_time, total_time, throughput\n");
 #endif
     //printf("%ld,%ld,%ld\n", total_num_keys_cpu, total_num_keys_dpu, total_num_keys_cpu + total_num_keys_dpu);
-    //printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", zipfian_const.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, send_time, cpu_time,
+    //printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", alpha.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, send_time, cpu_time,
     //    execution_time, 100 * cpu_time / execution_time, send_and_execution_time, total_time, throughput);
     double throughput = total_num_keys / total_batch_time;
-    printf("%.2f, %d, %d, total, %ld,, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f\n",
-        opt.zipfian_const, NR_DPUS, NR_TASKLETS,
-        total_num_keys, total_preprocess_time1, total_preprocess_time2, total_migration_plan_time, total_migration_time, total_send_time,
+    printf("%s, %d, %d, total, %d,, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f\n",
+        opt.alpha.c_str(), host_tree.get_nr_dpus(), NR_TASKLETS,
+        opt.nr_batches, total_preprocess_time1, total_preprocess_time2, total_migration_plan_time, total_migration_time, total_send_time,
         total_execution_time, total_receive_result_time, total_merge_time, total_batch_time, throughput);
 
 #ifdef MEASURE_XFER_BYTES
@@ -865,17 +822,17 @@ static void print_num_kvpairs(HostTree* host_tree)
 {
     if (!opt.print_subtree_size)
         return;
-    int nr_dpus = opt.print_subtree_size_rc.first;
+    dpu_id_t nr_dpus = opt.print_subtree_size;
     printf("===== #KV-pairs =====\n");
     for (dpu_id_t i = 0; i < nr_dpus; i++) {
         printf("DPU[%4d] %4d\n", i, host_tree->get_num_kvpairs(i));
     }
 }
 
-static void print_merge_info()
+static void print_merge_info(HostTree* host_tree)
 {
     printf("===== merge info =====\n");
-    for (dpu_id_t i = 0; i < NR_DPUS; i++) {
+    for (dpu_id_t i = 0; i < host_tree->get_nr_dpus(); i++) {
         printf("%2d", i);
         for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
             printf(" %2d", merge_info[i].merge_to[j]);
@@ -887,7 +844,7 @@ static void print_nr_queries(BatchCtx* batch_ctx)
 {
     if (!opt.print_load)
         return;
-    int nr_dpus = opt.print_load_rc.first;
+    dpu_id_t nr_dpus = opt.print_load;
     printf("===== nr queries =====\n");
     for (dpu_id_t i = 0; i < nr_dpus; i++) {
         printf("DPU[%4d] %4d\n", i, batch_ctx->num_keys_for_DPU[i]);

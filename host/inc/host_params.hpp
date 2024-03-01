@@ -9,13 +9,17 @@
 #include <limits>
 
 
-#ifndef NR_DPUS
-constexpr size_t NR_DPUS = 4;
+#ifndef NR_RANKS
+#error NR_RANKS should always be defined
 #endif
 
-#ifndef NR_DPUS_IN_RANK
-constexpr size_t NR_DPUS_IN_RANK = 64;
+#ifdef UPMEM_SIMULATOR
+constexpr size_t MAX_NR_DPUS_IN_RANK = 1;
+#else
+constexpr size_t MAX_NR_DPUS_IN_RANK = 64;
 #endif
+
+constexpr size_t MAX_NR_DPUS = MAX_NR_DPUS_IN_RANK * NR_RANKS;
 
 #ifndef NR_INITIAL_TREES_IN_DPU
 constexpr size_t NR_INITIAL_TREES_IN_DPU = 12;
@@ -31,7 +35,7 @@ constexpr size_t DEFAULT_NR_BATCHES = 20;
 #endif
 
 #ifndef NUM_INIT_REQS
-constexpr size_t NUM_INIT_REQS = 2000 * (NR_DPUS * NR_INITIAL_TREES_IN_DPU);
+constexpr size_t NUM_INIT_REQS = 2000 * (MAX_NR_DPUS * NR_INITIAL_TREES_IN_DPU);
 #endif
 
 #ifndef SOFT_LIMIT_NR_TREES_IN_DPU
