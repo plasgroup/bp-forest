@@ -13,8 +13,7 @@ union DPUResultsUnion {
     dpu_succ_results_t succ[MAX_NR_DPUS];
 };
 extern std::unique_ptr<DPUResultsUnion> dpu_results;
-extern merge_info_t merge_info[MAX_NR_DPUS];
-extern dpu_init_param_t dpu_init_param[MAX_NR_DPUS][NR_SEATS_IN_DPU];
+extern dpu_init_param_t dpu_init_param[MAX_NR_DPUS];
 
 void upmem_init(void);
 void upmem_release(void);
@@ -24,9 +23,7 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
     float* send_time, float* exec_time);
 void upmem_receive_get_results(BatchCtx& batch_ctx, float* receive_time);
 void upmem_receive_succ_results(BatchCtx& batch_ctx, float* receive_time);
-void upmem_receive_split_info(float* receive_time);
 void upmem_receive_num_kvpairs(HostTree* host_tree, float* receive_time);
-void upmem_send_nodes_from_dpu_to_dpu(dpu_id_t from_DPU, seat_id_t from_tree,
-    dpu_id_t to_DPU, seat_id_t to_tree);
+void upmem_migrate_kvpairs(std::array<migration_ratio_param_t, MAX_NR_DPUS>& plan);
 
 #endif /* __UPMEM_HPP__ */

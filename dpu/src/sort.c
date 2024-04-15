@@ -29,7 +29,6 @@ void parallel_sort_requests(uint32_t nelems, barrier_t* barrier)
     }
 
     //----- bitonic sort -----//
-    const uint32_t half_nelems = nelems >> 1u;
     const unsigned lg2_half_nelems = floor_log2_uint32(nelems) - 1u;
     const uint32_t idx_swap_begin = ((uint32_t)tid << lg2_half_nelems) / NR_TASKLETS,
                    idx_swap_end = ((uint32_t)(tid + 1) << lg2_half_nelems) / NR_TASKLETS;

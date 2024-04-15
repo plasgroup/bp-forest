@@ -28,7 +28,7 @@ static void upmem_init_impl()
 {
     // clang-format off
     constexpr const char* profile =
-#if defined(HOST_MULTI_THREAD) && defined(QUERY_GATHER_XFER)
+#if defined(HOST_MULTI_THREAD)
 #  define STRINGFY_IMPL_(x) #x
 #  define STRINGFY(x) STRINGFY_IMPL_(x)
 #  ifdef UPMEM_SIMULATOR
@@ -63,7 +63,7 @@ static void upmem_init_impl()
     }
     first_dpu_id_in_each_rank.back() = idx_dpu;
 
-    DPU_INCBIN(dpu_binary, DPU_BINARY_PATH)
+    extern dpu_incbin_t dpu_binary;
     DPU_ASSERT(dpu_load_from_incbin(all_dpu_impl, &dpu_binary, NULL));
 }
 static void upmem_release_impl()
@@ -168,7 +168,7 @@ struct VisitorOf_xfer_with_dpu {
         static_assert(std::is_trivially_copyable_v<std::remove_pointer_t<decltype(ptr)>>,
             "non-trivial copying cannot be performed between CPU and DPU");
         DPU_ASSERT(dpu_prepare_xfer(each_dpu_impl[idx_dpu], ptr));
-        DPU_ASSERT(dpu_push_xfer(each_dpu_impl[idx_dpu], Direction, symbol, 0, buf.bytes_for_dpu(idx_dpu), DPU_XFER_DEFAULT));
+        DPU_ASSERT(dpu_push_xfer(each_dpu_impl[idx_dpu], Direction, symbol, 0, size, DPU_XFER_DEFAULT));
     }
 };
 template <bool ToDPU, class BatchTransferBuffer>
@@ -192,7 +192,7 @@ struct VisitorOf_broadcast_to_dpu {
     void operator()(const DPUSetRanks& ranks_) const
     {
         const DPUSetRanks ranks = ranks_;
-        for (dpu_id_t idx_rank = ranks.idx_rank_begin, idx_dpu = first_dpu_id_in_each_rank[idx_rank]; idx_rank < ranks.idx_rank_end; idx_rank++) {
+        for (dpu_id_t idx_rank = ranks.idx_rank_begin; idx_rank < ranks.idx_rank_end; idx_rank++) {
             DPU_ASSERT(dpu_broadcast_to(each_rank_impl[idx_rank], symbol, 0, datum.for_dpu(0), datum.bytes_for_dpu(0), DPU_XFER_ASYNC));
         }
         for (dpu_id_t idx_rank = ranks.idx_rank_begin; idx_rank < ranks.idx_rank_end; idx_rank++) {

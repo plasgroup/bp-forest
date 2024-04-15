@@ -14,7 +14,7 @@ public:
         mt32.seed(rnd());
     }
     static uint64_t rand64() { return mt64(); }
-    static uint32_t rand32() { return mt32(); }
+    static uint32_t rand32() { return static_cast<uint32_t>(mt32()); }
 
 private:
     static std::mt19937_64 mt64;
@@ -25,7 +25,7 @@ private:
 static inline float time_diff(struct timeval* start, struct timeval* end)
 {
     float timediff =
-      (end->tv_sec - start->tv_sec) + 1e-6 * (end->tv_usec - start->tv_usec);
+      static_cast<float>(end->tv_sec - start->tv_sec) + 1e-6f * static_cast<float>(end->tv_usec - start->tv_usec);
     return timediff;
 }
 

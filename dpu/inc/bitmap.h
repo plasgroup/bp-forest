@@ -51,10 +51,10 @@ static int bitmap_find_and_set_first_zero(bitmap_word_t* bitmap, int next, int s
     int id;
 
     id = bitmap_find_and_set_first_zero_range(bitmap, next, size);
-    if (id > 0)
+    if (id >= 0)
         return id;
     id = bitmap_find_and_set_first_zero_range(bitmap, 0, next);
-    if (id > 0)
+    if (id >= 0)
         return id;
     return -1;
 }

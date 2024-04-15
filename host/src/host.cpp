@@ -1,13 +1,11 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
-#include <memory>
 #endif
 
 #include "common.h"
 #include "host_data_structures.hpp"
 #include "host_params.hpp"
 #include "migration.hpp"
-#include "node_defs.hpp"
 #include "piecewise_constant_workload.hpp"
 #include "statistics.hpp"
 #include "upmem.hpp"
@@ -27,6 +25,7 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -51,7 +50,6 @@ float migration_plan_time;
 float send_time;
 float execution_time;
 float receive_result_time = 0;
-float merge_time;
 float batch_time = 0;
 float total_preprocess_time = 0;
 float total_preprocess_time1 = 0;
@@ -61,7 +59,6 @@ float total_migration_time = 0;
 float total_send_time = 0;
 float total_execution_time = 0;
 float total_receive_result_time = 0;
-float total_merge_time = 0;
 float total_batch_time = 0;
 float init_time = 0;
 
@@ -73,8 +70,6 @@ std::map<key_int64_t, value_ptr_t> verify_db;
 XferStatistics xfer_statistics;
 #endif /* MEASURE_XFER_BYTES */
 
-static void print_merge_info();
-static void print_num_kvpairs(HostTree* host_tree);
 static void print_nr_queries(BatchCtx* batch_ctx);
 
 struct Option {
@@ -88,6 +83,7 @@ struct Option {
         a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, succ", false, "get");
         a.add<dpu_id_t>("print-load", 'q', "print number of queries sent for each dpu", false, 0);
         a.add<dpu_id_t>("print-subtree-size", 'e', "print number of elements for each dpu", false, 0);
+        a.add<dpu_id_t>("print-migration-plan", 0, "print ratio of migrated elements from each dpu", false, 0);
         a.parse_check(argc, argv);
 
         alpha = a.get<std::string>("zipfianconst");
@@ -108,6 +104,7 @@ struct Option {
 
         print_load = a.get<dpu_id_t>("print-load");
         print_subtree_size = a.get<dpu_id_t>("print-subtree-size");
+        print_migration_plan = a.get<dpu_id_t>("print-migration-plan");
     }
 
     std::string alpha;
@@ -121,6 +118,7 @@ struct Option {
     } op_type;
     dpu_id_t print_load;
     dpu_id_t print_subtree_size;
+    dpu_id_t print_migration_plan;
 } opt;
 
 #ifdef DEBUG_ON
@@ -139,7 +137,7 @@ struct EqualByKey {
     }
 };
 
-#if defined(HOST_MULTI_THREAD) && defined(QUERY_GATHER_XFER)
+#if defined(HOST_MULTI_THREAD)
 static std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& dpu_req_copy_impl(dpu_id_t nr_dpus)
 {
     static std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]> impl{new each_request_t[nr_dpus][MAX_REQ_NUM_IN_A_DPU]};
@@ -147,12 +145,14 @@ static std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& dpu_req_copy_imp
 }
 #endif
 
+#define MyAssert(expr) (static_cast<bool>(expr) ? void(0) : ((std::cerr << __FILE__ ":" << __LINE__ << ": Assertion `" #expr "' failed" << std::endl), std::abort()))
+
 void check_get_results(dpu_id_t nr_dpus, dpu_get_results_t dpu_get_results[], std::array<unsigned, MAX_NR_DPUS>& num_keys_for_DPU)
 {
     for (dpu_id_t dpu = 0; dpu < nr_dpus; dpu++) {
         const auto num_queries = num_keys_for_DPU.at(dpu);
 
-#if defined(HOST_MULTI_THREAD) && defined(QUERY_GATHER_XFER)
+#if defined(HOST_MULTI_THREAD)
         std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& orig_requests = dpu_req_copy_impl(nr_dpus);
         for (dpu_id_t idx_dpu = 0; idx_dpu < nr_dpus; idx_dpu++) {
             each_request_t* output = &orig_requests[idx_dpu][0];
@@ -161,11 +161,11 @@ void check_get_results(dpu_id_t nr_dpus, dpu_get_results_t dpu_get_results[], st
                 output = std::copy_n(block.buf.cbegin(), block.size_in_elems, output);
             }
         }
-#else  /* HOST_MULTI_THREAD && QUERY_GATHER_XFER */
+#else  /* HOST_MULTI_THREAD */
         std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& orig_requests = dpu_requests;
-#endif /* HOST_MULTI_THREAD && QUERY_GATHER_XFER */
+#endif /* HOST_MULTI_THREAD */
 
-        assert(std::equal(
+        MyAssert(std::equal(
             &orig_requests[dpu][0], &orig_requests[dpu][num_queries],
             &dpu_get_results[dpu][0], &dpu_get_results[dpu][num_queries], EqualByKey{}));
 
@@ -173,16 +173,16 @@ void check_get_results(dpu_id_t nr_dpus, dpu_get_results_t dpu_get_results[], st
             key_int64_t key = dpu_get_results[dpu][index].key;
             const auto it = verify_db.find(key);
             if (it == verify_db.end())
-                assert(dpu_get_results[dpu][index].get_result == 0);
+                MyAssert(dpu_get_results[dpu][index].get_result == 0);
             else
-                assert(dpu_get_results[dpu][index].get_result == it->second);
+                MyAssert(dpu_get_results[dpu][index].get_result == it->second);
         }
     }
 }
 
-void check_succ_results(dpu_id_t nr_dpus, dpu_succ_results_t dpu_succ_results[], std::array<unsigned, MAX_NR_DPUS>& num_keys_for_DPU)
+void check_succ_results(dpu_id_t nr_dpus, [[maybe_unused]] dpu_succ_results_t dpu_succ_results[], std::array<unsigned, MAX_NR_DPUS>& num_keys_for_DPU)
 {
-#if defined(HOST_MULTI_THREAD) && defined(QUERY_GATHER_XFER)
+#if defined(HOST_MULTI_THREAD)
     std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& orig_requests = dpu_req_copy_impl(nr_dpus);
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_dpus; idx_dpu++) {
         each_request_t* output = &orig_requests[idx_dpu][0];
@@ -191,40 +191,38 @@ void check_succ_results(dpu_id_t nr_dpus, dpu_succ_results_t dpu_succ_results[],
             output = std::copy_n(block.buf.cbegin(), block.size_in_elems, output);
         }
     }
-#else  /* HOST_MULTI_THREAD && QUERY_GATHER_XFER */
+#else  /* HOST_MULTI_THREAD */
     std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& orig_requests = dpu_requests;
-#endif /* HOST_MULTI_THREAD && QUERY_GATHER_XFER */
+#endif /* HOST_MULTI_THREAD */
 
     for (dpu_id_t dpu = 0; dpu < nr_dpus; dpu++) {
         for (unsigned index = 0; index < num_keys_for_DPU.at(dpu); index++) {
             key_int64_t key = orig_requests[dpu][index].key;
             auto it = verify_db.upper_bound(key);
             if (it == verify_db.end()) {
-                assert(dpu_succ_results[dpu][index].succ_val_ptr == 0);
+                MyAssert(dpu_succ_results[dpu][index].succ_val_ptr == 0);
             } else {
-                assert(dpu_succ_results[dpu][index].succ_key == it->first);
-                assert(dpu_succ_results[dpu][index].succ_val_ptr == it->second);
+                MyAssert(dpu_succ_results[dpu][index].succ_key == it->first);
+                MyAssert(dpu_succ_results[dpu][index].succ_val_ptr == it->second);
             }
         }
     }
 }
-#endif
+#endif /* DEBUG_ON */
 
 [[nodiscard]] HostTree initialize_bpforest(PiecewiseConstantWorkloadMetadata& workload_dist)
 {
-    // the initial keys are: KEY_MIN + KeyInterval * {0, 1, 2, ..., NUM_INIT_REQS - 1}
-    constexpr key_int64_t KeyInterval = (KEY_MAX - KEY_MIN) / NUM_INIT_REQS;
+    // the initial keys are: KEY_MIN + INIT_KEY_INTERVAL * {0, 1, 2, ..., NUM_INIT_REQS - 1}
     const dpu_id_t nr_dpus = upmem_get_nr_dpus();
-    const auto nr_init_trees = nr_dpus * NR_INITIAL_TREES_IN_DPU;
 
-    constexpr auto initialize_subtree = [](dpu_id_t idx_dpu, seat_id_t idx_tree, key_int64_t first_key, key_int64_t last_key) {
-        dpu_init_param_t& param = dpu_init_param[idx_dpu][idx_tree];
-        param.use = 1;
+    constexpr auto initialize_subtree = [](dpu_id_t idx_dpu, key_int64_t first_key, key_int64_t last_key) {
+        dpu_init_param_t& param = dpu_init_param[idx_dpu];
         param.start = first_key;
         param.end_inclusive = last_key;
-        param.interval = KeyInterval;
+        param.interval = INIT_KEY_INTERVAL;
 #ifdef DEBUG_ON
-        for (key_int64_t k = param.start; k <= param.end_inclusive; k += param.interval) {
+        const key_int64_t last_ins_idx = (param.end_inclusive - param.start) / param.interval;
+        for (key_int64_t i = 0, k = param.start; i <= last_ins_idx; i++, k += param.interval) {
             verify_db.emplace(k, k);
         }
 #endif /* DEBUG_ON */
@@ -232,7 +230,7 @@ void check_succ_results(dpu_id_t nr_dpus, dpu_succ_results_t dpu_succ_results[],
 
     [[maybe_unused]] const auto num_pieces = workload_dist.densities.size();
     const auto sum_weight = std::accumulate(workload_dist.densities.cbegin(), workload_dist.densities.cend(), double{0});
-    const auto weight_for_each_tree = sum_weight / nr_init_trees;
+    const auto weight_for_each_dpu = sum_weight / nr_dpus;
 
     HostTree host_struct;
     host_struct.nr_dpus = nr_dpus;
@@ -241,42 +239,38 @@ void check_succ_results(dpu_id_t nr_dpus, dpu_succ_results_t dpu_succ_results[],
     size_t idx_dist_piece = 0;
     auto weight_of_the_piece = workload_dist.densities.at(idx_dist_piece),
          left_weight_in_the_piece = weight_of_the_piece;
-    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_dpus; idx_dpu++) {
-        const auto first_key_in_this_dpu = next_key;
-
-        for (seat_id_t idx_tree = 0; idx_tree < NR_INITIAL_TREES_IN_DPU; idx_tree++) {
-            if (idx_dpu == nr_dpus - 1 && idx_tree == NR_INITIAL_TREES_IN_DPU - 1) {  // last tree
-                constexpr key_int64_t LastKey = KeyInterval * (NUM_INIT_REQS - 1);
-                assert(next_key <= LastKey);
-                initialize_subtree(idx_dpu, idx_tree, next_key, LastKey);
-                break;
-            }
-
-            auto weight_left = weight_for_each_tree;
-            while (weight_left >= left_weight_in_the_piece) {
-                weight_left -= left_weight_in_the_piece;
-                idx_dist_piece++;
-                assert(idx_dist_piece < num_pieces);
-                weight_of_the_piece = left_weight_in_the_piece = workload_dist.densities.at(idx_dist_piece);
-            }
-            left_weight_in_the_piece -= weight_left;
-            const auto last_key = (static_cast<key_int64_t>(
-                                       static_cast<double>(workload_dist.intervals.at(idx_dist_piece + 1))
-                                       - static_cast<double>(workload_dist.intervals.at(idx_dist_piece + 1) - workload_dist.intervals.at(idx_dist_piece))
-                                             * left_weight_in_the_piece / weight_of_the_piece)
-                                      - KEY_MIN)
-                                      / KeyInterval * KeyInterval
-                                  + KEY_MIN;
-            assert(next_key <= last_key);
-
-            initialize_subtree(idx_dpu, idx_tree, next_key, last_key);
-
-            next_key = last_key + KeyInterval;
+    for (dpu_id_t idx_dpu = 0; idx_dpu + 1 < nr_dpus; idx_dpu++) {
+        auto weight_left = weight_for_each_dpu;
+        while (weight_left >= left_weight_in_the_piece) {
+            weight_left -= left_weight_in_the_piece;
+            idx_dist_piece++;
+            assert(idx_dist_piece < num_pieces);
+            weight_of_the_piece = left_weight_in_the_piece = workload_dist.densities.at(idx_dist_piece);
         }
+        left_weight_in_the_piece -= weight_left;
+        const auto last_key = (static_cast<key_int64_t>(
+                                   static_cast<double>(workload_dist.intervals.at(idx_dist_piece + 1))
+                                   - static_cast<double>(workload_dist.intervals.at(idx_dist_piece + 1) - workload_dist.intervals.at(idx_dist_piece))
+                                         * left_weight_in_the_piece / weight_of_the_piece)
+                                  - KEY_MIN)
+                                  / INIT_KEY_INTERVAL * INIT_KEY_INTERVAL
+                              + KEY_MIN;
+        assert(next_key <= last_key);
 
-        host_struct.lower_bounds.at(idx_dpu) = first_key_in_this_dpu;
-        host_struct.num_kvpairs.at(idx_dpu) = (next_key - first_key_in_this_dpu) / KeyInterval;
+        initialize_subtree(idx_dpu, next_key, last_key);
+
+        host_struct.lower_bounds.at(idx_dpu) = next_key;
+        host_struct.num_kvpairs.at(idx_dpu) = (last_key - next_key) / INIT_KEY_INTERVAL + 1;
+
+        next_key = last_key + INIT_KEY_INTERVAL;
     }
+
+    constexpr key_int64_t LastKey = INIT_KEY_INTERVAL * (NUM_INIT_REQS - 1);
+    assert(next_key <= LastKey);
+    initialize_subtree(nr_dpus - 1, next_key, LastKey);
+
+    host_struct.lower_bounds.at(nr_dpus - 1) = next_key;
+    host_struct.num_kvpairs.at(nr_dpus - 1) = (LastKey - next_key) / INIT_KEY_INTERVAL + 1;
 
     /* init BPTree in DPUs */
     BatchCtx dummy;
@@ -284,16 +278,6 @@ void check_succ_results(dpu_id_t nr_dpus, dpu_succ_results_t dpu_succ_results[],
 
     return host_struct;
 }
-
-// /* update cpu structs according to merge info */
-// void update_cpu_struct_merge(HostTree* host_tree)
-// {
-//     /* migration plan should be applied in advance */
-//     for (uint32_t dpu = 0; dpu < NR_DPUS; dpu++)
-//         for (seat_id_t i = 0; i < NR_SEATS_IN_DPU; i++)
-//             if (merge_info[dpu].merge_to[i] != INVALID_SEAT_ID)
-//                 host_tree->remove(dpu, i);  // merge to the previous subtree
-// }
 
 #ifdef HOST_MULTI_THREAD
 #include <condition_variable>
@@ -303,7 +287,7 @@ void check_succ_results(dpu_id_t nr_dpus, dpu_succ_results_t dpu_succ_results[],
 class PreprocessWorker
 {
     key_int64_t* requests;
-    unsigned start, end;
+    size_t start, end;
     HostTree* host_tree;
     unsigned worker_idx;
     std::thread t;
@@ -342,7 +326,7 @@ public:
         t.join();
     }
 
-    void initialize(key_int64_t* r, unsigned s, unsigned e, HostTree& h, unsigned w)
+    void initialize(key_int64_t* r, size_t s, size_t e, HostTree& h, unsigned w)
     {
         count.fill(0);
         requests = r;
@@ -355,19 +339,19 @@ public:
 private:
     void count_get_requests_job()
     {
-        for (unsigned i = start; i < end; i++) {
+        for (size_t i = start; i < end; i++) {
             count[host_tree->dpu_responsible_for_get_query_with(requests[i])]++;
         }
     }
     void count_insert_requests_job()
     {
-        for (unsigned i = start; i < end; i++) {
+        for (size_t i = start; i < end; i++) {
             count[host_tree->dpu_responsible_for_insert_query_with(requests[i])]++;
         }
     }
     void count_pred_requests_job()
     {
-        for (unsigned i = start; i < end; i++) {
+        for (size_t i = start; i < end; i++) {
             count[host_tree->dpu_responsible_for_pred_query_with(requests[i])]++;
         }
     }
@@ -396,59 +380,40 @@ public:
 private:
     void fill_get_requests_job()
     {
-        for (unsigned i = start; i < end; i++) {
+        for (size_t i = start; i < end; i++) {
             const key_int64_t key = requests[i];
             const auto idx_dpu = host_tree->dpu_responsible_for_get_query_with(key);
             const auto idx_in_buf = count[idx_dpu]++;
-#ifdef QUERY_GATHER_XFER
             dpu_requests[idx_dpu][worker_idx].buf[idx_in_buf].key = key;
-#else
-            dpu_requests[idx_dpu][idx_in_buf].key = key;
-#endif
         }
-#ifdef QUERY_GATHER_XFER
         for (dpu_id_t idx_dpu = 0; idx_dpu < host_tree->get_nr_dpus(); idx_dpu++) {
             dpu_requests[idx_dpu][worker_idx].size_in_elems = count[idx_dpu];
         }
-#endif
     }
     void fill_insert_requests_job()
     {
-        for (unsigned i = start; i < end; i++) {
+        for (size_t i = start; i < end; i++) {
             const key_int64_t key = requests[i];
             const auto idx_dpu = host_tree->dpu_responsible_for_insert_query_with(key);
             const auto idx_in_buf = count[idx_dpu]++;
-#ifdef QUERY_GATHER_XFER
             dpu_requests[idx_dpu][worker_idx].buf[idx_in_buf].key = key;
             dpu_requests[idx_dpu][worker_idx].buf[idx_in_buf].write_val_ptr = key;
-#else
-            dpu_requests[idx_dpu][idx_in_buf].key = key;
-            dpu_requests[idx_dpu][idx_in_buf].write_val_ptr = key;
-#endif
         }
-#ifdef QUERY_GATHER_XFER
         for (dpu_id_t idx_dpu = 0; idx_dpu < host_tree->get_nr_dpus(); idx_dpu++) {
             dpu_requests[idx_dpu][worker_idx].size_in_elems = count[idx_dpu];
         }
-#endif
     }
     void fill_pred_requests_job()
     {
-        for (unsigned i = start; i < end; i++) {
+        for (size_t i = start; i < end; i++) {
             const key_int64_t key = requests[i];
             const auto idx_dpu = host_tree->dpu_responsible_for_pred_query_with(key);
             const auto idx_in_buf = count[idx_dpu]++;
-#ifdef QUERY_GATHER_XFER
             dpu_requests[idx_dpu][worker_idx].buf[idx_in_buf].key = key;
-#else
-            dpu_requests[idx_dpu][idx_in_buf].key = key;
-#endif
         }
-#ifdef QUERY_GATHER_XFER
         for (dpu_id_t idx_dpu = 0; idx_dpu < host_tree->get_nr_dpus(); idx_dpu++) {
             dpu_requests[idx_dpu][worker_idx].size_in_elems = count[idx_dpu];
         }
-#endif
     }
 
 public:
@@ -506,7 +471,7 @@ PreprocessWorker ppwk[HOST_MULTI_THREAD];
 #ifdef TOUCH_QUERIES_IN_ADVANCE
 key_int64_t accumulated_key_numbers = 0;
 #endif /* TOUCH_QUERIES_IN_ADVANCE */
-int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, WorkloadBuffer& workload_buffer, HostTree& host_tree, BatchCtx& batch_ctx)
+size_t do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, WorkloadBuffer& workload_buffer, HostTree& host_tree, BatchCtx& batch_ctx)
 {
 #ifdef PRINT_DEBUG
     printf("======= batch %d =======\n", batch_num);
@@ -539,89 +504,31 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, W
     accumulated_key_numbers = std::accumulate(&batch_keys[0], &batch_keys[num_keys_batch], key_int64_t{0});
 #endif /* TOUCH_QUERIES_IN_ADVANCE */
 #ifdef DEBUG_ON
-    constexpr key_int64_t KeyInterval = (KEY_MAX - KEY_MIN) / NUM_INIT_REQS;
     for (size_t i = 0; i < num_keys_batch; i += 2u) {
-        batch_keys[i] = batch_keys[i] / KeyInterval * KeyInterval;
+        batch_keys[i] = batch_keys[i] / INIT_KEY_INTERVAL * INIT_KEY_INTERVAL;
     }
 #endif /* DEBUG_ON */
 
-    /* 1. count number of queries for each DPU */
-    auto count_requests = [&] {
+    /* 1. count and prepare requests to send to DPUs */
+    preprocess_time1 = measure_time([&] {
 #ifdef HOST_MULTI_THREAD
         for (unsigned i = 0; i < HOST_MULTI_THREAD; i++) {
-            unsigned start = num_keys_batch * i / HOST_MULTI_THREAD;
-            unsigned end = num_keys_batch * (i + 1) / HOST_MULTI_THREAD;
+            size_t start = num_keys_batch * i / HOST_MULTI_THREAD;
+            size_t end = num_keys_batch * (i + 1) / HOST_MULTI_THREAD;
             ppwk[i].initialize(batch_keys, start, end, host_tree, i);
-#ifndef QUERY_GATHER_XFER
-            ppwk[i].count_requests(task);
-        }
-        for (int i = 0; i < HOST_MULTI_THREAD; i++) {
-            ppwk[i].join();
-            ppwk[i].add_request_count(batch_ctx.num_keys_for_DPU);
-#endif
-        }
-#else  /* HOST_MULTI_THREAD */
-        switch (task) {
-        case TASK_GET:
-            for (int i = 0; i < num_keys_batch; i++) {
-                batch_ctx.num_keys_for_DPU[host_tree.dpu_responsible_for_get_query_with(batch_keys[i])]++;
-            }
-            break;
-        case TASK_INSERT:
-            for (int i = 0; i < num_keys_batch; i++) {
-                batch_ctx.num_keys_for_DPU[host_tree.dpu_responsible_for_insert_query_with(batch_keys[i])]++;
-            }
-            break;
-        case TASK_PRED:
-            for (int i = 0; i < num_keys_batch; i++) {
-                batch_ctx.num_keys_for_DPU[host_tree.dpu_responsible_for_pred_query_with(batch_keys[i])]++;
-            }
-            break;
-        default:
-            abort();
-        }
-#endif /* HOST_MULTI_THREAD */
-    };
-    preprocess_time1 = measure_time(count_requests).count();
-
-    /* 2. migration planning */
-    Migration migration_plan;
-    migration_plan_time = measure_time([&] {
-        migration_plan.migration_plan_memory_balancing();
-        migration_plan.migration_plan_query_balancing(batch_ctx, num_migration);
-    }).count();
-
-    /* 3. execute migration according to migration_plan */
-    migration_time = measure_time([&] {
-        if (migration_plan.execute(host_tree)) {
-            count_requests();
-        }
-    }).count();
-
-    /* 4. prepare requests to send to DPUs */
-    preprocess_time2 = measure_time([&] {
-#ifdef HOST_MULTI_THREAD
-#ifndef QUERY_GATHER_XFER
-        std::array<unsigned, MAX_NR_DPUS> request_count_accumulator{};
-        for (int i = 0; i < HOST_MULTI_THREAD; i++)
-            ppwk[i].set_partial_sum_of_request_counts(request_count_accumulator);
-#endif
-        for (int i = 0; i < HOST_MULTI_THREAD; i++)
             ppwk[i].fill_requests(task);
+        }
         for (int i = 0; i < HOST_MULTI_THREAD; i++) {
             ppwk[i].join();
-#ifdef QUERY_GATHER_XFER
             ppwk[i].add_request_count(batch_ctx.num_keys_for_DPU);
-#endif
         }
 #else  /* HOST_MULTI_THREAD */
-        std::array<unsigned, MAX_NR_DPUS> request_count{};
         switch (task) {
         case TASK_GET:
             for (int i = 0; i < num_keys_batch; i++) {
                 const key_int64_t key = batch_keys[i];
                 const auto idx_dpu = host_tree.dpu_responsible_for_get_query_with(key);
-                const auto idx_in_buf = request_count[idx_dpu]++;
+                const auto idx_in_buf = batch_ctx.num_keys_for_DPU[idx_dpu]++;
                 dpu_requests[idx_dpu][idx_in_buf].key = key;
             }
             break;
@@ -629,7 +536,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, W
             for (int i = 0; i < num_keys_batch; i++) {
                 const key_int64_t key = batch_keys[i];
                 const auto idx_dpu = host_tree.dpu_responsible_for_insert_query_with(key);
-                const auto idx_in_buf = request_count[idx_dpu]++;
+                const auto idx_in_buf = batch_ctx.num_keys_for_DPU[idx_dpu]++;
                 dpu_requests[idx_dpu][idx_in_buf].key = key;
                 dpu_requests[idx_dpu][idx_in_buf].write_val_ptr = key;
             }
@@ -638,7 +545,7 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, W
             for (int i = 0; i < num_keys_batch; i++) {
                 const key_int64_t key = batch_keys[i];
                 const auto idx_dpu = host_tree.dpu_responsible_for_pred_query_with(key);
-                const auto idx_in_buf = request_count[idx_dpu]++;
+                const auto idx_in_buf = batch_ctx.num_keys_for_DPU[idx_dpu]++;
                 dpu_requests[idx_dpu][idx_in_buf].key = key;
             }
             break;
@@ -646,15 +553,6 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, W
             abort();
         }
 #endif /* HOST_MULTI_THREAD */
-#ifdef DEBUG_ON
-        if (task == TASK_INSERT)
-            for (int i = 0; i < num_keys_batch; i++)
-                verify_db.emplace(batch_keys[i], batch_keys[i]);
-#endif /* DEBUG_ON */
-
-#ifdef PRINT_DEBUG
-        print_nr_queries(&batch_ctx);
-#endif /* PRINT_DEBUG */
 
 #ifndef RANK_ORIENTED_XFER
         /* count the number of requests for each DPU, determine the send size */
@@ -662,12 +560,40 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, W
 #endif /* RANK_ORIENTED_XFER */
     }).count();
 
-    /* 5. query deliver + 6. DPU query execution */
+#ifdef DEBUG_ON
+    if (task == TASK_INSERT)
+        for (size_t i = 0; i < num_keys_batch; i++)
+            verify_db.emplace(batch_keys[i], batch_keys[i]);
+#endif /* DEBUG_ON */
+
+    /* 2. query deliver + 3. DPU query execution */
     upmem_send_task(task, batch_ctx, &send_time, &execution_time);
 
-    /* 7. receive results (and update CPU structs) */
+    /* 4. migration planning */
+    Migration migration_plan;
+    migration_plan_time = measure_time([&] {
+        migration_plan.migration_plan_memory_balancing();
+        migration_plan.migration_plan_query_balancing(host_tree, num_keys_batch, batch_ctx);
+    }).count();
+
+#ifdef PRINT_DEBUG
+    migration_plan.print(std::cout, opt.print_migration_plan);
+#endif
+
+    /* 5. execute migration according to migration_plan */
+    migration_time = measure_time([&] {
+        migration_plan.execute(host_tree);
+    }).count();
+
+#ifdef PRINT_DEBUG
+    print_nr_queries(&batch_ctx);
+#endif /* PRINT_DEBUG */
+
+    /* 6. receive results (and update CPU structs) */
     receive_result_time = measure_time([&] {
-        upmem_receive_num_kvpairs(&host_tree, NULL);
+        if (task == TASK_INSERT) {
+            upmem_receive_num_kvpairs(&host_tree, NULL);
+        }
         if (task == TASK_GET) {
             upmem_receive_get_results(batch_ctx, NULL);
 #ifdef DEBUG_ON
@@ -683,20 +609,9 @@ int do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch, W
     }).count();
 
 #ifdef PRINT_DEBUG
-    print_num_kvpairs(&host_tree);
+    if (opt.print_subtree_size)
+        std::cout << host_tree << std::endl;
 #endif /* PRINT_DEBUG */
-
-    /* 8. merge small subtrees in DPU*/
-    merge_time = measure_time([&] {
-#ifdef MERGE
-        for (uint32_t i = 0; i < NR_DPUS; i++)
-            std::fill(&merge_info[i].merge_to[0], &merge_info[i].merge_to[NR_SEATS_IN_DPU], INVALID_SEAT_ID);
-        Migration migration_plan_for_merge;
-        // migration_plan_for_merge.migration_plan_for_merge(host_tree, merge_info);
-        migration_plan_for_merge.execute(host_tree);
-        upmem_send_task(TASK_MERGE, batch_ctx, NULL, NULL);
-#endif /* MERGE */
-    }).count();
 
     return num_keys_batch;
 }
@@ -706,18 +621,14 @@ int main(int argc, char* argv[])
     opt.parse(argc, argv);
 
     /* In current implementation, bitmap word is 64 bit. So NR_SEAT_IN_DPU must not be greater than 64. */
-    assert(NR_SEATS_IN_DPU <= 64);
     assert(sizeof(dpu_requests_t) == sizeof(dpu_requests[0]));
 #ifdef PRINT_DEBUG
     std::cout << "NR_RANKS:" << NR_RANKS << std::endl
               << "NR_TASKLETS:" << NR_TASKLETS << std::endl
-              << "NR_SEATS_PER_DPU:" << NR_SEATS_IN_DPU << std::endl
-              << "seats per DPU (init):" << NR_INITIAL_TREES_IN_DPU << std::endl
-              << "seats per DPU (max):" << NR_SEATS_IN_DPU << std::endl
               << "requests per batch:" << NUM_REQUESTS_PER_BATCH << std::endl
               << "init elements in total:" << NUM_INIT_REQS << std::endl
               << "MAX_NUM_NODES_IN_SEAT:" << MAX_NUM_NODES_IN_SEAT << std::endl
-              << "estm. max elems in seat:" << (MAX_NUM_NODES_IN_SEAT * MAX_CHILD) << std::endl;
+              << "estm. max elems in seat:" << (MAX_NUM_NODES_IN_SEAT * MAX_NR_PAIRS) << std::endl;
 #endif
 
     upmem_init();
@@ -745,9 +656,9 @@ int main(int argc, char* argv[])
 
     /* main routine */
     uint64_t total_num_keys = 0;
-    printf("alpha, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time, execution_time, receive_result_time, merge_time, batch_time, throughput\n");
+    printf("alpha, NR_DPUS, NR_TASKLETS, batch_num, num_keys, max_query_num, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time, execution_time, receive_result_time, batch_time, throughput\n");
     for (int idx_batch = 0; idx_batch < opt.nr_batches; idx_batch++) {
-        int num_keys;
+        size_t num_keys;
         BatchCtx batch_ctx;
         switch (opt.op_type) {
         case Option::OP_TYPE_GET:
@@ -763,7 +674,7 @@ int main(int argc, char* argv[])
             abort();
         }
         total_num_keys += num_keys;
-        batch_time = preprocess_time1 + preprocess_time2 + migration_plan_time + migration_time + send_time + execution_time + receive_result_time + merge_time;
+        batch_time = preprocess_time1 + preprocess_time2 + migration_plan_time + migration_time + send_time + execution_time + receive_result_time;
         total_preprocess_time1 += preprocess_time1;
         total_preprocess_time2 += preprocess_time2;
         total_migration_plan_time += migration_plan_time;
@@ -771,13 +682,12 @@ int main(int argc, char* argv[])
         total_send_time += send_time;
         total_execution_time += execution_time;
         total_receive_result_time += receive_result_time;
-        total_merge_time += merge_time;
         total_batch_time += batch_time;
-        double throughput = num_keys / batch_time;
-        printf("%s, %d, %d, %d, %d, %d, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
+        double throughput = static_cast<double>(num_keys) / batch_time;
+        printf("%s, %d, %d, %d, %ld, %d, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
             opt.alpha.c_str(), host_tree.get_nr_dpus(), NR_TASKLETS, idx_batch,
             num_keys, batch_ctx.send_size, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time,
-            execution_time, receive_result_time, merge_time, batch_time, throughput);
+            execution_time, receive_result_time, batch_time, throughput);
     }
 
 
@@ -787,14 +697,14 @@ int main(int argc, char* argv[])
     //printf("%ld,%ld,%ld\n", total_num_keys_cpu, total_num_keys_dpu, total_num_keys_cpu + total_num_keys_dpu);
     //printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", alpha.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, send_time, cpu_time,
     //    execution_time, 100 * cpu_time / execution_time, send_and_execution_time, total_time, throughput);
-    double throughput = total_num_keys / total_batch_time;
-    printf("%s, %d, %d, total, %d,, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f\n",
+    double throughput = static_cast<double>(total_num_keys) / total_batch_time;
+    printf("%s, %d, %d, total, %d,, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f\n",
         opt.alpha.c_str(), host_tree.get_nr_dpus(), NR_TASKLETS,
         opt.nr_batches, total_preprocess_time1, total_preprocess_time2, total_migration_plan_time, total_migration_time, total_send_time,
-        total_execution_time, total_receive_result_time, total_merge_time, total_batch_time, throughput);
+        total_execution_time, total_receive_result_time, total_batch_time, throughput);
 
 #ifdef MEASURE_XFER_BYTES
-    xfer_statistics.print(stdout);
+    xfer_statistics.print();
 #endif /* MEASURE_XFER_BYTES */
 
     upmem_release();
@@ -817,29 +727,7 @@ int main(int argc, char* argv[])
 // Printer
 //
 
-static void print_num_kvpairs(HostTree* host_tree)
-{
-    if (!opt.print_subtree_size)
-        return;
-    dpu_id_t nr_dpus = opt.print_subtree_size;
-    printf("===== #KV-pairs =====\n");
-    for (dpu_id_t i = 0; i < nr_dpus; i++) {
-        printf("DPU[%4d] %4d\n", i, host_tree->get_num_kvpairs(i));
-    }
-}
-
-static void print_merge_info(HostTree* host_tree)
-{
-    printf("===== merge info =====\n");
-    for (dpu_id_t i = 0; i < host_tree->get_nr_dpus(); i++) {
-        printf("%2d", i);
-        for (seat_id_t j = 0; j < NR_SEATS_IN_DPU; j++)
-            printf(" %2d", merge_info[i].merge_to[j]);
-        printf("\n");
-    }
-}
-
-static void print_nr_queries(BatchCtx* batch_ctx)
+[[maybe_unused]] static void print_nr_queries(BatchCtx* batch_ctx)
 {
     if (!opt.print_load)
         return;

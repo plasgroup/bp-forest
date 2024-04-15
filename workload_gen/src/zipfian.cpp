@@ -24,7 +24,7 @@ int main(int argc, char* argv[])
 {
     cmdline::parser a;
     a.add<std::string>("filename", 'f', "workload file name", true);
-    a.add<int>("keynum", 'n', "num of generated_keys to generate", false, 100000000);
+    a.add<size_t>("keynum", 'n', "num of generated_keys to generate", false, 100000000);
     a.add<double>("zipfianconst", 'a', "zipfianconst", false, 0.99);
     a.add<uint64_t>("elementnum", 'e', "num of elements of zipfian dist.", false, 2500);
     a.add("scramble", 's', "whether scramble or not");
@@ -34,10 +34,10 @@ int main(int argc, char* argv[])
     // a.add<int>("elementnum", 'e', "num of elements of zipfian dist.", true, (1ULL << 31) - 1;); // 32bit zipfian dist.
 
     const double zipfian_const = a.get<double>("zipfianconst");
-    const int key_num = a.get<int>("keynum");
-    const uint64_t min = 0;
+    const size_t key_num = a.get<size_t>("keynum");
+    const uint64_t min = KEY_MIN;
     const uint64_t num_partitions = a.get<uint64_t>("elementnum");
-    const uint64_t range = std::numeric_limits<uint64_t>::max() / num_partitions;  // key range per 1 division
+    const uint64_t range = KEY_MAX / num_partitions;  // key range per 1 division
 
     PiecewiseConstantWorkload generated;
     generated.metadata.intervals.reserve(num_partitions + 1u);
@@ -73,10 +73,10 @@ int main(int argc, char* argv[])
 
     start_time = clock();
 
-    for (int i = 0; i < key_num; i++) {
+    for (size_t i = 0; i < key_num; i++) {
         time_elapsed = (double)(clock() - start_time) / CLOCKS_PER_SEC;
         if (time_elapsed >= 3.0) {
-            printf("[zipfianconst = %.2f] %.2f%% completed\n", zipfian_const, (i / (double)key_num) * 100);
+            printf("[zipfianconst = %.2f] %.2f%% completed\n", zipfian_const, ((double)i / (double)key_num) * 100);
             start_time = clock();
         }
         uint64_t which_range = generator->Next();
@@ -84,9 +84,9 @@ int main(int argc, char* argv[])
         generated.data.push_back(which_range * range + in_range);
         distribution[which_range]++;
     }
-    for (int i = 0; i < 10; i++) {
+    for (unsigned i = 0; i < 10; i++) {
         if (a.exist("showinfo")) {
-            std::cout << "num keys in " << i << "th range: " << distribution[i] << ", " << 100 * (double)distribution[i] / key_num << "%" << std::endl;
+            std::cout << "num keys in " << i << "th range: " << distribution[i] << ", " << 100 * (double)distribution[i] / (double)key_num << "%" << std::endl;
         }
     }
 

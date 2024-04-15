@@ -27,14 +27,14 @@ static void upmem_init_impl()
 }
 static void upmem_release_impl()
 {
-    all_dpu ^= all_dpu;
+    all_dpu.reset();
     Emulation::terminate();
 }
 
 
 static dpu_id_t nr_dpus_in_set(const DPUSet& set)
 {
-    return set.count();
+    return static_cast<dpu_id_t>(set.count());
 }
 dpu_id_t upmem_get_nr_dpus()
 {

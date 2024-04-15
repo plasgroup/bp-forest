@@ -6,8 +6,8 @@ extern "C" {
 #endif  // ifdef __cplusplus
 
 
-#include "workload_types.h"
 #include "bit_ops_macro.h"
+#include "workload_types.h"
 
 #include <stdint.h>
 
@@ -16,8 +16,8 @@ extern "C" {
  * MRAM Layout
  */
 
-#define MRAM_CABIN_BYTES (30 * 1024 * 1024)
-#define MRAM_REQUEST_BUFFER_BYTES (15 * 1024 * 1024)
+#define MRAM_CABIN_BYTES (27 * 1024 * 1024)
+#define MRAM_REQUEST_BUFFER_BYTES (8 * 1024 * 1024)
 
 
 /*
@@ -28,27 +28,14 @@ extern "C" {
 #error NR_TASKLETS is always used but never defined
 #endif
 
-#ifndef NR_SEATS_IN_DPU
-#define NR_SEATS_IN_DPU (20)
-#endif
-
-#define MAX_NUM_NODES_IN_SEAT (MRAM_CABIN_BYTES / NR_SEATS_IN_DPU / sizeof(BPTreeNode))
+#define SIZEOF_NODE (2048)
+#define MAX_NUM_NODES_IN_SEAT (MRAM_CABIN_BYTES / SIZEOF_NODE)
+#define MAX_NR_PAIRS ((SIZEOF_NODE - 16) / 16)        // depends on the definition of `Node' in dpu/inc/bplustree.h
+#define MAX_NR_CHILDREN ((SIZEOF_NODE / 12) / 2 * 2)  // depends on the definition of `Node' in dpu/inc/bplustree.h
 
 #ifndef MAX_REQ_NUM_IN_A_DPU
 #define MAX_REQ_NUM_IN_A_DPU (BIT_FLOOR_UINT32(MRAM_REQUEST_BUFFER_BYTES / sizeof(each_request_t) / 2))
 #endif
-
-
-/*
- * split related parameter
- */
-#define MAX_NUM_SPLIT (5)
-
-#ifndef SPLIT_THRESHOLD
-#define SPLIT_THRESHOLD (4000)
-#endif  // ifndef SPLIT_THRESHOLD
-
-#define NR_ELEMS_AFTER_SPLIT (SPLIT_THRESHOLD / 2)
 
 
 // #define PRINT_DEBUG
@@ -86,31 +73,25 @@ typedef union {
 } dpu_results_t;
 
 typedef struct {
-    int use;
     key_int64_t start;
     key_int64_t end_inclusive;
     key_int64_t interval;
 } dpu_init_param_t;
 
-typedef int seat_id_t;
-#define INVALID_SEAT_ID (-1)
-typedef uint64_t seat_set_t;
+typedef struct {
+    uint32_t left_npairs_ratio_x2147483648;
+    uint32_t right_npairs_ratio_x2147483648;
+} migration_ratio_param_t;
+typedef struct {
+    key_int64_t left_delim_key;
+    key_int64_t right_delim_key;
+} migration_key_param_t;
+typedef struct {
+    uint32_t num_left_kvpairs;
+    uint32_t num_right_kvpairs;
+} migration_pairs_param_t;
 
 typedef struct {
-    /*  num_elems: number of elements(k-v pair) in the tree
-    new_tree_index: the tree_index of the new tree made by split
-    split_key: the border key of the split  */
-    int num_split;
-    int num_elems[MAX_NUM_SPLIT];
-    key_int64_t split_key[MAX_NUM_SPLIT - 1];
-    int new_tree_index[MAX_NUM_SPLIT];
-} split_info_t;
-
-typedef struct {
-    seat_id_t merge_to[NR_SEATS_IN_DPU];
-} merge_info_t;
-
-typedef struct KVPair {
     key_int64_t key;
     value_ptr_t value;
 } KVPair;
@@ -124,7 +105,6 @@ typedef struct KVPair {
 #define TASK_PRED (UINT32_C(14))
 #define TASK_FROM (UINT32_C(100))
 #define TASK_TO (UINT32_C(101))
-#define TASK_MERGE (UINT32_C(102))
 
 #define TASK_OPERAND_SHIFT 32
 #define TASK_ID_MASK ((UINT64_C(1) << TASK_OPERAND_SHIFT) - 1)

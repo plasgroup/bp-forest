@@ -17,7 +17,7 @@ class XferStatistics {
         uint64_t count;
     };
     std::map<std::string, std::vector<XferEntry> > stat;
-    int epoch = 0;
+    unsigned epoch = 0;
 
 public:
     void new_batch()
@@ -42,7 +42,7 @@ public:
         e.count++;
     }
 
-    void print(FILE* fp)
+    void print()
     {
         printf("==== XFER STATISTICS (MB) ====\n");
         printf("symbol                    rd count xfer-bytes    average  effective effeciency(%%) \n");
@@ -52,12 +52,12 @@ public:
             uint64_t sum_total_bytes = 0;
             uint64_t sum_effective_bytes = 0;
             uint64_t sum_count = 0;
-            for (int i = 0; i < v.size(); i++) {
+            for (unsigned i = 0; i < v.size(); i++) {
                 XferEntry& e = v[i];
                 sum_total_bytes += e.total_bytes;
                 sum_effective_bytes += e.effective_bytes;
                 sum_count += e.count;
-                print_line(symbol, i, e.count, e.total_bytes, e.effective_bytes);
+                print_line(symbol, static_cast<int>(i), e.count, e.total_bytes, e.effective_bytes);
             }
             print_line(symbol, -1, sum_count, sum_total_bytes, sum_effective_bytes);
         }
@@ -73,7 +73,7 @@ private:
             MB(total),
             count > 0 ? MB(total / count) : 0.0,
             MB(effective),
-            total > 0 ? ((float) effective) / total * 100: 0.0
+            total > 0 ? ((float) effective) / static_cast<float>(total) * 100: 0.0
             );
 #undef MB
     }

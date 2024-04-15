@@ -5,30 +5,28 @@
 #include "host_data_structures.hpp"
 #include "host_params.hpp"
 
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <map>
 #include <utility>
+#include <limits>
 #include <vector>
-
-class HostTree;
-class BatchCtx;
 
 class Migration
 {
 private:
-    // DPU#i will have  `plan[i]` more KV pairs after migration (if plan[i] > 0)
-    //                 `-plan[i]` less KV pairs                 (if plan[i] < 0)
-    std::array<int32_t, MAX_NR_DPUS> plan{};
+    std::array<migration_ratio_param_t, MAX_NR_DPUS> plan{};
 
 public:
     Migration() {}
-    void migration_plan_query_balancing(BatchCtx& batch_ctx, int num_migration);
+    void migration_plan_query_balancing(const HostTree& host_tree, size_t num_keys_batch, const BatchCtx& batch_ctx);
     void migration_plan_memory_balancing(void);
     // @return whether `host_tree` is changed
     bool execute(HostTree& host_tree);
-    void print_plan(void);
+
+    void print(std::ostream& os, dpu_id_t nr_dpus_to_print = std::numeric_limits<dpu_id_t>::max());
 };
 
 #endif /* __MIGRATION_HPP__ */

@@ -1,76 +1,59 @@
+#include "allocator.h"
 #include "binary_search.h"
 #include "bplustree.h"
-#include "cabin.h"
 #include "common.h"
-#include "merge_phase.h"
 #include "sort.h"
-#include "split_phase.h"
 #include "workload_types.h"
 
 #include <assert.h>
+#include <attributes.h>
 #include <barrier.h>
 #include <defs.h>
 #include <mram.h>
+#include <mutex.h>
 #include <perfcounter.h>
-#include <sem.h>
 
+#include <stdint.h>
 #include <stdio.h>
 
 BARRIER_INIT(my_barrier, NR_TASKLETS);
-SEMAPHORE_INIT(my_semaphore, 1);
+MUTEX_INIT(my_mutex);
 
-__mram each_request_t request_buffer[MAX_REQ_NUM_IN_A_DPU];
-__mram dpu_results_t results;
-__mram_ptr void* ptr;
-__mram KVPair tree_transfer_buffer[MAX_NUM_NODES_IN_SEAT * MAX_CHILD];
-__mram uint64_t tree_transfer_num;
-__mram split_info_t split_result[NR_SEATS_IN_DPU];
-__mram merge_info_t merge_info;
-__mram dpu_init_param_t dpu_init_param[NR_SEATS_IN_DPU];
+__mram_noinit dpu_init_param_t dpu_init_param;
+__mram_noinit each_request_t request_buffer[MAX_REQ_NUM_IN_A_DPU];
+__mram_noinit dpu_results_t results;
+
+__mram_noinit migration_ratio_param_t migration_ratio_param;
+__mram_noinit migration_key_param_t migration_key_param;
+__mram_noinit migration_pairs_param_t migration_pairs_param;
+__mram_noinit key_int64_t migrated_keys[MAX_NUM_NODES_IN_SEAT * MAX_NR_PAIRS];
+__mram_noinit value_ptr_t migrated_values[MAX_NUM_NODES_IN_SEAT * MAX_NR_PAIRS];
 
 __host unsigned end_idx;
 __host uint64_t task_no;
-__host int num_kvpairs_in_seat[NR_SEATS_IN_DPU];
-int queries_per_tasklet;
-seat_id_t current_tree;
-uint32_t task;
-int num_invoked = 0;
-
-#ifdef DEBUG_ON
-__mram_ptr void* getval;
-#endif
 
 int main()
 {
-    int tid = me();
+    unsigned tid = me();
+    const uint32_t task = (uint32_t)TASK_GET_ID(task_no);
     if (tid == 0) {
-        num_invoked++;
-        task = (uint32_t)TASK_GET_ID(task_no);
 #ifdef DEBUG_ON
         printf("end_idx = %d\n", end_idx);
 #endif
     }
-    barrier_wait(&my_barrier);
     switch (task) {
     case TASK_INIT: {
         if (tid == 0) {
-            Cabin_init();
-            for (seat_id_t seat_id = 0; seat_id < NR_SEATS_IN_DPU; seat_id++) {
-                __mram_ptr dpu_init_param_t* param = &dpu_init_param[seat_id];
-                if (param->use != 0) {
-                    Cabin_allocate_seat(seat_id);
-                    init_BPTree(seat_id);
-                    if (param->end_inclusive < param->start)
-                        continue;
-                    key_int64_t k = param->start;
-                    lower_bounds[seat_id] = k;
-                    while (true) {
-                        value_ptr_t v = k;
-                        BPTreeInsert(k, v, seat_id);
-                        if (param->end_inclusive - k < param->interval)
-                            break;
-                        k += param->interval;
-                    }
+            root = Allocator_reset();
+            init_BPTree();
+            if (dpu_init_param.end_inclusive >= dpu_init_param.start) {
+                key_int64_t k = dpu_init_param.start;
+                while (true) {
+                    value_ptr_t v = k;
+                    BPTreeInsert(k, v);
+                    if (dpu_init_param.end_inclusive - k < dpu_init_param.interval)
+                        break;
+                    k += dpu_init_param.interval;
                 }
             }
         }
@@ -103,9 +86,9 @@ int main()
         //             barrier_wait(&my_barrier);
         //         }
         // #ifdef PRINT_DEBUG
-        //         sem_take(&my_semaphore);
+        //         mutex_lock(my_mutex);
         //         printf("[tasklet %d] inserting tree [%d, %d)\n", tid, start_tree, end_tree);
-        //         sem_give(&my_semaphore);
+        //         mutex_unlock(my_mutex);
         //         barrier_wait(&my_barrier);
         // #endif
         //         /* execution */
@@ -115,12 +98,12 @@ int main()
         //                     BPTreeInsert(request_buffer[index].key, request_buffer[index].write_val_ptr, tree);
         //                 }
         // #ifdef PRINT_DEBUG
-        //                 sem_take(&my_semaphore);
+        //                 mutex_lock(my_mutex);
         //                 printf("[tasklet %d] inserted seat %d\n", tid, tree);
         //                 printf("[tasklet %d] total num of nodes of seat %d = %d\n", tid, tree, Seat_get_n_nodes(tree));
         //                 printf("[tasklet %d] height of seat %d = %d\n", tid, tree, Seat_get_height(tree));
         //                 printf("[tasklet %d] num of KV-Pairs of seat %d = %d\n", tid, tree, BPTree_Serialize(tree, tree_transfer_buffer));
-        //                 sem_give(&my_semaphore);
+        //                 mutex_unlock(my_mutex);
         // #endif
         //             }
         //         }
@@ -171,42 +154,11 @@ int main()
         const unsigned start_index = end_idx * tid / NR_TASKLETS;
         const unsigned end_index = end_idx * (tid + 1) / NR_TASKLETS;
 
-#ifdef DPU_SORT_QUERIES
-        parallel_sort_requests(end_idx, &my_barrier);
-        barrier_wait(&my_barrier);
-
-        if (start_index < end_index) {
-            unsigned idx_req = start_index;
-            key_int64_t key = request_buffer[idx_req].key;
-            unsigned idx_tree = tree_responsible_for_get_request_with(key);
-            if (idx_tree == UINT_MAX) {
-                for (; idx_req < end_index && key < lower_bounds[0]; idx_req++, key = request_buffer[idx_req].key) {
-                    results.get[idx_req].key = key;
-                    results.get[idx_req].get_result = 0;
-                }
-                idx_tree = 0u;
-            }
-            for (; idx_req < end_index; idx_req++) {
-                const key_int64_t key = request_buffer[idx_req].key;
-                while (idx_tree + 1u < NR_SEATS_IN_DPU && key >= lower_bounds[idx_tree + 1u]) {
-                    idx_tree++;
-                }
-                results.get[idx_req].key = key;
-                results.get[idx_req].get_result = BPTreeGet(key, idx_tree);
-            }
-        }
-#else /* DPU_SORT_QUERIES */
         for (unsigned idx_req = start_index; idx_req < end_index; idx_req++) {
             const key_int64_t key = request_buffer[idx_req].key;
-            const unsigned idx_tree = tree_responsible_for_get_request_with(key);
             results.get[idx_req].key = key;
-            if (idx_tree == UINT_MAX) {
-                results.get[idx_req].get_result = 0;
-            } else {
-                results.get[idx_req].get_result = BPTreeGet(key, idx_tree);
-            }
+            results.get[idx_req].get_result = BPTreeGet(key);
         }
-#endif /* DPU_SORT_QUERIES */
         break;
     }
     // case TASK_SUCC: {
@@ -243,27 +195,56 @@ int main()
     // }
     case TASK_FROM: {
         if (tid == 0) {
-            seat_id_t seat_id = (task_no >> 32);
-            tree_transfer_num = BPTree_Serialize(seat_id, tree_transfer_buffer);
-            //printf("TASK FROM, tree_transfer num: %lu\n", tree_transfer_num);
-            Cabin_release_seat(seat_id);
+            const migration_ratio_param_t ratio_param = migration_ratio_param;
+            assert(ratio_param.left_npairs_ratio_x2147483648 + ratio_param.right_npairs_ratio_x2147483648 <= 2147483648u);
+
+            migration_pairs_param_t npairs = (migration_pairs_param_t){
+                (uint32_t)((uint64_t)ratio_param.left_npairs_ratio_x2147483648 * num_kvpairs / 2147483648u),
+                num_kvpairs - (uint32_t)((2147483648u - (uint64_t)ratio_param.right_npairs_ratio_x2147483648) * num_kvpairs / 2147483648u),
+            };
+
+            migration_key_param_t delimiters;
+            if (ratio_param.left_npairs_ratio_x2147483648 != 2147483648u) {
+                delimiters.left_delim_key = BPTreeNthKeyFromLeft(npairs.num_left_kvpairs);
+            }
+            if (ratio_param.right_npairs_ratio_x2147483648 != 0u) {
+                delimiters.right_delim_key = BPTreeNthKeyFromRight(npairs.num_right_kvpairs - 1u);
+            }
+            migration_key_param = delimiters;
+
+            switch (ratio_param.left_npairs_ratio_x2147483648) {
+            case 0u:
+                break;
+            case 2147483648u:
+                npairs.num_left_kvpairs = num_kvpairs;
+                BPTreeSerialize(&migrated_keys[0], &migrated_values[0]);
+                break;
+            default:
+                npairs.num_left_kvpairs = BPTreeExtractFirstPairs(&migrated_keys[0], &migrated_values[0], delimiters.left_delim_key);
+                break;
+            }
+
+            // assert(ratio_param.right_npairs_ratio_x2147483648 == 0u);
+            // switch (ratio_param.right_npairs_ratio_x2147483648) {
+            // case 0u:
+            //     break;
+            // case 2147483648u:
+            //     npairs.num_right_kvpairs = num_kvpairs;
+            //     BPTreeSerialize(&migrated_keys[0], &migrated_values[0]);
+            //     break;
+            // default:
+            //     // npairs.num_right_kvpairs = BPTreeExtractLastPairs(&migrated_keys[npairs.num_left_kvpairs], &migrated_values[npairs.num_left_kvpairs], delimiters.right_delim_key);
+            //     break;
+            // }
+
+            migration_pairs_param = npairs;
         }
         break;
     }
     case TASK_TO: {
         if (tid == 0) {
-            seat_id_t seat_id = (task_no >> 32);
-            Cabin_allocate_seat(seat_id);
-            init_BPTree(seat_id);
-            //printf("TASK TO, tree_transfer num: %lu\n", tree_transfer_num);
-            BPTree_Deserialize(seat_id, tree_transfer_buffer, 0, tree_transfer_num);
-            //printf("TASK TO, after deserialize: %d\n", num_kvpairs_in_seat[seat_id]);
-        }
-        break;
-    }
-    case TASK_MERGE: {
-        if (tid == 0) {
-            merge_phase();
+            BPTreeInsertSortedPairsToLeft(&migrated_keys[0], &migrated_values[0], migration_pairs_param.num_left_kvpairs);
+            // BPTreeInsertSortedPairsToRight(&migrated_keys[migration_pairs_param.num_left_kvpairs], &migrated_values[migration_pairs_param.num_left_kvpairs], migration_pairs_param.num_right_kvpairs);
         }
         break;
     }
@@ -274,14 +255,15 @@ int main()
     }
 
 #ifdef PRINT_ON
-    // sem_take(&my_semaphore);
-    // printf("\n");
-    // printf("Printing Nodes of tasklet#%d...\n", tid);
-    // printf("===========================================\n");
-    // BPTreePrintAll(tid);
-    // printf("===========================================\n");
-    // sem_give(&my_semaphore);
-    // barrier_wait(&my_barrier);
+    barrier_wait(&my_barrier);
+    if (tid == 0) {
+        printf("\n");
+        printf("Printing Nodes...\n");
+        printf("===========================================\n");
+        BPTreePrintKeys();
+        if (!BPTreeCheckStructure()) BPTreePrintAll();
+        printf("===========================================\n");
+    }
 #endif
     return 0;
 }

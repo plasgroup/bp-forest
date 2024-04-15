@@ -57,25 +57,19 @@ Serialization
         3.  loop:  // 中身が少なすぎる非ルートなノードをなくす
             1.  `node <- parent.children[0]`
             2.  if `node.is_leaf`:
-                1.  if `node.keys.size < MIN_NUM_KEYS`:
+                1.  if `node.kv_pairs.size < MIN_NUM_PAIRS`:
                     1.  `sibling <- parent.children[1]`
-                    2.  if `node.keys.size + sibling.keys.size >= 2 * MIN_NUM_KEYS`:  // 兄弟から子供を移す
+                    2.  if `node.kv_pairs.size + sibling.kv_pairs.size >= 2 * MIN_NUM_KEYS`:  // 兄弟からペアを移す
                         1.  `n_move <- MIN_NUM_KEYS - node.keys.size`
-                        2.  foreach `grandchild` in `sibling.children[:n_move]`:
-                            1.  `grandchild.parent <- node`
-                        3.  `node.keys <- node.keys ++ [parent.keys[0]] ++ sibling.keys[:(n_move - 1)]`
-                        4.  `parent.keys[0] <- sibling.keys[n_move - 1]`
-                        5.  `sibling.keys <- sibling.keys[n_move:]`
-                        6.  `node.children <- node.children ++ sibling.children[:n_move]`
-                        7.  `sibling.children <- sibling.children[n_move:]`
+                        2.  `node.kv_pairs <- node.kv_pairs ++ sibling.kv_pairs[:n_move]`
+                        3.  `sibling.kv_pairs <- sibling.kv_pairs[n_move:]`
+                        4.  `parent.keys[0] <- sibling.kv_pairs[0].key`
                     3.  else (`node.keys.size + sibling.keys.size < 2 * MIN_NUM_KEYS`):  // 兄弟とmerge
-                        1.  foreach `grandchild` in `node.children`:
-                            1.  `grandchild.parent <- sibling`
-                        2.  `sibling <- merge(node, parent.keys[0], sibling)`
-                        3.  `free(node)`
-                        4.  `parent.keys <- parent.keys[1:]`
-                        5.  `parent.children <- parent.children[1:]`
-                        6.  if `parent.keys == []`:
+                        1.  `sibling <- merge(node, sibling)`
+                        2.  `free(node)`
+                        3.  `parent.keys <- parent.keys[1:]`
+                        4.  `parent.children <- parent.children[1:]`
+                        5.  if `parent.keys == []`:
                             1.  `free(parent)`
                             2.  `T.root <- sibling`
                 2.  break
@@ -103,3 +97,8 @@ Serialization
                             1.  `free(parent)`
                             2.  `T.root <- sibling`
                         7.  `parent <- sibling`
+                2.  else (`node.keys.size >= MIN_NUM_KEYS + 1`): `parent <- node`
+
+## TODO
+
+* $`L`$ 用の領域が足りなくなった時に中断する？
