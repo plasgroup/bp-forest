@@ -78,18 +78,19 @@ typedef struct {
     key_int64_t interval;
 } dpu_init_param_t;
 
-typedef struct {
-    uint32_t left_npairs_ratio_x2147483648;
-    uint32_t right_npairs_ratio_x2147483648;
-} migration_ratio_param_t;
-typedef struct {
-    key_int64_t left_delim_key;
-    key_int64_t right_delim_key;
-} migration_key_param_t;
-typedef struct {
-    uint32_t num_left_kvpairs;
-    uint32_t num_right_kvpairs;
-} migration_pairs_param_t;
+// typedef struct {
+//     uint32_t left_npairs_ratio_x2147483648;
+//     uint32_t right_npairs_ratio_x2147483648;
+// } migration_ratio_param_t;
+// typedef struct {
+//     key_int64_t left_delim_key;
+//     key_int64_t right_delim_key;
+// } migration_key_param_t;
+// typedef struct {
+//     uint32_t num_left_kvpairs;
+//     uint32_t num_right_kvpairs;
+// } migration_pairs_param_t;
+typedef uint32_t migration_pairs_param_t;
 
 typedef struct {
     key_int64_t key;

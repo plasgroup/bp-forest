@@ -8,20 +8,28 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <type_traits>
+#include <utility>
 
 
-Emulation emu[MAX_NR_DPUS];
 static constexpr dpu_id_t NrDPUs = MAX_NR_DPUS;
 static constexpr dpu_id_t NrDPUsInRank = MAX_NR_DPUS_IN_RANK;
+Emulation emu[NrDPUs];
 
+
+inline UPMEM_AsyncDuration::~UPMEM_AsyncDuration()
+{
+}
 
 static void upmem_init_impl()
 {
+    all_dpu.reset();
+    all_dpu.flip();
+
     for (dpu_id_t i = 0; i < NrDPUs; i++) {
-        all_dpu[i] = true;
         emu[i].init(i);
     }
 }
@@ -40,23 +48,37 @@ dpu_id_t upmem_get_nr_dpus()
 {
     return NrDPUs;
 }
-
-static void select_dpu(DPUSet* dst, dpu_id_t index)
+std::pair<dpu_id_t, dpu_id_t> upmem_get_dpu_range_in_rank(dpu_id_t idx_rank)
 {
-    DPUSet mask;
-    mask[index] = true;
-    *dst = all_dpu & mask;
+    return {NrDPUsInRank * idx_rank, NrDPUsInRank * (idx_rank + 1)};
+}
+
+static DPUSet select_dpu(dpu_id_t index)
+{
+    assert(index < upmem_get_nr_dpus());
+    DPUSet result;
+    result.set(index);
+    return result;
+}
+static DPUSet select_rank(dpu_id_t index)
+{
+    assert(index < NR_RANKS);
+    DPUSet result;
+    for (dpu_id_t i = 0; i < NrDPUsInRank; i++) {
+        result.set(index * NrDPUsInRank + i);
+    }
+    return result;
 }
 
 
 template <bool ToDPU, class BatchTransferBuffer>
-static void xfer_with_dpu(const DPUSet& set, const char* symbol, BatchTransferBuffer&& buf)
+static void xfer_with_dpu(const DPUSet& set, const char* symbol, BatchTransferBuffer&& buf, UPMEM_AsyncDuration&)
 {
     uint64_t total_xfer_bytes = 0;
     uint64_t total_effective_bytes = 0;
-    for (dpu_id_t i = 0; i < MAX_NR_DPUS;) {
+    for (dpu_id_t i = 0; i < NrDPUs;) {
         size_t max_xfer_bytes = 0;
-        for (dpu_id_t j = 0; i < MAX_NR_DPUS && j < NrDPUsInRank; i++, j++) {
+        for (dpu_id_t j = 0; i < NrDPUs && j < NrDPUsInRank; i++, j++) {
             if (set[i]) {
                 auto* const ptr = buf.for_dpu(i);
                 const auto size = buf.bytes_for_dpu(i);
@@ -80,19 +102,19 @@ static void xfer_with_dpu(const DPUSet& set, const char* symbol, BatchTransferBu
 }
 
 template <typename T>
-static void broadcast_to_dpu(const DPUSet& set, const char* symbol, const Single<T>& datum)
+static void broadcast_to_dpu(const DPUSet& set, const char* symbol, const Single<T>& datum, UPMEM_AsyncDuration& async)
 {
-    xfer_with_dpu<true>(set, symbol, datum);
+    xfer_with_dpu<true>(set, symbol, datum, async);
 }
 
 template <bool ToDPU, class ScatteredBatchTransferBuffer>
-static void scatter_gather_with_dpu(const DPUSet& set, const char* symbol, ScatteredBatchTransferBuffer&& buf)
+static void scatter_gather_with_dpu(const DPUSet& set, const char* symbol, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration&)
 {
     uint64_t total_xfer_bytes = 0;
     uint64_t total_effective_bytes = 0;
-    for (dpu_id_t i = 0; i < MAX_NR_DPUS;) {
+    for (dpu_id_t i = 0; i < NrDPUs;) {
         size_t max_xfer_bytes = 0;
-        for (dpu_id_t j = 0; i < MAX_NR_DPUS && j < NrDPUsInRank; i++, j++) {
+        for (dpu_id_t j = 0; i < NrDPUs && j < NrDPUsInRank; i++, j++) {
             if (set[i]) {
                 uintptr_t mram_addr = reinterpret_cast<uintptr_t>(emu[i].get_addr_of_symbol(symbol));
                 const size_t xfer_bytes = buf.bytes_for_dpu(i);
@@ -119,10 +141,34 @@ static void scatter_gather_with_dpu(const DPUSet& set, const char* symbol, Scatt
 #endif /* MEASURE_XFER_BYTES */
 }
 
-static void execute(const DPUSet& set)
+static void execute(const DPUSet& set, UPMEM_AsyncDuration&)
 {
-    for (dpu_id_t i = 0; i < MAX_NR_DPUS; i++)
+    for (dpu_id_t i = 0; i < NrDPUs; i++)
         if (set[i])
             emu[i].execute();
     Emulation::wait_all();
+}
+
+template <class Func>
+static void then_call(const DPUSet& set, Func& func, UPMEM_AsyncDuration& async)
+{
+    if (set == all_dpu) {
+        for (dpu_id_t idx_rank = 0; idx_rank < NR_RANKS; idx_rank++) {
+            func(idx_rank, async);
+        }
+    } else {
+        for (dpu_id_t idx_rank = 0; idx_rank < NR_RANKS; idx_rank++) {
+            const bool is_active = set[idx_rank * NrDPUsInRank];
+            for (dpu_id_t idx_dpu_in_rank = 1; idx_dpu_in_rank < NrDPUsInRank; idx_dpu_in_rank++) {
+                if (set[idx_rank * NrDPUsInRank + idx_dpu_in_rank] != is_active) {
+                    std::cerr << "callback bound to one DPU is not supported" << std::endl;
+                    std::abort();
+                }
+            }
+
+            if (is_active) {
+                func(0, async);
+            }
+        }
+    }
 }

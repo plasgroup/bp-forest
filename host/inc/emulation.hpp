@@ -105,8 +105,6 @@ class Emulation
         dpu_results_t results;
         uint32_t num_kvpairs;
         dpu_init_param_t dpu_init_param;
-        migration_ratio_param_t migration_ratio_param;
-        migration_key_param_t migration_key_param;
         migration_pairs_param_t migration_pairs_param;
         key_int64_t migrated_keys[MAX_NUM_NODES_IN_SEAT * MAX_NR_PAIRS];
         value_ptr_t migrated_values[MAX_NUM_NODES_IN_SEAT * MAX_NR_PAIRS];
@@ -138,8 +136,6 @@ public:
         MRAM_SYMBOL(results);
         MRAM_SYMBOL(num_kvpairs);
         MRAM_SYMBOL(dpu_init_param);
-        MRAM_SYMBOL(migration_ratio_param);
-        MRAM_SYMBOL(migration_key_param);
         MRAM_SYMBOL(migration_pairs_param);
         MRAM_SYMBOL(migrated_keys);
         MRAM_SYMBOL(migrated_values);
@@ -276,76 +272,20 @@ private:
 
     void task_from()
     {
-        migration_pairs_param_t npairs{
-            static_cast<uint32_t>(mram->migration_ratio_param.left_npairs_ratio_x2147483648 * subtree.size() / 2147483648u),
-            static_cast<uint32_t>(subtree.size() - (2147483648u - mram->migration_ratio_param.right_npairs_ratio_x2147483648) * subtree.size() / 2147483648u),
-        };
-
-        if (mram->migration_ratio_param.left_npairs_ratio_x2147483648 != 2147483648u) {
-            mram->migration_key_param.left_delim_key = std::next(subtree.cbegin(), npairs.num_left_kvpairs)->first;
-        }
-        if (mram->migration_ratio_param.right_npairs_ratio_x2147483648 != 0u) {
-            mram->migration_key_param.right_delim_key = std::prev(subtree.cend(), npairs.num_right_kvpairs)->first;
-        }
-
         unsigned idx_migrated = 0;
-
-        switch (mram->migration_ratio_param.left_npairs_ratio_x2147483648) {
-        case 0u:
-            break;
-        case 2147483648u:
-            npairs.num_left_kvpairs = static_cast<uint32_t>(subtree.size());
-            for (const auto& pair : subtree) {
-                mram->migrated_keys[idx_migrated] = pair.first;
-                mram->migrated_values[idx_migrated] = pair.second;
-                idx_migrated++;
-            }
-            subtree.clear();
-            mram->num_kvpairs = 0;
-            break;
-        default:
-            while (!subtree.empty() && subtree.cbegin()->first < mram->migration_key_param.left_delim_key) {
-                mram->migrated_keys[idx_migrated] = subtree.cbegin()->first;
-                mram->migrated_values[idx_migrated] = subtree.cbegin()->second;
-                idx_migrated++;
-
-                subtree.erase(subtree.cbegin());
-            }
-            npairs.num_left_kvpairs = idx_migrated;
-            break;
+        mram->migration_pairs_param = static_cast<uint32_t>(subtree.size());
+        for (const auto& pair : subtree) {
+            mram->migrated_keys[idx_migrated] = pair.first;
+            mram->migrated_values[idx_migrated] = pair.second;
+            idx_migrated++;
         }
-
-        switch (mram->migration_ratio_param.right_npairs_ratio_x2147483648) {
-        case 0u:
-            break;
-        case 2147483648u:
-            npairs.num_right_kvpairs = static_cast<uint32_t>(subtree.size());
-            for (const auto& pair : subtree) {
-                mram->migrated_keys[idx_migrated] = pair.first;
-                mram->migrated_values[idx_migrated] = pair.second;
-                idx_migrated++;
-            }
-            subtree.clear();
-            break;
-        default:
-            for (auto iter = subtree.lower_bound(mram->migration_key_param.right_delim_key); iter != subtree.end();) {
-                mram->migrated_keys[idx_migrated] = iter->first;
-                mram->migrated_values[idx_migrated] = iter->second;
-                idx_migrated++;
-                subtree.erase(iter++);
-            }
-            npairs.num_right_kvpairs = idx_migrated - npairs.num_left_kvpairs;
-            break;
-        }
-
-        mram->num_kvpairs = static_cast<uint32_t>(subtree.size());
-        mram->migration_pairs_param = npairs;
+        subtree.clear();
+        mram->num_kvpairs = 0;
     }
 
     void task_to()
     {
-        const uint32_t num_migrated_pairs = mram->migration_pairs_param.num_left_kvpairs + mram->migration_pairs_param.num_right_kvpairs;
-        for (unsigned i = 0; i < num_migrated_pairs; i++) {
+        for (unsigned i = 0; i < mram->migration_pairs_param; i++) {
             subtree.emplace(mram->migrated_keys[i], mram->migrated_values[i]);
         }
         mram->num_kvpairs = static_cast<uint32_t>(subtree.size());

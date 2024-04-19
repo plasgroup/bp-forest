@@ -1,13 +1,14 @@
 #include "upmem.hpp"
 
-#include "scattered_batch_transfer_buffer.hpp"
 #include "batch_transfer_buffer.hpp"
 #include "common.h"
 #include "dpu_set.hpp"
 #include "host_data_structures.hpp"
 #include "host_params.hpp"
+#include "scattered_batch_transfer_buffer.hpp"
 #include "statistics.hpp"
 #include "utils.hpp"
+#include "workload_types.h"
 
 #include <sys/time.h>
 
@@ -24,25 +25,50 @@ std::unique_ptr<dpu_requests_t[]> dpu_requests;
 std::unique_ptr<DPUResultsUnion> dpu_results{new DPUResultsUnion};
 dpu_init_param_t dpu_init_param[MAX_NR_DPUS];
 
+static std::array<std::array<migration_pairs_param_t, MAX_NR_DPUS_IN_RANK>, NR_RANKS> nr_migrated_pairs;
+using KeyBufType = std::array<std::array<key_int64_t, MAX_NR_DPUS_IN_RANK * MAX_NUM_NODES_IN_SEAT>, NR_RANKS>;
+static std::unique_ptr<KeyBufType> migration_key_buf{new KeyBufType};
+using ValueBufType = std::array<std::array<value_ptr_t, MAX_NR_DPUS_IN_RANK * MAX_NUM_NODES_IN_SEAT>, NR_RANKS>;
+static std::unique_ptr<ValueBufType> migration_value_buf{new ValueBufType};
+
+struct UPMEM_AsyncDuration;
+struct IssueMigration {
+    dpu_id_t idx_rank;
+    std::optional<std::array<double, MAX_NR_DPUS_IN_RANK - 1>>* plan;
+    key_int64_t* lower_bounds;
+    uint32_t* num_kvpairs;
+
+    inline void operator()(uint32_t, UPMEM_AsyncDuration&);
+};
+static std::array<IssueMigration, NR_RANKS> migration_callbacks;
+
 
 //
 // Low level DPU ACCESS
 //
+struct UPMEM_AsyncDuration {
+    ~UPMEM_AsyncDuration();
+};
+
 static void upmem_init_impl();
 static void upmem_release_impl();
 
 [[maybe_unused]] static dpu_id_t nr_dpus_in_set(const DPUSet& set);
 dpu_id_t upmem_get_nr_dpus();
-[[maybe_unused]] static void select_dpu(DPUSet* dst, dpu_id_t index);
+[[maybe_unused]] static DPUSet select_dpu(dpu_id_t index);
+[[maybe_unused]] static DPUSet select_rank(dpu_id_t index);
 
 template <bool ToDPU, class BatchTransferBuffer>
-static void xfer_with_dpu(const DPUSet& set, const char* symbol, BatchTransferBuffer&& buf);
+static void xfer_with_dpu(const DPUSet& set, const char* symbol, BatchTransferBuffer&& buf, UPMEM_AsyncDuration&);
 template <typename T>
-static void broadcast_to_dpu(const DPUSet& set, const char* symbol, const Single<T>& datum);
+static void broadcast_to_dpu(const DPUSet& set, const char* symbol, const Single<T>& datum, UPMEM_AsyncDuration&);
 template <bool ToDPU, class ScatteredBatchTransferBuffer>
-static void scatter_gather_with_dpu(const DPUSet& set, const char* symbol, ScatteredBatchTransferBuffer&& buf);
+static void scatter_gather_with_dpu(const DPUSet& set, const char* symbol, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration&);
 
-static void execute(const DPUSet& set);
+static void execute(const DPUSet& set, UPMEM_AsyncDuration&);
+
+template <class Func>
+static void then_call(const DPUSet& set, Func&, UPMEM_AsyncDuration&);
 
 #ifdef HOST_ONLY
 #include "upmem_impl_host_only.ipp"
@@ -51,25 +77,25 @@ static void execute(const DPUSet& set);
 #endif
 
 template <class BatchTransferBuffer>
-static void send_to_dpu(const DPUSet& set, const char* symbol, BatchTransferBuffer&& buf)
+static void send_to_dpu(const DPUSet& set, const char* symbol, BatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
 {
-    xfer_with_dpu<true>(set, symbol, std::forward<BatchTransferBuffer>(buf));
+    xfer_with_dpu<true>(set, symbol, std::forward<BatchTransferBuffer>(buf), async);
 }
 template <class BatchTransferBuffer>
-static void recv_from_dpu(const DPUSet& set, const char* symbol, BatchTransferBuffer&& buf)
+static void recv_from_dpu(const DPUSet& set, const char* symbol, BatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
 {
-    xfer_with_dpu<false>(set, symbol, std::forward<BatchTransferBuffer>(buf));
+    xfer_with_dpu<false>(set, symbol, std::forward<BatchTransferBuffer>(buf), async);
 }
 
 template <class ScatteredBatchTransferBuffer>
-static void gather_to_dpu(const DPUSet& set, const char* symbol, ScatteredBatchTransferBuffer&& buf)
+static void gather_to_dpu(const DPUSet& set, const char* symbol, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
 {
-    scatter_gather_with_dpu<true>(set, symbol, std::forward<ScatteredBatchTransferBuffer>(buf));
+    scatter_gather_with_dpu<true>(set, symbol, std::forward<ScatteredBatchTransferBuffer>(buf), async);
 }
 template <class ScatteredBatchTransferBuffer>
-static void scatter_from_dpu(const DPUSet& set, const char* symbol, ScatteredBatchTransferBuffer&& buf)
+static void scatter_from_dpu(const DPUSet& set, const char* symbol, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
 {
-    scatter_gather_with_dpu<false>(set, symbol, std::forward<ScatteredBatchTransferBuffer>(buf));
+    scatter_gather_with_dpu<false>(set, symbol, std::forward<ScatteredBatchTransferBuffer>(buf), async);
 }
 
 
@@ -83,6 +109,10 @@ void upmem_init()
     const dpu_id_t nr_dpus = upmem_get_nr_dpus();
     dpu_requests.reset(new dpu_requests_t[nr_dpus]);
 
+    for (dpu_id_t idx_rank = 0; idx_rank < NR_RANKS; idx_rank++) {
+        migration_callbacks[idx_rank].idx_rank = idx_rank;
+    }
+
 #ifdef PRINT_DEBUG
     std::printf("Allocated %d DPU(s)\n", nr_dpus);
 #endif /* PRINT_DEBUG */
@@ -91,6 +121,8 @@ void upmem_init()
 void upmem_release()
 {
     upmem_release_impl();
+    migration_key_buf.reset();
+    migration_value_buf.reset();
 }
 
 
@@ -127,31 +159,35 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
 
     gettimeofday(&start, NULL);
 
-    /* send task ID */
-    broadcast_to_dpu(all_dpu, "task_no", Single{task});
+    {
+        UPMEM_AsyncDuration async;
 
-    /* send data */
-    switch (task) {
-    case TASK_INIT:
-        send_to_dpu(all_dpu, "dpu_init_param", EachInArray{dpu_init_param});
-        break;
-    case TASK_GET:
-    case TASK_INSERT:
-    case TASK_SUCC: {
-        send_to_dpu(all_dpu, "end_idx", EachInArray{batch_ctx.num_keys_for_DPU.data()});
+        /* send task ID */
+        broadcast_to_dpu(all_dpu, "task_no", Single{task}, async);
+
+        /* send data */
+        switch (task) {
+        case TASK_INIT:
+            send_to_dpu(all_dpu, "dpu_init_param", EachInArray{dpu_init_param}, async);
+            break;
+        case TASK_GET:
+        case TASK_INSERT:
+        case TASK_SUCC: {
+            send_to_dpu(all_dpu, "end_idx", EachInArray{batch_ctx.num_keys_for_DPU.data()}, async);
 #if defined(HOST_MULTI_THREAD)
-        gather_to_dpu(all_dpu, "request_buffer", ArrayOfScatteredArray{dpu_requests.get(), batch_ctx.num_keys_for_DPU.data()});
+            gather_to_dpu(all_dpu, "request_buffer", ArrayOfScatteredArray{dpu_requests.get(), batch_ctx.num_keys_for_DPU.data()}, async);
 #else
 #ifdef RANK_ORIENTED_XFER
-        send_to_dpu(all_dpu, "request_buffer", VariousSizeIn2DArray{dpu_requests.get(), batch_ctx.num_keys_for_DPU.data()});
+            send_to_dpu(all_dpu, "request_buffer", VariousSizeIn2DArray{dpu_requests.get(), batch_ctx.num_keys_for_DPU.data()}, async);
 #else  /* RANK_ORIENTED_XFER */
-        send_to_dpu(all_dpu, "request_buffer", SameSizeIn2DArray{dpu_requests.get(), batch_ctx.send_size});
+            send_to_dpu(all_dpu, "request_buffer", SameSizeIn2DArray{dpu_requests.get(), batch_ctx.send_size}, async);
 #endif /* RANK_ORIENTED_XFER */
 #endif /* HOST_MULTI_THREAD */
-        break;
-    default:
-        abort();
-    }
+            break;
+        default:
+            abort();
+        }
+        }
     }
 
     gettimeofday(&end, NULL);
@@ -166,8 +202,12 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
 
     gettimeofday(&start, NULL);
 
-    /* launch DPU */
-    execute(all_dpu);
+    {
+        UPMEM_AsyncDuration async;
+
+        /* launch DPU */
+        execute(all_dpu, async);
+    }
 
     gettimeofday(&end, NULL);
     if (exec_time != NULL)
@@ -183,19 +223,23 @@ void upmem_receive_get_results(BatchCtx& batch_ctx, float* receive_time)
 {
     struct timeval start, end;
 
-    gettimeofday(&start, NULL);
-
 #ifdef PRINT_DEBUG
     std::printf("send_size: %ld / buffer_size: %ld\n",
         sizeof(each_get_result_t) * batch_ctx.send_size,
         sizeof(each_get_result_t) * MAX_REQ_NUM_IN_A_DPU);
 #endif /* PRINT_DEBUG */
 
+    gettimeofday(&start, NULL);
+
+    {
+        UPMEM_AsyncDuration async;
+
 #ifdef RANK_ORIENTED_XFER
-    recv_from_dpu(all_dpu, "results", VariousSizeIn2DArray{dpu_results->get, batch_ctx.num_keys_for_DPU.data()});
+        recv_from_dpu(all_dpu, "results", VariousSizeIn2DArray{dpu_results->get, batch_ctx.num_keys_for_DPU.data()}, async);
 #else  /* RANK_ORIENTED_XFER */
-    recv_from_dpu(all_dpu, "results", SameSizeIn2DArray{dpu_results->get, batch_ctx.send_size});
+        recv_from_dpu(all_dpu, "results", SameSizeIn2DArray{dpu_results->get, batch_ctx.send_size}, async);
 #endif /* RANK_ORIENTED_XFER */
+    }
 
     gettimeofday(&end, NULL);
     if (receive_time != NULL)
@@ -206,19 +250,23 @@ void upmem_receive_succ_results(BatchCtx& batch_ctx, float* receive_time)
 {
     struct timeval start, end;
 
-    gettimeofday(&start, NULL);
-
 #ifdef PRINT_DEBUG
     std::printf("send_size: %ld / buffer_size: %ld\n",
         sizeof(each_succ_result_t) * batch_ctx.send_size,
         sizeof(each_succ_result_t) * MAX_REQ_NUM_IN_A_DPU);
 #endif /* PRINT_DEBUG */
 
+    gettimeofday(&start, NULL);
+
+    {
+        UPMEM_AsyncDuration async;
+
 #ifdef RANK_ORIENTED_XFER
-    recv_from_dpu(all_dpu, "results", VariousSizeIn2DArray{dpu_results->succ, batch_ctx.num_keys_for_DPU.data()});
+        recv_from_dpu(all_dpu, "results", VariousSizeIn2DArray{dpu_results->succ, batch_ctx.num_keys_for_DPU.data()}, async);
 #else  /* RANK_ORIENTED_XFER */
-    recv_from_dpu(all_dpu, "results", SameSizeIn2DArray{dpu_results->succ, batch_ctx.send_size});
+        recv_from_dpu(all_dpu, "results", SameSizeIn2DArray{dpu_results->succ, batch_ctx.send_size}, async);
 #endif /* RANK_ORIENTED_XFER */
+    }
 
     gettimeofday(&end, NULL);
     if (receive_time != NULL)
@@ -231,24 +279,104 @@ void upmem_receive_num_kvpairs(HostTree* host_tree, float* receive_time)
 
     gettimeofday(&start, NULL);
 
-    recv_from_dpu(all_dpu, "num_kvpairs", EachInArray{host_tree->num_kvpairs.data()});
+    {
+        UPMEM_AsyncDuration async;
+
+        recv_from_dpu(all_dpu, "num_kvpairs", EachInArray{host_tree->num_kvpairs.data()}, async);
+    }
 
     gettimeofday(&end, NULL);
     if (receive_time != NULL)
         *receive_time = time_diff(&start, &end);
 }
 
-void upmem_migrate_kvpairs(std::array<migration_ratio_param_t, MAX_NR_DPUS>& plan)
+void IssueMigration::operator()(uint32_t, UPMEM_AsyncDuration& async)
 {
-    send_to_dpu(all_dpu, "migration_ratio_param", EachInArray{plan.data()});
+    const DPUSet rank_dpus = select_rank(idx_rank);
+    const std::pair<dpu_id_t, dpu_id_t> dpu_range = upmem_get_dpu_range_in_rank(idx_rank);
+    const dpu_id_t idx_dpu_begin = dpu_range.first;
+    const dpu_id_t idx_dpu_end = dpu_range.second;
+    const dpu_id_t nr_dpus = idx_dpu_end - idx_dpu_begin;
 
-    constexpr uint64_t task_from = TASK_FROM;
-    broadcast_to_dpu(all_dpu, "task_no", Single{task_from});
+    std::array<migration_pairs_param_t, MAX_NR_DPUS_IN_RANK> psum_nr_pairs;
+    migration_pairs_param_t tmp_psum = 0;
+    for (dpu_id_t idx_dpu_in_rank = 0; idx_dpu_in_rank < nr_dpus; idx_dpu_in_rank++) {
+        psum_nr_pairs[idx_dpu_in_rank] = (tmp_psum += nr_migrated_pairs[idx_rank][idx_dpu_in_rank]);
+    }
+    scatter_from_dpu(rank_dpus, "migrated_keys",
+        RankWise::PartitionedArray{idx_rank,
+            (*migration_key_buf)[idx_rank].data(),
+            nr_migrated_pairs[idx_rank].data(), psum_nr_pairs.data()},
+        async);
+    scatter_from_dpu(rank_dpus, "migrated_values",
+        RankWise::PartitionedArray{idx_rank,
+            (*migration_value_buf)[idx_rank].data(),
+            nr_migrated_pairs[idx_rank].data(), psum_nr_pairs.data()},
+        async);
 
-    execute(all_dpu);
+    std::array<migration_pairs_param_t, MAX_NR_DPUS_IN_RANK> new_psum_nr_pairs;
+    for (dpu_id_t idx_dest_in_rank = 0; idx_dest_in_rank + 1 < nr_dpus; idx_dest_in_rank++) {
+        const double end_pos = (**plan)[idx_dest_in_rank];
+        const dpu_id_t floor_end_pos = static_cast<dpu_id_t>(end_pos);
 
-    constexpr uint64_t task_to = TASK_TO;
-    broadcast_to_dpu(all_dpu, "task_no", Single{task_to});
+        migration_pairs_param_t new_psum = 0;
+        if (floor_end_pos != 0) {
+            new_psum = psum_nr_pairs[floor_end_pos - 1];
+        }
+        new_psum += static_cast<migration_pairs_param_t>(nr_migrated_pairs[idx_rank][floor_end_pos] * (end_pos - floor_end_pos));
 
-    execute(all_dpu);
+        new_psum_nr_pairs[idx_dest_in_rank] = new_psum;
+    }
+    new_psum_nr_pairs[nr_dpus - 1] = psum_nr_pairs[nr_dpus - 1];
+
+    nr_migrated_pairs[idx_rank][0] = new_psum_nr_pairs[0];
+    for (dpu_id_t idx_dpu_in_rank = 1; idx_dpu_in_rank < nr_dpus; idx_dpu_in_rank++) {
+        nr_migrated_pairs[idx_rank][idx_dpu_in_rank] = new_psum_nr_pairs[idx_dpu_in_rank] - new_psum_nr_pairs[idx_dpu_in_rank - 1];
+    }
+
+    send_to_dpu(rank_dpus, "migration_pairs_param", RankWise::EachInArray{idx_rank, nr_migrated_pairs[idx_rank].data()}, async);
+    gather_to_dpu(rank_dpus, "migrated_keys",
+        RankWise::PartitionedArray{idx_rank,
+            (*migration_key_buf)[idx_rank].data(),
+            nr_migrated_pairs[idx_rank].data(), new_psum_nr_pairs.data()},
+        async);
+    gather_to_dpu(rank_dpus, "migrated_values",
+        RankWise::PartitionedArray{idx_rank,
+            (*migration_value_buf)[idx_rank].data(),
+            nr_migrated_pairs[idx_rank].data(), new_psum_nr_pairs.data()},
+        async);
+
+    static constexpr uint64_t task_to = TASK_TO;
+    broadcast_to_dpu(rank_dpus, "task_no", Single{task_to}, async);
+
+    execute(rank_dpus, async);
+
+    for (dpu_id_t idx_dpu_in_rank = 1; idx_dpu_in_rank < nr_dpus; idx_dpu_in_rank++) {
+        lower_bounds[idx_dpu_in_rank] = (*migration_key_buf)[idx_rank][new_psum_nr_pairs[idx_dpu_in_rank - 1]];
+    }
+    for (dpu_id_t idx_dpu_in_rank = 0; idx_dpu_in_rank < nr_dpus; idx_dpu_in_rank++) {
+        num_kvpairs[idx_dpu_in_rank] = nr_migrated_pairs[idx_rank][idx_dpu_in_rank];
+    }
+}
+void upmem_migrate_kvpairs(std::array<std::optional<std::array<double, MAX_NR_DPUS_IN_RANK - 1>>, NR_RANKS>& plan, HostTree& host_tree)
+{
+    UPMEM_AsyncDuration async;
+
+    for (dpu_id_t idx_rank = 0; idx_rank < NR_RANKS; idx_rank++) {
+        if (plan[idx_rank].has_value()) {
+            const DPUSet rank_dpus = select_rank(idx_rank);
+            const dpu_id_t idx_dpu_begin = upmem_get_dpu_range_in_rank(idx_rank).first;
+
+            static constexpr uint64_t task_from = TASK_FROM;
+            broadcast_to_dpu(rank_dpus, "task_no", Single{task_from}, async);
+            execute(rank_dpus, async);
+
+            recv_from_dpu(rank_dpus, "migration_pairs_param", RankWise::EachInArray{idx_rank, nr_migrated_pairs[idx_rank].data()}, async);
+
+            migration_callbacks[idx_rank].plan = &plan[idx_rank];
+            migration_callbacks[idx_rank].lower_bounds = &host_tree.lower_bounds[idx_dpu_begin];
+            migration_callbacks[idx_rank].num_kvpairs = &host_tree.num_kvpairs[idx_dpu_begin];
+            then_call(rank_dpus, migration_callbacks[idx_rank], async);
+        }
+    }
 }

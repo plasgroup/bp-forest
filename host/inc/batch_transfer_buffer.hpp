@@ -1,6 +1,7 @@
 #pragma once
 
 #include "host_params.hpp"
+#include "upmem.hpp"
 
 #include <array>
 #include <cstddef>
@@ -75,3 +76,22 @@ struct Single {
     T* for_dpu(dpu_id_t) const { return datum; }
     constexpr size_t bytes_for_dpu(dpu_id_t) const { return size_in_bytes; }
 };
+
+
+namespace RankWise
+{
+
+template <typename T>
+struct EachInArray {
+    static constexpr bool IsSizeVarying = false;
+
+    T* array;
+    dpu_id_t idx_rank;
+
+    EachInArray(dpu_id_t idx_rank, T* array) : array{array}, idx_rank{idx_rank} {}
+
+    T* for_dpu(dpu_id_t dpu) const { return &array[dpu - upmem_get_dpu_range_in_rank(idx_rank).first]; }
+    constexpr size_t bytes_for_dpu(dpu_id_t) const { return sizeof(T); }
+};
+
+}  // namespace RankWise

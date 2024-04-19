@@ -8,16 +8,21 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
-#include <iostream>
-#include <map>
-#include <utility>
+#include <iosfwd>
 #include <limits>
+#include <map>
+#include <optional>
+#include <utility>
 #include <vector>
+
+
+// commit `e9d3f8b`: overall balance with only migration to the adjacent DPU
+
 
 class Migration
 {
 private:
-    std::array<migration_ratio_param_t, MAX_NR_DPUS> plan{};
+    std::array<std::optional<std::array<double, MAX_NR_DPUS_IN_RANK - 1>>, NR_RANKS> plan;
 
 public:
     Migration() {}

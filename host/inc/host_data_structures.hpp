@@ -19,6 +19,7 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <optional>
 
 
 /* Data structures in host for managing subtrees in DPUs */
@@ -32,6 +33,7 @@ private:
     HostTree() {}
     friend HostTree initialize_bpforest(PiecewiseConstantWorkloadMetadata& workload_dist);
     friend void upmem_receive_num_kvpairs(HostTree* host_tree, float* receive_time);
+    friend void upmem_migrate_kvpairs(std::array<std::optional<std::array<double, MAX_NR_DPUS_IN_RANK - 1>>, NR_RANKS>&, HostTree&);
 
 public:
     dpu_id_t get_nr_dpus() const { return nr_dpus; }
@@ -69,17 +71,15 @@ public:
         return static_cast<dpu_id_t>(one_after_the_target - (lower_bounds.cbegin() + 1));
     }
 
-    friend std::ostream& operator<<(std::ostream& os, const HostTree& tree)
+    void print(std::ostream& os, dpu_id_t print_size)
     {
         constexpr auto digits = std::numeric_limits<key_int64_t>::digits10 + 1;
-        for (dpu_id_t idx_dpu = 0; idx_dpu < tree.nr_dpus; idx_dpu++) {
-            std::cout << "DPU[" << idx_dpu << "]: "
-                      << tree.num_kvpairs.at(idx_dpu) << " pairs for ["
-                      << std::setw(digits) << tree.lower_bounds.at(idx_dpu) << ", "
-                      << std::setw(digits) << (idx_dpu + 1u == tree.nr_dpus ? KEY_MAX : tree.lower_bounds.at(idx_dpu + 1u)) << ")" << std::endl;
+        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_dpus && idx_dpu < print_size; idx_dpu++) {
+            os << "DPU[" << idx_dpu << "]: "
+               << num_kvpairs.at(idx_dpu) << " pairs for ["
+               << std::setw(digits) << lower_bounds.at(idx_dpu) << ", "
+               << std::setw(digits) << (idx_dpu + 1u == nr_dpus ? KEY_MAX : lower_bounds.at(idx_dpu + 1u)) << ")" << std::endl;
         }
-
-        return os;
     }
 };
 
