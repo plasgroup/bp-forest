@@ -24,6 +24,10 @@ static std::array<dpu_set_t, MAX_NR_DPUS> each_dpu_impl;
 static std::array<dpu_id_t, NR_RANKS + 1> first_dpu_id_in_each_rank;
 
 
+void UPMEM_AsyncDuration::synchronize()
+{
+    DPU_ASSERT(dpu_sync(all_dpu_impl));
+}
 UPMEM_AsyncDuration::~UPMEM_AsyncDuration()
 {
     DPU_ASSERT(dpu_sync(all_dpu_impl));
@@ -336,7 +340,7 @@ struct VisitorOf_then_call {
     }
     void operator()(const DPUSetAll&) const
     {
-        DPU_ASSERT(dpu_callback(all_dpu_impl, &callback_wrapper, &func, DPU_CALLBACK_ASYNC));
+        DPU_ASSERT(dpu_callback(all_dpu_impl, &callback_wrapper, &func, static_cast<dpu_callback_flags_t>(DPU_CALLBACK_ASYNC | DPU_CALLBACK_SINGLE_CALL)));
     }
 
     void operator()(const DPUSetRanks& ranks_) const

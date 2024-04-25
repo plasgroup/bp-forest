@@ -11,18 +11,14 @@
 #include <iosfwd>
 #include <limits>
 #include <map>
-#include <optional>
 #include <utility>
 #include <vector>
-
-
-// commit `e9d3f8b`: overall balance with only migration to the adjacent DPU
 
 
 class Migration
 {
 private:
-    std::array<std::optional<std::array<double, MAX_NR_DPUS_IN_RANK - 1>>, NR_RANKS> plan;
+    MigrationPlanType plan{};
 
 public:
     Migration() {}

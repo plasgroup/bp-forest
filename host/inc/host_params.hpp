@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 
 
 #ifndef NR_RANKS
@@ -52,4 +53,10 @@ constexpr size_t QUERY_BUFFER_BLOCK_SIZE = MAX_REQ_NUM_IN_A_DPU / HOST_MULTI_THR
 using dpu_requests_t = SizedBuffer<each_request_t, QUERY_BUFFER_BLOCK_SIZE>[HOST_MULTI_THREAD];
 #else
 using dpu_requests_t = each_request_t[MAX_REQ_NUM_IN_A_DPU];
+#endif
+
+#ifdef BULK_MIGRATION
+using MigrationPlanType = std::array<std::optional<std::array<double, MAX_NR_DPUS_IN_RANK - 1>>, NR_RANKS>;
+#else
+using MigrationPlanType = std::array<migration_ratio_param_t, MAX_NR_DPUS>;
 #endif

@@ -20,11 +20,14 @@ static constexpr dpu_id_t NrDPUsInRank = MAX_NR_DPUS_IN_RANK;
 Emulation emu[NrDPUs];
 
 
+inline void UPMEM_AsyncDuration::synchronize()
+{
+}
 inline UPMEM_AsyncDuration::~UPMEM_AsyncDuration()
 {
 }
 
-static void upmem_init_impl()
+static inline void upmem_init_impl()
 {
     all_dpu.reset();
     all_dpu.flip();

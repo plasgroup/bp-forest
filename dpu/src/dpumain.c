@@ -23,6 +23,10 @@ __mram_noinit dpu_init_param_t dpu_init_param;
 __mram_noinit each_request_t request_buffer[MAX_REQ_NUM_IN_A_DPU];
 __mram_noinit dpu_results_t results;
 
+#ifndef BULK_MIGRATION
+__host migration_ratio_param_t migration_ratio_param;
+__host migration_key_param_t migration_key_param;
+#endif
 __host migration_pairs_param_t migration_pairs_param;
 __mram_noinit key_int64_t migrated_keys[MAX_NUM_NODES_IN_SEAT * MAX_NR_PAIRS];
 __mram_noinit value_ptr_t migrated_values[MAX_NUM_NODES_IN_SEAT * MAX_NR_PAIRS];
@@ -193,15 +197,65 @@ int main()
     // }
     case TASK_FROM: {
         if (tid == 0) {
+#ifdef BULK_MIGRATION
             migration_pairs_param = num_kvpairs;
             BPTreeSerialize(&migrated_keys[0], &migrated_values[0]);
+#else  /* BULK_MIGRATION */
+            const migration_ratio_param_t ratio_param = migration_ratio_param;
+            assert(ratio_param.left_npairs_ratio_x2147483648 + ratio_param.right_npairs_ratio_x2147483648 <= 2147483648u);
+
+            migration_pairs_param_t npairs = (migration_pairs_param_t){
+                (uint32_t)((uint64_t)ratio_param.left_npairs_ratio_x2147483648 * num_kvpairs / 2147483648u),
+                num_kvpairs - (uint32_t)((2147483648u - (uint64_t)ratio_param.right_npairs_ratio_x2147483648) * num_kvpairs / 2147483648u),
+            };
+
+            migration_key_param_t delimiters;
+            if (ratio_param.left_npairs_ratio_x2147483648 != 2147483648u) {
+                delimiters.left_delim_key = BPTreeNthKeyFromLeft(npairs.num_left_kvpairs);
+            }
+            if (ratio_param.right_npairs_ratio_x2147483648 != 0u) {
+                delimiters.right_delim_key = BPTreeNthKeyFromRight(npairs.num_right_kvpairs - 1u);
+            }
+            migration_key_param = delimiters;
+
+            switch (ratio_param.left_npairs_ratio_x2147483648) {
+            case 0u:
+                break;
+            case 2147483648u:
+                npairs.num_left_kvpairs = num_kvpairs;
+                BPTreeSerialize(&migrated_keys[0], &migrated_values[0]);
+                break;
+            default:
+                npairs.num_left_kvpairs = BPTreeExtractFirstPairs(&migrated_keys[0], &migrated_values[0], delimiters.left_delim_key);
+                break;
+            }
+
+            // assert(ratio_param.right_npairs_ratio_x2147483648 == 0u);
+            switch (ratio_param.right_npairs_ratio_x2147483648) {
+            case 0u:
+                break;
+            case 2147483648u:
+                npairs.num_right_kvpairs = num_kvpairs;
+                BPTreeSerialize(&migrated_keys[0], &migrated_values[0]);
+                break;
+            default:
+                // npairs.num_right_kvpairs = BPTreeExtractLastPairs(&migrated_keys[npairs.num_left_kvpairs], &migrated_values[npairs.num_left_kvpairs], delimiters.right_delim_key);
+                break;
+            }
+
+            migration_pairs_param = npairs;
+#endif /* BULK_MIGRATION */
         }
         break;
     }
     case TASK_TO: {
         if (tid == 0) {
+#ifdef BULK_MIGRATION
             BPTreeInsertSortedPairsToLeft(&migrated_keys[0], &migrated_values[0], migration_pairs_param);
-            // BPTreeInsertSortedPairsToRight(&migrated_keys[migration_pairs_param.num_left_kvpairs], &migrated_values[migration_pairs_param.num_left_kvpairs], migration_pairs_param.num_right_kvpairs);
+#else /* BULK_MIGRATION */
+            BPTreeInsertSortedPairsToLeft(&migrated_keys[0], &migrated_values[0], migration_pairs_param.num_left_kvpairs);
+            BPTreeInsertSortedPairsToRight(&migrated_keys[migration_pairs_param.num_left_kvpairs], &migrated_values[migration_pairs_param.num_left_kvpairs], migration_pairs_param.num_right_kvpairs);
+#endif /* BULK_MIGRATION */
         }
         break;
     }
@@ -218,7 +272,8 @@ int main()
         printf("Printing Nodes...\n");
         printf("===========================================\n");
         BPTreePrintKeys();
-        if (!BPTreeCheckStructure()) BPTreePrintAll();
+        if (!BPTreeCheckStructure())
+            BPTreePrintAll();
         printf("===========================================\n");
     }
 #endif

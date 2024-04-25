@@ -25,28 +25,38 @@ std::unique_ptr<dpu_requests_t[]> dpu_requests;
 std::unique_ptr<DPUResultsUnion> dpu_results{new DPUResultsUnion};
 dpu_init_param_t dpu_init_param[MAX_NR_DPUS];
 
+#ifdef BULK_MIGRATION
 static std::array<std::array<migration_pairs_param_t, MAX_NR_DPUS_IN_RANK>, NR_RANKS> nr_migrated_pairs;
 using KeyBufType = std::array<std::array<key_int64_t, MAX_NR_DPUS_IN_RANK * MAX_NUM_NODES_IN_SEAT>, NR_RANKS>;
-static std::unique_ptr<KeyBufType> migration_key_buf{new KeyBufType};
 using ValueBufType = std::array<std::array<value_ptr_t, MAX_NR_DPUS_IN_RANK * MAX_NUM_NODES_IN_SEAT>, NR_RANKS>;
+#else
+static std::array<migration_key_param_t, MAX_NR_DPUS> migration_delims;
+static std::array<migration_pairs_param_t, MAX_NR_DPUS> nr_migrated_pairs;
+using KeyBufType = std::array<key_int64_t[MAX_NUM_NODES_IN_SEAT], MAX_NR_DPUS>;
+using ValueBufType = std::array<value_ptr_t[MAX_NUM_NODES_IN_SEAT], MAX_NR_DPUS>;
+#endif
+
+static std::unique_ptr<KeyBufType> migration_key_buf{new KeyBufType};
 static std::unique_ptr<ValueBufType> migration_value_buf{new ValueBufType};
 
 struct UPMEM_AsyncDuration;
+#ifdef BULK_MIGRATION
 struct IssueMigration {
     dpu_id_t idx_rank;
-    std::optional<std::array<double, MAX_NR_DPUS_IN_RANK - 1>>* plan;
+    MigrationPlanType::value_type* plan;
     key_int64_t* lower_bounds;
     uint32_t* num_kvpairs;
 
     inline void operator()(uint32_t, UPMEM_AsyncDuration&);
 };
 static std::array<IssueMigration, NR_RANKS> migration_callbacks;
-
+#endif
 
 //
 // Low level DPU ACCESS
 //
 struct UPMEM_AsyncDuration {
+    void synchronize();
     ~UPMEM_AsyncDuration();
 };
 
@@ -109,9 +119,11 @@ void upmem_init()
     const dpu_id_t nr_dpus = upmem_get_nr_dpus();
     dpu_requests.reset(new dpu_requests_t[nr_dpus]);
 
+#ifdef BULK_MIGRATION
     for (dpu_id_t idx_rank = 0; idx_rank < NR_RANKS; idx_rank++) {
         migration_callbacks[idx_rank].idx_rank = idx_rank;
     }
+#endif
 
 #ifdef PRINT_DEBUG
     std::printf("Allocated %d DPU(s)\n", nr_dpus);
@@ -290,6 +302,7 @@ void upmem_receive_num_kvpairs(HostTree* host_tree, float* receive_time)
         *receive_time = time_diff(&start, &end);
 }
 
+#ifdef BULK_MIGRATION
 void IssueMigration::operator()(uint32_t, UPMEM_AsyncDuration& async)
 {
     const DPUSet rank_dpus = select_rank(idx_rank);
@@ -303,12 +316,12 @@ void IssueMigration::operator()(uint32_t, UPMEM_AsyncDuration& async)
     for (dpu_id_t idx_dpu_in_rank = 0; idx_dpu_in_rank < nr_dpus; idx_dpu_in_rank++) {
         psum_nr_pairs[idx_dpu_in_rank] = (tmp_psum += nr_migrated_pairs[idx_rank][idx_dpu_in_rank]);
     }
-    scatter_from_dpu(rank_dpus, "migrated_keys",
+    recv_from_dpu(rank_dpus, "migrated_keys",
         RankWise::PartitionedArray{idx_rank,
             (*migration_key_buf)[idx_rank].data(),
             nr_migrated_pairs[idx_rank].data(), psum_nr_pairs.data()},
         async);
-    scatter_from_dpu(rank_dpus, "migrated_values",
+    recv_from_dpu(rank_dpus, "migrated_values",
         RankWise::PartitionedArray{idx_rank,
             (*migration_value_buf)[idx_rank].data(),
             nr_migrated_pairs[idx_rank].data(), psum_nr_pairs.data()},
@@ -335,12 +348,12 @@ void IssueMigration::operator()(uint32_t, UPMEM_AsyncDuration& async)
     }
 
     send_to_dpu(rank_dpus, "migration_pairs_param", RankWise::EachInArray{idx_rank, nr_migrated_pairs[idx_rank].data()}, async);
-    gather_to_dpu(rank_dpus, "migrated_keys",
+    send_to_dpu(rank_dpus, "migrated_keys",
         RankWise::PartitionedArray{idx_rank,
             (*migration_key_buf)[idx_rank].data(),
             nr_migrated_pairs[idx_rank].data(), new_psum_nr_pairs.data()},
         async);
-    gather_to_dpu(rank_dpus, "migrated_values",
+    send_to_dpu(rank_dpus, "migrated_values",
         RankWise::PartitionedArray{idx_rank,
             (*migration_value_buf)[idx_rank].data(),
             nr_migrated_pairs[idx_rank].data(), new_psum_nr_pairs.data()},
@@ -358,8 +371,11 @@ void IssueMigration::operator()(uint32_t, UPMEM_AsyncDuration& async)
         num_kvpairs[idx_dpu_in_rank] = nr_migrated_pairs[idx_rank][idx_dpu_in_rank];
     }
 }
-void upmem_migrate_kvpairs(std::array<std::optional<std::array<double, MAX_NR_DPUS_IN_RANK - 1>>, NR_RANKS>& plan, HostTree& host_tree)
+#endif /* BULK_MIGRATION */
+
+void upmem_migrate_kvpairs(MigrationPlanType& plan, HostTree& host_tree)
 {
+#ifdef BULK_MIGRATION
     UPMEM_AsyncDuration async;
 
     for (dpu_id_t idx_rank = 0; idx_rank < NR_RANKS; idx_rank++) {
@@ -379,4 +395,80 @@ void upmem_migrate_kvpairs(std::array<std::optional<std::array<double, MAX_NR_DP
             then_call(rank_dpus, migration_callbacks[idx_rank], async);
         }
     }
+
+#else  /* BULK_MIGRATION */
+    const dpu_id_t nr_dpus = upmem_get_nr_dpus();
+
+    {
+        UPMEM_AsyncDuration async;
+
+        send_to_dpu(all_dpu, "migration_ratio_param", EachInArray{plan.data()}, async);
+
+        constexpr uint64_t task_from = TASK_FROM;
+        broadcast_to_dpu(all_dpu, "task_no", Single{task_from}, async);
+
+        execute(all_dpu, async);
+
+        recv_from_dpu(all_dpu, "migration_key_param", EachInArray{migration_delims.data()}, async);
+        recv_from_dpu(all_dpu, "migration_pairs_param", EachInArray{nr_migrated_pairs.data()}, async);
+    }
+
+    {
+        UPMEM_AsyncDuration async;
+
+        std::array<uint32_t, MAX_NR_DPUS> nr_out_kvpairs;
+        std::array<migration_pairs_param_t, MAX_NR_DPUS> new_nr_migrated_pairs;
+
+        nr_out_kvpairs[0] = nr_migrated_pairs[0].num_right_kvpairs;
+        new_nr_migrated_pairs[0].num_left_kvpairs = 0;
+        new_nr_migrated_pairs[0].num_right_kvpairs = nr_migrated_pairs[1].num_left_kvpairs;
+        host_tree.num_kvpairs[0] = host_tree.num_kvpairs[0] - nr_out_kvpairs[0] + new_nr_migrated_pairs[0].num_right_kvpairs;
+        for (dpu_id_t idx_dpu = 1; idx_dpu + 1 < nr_dpus; idx_dpu++) {
+            nr_out_kvpairs[idx_dpu] = nr_migrated_pairs[idx_dpu].num_left_kvpairs + nr_migrated_pairs[idx_dpu].num_right_kvpairs;
+            new_nr_migrated_pairs[idx_dpu].num_left_kvpairs = nr_migrated_pairs[idx_dpu - 1].num_right_kvpairs;
+            new_nr_migrated_pairs[idx_dpu].num_right_kvpairs = nr_migrated_pairs[idx_dpu + 1].num_left_kvpairs;
+            host_tree.num_kvpairs[idx_dpu] = host_tree.num_kvpairs[idx_dpu]
+                                             - nr_out_kvpairs[idx_dpu]
+                                             + new_nr_migrated_pairs[idx_dpu].num_left_kvpairs
+                                             + new_nr_migrated_pairs[idx_dpu].num_right_kvpairs;
+        }
+        nr_out_kvpairs[nr_dpus - 1] = nr_migrated_pairs[nr_dpus - 1].num_left_kvpairs;
+        new_nr_migrated_pairs[nr_dpus - 1].num_left_kvpairs = nr_migrated_pairs[nr_dpus - 2].num_right_kvpairs;
+        new_nr_migrated_pairs[nr_dpus - 1].num_right_kvpairs = 0;
+        host_tree.num_kvpairs[nr_dpus - 1] = host_tree.num_kvpairs[nr_dpus - 1] - nr_out_kvpairs[nr_dpus - 1] + new_nr_migrated_pairs[nr_dpus - 1].num_left_kvpairs;
+
+        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_dpus; idx_dpu++) {
+            nr_migrated_pairs[idx_dpu] = new_nr_migrated_pairs[idx_dpu];
+        }
+
+        recv_from_dpu(all_dpu, "migrated_keys", VariousSizeIn2DArray{migration_key_buf->data(), nr_out_kvpairs.data()}, async);
+        recv_from_dpu(all_dpu, "migrated_values", VariousSizeIn2DArray{migration_value_buf->data(), nr_out_kvpairs.data()}, async);
+    }
+
+    {
+        UPMEM_AsyncDuration async;
+
+        send_to_dpu(all_dpu, "migration_pairs_param", EachInArray{nr_migrated_pairs.data()}, async);
+        gather_to_dpu(all_dpu, "migrated_keys", MigrationToDPU{migration_key_buf->data(), nr_migrated_pairs.data()}, async);
+        gather_to_dpu(all_dpu, "migrated_values", MigrationToDPU{migration_value_buf->data(), nr_migrated_pairs.data()}, async);
+
+        static constexpr uint64_t task_to = TASK_TO;
+        broadcast_to_dpu(all_dpu, "task_no", Single{task_to}, async);
+
+        execute(all_dpu, async);
+
+        for (dpu_id_t idx_dpu = 1; idx_dpu < nr_dpus; idx_dpu++) {
+            if (plan[idx_dpu].left_npairs_ratio_x2147483648 != 0) {
+                assert(plan[idx_dpu - 1].right_npairs_ratio_x2147483648 == 0);
+                if (plan[idx_dpu].left_npairs_ratio_x2147483648 == 2147483648u) {
+                    host_tree.lower_bounds[idx_dpu] = host_tree.lower_bounds[idx_dpu + 1];
+                } else {
+                    host_tree.lower_bounds[idx_dpu] = migration_delims[idx_dpu].left_delim_key;
+                }
+            } else if (plan[idx_dpu - 1].right_npairs_ratio_x2147483648 != 0) {
+                host_tree.lower_bounds[idx_dpu] = migration_delims[idx_dpu - 1].right_delim_key;
+            }
+        }
+    }
+#endif /* BULK_MIGRATION */
 }

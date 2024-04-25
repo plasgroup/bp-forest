@@ -29,6 +29,7 @@ void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
 void upmem_receive_get_results(BatchCtx& batch_ctx, float* receive_time);
 void upmem_receive_succ_results(BatchCtx& batch_ctx, float* receive_time);
 void upmem_receive_num_kvpairs(HostTree* host_tree, float* receive_time);
-void upmem_migrate_kvpairs(std::array<std::optional<std::array<double, MAX_NR_DPUS_IN_RANK - 1>>, NR_RANKS>& plan);
+
+void upmem_migrate_kvpairs(MigrationPlanType& plan, HostTree& host_tree);
 
 #endif /* __UPMEM_HPP__ */

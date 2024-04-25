@@ -33,7 +33,7 @@ private:
     HostTree() {}
     friend HostTree initialize_bpforest(PiecewiseConstantWorkloadMetadata& workload_dist);
     friend void upmem_receive_num_kvpairs(HostTree* host_tree, float* receive_time);
-    friend void upmem_migrate_kvpairs(std::array<std::optional<std::array<double, MAX_NR_DPUS_IN_RANK - 1>>, NR_RANKS>&, HostTree&);
+    friend void upmem_migrate_kvpairs(MigrationPlanType&, HostTree&);
 
 public:
     dpu_id_t get_nr_dpus() const { return nr_dpus; }

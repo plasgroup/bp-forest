@@ -81,6 +81,34 @@ struct Single {
 namespace RankWise
 {
 
+template <class T, typename SizeT>
+struct PartitionedArray {
+    static constexpr bool IsSizeVarying = true;
+
+    T* array;
+    SizeT* size_in_elems;
+    SizeT* psum_size_in_elems;
+    dpu_id_t idx_rank;
+
+    PartitionedArray(dpu_id_t idx_rank, T* array, SizeT* size_in_elems, SizeT* psum_size_in_elems)
+        : array{array}, size_in_elems{size_in_elems}, psum_size_in_elems{psum_size_in_elems}, idx_rank{idx_rank} {}
+
+    T* for_dpu(dpu_id_t dpu) const
+    {
+        const dpu_id_t idx_dpu_in_rank = dpu - upmem_get_dpu_range_in_rank(idx_rank).first;
+        if (idx_dpu_in_rank == 0) {
+            return &array[0];
+        } else {
+            return &array[psum_size_in_elems[idx_dpu_in_rank - 1]];
+        }
+    }
+    constexpr size_t bytes_for_dpu(dpu_id_t dpu) const
+    {
+        const dpu_id_t idx_dpu_in_rank = dpu - upmem_get_dpu_range_in_rank(idx_rank).first;
+        return sizeof(T) * size_in_elems[idx_dpu_in_rank];
+    }
+};
+
 template <typename T>
 struct EachInArray {
     static constexpr bool IsSizeVarying = false;

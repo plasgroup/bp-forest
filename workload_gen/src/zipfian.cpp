@@ -51,12 +51,12 @@ int main(int argc, char* argv[])
         generator.reset(new ycsbc::ScrambledZipfianGenerator(min, num_partitions, zipfian_const));
         generated.metadata.densities.resize(num_partitions);
         for (uint64_t idx_part = 0; idx_part < num_partitions; idx_part++) {
-            generated.metadata.densities.at(utils::FNVHash64(idx_part) % num_partitions) = std::pow(idx_part + 1, -zipfian_const);
+            generated.metadata.densities.at(num_partitions - 1 - utils::FNVHash64(idx_part) % num_partitions) = std::pow(idx_part + 1, -zipfian_const);
         }
     } else {
         generator.reset(new ycsbc::ZipfianGenerator(min, num_partitions, zipfian_const));
         for (uint64_t idx_part = 0; idx_part < num_partitions; idx_part++) {
-            generated.metadata.densities.push_back(std::pow(idx_part + 1, -zipfian_const));
+            generated.metadata.densities.push_back(std::pow(num_partitions - idx_part, -zipfian_const));
         }
     }
 
@@ -79,7 +79,7 @@ int main(int argc, char* argv[])
             printf("[zipfianconst = %.2f] %.2f%% completed\n", zipfian_const, ((double)i / (double)key_num) * 100);
             start_time = clock();
         }
-        uint64_t which_range = generator->Next();
+        uint64_t which_range = num_partitions - 1 - generator->Next();
         uint64_t in_range = rand_in_range(mt);
         generated.data.push_back(which_range * range + in_range);
         distribution[which_range]++;

@@ -779,7 +779,7 @@ int main(int argc, char* argv[])
 {
     if (!opt.print_load)
         return;
-    dpu_id_t nr_dpus = opt.print_load;
+    dpu_id_t nr_dpus = std::min(opt.print_load, upmem_get_nr_dpus());
     printf("===== nr queries =====\n");
     for (dpu_id_t i = 0; i < nr_dpus; i++) {
         printf("DPU[%4d] %4d\n", i, batch_ctx->num_keys_for_DPU[i]);
