@@ -16,6 +16,7 @@ foreach(build_version IN LISTS targets)
     target_link_libraries(host_app_${build_version} common_${build_version} workload_mgmt cmdline cereal Threads::Threads)
     if(NOT "${build_version}" STREQUAL "host_only")
         target_link_libraries(host_app_${build_version} PkgConfig::DPU_CONFIG)
+        add_dependencies(host_app_${build_version} dpu_program_${build_version})
 
         file(CREATE_LINK "${CMAKE_CURRENT_LIST_DIR}/src/with_dpu/dpu_incbin.cpp" "${CMAKE_CURRENT_BINARY_DIR}/dpu_incbin_${build_version}.cpp" SYMBOLIC)
         target_sources(host_app_${build_version} PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/dpu_incbin_${build_version}.cpp")
