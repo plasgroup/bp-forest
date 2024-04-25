@@ -56,8 +56,12 @@ static std::array<IssueMigration, NR_RANKS> migration_callbacks;
 // Low level DPU ACCESS
 //
 struct UPMEM_AsyncDuration {
-    void synchronize();
     ~UPMEM_AsyncDuration();
+
+#ifndef HOST_ONLY
+    bool all{};
+    std::array<bool, NR_RANKS> rank{};
+#endif
 };
 
 static void upmem_init_impl();

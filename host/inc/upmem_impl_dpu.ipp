@@ -24,13 +24,16 @@ static std::array<dpu_set_t, MAX_NR_DPUS> each_dpu_impl;
 static std::array<dpu_id_t, NR_RANKS + 1> first_dpu_id_in_each_rank;
 
 
-void UPMEM_AsyncDuration::synchronize()
-{
-    DPU_ASSERT(dpu_sync(all_dpu_impl));
-}
 UPMEM_AsyncDuration::~UPMEM_AsyncDuration()
 {
-    DPU_ASSERT(dpu_sync(all_dpu_impl));
+    if (all) {
+        DPU_ASSERT(dpu_sync(all_dpu_impl));
+    }
+    for (dpu_id_t i = 0; i < NR_RANKS; i++) {
+        if (rank[i]) {
+            DPU_ASSERT(dpu_sync(each_rank_impl[i]));
+        }
+    }
 }
 
 static void upmem_init_impl()
@@ -122,6 +125,7 @@ template <bool ToDPU, class BatchTransferBuffer>
 struct VisitorOf_xfer_with_dpu {
     const char* symbol;
     BatchTransferBuffer&& buf;
+    UPMEM_AsyncDuration& async;
 
     static constexpr dpu_xfer_t Direction = ToDPU ? DPU_XFER_TO_DPU : DPU_XFER_FROM_DPU;
 
@@ -141,6 +145,7 @@ struct VisitorOf_xfer_with_dpu {
                     max_xfer_bytes_in_rank = std::max(max_xfer_bytes_in_rank, size);
                 }
                 DPU_ASSERT(dpu_push_xfer(each_rank_impl[idx_rank], Direction, symbol, 0, max_xfer_bytes_in_rank, DPU_XFER_ASYNC));
+                async.rank[idx_rank] = true;
             }
 
         } else {
@@ -149,6 +154,7 @@ struct VisitorOf_xfer_with_dpu {
                 DPU_ASSERT(dpu_prepare_xfer(each_dpu_impl[idx_dpu], buf.for_dpu(idx_dpu)));
             }
             DPU_ASSERT(dpu_push_xfer(all_dpu_impl, Direction, symbol, 0, buf.bytes_for_dpu(0), DPU_XFER_ASYNC));
+            async.all = true;
         }
     }
 
@@ -171,6 +177,7 @@ struct VisitorOf_xfer_with_dpu {
             }
             DPU_ASSERT(dpu_push_xfer(each_rank_impl[idx_rank], Direction, symbol, 0,
                 (buf.IsSizeVarying ? max_xfer_bytes_in_rank : buf.bytes_for_dpu(idx_dpu_end_in_rank)), DPU_XFER_ASYNC));
+            async.rank[idx_rank] = true;
         }
     }
 
@@ -182,25 +189,27 @@ struct VisitorOf_xfer_with_dpu {
         static_assert(std::is_trivially_copyable_v<std::remove_pointer_t<decltype(ptr)>>,
             "non-trivial copying cannot be performed between CPU and DPU");
         DPU_ASSERT(dpu_prepare_xfer(each_dpu_impl[idx_dpu], ptr));
-        DPU_ASSERT(dpu_push_xfer(each_dpu_impl[idx_dpu], Direction, symbol, 0, size, DPU_XFER_ASYNC));
+        DPU_ASSERT(dpu_push_xfer(each_dpu_impl[idx_dpu], Direction, symbol, 0, size, DPU_XFER_DEFAULT));
     }
 };
 template <bool ToDPU, class BatchTransferBuffer>
-static void xfer_with_dpu(const DPUSet& set, const char* symbol, BatchTransferBuffer&& buf, UPMEM_AsyncDuration&)
+static void xfer_with_dpu(const DPUSet& set, const char* symbol, BatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
 {
-    std::visit(VisitorOf_xfer_with_dpu<ToDPU, BatchTransferBuffer>{symbol, std::forward<BatchTransferBuffer>(buf)}, set);
+    std::visit(VisitorOf_xfer_with_dpu<ToDPU, BatchTransferBuffer>{symbol, std::forward<BatchTransferBuffer>(buf), async}, set);
 }
 
 template <typename T>
 struct VisitorOf_broadcast_to_dpu {
     const char* symbol;
     const Single<T>& datum;
+    UPMEM_AsyncDuration& async;
 
     static_assert(std::is_trivially_copyable_v<T>, "non-trivial copying cannot be performed between CPU and DPU");
 
     void operator()(const DPUSetAll&) const
     {
         DPU_ASSERT(dpu_broadcast_to(all_dpu_impl, symbol, 0, datum.for_dpu(0), datum.bytes_for_dpu(0), DPU_XFER_ASYNC));
+        async.all = true;
     }
 
     void operator()(const DPUSetRanks& ranks_) const
@@ -208,18 +217,19 @@ struct VisitorOf_broadcast_to_dpu {
         const DPUSetRanks ranks = ranks_;
         for (dpu_id_t idx_rank = ranks.idx_rank_begin; idx_rank < ranks.idx_rank_end; idx_rank++) {
             DPU_ASSERT(dpu_broadcast_to(each_rank_impl[idx_rank], symbol, 0, datum.for_dpu(0), datum.bytes_for_dpu(0), DPU_XFER_ASYNC));
+            async.rank[idx_rank] = true;
         }
     }
 
     void operator()(const DPUSetSingle& dpu) const
     {
-        DPU_ASSERT(dpu_broadcast_to(each_dpu_impl[dpu.idx_dpu], symbol, 0, datum.for_dpu(0), datum.bytes_for_dpu(0), DPU_XFER_ASYNC));
+        DPU_ASSERT(dpu_broadcast_to(each_dpu_impl[dpu.idx_dpu], symbol, 0, datum.for_dpu(0), datum.bytes_for_dpu(0), DPU_XFER_DEFAULT));
     }
 };
 template <typename T>
-static void broadcast_to_dpu(const DPUSet& set, const char* symbol, const Single<T>& datum, UPMEM_AsyncDuration&)
+static void broadcast_to_dpu(const DPUSet& set, const char* symbol, const Single<T>& datum, UPMEM_AsyncDuration& async)
 {
-    std::visit(VisitorOf_broadcast_to_dpu<T>{symbol, datum}, set);
+    std::visit(VisitorOf_broadcast_to_dpu<T>{symbol, datum, async}, set);
 }
 
 template <bool ToDPU, class ScatteredBatchTransferBuffer>
@@ -229,6 +239,8 @@ struct VisitorOf_scatter_gather_with_dpu {
     ScatteredBatchTransferBuffer&& buf;
     static_assert(std::is_trivially_copyable_v<std::remove_reference_t<ScatteredBatchTransferBuffer>>,
         "callable object for scatter_gather_with_dpu should be trivially copyable");
+
+    UPMEM_AsyncDuration& async;
 
     static constexpr dpu_xfer_t Direction = ToDPU ? DPU_XFER_TO_DPU : DPU_XFER_FROM_DPU;
 
@@ -248,6 +260,7 @@ struct VisitorOf_scatter_gather_with_dpu {
             get_block_t get_block{&get_block_func_wrapper, &buf, sizeof(buf)};
             DPU_ASSERT(dpu_push_sg_xfer(each_rank_impl[idx_rank], Direction, symbol, 0, max_xfer_bytes_in_rank, &get_block,
                 static_cast<dpu_sg_xfer_flags_t>(DPU_SG_XFER_DISABLE_LENGTH_CHECK | DPU_SG_XFER_ASYNC)));
+            async.rank[idx_rank] = true;
         }
     }
 
@@ -263,6 +276,7 @@ struct VisitorOf_scatter_gather_with_dpu {
             get_block_t get_block{&get_block_func_wrapper, &buf, sizeof(buf)};
             DPU_ASSERT(dpu_push_sg_xfer(each_rank_impl[idx_rank], Direction, symbol, 0, max_xfer_bytes_in_rank, &get_block,
                 static_cast<dpu_sg_xfer_flags_t>(DPU_SG_XFER_DISABLE_LENGTH_CHECK | DPU_SG_XFER_ASYNC)));
+            async.rank[idx_rank] = true;
         }
     }
 
@@ -273,12 +287,14 @@ struct VisitorOf_scatter_gather_with_dpu {
     }
 };
 template <bool ToDPU, class ScatteredBatchTransferBuffer>
-static void scatter_gather_with_dpu(const DPUSet& set, const char* symbol, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration&)
+static void scatter_gather_with_dpu(const DPUSet& set, const char* symbol, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
 {
-    std::visit(VisitorOf_scatter_gather_with_dpu<ToDPU, ScatteredBatchTransferBuffer>{symbol, std::forward<ScatteredBatchTransferBuffer>(buf)}, set);
+    std::visit(VisitorOf_scatter_gather_with_dpu<ToDPU, ScatteredBatchTransferBuffer>{symbol, std::forward<ScatteredBatchTransferBuffer>(buf), async}, set);
 }
 
 struct VisitorOf_execute {
+    UPMEM_AsyncDuration& async;
+
     static dpu_error_t bypass_logs(struct dpu_set_t set, uint32_t /* rank_id */, void* /* arg */)
     {
         dpu_set_t dpu;
@@ -295,6 +311,7 @@ struct VisitorOf_execute {
 #ifdef PRINT_DEBUG
         DPU_ASSERT(dpu_callback(all_dpu_impl, &bypass_logs, nullptr, DPU_CALLBACK_ASYNC));
 #endif /* PRINT_DEBUG */
+        async.all = true;
     }
 
     void operator()(const DPUSetRanks& ranks_) const
@@ -305,6 +322,7 @@ struct VisitorOf_execute {
 #ifdef PRINT_DEBUG
             DPU_ASSERT(dpu_callback(each_rank_impl[idx_rank], &bypass_logs, nullptr, DPU_CALLBACK_ASYNC));
 #endif /* PRINT_DEBUG */
+            async.rank[idx_rank] = true;
         }
     }
 
@@ -313,18 +331,19 @@ struct VisitorOf_execute {
         dpu_set_t dpu_impl = each_dpu_impl[d.idx_dpu];
         DPU_ASSERT(dpu_launch(dpu_impl, DPU_SYNCHRONOUS));
 #ifdef PRINT_DEBUG
-        DPU_ASSERT(dpu_callback(dpu_impl, &bypass_logs, nullptr, DPU_CALLBACK_ASYNC));
+        DPU_ASSERT(dpu_callback(dpu_impl, &bypass_logs, nullptr, DPU_CALLBACK_DEFAULT));
 #endif /* PRINT_DEBUG */
     }
 };
-static void execute(const DPUSet& set, UPMEM_AsyncDuration&)
+static void execute(const DPUSet& set, UPMEM_AsyncDuration& async)
 {
-    std::visit(VisitorOf_execute{}, set);
+    std::visit(VisitorOf_execute{async}, set);
 }
 
 template <class Func>
 struct VisitorOf_then_call {
     Func& func;
+    UPMEM_AsyncDuration& async;
 
     static UPMEM_AsyncDuration& get_async_duration()
     {
@@ -341,6 +360,7 @@ struct VisitorOf_then_call {
     void operator()(const DPUSetAll&) const
     {
         DPU_ASSERT(dpu_callback(all_dpu_impl, &callback_wrapper, &func, static_cast<dpu_callback_flags_t>(DPU_CALLBACK_ASYNC | DPU_CALLBACK_SINGLE_CALL)));
+        async.all = true;
     }
 
     void operator()(const DPUSetRanks& ranks_) const
@@ -348,6 +368,7 @@ struct VisitorOf_then_call {
         const DPUSetRanks ranks = ranks_;
         for (dpu_id_t idx_rank = ranks.idx_rank_begin; idx_rank < ranks.idx_rank_end; idx_rank++) {
             DPU_ASSERT(dpu_callback(each_rank_impl[idx_rank], &callback_wrapper, &func, DPU_CALLBACK_ASYNC));
+            async.rank[idx_rank] = true;
         }
     }
 
@@ -358,7 +379,7 @@ struct VisitorOf_then_call {
     }
 };
 template <class Func>
-static void then_call(const DPUSet& set, Func& func, UPMEM_AsyncDuration&)
+static void then_call(const DPUSet& set, Func& func, UPMEM_AsyncDuration& async)
 {
-    std::visit(VisitorOf_then_call<Func>{func}, set);
+    std::visit(VisitorOf_then_call<Func>{func, async}, set);
 }
