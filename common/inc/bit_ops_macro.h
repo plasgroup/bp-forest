@@ -25,6 +25,8 @@ extern "C" {
 
 #define BITWIDTH_UINT32(n) (BITWIDTH_OF_POW2_UINT32(BIT_FLOOR_UINT32(n)))
 
+#define CEIL_LOG2_UINT32(x) (BITWIDTH_OF_POW2_UINT32(BIT_CEIL_UINT32(x)) - 1u)
+#define FLOOR_LOG2_UINT32(x) (BITWIDTH_OF_POW2_UINT32(BIT_FLOOR_UINT32(x)) - 1u)
 
 #ifdef __cplusplus
 }  // extern "C"

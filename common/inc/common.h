@@ -31,7 +31,11 @@ extern "C" {
 #define SIZEOF_NODE (2048)
 #define MAX_NUM_NODES_IN_SEAT (MRAM_CABIN_BYTES / SIZEOF_NODE)
 #define MAX_NR_PAIRS ((SIZEOF_NODE - 16) / 16)        // depends on the definition of `Node' in dpu/inc/bplustree.h
+#ifdef CACHE_CHILD_HEADER_IN_LINK
+#define MAX_NR_CHILDREN ((SIZEOF_NODE / 16) / 2 * 2)  // depends on the definition of `Node' in dpu/inc/bplustree.h
+#else
 #define MAX_NR_CHILDREN ((SIZEOF_NODE / 12) / 2 * 2)  // depends on the definition of `Node' in dpu/inc/bplustree.h
+#endif
 
 #ifndef MAX_REQ_NUM_IN_A_DPU
 #define MAX_REQ_NUM_IN_A_DPU (BIT_FLOOR_UINT32(MRAM_REQUEST_BUFFER_BYTES / sizeof(each_request_t) / 2))

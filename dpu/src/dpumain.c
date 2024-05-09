@@ -46,7 +46,6 @@ int main()
     switch (task) {
     case TASK_INIT: {
         if (tid == 0) {
-            root = Allocator_reset();
             init_BPTree();
             if (dpu_init_param.end_inclusive >= dpu_init_param.start) {
                 key_int64_t k = dpu_init_param.start;
@@ -265,7 +264,7 @@ int main()
     }
     }
 
-#ifdef PRINT_ON
+#if defined(PRINT_ON) && defined(DEBUG_ON)
     barrier_wait(&my_barrier);
     if (tid == 0) {
         printf("\n");
