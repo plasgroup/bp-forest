@@ -12,7 +12,9 @@
 
 #include <sys/time.h>
 
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <utility>
 
 #ifdef PRINT_DEBUG
@@ -46,6 +48,9 @@ struct IssueMigration {
     MigrationPlanType::value_type* plan;
     key_int64_t* lower_bounds;
     uint32_t* num_kvpairs;
+    std::mutex mutex;
+    std::condition_variable cond;
+    bool finished;
 
     inline void operator()(uint32_t, UPMEM_AsyncDuration&);
 };
@@ -137,8 +142,6 @@ void upmem_init()
 void upmem_release()
 {
     upmem_release_impl();
-    migration_key_buf.reset();
-    migration_value_buf.reset();
 }
 
 
@@ -374,6 +377,12 @@ void IssueMigration::operator()(uint32_t, UPMEM_AsyncDuration& async)
     for (dpu_id_t idx_dpu_in_rank = 0; idx_dpu_in_rank < nr_dpus; idx_dpu_in_rank++) {
         num_kvpairs[idx_dpu_in_rank] = nr_migrated_pairs[idx_rank][idx_dpu_in_rank];
     }
+
+    {
+        std::lock_guard<std::mutex> lock{mutex};
+        finished = true;
+    }
+    cond.notify_one();
 }
 #endif /* BULK_MIGRATION */
 
@@ -396,9 +405,20 @@ void upmem_migrate_kvpairs(MigrationPlanType& plan, HostTree& host_tree)
             migration_callbacks[idx_rank].plan = &plan[idx_rank];
             migration_callbacks[idx_rank].lower_bounds = &host_tree.lower_bounds[idx_dpu_begin];
             migration_callbacks[idx_rank].num_kvpairs = &host_tree.num_kvpairs[idx_dpu_begin];
+
+            migration_callbacks[idx_rank].finished = false;
             then_call(rank_dpus, migration_callbacks[idx_rank], async);
         }
     }
+
+    // without the following, the destructor of `async` will only wait for the completion of `then_call`.
+    for (dpu_id_t idx_rank = 0; idx_rank < NR_RANKS; idx_rank++) {
+        if (plan[idx_rank].has_value()) {
+            std::unique_lock<std::mutex> lock{migration_callbacks[idx_rank].mutex};
+            migration_callbacks[idx_rank].cond.wait(lock, [&] { return migration_callbacks[idx_rank].finished; });
+        }
+    }
+    // now it will wait for the migration to complete.
 
 #else  /* BULK_MIGRATION */
     const dpu_id_t nr_dpus = upmem_get_nr_dpus();
