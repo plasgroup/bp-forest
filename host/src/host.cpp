@@ -561,6 +561,7 @@ size_t do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch
     }).count();
 
     /* 2. migration planning */
+#ifndef DISABLE_MIGRATION
     Migration migration_plan;
     migration_plan_time = measure_time([&] {
         migration_plan.migration_plan_memory_balancing();
@@ -575,6 +576,7 @@ size_t do_one_batch(const uint64_t task, int batch_num, int migrations_per_batch
     migration_time = measure_time([&] {
         migration_plan.execute(host_tree);
     }).count();
+#endif /* DISABLE_MIGRATION */
 
     /* 4. count and prepare requests to send to DPUs */
     preprocess_time2 = measure_time([&] {
