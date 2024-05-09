@@ -28,7 +28,7 @@ extern "C" {
 #error NR_TASKLETS is always used but never defined
 #endif
 
-#define SIZEOF_NODE (512)
+#define SIZEOF_NODE (256)
 #define MAX_NUM_NODES_IN_SEAT (MRAM_CABIN_BYTES / SIZEOF_NODE)
 #define MAX_NR_PAIRS ((SIZEOF_NODE - 16) / 16)        // depends on the definition of `Node' in dpu/inc/bplustree.h
 #ifdef CACHE_CHILD_HEADER_IN_LINK
