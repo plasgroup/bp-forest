@@ -110,8 +110,8 @@ class Emulation
         migration_key_param_t migration_key_param;
 #endif
         migration_pairs_param_t migration_pairs_param;
-        key_int64_t migrated_keys[MAX_NUM_NODES_IN_SEAT * MAX_NR_PAIRS];
-        value_ptr_t migrated_values[MAX_NUM_NODES_IN_SEAT * MAX_NR_PAIRS];
+        key_int64_t migrated_keys[MAX_NUM_PAIRS_IN_DPU];
+        value_ptr_t migrated_values[MAX_NUM_PAIRS_IN_DPU];
     };
     std::unique_ptr<MRAM> mram{new MRAM};
 

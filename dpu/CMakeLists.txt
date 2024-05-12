@@ -2,6 +2,12 @@ set(CMAKE_C_COMPILER dpu-upmem-dpurte-clang)
 
 file(GLOB DPU_SOURCE ${CMAKE_CURRENT_LIST_DIR}/src/*.c)
 
+if(DEFINED USE_RBTREE)
+    list(REMOVE_ITEM DPU_SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/bplustree.c")
+else(DEFINED USE_RBTREE)
+    list(REMOVE_ITEM DPU_SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/rbtree.c")
+endif(DEFINED USE_RBTREE)
+
 foreach(build_version IN LISTS targets)
     if(NOT "${build_version}" STREQUAL "host_only")
         add_executable(dpu_program_${build_version} ${DPU_SOURCE})

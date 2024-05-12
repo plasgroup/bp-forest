@@ -16,7 +16,7 @@ extern "C" {
  * MRAM Layout
  */
 
-#define MRAM_CABIN_BYTES (27 * 1024 * 1024)
+#define MRAM_CABIN_BYTES (27u * 1024u * 1024u)
 #define MRAM_REQUEST_BUFFER_BYTES (8 * 1024 * 1024)
 
 
@@ -28,14 +28,30 @@ extern "C" {
 #error NR_TASKLETS is always used but never defined
 #endif
 
-#define SIZEOF_NODE (256)
-#define MAX_NUM_NODES_IN_SEAT (MRAM_CABIN_BYTES / SIZEOF_NODE)
+
+#ifdef USE_RBTREE
+#define SIZEOF_NODE (24u)
+#define MAX_NUM_NODES_IN_DPU (MRAM_CABIN_BYTES / SIZEOF_NODE)
+#define MAX_NUM_PAIRS_IN_DPU (MAX_NUM_NODES_IN_DPU)
+
+#else /* USE_RBTREE */
+
+#ifndef SIZEOF_NODE
+#define SIZEOF_NODE (256u)
+#endif
+
+#define MAX_NUM_NODES_IN_DPU (MRAM_CABIN_BYTES / SIZEOF_NODE)
 #define MAX_NR_PAIRS ((SIZEOF_NODE - 16) / 16)        // depends on the definition of `Node' in dpu/inc/bplustree.h
+#define MAX_NUM_PAIRS_IN_DPU (MAX_NUM_NODES_IN_DPU * MAX_NR_PAIRS)
+
 #ifdef CACHE_CHILD_HEADER_IN_LINK
 #define MAX_NR_CHILDREN ((SIZEOF_NODE / 16) / 2 * 2)  // depends on the definition of `Node' in dpu/inc/bplustree.h
-#else
+#else /* CACHE_CHILD_HEADER_IN_LINK */
 #define MAX_NR_CHILDREN ((SIZEOF_NODE / 12) / 2 * 2)  // depends on the definition of `Node' in dpu/inc/bplustree.h
-#endif
+#endif /* CACHE_CHILD_HEADER_IN_LINK */
+
+#endif /* USE_RBTREE */
+
 
 #ifndef MAX_REQ_NUM_IN_A_DPU
 #define MAX_REQ_NUM_IN_A_DPU (BIT_FLOOR_UINT32(MRAM_REQUEST_BUFFER_BYTES / sizeof(each_request_t) / 2))

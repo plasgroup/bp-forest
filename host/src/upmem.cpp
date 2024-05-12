@@ -29,13 +29,13 @@ dpu_init_param_t dpu_init_param[MAX_NR_DPUS];
 
 #ifdef BULK_MIGRATION
 static std::array<std::array<migration_pairs_param_t, MAX_NR_DPUS_IN_RANK>, NR_RANKS> nr_migrated_pairs;
-using KeyBufType = std::array<std::array<key_int64_t, MAX_NR_DPUS_IN_RANK * MAX_NUM_NODES_IN_SEAT>, NR_RANKS>;
-using ValueBufType = std::array<std::array<value_ptr_t, MAX_NR_DPUS_IN_RANK * MAX_NUM_NODES_IN_SEAT>, NR_RANKS>;
+using KeyBufType = std::array<std::array<key_int64_t, MAX_NR_DPUS_IN_RANK * MAX_NUM_NODES_IN_DPU>, NR_RANKS>;
+using ValueBufType = std::array<std::array<value_ptr_t, MAX_NR_DPUS_IN_RANK * MAX_NUM_NODES_IN_DPU>, NR_RANKS>;
 #else
 static std::array<migration_key_param_t, MAX_NR_DPUS> migration_delims;
 static std::array<migration_pairs_param_t, MAX_NR_DPUS> nr_migrated_pairs;
-using KeyBufType = std::array<key_int64_t[MAX_NUM_NODES_IN_SEAT], MAX_NR_DPUS>;
-using ValueBufType = std::array<value_ptr_t[MAX_NUM_NODES_IN_SEAT], MAX_NR_DPUS>;
+using KeyBufType = std::array<key_int64_t[MAX_NUM_NODES_IN_DPU], MAX_NR_DPUS>;
+using ValueBufType = std::array<value_ptr_t[MAX_NUM_NODES_IN_DPU], MAX_NR_DPUS>;
 #endif
 
 static std::unique_ptr<KeyBufType> migration_key_buf{new KeyBufType};

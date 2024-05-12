@@ -1,17 +1,15 @@
 #pragma once
 
-#include "bplustree.h"
+#include "common.h"
+#include "node_ptr.h"
+#include "tree_impl.h"
 
 #include <attributes.h>
 
 
-extern __mram_ptr Node nodes_storage[MAX_NUM_NODES_IN_SEAT];
-#define NODE_NULLPTR (&nodes_storage[MAX_NUM_NODES_IN_SEAT])
+extern __mram_ptr Node nodes_storage[MAX_NUM_NODES_IN_DPU];
 
-/**
- * @return ptr to root node
- */
-MBPTptr Allocator_reset();
+void Allocator_reset();
 
-MBPTptr Allocate_node();
-void Free_node(MBPTptr node);
+NodePtr Allocate_node();
+void Free_node(NodePtr node);

@@ -36,11 +36,11 @@ struct ArrayOfScatteredArray {
 #ifndef BULK_MIGRATION
 template <class T>
 struct MigrationToDPU {
-    using InnerArray = T[MAX_NUM_NODES_IN_SEAT];
+    using InnerArray = T[MAX_NUM_NODES_IN_DPU];
     InnerArray* array;
     migration_pairs_param_t* nr_migrated_pairs;
 
-    MigrationToDPU(T (*array)[MAX_NUM_NODES_IN_SEAT], migration_pairs_param_t* nr_migrated_pairs)
+    MigrationToDPU(T (*array)[MAX_NUM_NODES_IN_DPU], migration_pairs_param_t* nr_migrated_pairs)
         : array{array}, nr_migrated_pairs{nr_migrated_pairs} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)

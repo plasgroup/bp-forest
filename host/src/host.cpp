@@ -677,8 +677,8 @@ int main(int argc, char* argv[])
               << "NR_TASKLETS:" << NR_TASKLETS << std::endl
               << "requests per batch:" << NUM_REQUESTS_PER_BATCH << std::endl
               << "init elements in total:" << NUM_INIT_REQS << std::endl
-              << "MAX_NUM_NODES_IN_SEAT:" << MAX_NUM_NODES_IN_SEAT << std::endl
-              << "estm. max elems in seat:" << (MAX_NUM_NODES_IN_SEAT * MAX_NR_PAIRS) << std::endl;
+              << "MAX_NUM_NODES_IN_DPU:" << MAX_NUM_NODES_IN_DPU << std::endl
+              << "estm. max elems in seat:" << MAX_NUM_PAIRS_IN_DPU << std::endl;
 #endif
 
     upmem_init();

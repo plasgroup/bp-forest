@@ -1,8 +1,5 @@
-#include "allocator.h"
-#include "binary_search.h"
-#include "bplustree.h"
+#include "tree.h"
 #include "common.h"
-#include "sort.h"
 #include "workload_types.h"
 
 #include <assert.h>
@@ -13,7 +10,6 @@
 #include <mutex.h>
 #include <perfcounter.h>
 
-#include <stdint.h>
 #include <stdio.h>
 
 BARRIER_INIT(my_barrier, NR_TASKLETS);
@@ -23,13 +19,15 @@ __mram_noinit dpu_init_param_t dpu_init_param;
 __mram_noinit each_request_t request_buffer[MAX_REQ_NUM_IN_A_DPU];
 __mram_noinit dpu_results_t results;
 
+#ifndef DISABLE_MIGRATION
 #ifndef BULK_MIGRATION
 __host migration_ratio_param_t migration_ratio_param;
 __host migration_key_param_t migration_key_param;
-#endif
+#endif /* !BULK_MIGRATION */
 __host migration_pairs_param_t migration_pairs_param;
-__mram_noinit key_int64_t migrated_keys[MAX_NUM_NODES_IN_SEAT * MAX_NR_PAIRS];
-__mram_noinit value_ptr_t migrated_values[MAX_NUM_NODES_IN_SEAT * MAX_NR_PAIRS];
+__mram_noinit key_int64_t migrated_keys[MAX_NUM_PAIRS_IN_DPU];
+__mram_noinit value_ptr_t migrated_values[MAX_NUM_PAIRS_IN_DPU];
+#endif /* !DISABLE_MIGRATION */
 
 __host unsigned end_idx;
 __host uint64_t task_no;
@@ -46,12 +44,12 @@ int main()
     switch (task) {
     case TASK_INIT: {
         if (tid == 0) {
-            init_BPTree();
+            init_Tree();
             if (dpu_init_param.end_inclusive >= dpu_init_param.start) {
                 key_int64_t k = dpu_init_param.start;
                 while (true) {
                     value_ptr_t v = k;
-                    BPTreeInsert(k, v);
+                    TreeInsert(k, v);
                     if (dpu_init_param.end_inclusive - k < dpu_init_param.interval)
                         break;
                     k += dpu_init_param.interval;
@@ -96,14 +94,14 @@ int main()
         //         for (seat_id_t tree = start_tree; tree < end_tree; tree++) {
         //             if (Seat_is_used(tree)) {
         //                 for (int index = tree == 0 ? 0 : end_idx[tree - 1]; index < end_idx[tree]; index++) {
-        //                     BPTreeInsert(request_buffer[index].key, request_buffer[index].write_val_ptr, tree);
+        //                     TreeInsert(request_buffer[index].key, request_buffer[index].write_val_ptr, tree);
         //                 }
         // #ifdef PRINT_DEBUG
         //                 mutex_lock(my_mutex);
         //                 printf("[tasklet %d] inserted seat %d\n", tid, tree);
         //                 printf("[tasklet %d] total num of nodes of seat %d = %d\n", tid, tree, Seat_get_n_nodes(tree));
         //                 printf("[tasklet %d] height of seat %d = %d\n", tid, tree, Seat_get_height(tree));
-        //                 printf("[tasklet %d] num of KV-Pairs of seat %d = %d\n", tid, tree, BPTree_Serialize(tree, tree_transfer_buffer));
+        //                 printf("[tasklet %d] num of KV-Pairs of seat %d = %d\n", tid, tree, Tree_Serialize(tree, tree_transfer_buffer));
         //                 mutex_unlock(my_mutex);
         // #endif
         //             }
@@ -123,12 +121,12 @@ int main()
         //         while (true) {
         //             if (end_idx[tree] < end_index) { /* not last tree */
         //                 for (; index < end_idx[tree]; index++) {
-        //                     results.get[index].get_result = BPTreeGet(request_buffer[index].key, tree);
+        //                     results.get[index].get_result = TreeGet(request_buffer[index].key, tree);
         //                 }
         //                 tree++;
         //             } else { /* last tree */
         //                 for (; index < end_index; index++) {
-        //                     results.get[index].get_result = BPTreeGet(request_buffer[index].key, tree);
+        //                     results.get[index].get_result = TreeGet(request_buffer[index].key, tree);
         //                 }
         //                 break;
         //             }
@@ -143,7 +141,7 @@ int main()
         //                 if (Seat_is_used(seat_id)) {
         //                     printf("[after split] total num of nodes of seat %d = %d\n", seat_id, Seat_get_n_nodes(seat_id));
         //                     printf("[after split] height of seat %d = %d\n", seat_id, Seat_get_height(seat_id));
-        //                     printf("[after split] num of KV-Pairs of seat %d = %d\n", seat_id, BPTree_Serialize(seat_id, tree_transfer_buffer));
+        //                     printf("[after split] num of KV-Pairs of seat %d = %d\n", seat_id, Tree_Serialize(seat_id, tree_transfer_buffer));
         //                 }
         //             }
         // #endif
@@ -158,7 +156,7 @@ int main()
         for (unsigned idx_req = start_index; idx_req < end_index; idx_req++) {
             const key_int64_t key = request_buffer[idx_req].key;
             results.get[idx_req].key = key;
-            results.get[idx_req].get_result = BPTreeGet(key);
+            results.get[idx_req].get_result = TreeGet(key);
         }
         break;
     }
@@ -178,14 +176,14 @@ int main()
     //     while (true) {
     //         if (end_idx[tree] < end_index) { /* not last tree */
     //             for (; index < end_idx[tree]; index++) {
-    //                 KVPair succ = BPTreeSucc(request_buffer[index].key, tree);
+    //                 KVPair succ = TreeSucc(request_buffer[index].key, tree);
     //                 results.succ[index].succ_key = succ.key;
     //                 results.succ[index].succ_val_ptr = succ.value;
     //             }
     //             tree++;
     //         } else { /* last tree */
     //             for (; index < end_index; index++) {
-    //                 KVPair succ = BPTreeSucc(request_buffer[index].key, tree);
+    //                 KVPair succ = TreeSucc(request_buffer[index].key, tree);
     //                 results.succ[index].succ_key = succ.key;
     //                 results.succ[index].succ_val_ptr = succ.value;
     //             }
@@ -194,11 +192,13 @@ int main()
     //     }
     //     break;
     // }
+
+#ifndef DISABLE_MIGRATION
     case TASK_FROM: {
         if (tid == 0) {
 #ifdef BULK_MIGRATION
             migration_pairs_param = num_kvpairs;
-            BPTreeSerialize(&migrated_keys[0], &migrated_values[0]);
+            TreeSerialize(&migrated_keys[0], &migrated_values[0]);
 #else  /* BULK_MIGRATION */
             const migration_ratio_param_t ratio_param = migration_ratio_param;
             assert(ratio_param.left_npairs_ratio_x2147483648 + ratio_param.right_npairs_ratio_x2147483648 <= 2147483648u);
@@ -210,10 +210,10 @@ int main()
 
             migration_key_param_t delimiters;
             if (ratio_param.left_npairs_ratio_x2147483648 != 2147483648u) {
-                delimiters.left_delim_key = BPTreeNthKeyFromLeft(npairs.num_left_kvpairs);
+                delimiters.left_delim_key = TreeNthKeyFromLeft(npairs.num_left_kvpairs);
             }
             if (ratio_param.right_npairs_ratio_x2147483648 != 0u) {
-                delimiters.right_delim_key = BPTreeNthKeyFromRight(npairs.num_right_kvpairs - 1u);
+                delimiters.right_delim_key = TreeNthKeyFromRight(npairs.num_right_kvpairs - 1u);
             }
             migration_key_param = delimiters;
 
@@ -222,10 +222,10 @@ int main()
                 break;
             case 2147483648u:
                 npairs.num_left_kvpairs = num_kvpairs;
-                BPTreeSerialize(&migrated_keys[0], &migrated_values[0]);
+                TreeSerialize(&migrated_keys[0], &migrated_values[0]);
                 break;
             default:
-                npairs.num_left_kvpairs = BPTreeExtractFirstPairs(&migrated_keys[0], &migrated_values[0], delimiters.left_delim_key);
+                npairs.num_left_kvpairs = TreeExtractFirstPairs(&migrated_keys[0], &migrated_values[0], delimiters.left_delim_key);
                 break;
             }
 
@@ -235,10 +235,10 @@ int main()
                 break;
             case 2147483648u:
                 npairs.num_right_kvpairs = num_kvpairs;
-                BPTreeSerialize(&migrated_keys[0], &migrated_values[0]);
+                TreeSerialize(&migrated_keys[0], &migrated_values[0]);
                 break;
             default:
-                // npairs.num_right_kvpairs = BPTreeExtractLastPairs(&migrated_keys[npairs.num_left_kvpairs], &migrated_values[npairs.num_left_kvpairs], delimiters.right_delim_key);
+                // npairs.num_right_kvpairs = TreeExtractLastPairs(&migrated_keys[npairs.num_left_kvpairs], &migrated_values[npairs.num_left_kvpairs], delimiters.right_delim_key);
                 break;
             }
 
@@ -250,14 +250,15 @@ int main()
     case TASK_TO: {
         if (tid == 0) {
 #ifdef BULK_MIGRATION
-            BPTreeInsertSortedPairsToLeft(&migrated_keys[0], &migrated_values[0], migration_pairs_param);
+            TreeInsertSortedPairsToLeft(&migrated_keys[0], &migrated_values[0], migration_pairs_param);
 #else /* BULK_MIGRATION */
-            BPTreeInsertSortedPairsToLeft(&migrated_keys[0], &migrated_values[0], migration_pairs_param.num_left_kvpairs);
-            BPTreeInsertSortedPairsToRight(&migrated_keys[migration_pairs_param.num_left_kvpairs], &migrated_values[migration_pairs_param.num_left_kvpairs], migration_pairs_param.num_right_kvpairs);
+            TreeInsertSortedPairsToLeft(&migrated_keys[0], &migrated_values[0], migration_pairs_param.num_left_kvpairs);
+            TreeInsertSortedPairsToRight(&migrated_keys[migration_pairs_param.num_left_kvpairs], &migrated_values[migration_pairs_param.num_left_kvpairs], migration_pairs_param.num_right_kvpairs);
 #endif /* BULK_MIGRATION */
         }
         break;
     }
+#endif /* !DISABLE_MIGRATION */
     default: {
         printf("no such a task: task %d\n", task);
         return -1;
@@ -268,11 +269,11 @@ int main()
     barrier_wait(&my_barrier);
     if (tid == 0) {
         printf("\n");
-        printf("Printing Nodes...\n");
+        printf("Printing %u Nodes...\n", num_kvpairs);
         printf("===========================================\n");
-        BPTreePrintKeys();
-        if (!BPTreeCheckStructure())
-            BPTreePrintAll();
+        TreePrintKeys();
+        if (!TreeCheckStructure())
+            TreePrintAll();
         printf("===========================================\n");
     }
 #endif
