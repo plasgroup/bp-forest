@@ -14,7 +14,10 @@
 typedef struct {
     unsigned numKeys : 8;
     bool isLeaf : 1;
-    NodePtr parent;
+    union {
+        NodePtr parent;
+        uint32_t size_adjuster;
+    };
 } NodeHeader;
 
 typedef struct {
@@ -22,7 +25,10 @@ typedef struct {
     unsigned numKeys : 8;
     bool isLeaf : 1;
 #endif
-    NodePtr ptr;
+    union {
+        NodePtr ptr;
+        uint32_t size_adjuster;
+    };
 } ChildInfo;
 
 typedef struct {
