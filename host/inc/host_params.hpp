@@ -31,7 +31,7 @@ constexpr size_t DEFAULT_NR_BATCHES = 20;
 #endif
 
 #ifndef NUM_INIT_REQS
-constexpr size_t NUM_INIT_REQS = 1500 * MAX_NR_DPUS;
+constexpr size_t NUM_INIT_REQS = 50000 * MAX_NR_DPUS;
 #endif
 constexpr key_int64_t INIT_KEY_INTERVAL = (KEY_MAX - KEY_MIN) / (NUM_INIT_REQS - 1);
 

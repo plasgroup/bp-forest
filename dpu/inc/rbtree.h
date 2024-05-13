@@ -10,7 +10,7 @@ enum RBColor {
     Black,
     Red
 };
-typedef struct __attribute((packed)) {
+typedef struct __attribute__((packed)) {
     NodePtr left : NODE_PTR_WIDTH;
     NodePtr right : NODE_PTR_WIDTH;
     NodePtr parent : NODE_PTR_WIDTH;

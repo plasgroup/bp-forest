@@ -36,7 +36,7 @@ static unsigned findUpperBound(key_int64_t __mram_ptr* keys, unsigned size, key_
     }
     return (unsigned)r;
 }
-static unsigned findUpperBoundWRAM(key_int64_t* keys, unsigned size, key_int64_t key)
+__attribute__((unused)) static unsigned findUpperBoundWRAM(key_int64_t* keys, unsigned size, key_int64_t key)
 {
     int l = -1, r = (int)size;
     while (l < r - 1) {
