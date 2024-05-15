@@ -75,8 +75,12 @@ static void upmem_init_impl()
     }
     first_dpu_id_in_each_rank.back() = idx_dpu;
 
+#ifdef UPMEM_TRACE
+    DPU_ASSERT(dpu_load(all_dpu_impl, DPU_BINARY_PATH, NULL));
+#else
     extern dpu_incbin_t dpu_binary;
     DPU_ASSERT(dpu_load_from_incbin(all_dpu_impl, &dpu_binary, NULL));
+#endif
 }
 static void upmem_release_impl()
 {

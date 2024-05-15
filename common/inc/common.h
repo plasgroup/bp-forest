@@ -44,17 +44,6 @@ extern "C" {
 #define MAX_NR_PAIRS ((SIZEOF_NODE - 16) / 16)  // depends on the definition of `Node' in dpu/inc/bplustree.h
 #define MAX_NUM_PAIRS_IN_DPU (MAX_NUM_NODES_IN_DPU * MAX_NR_PAIRS)
 
-#ifdef CACHE_CHILD_HEADER_IN_LINK  // depends on the definition of `Node' in dpu/inc/bplustree.h
-#define MAX_NR_CHILDREN ((SIZEOF_NODE / 16) / 2 * 2)
-#else /* CACHE_CHILD_HEADER_IN_LINK */
-#define MAX_NR_CHILDREN ((SIZEOF_NODE / 12) / 2 * 2)
-#endif /* CACHE_CHILD_HEADER_IN_LINK */
-
-// #define MIN_NR_KEYS ((MAX_NR_CHILDREN - 1) / 2)
-// #define MIN_NR_PAIRS ((MAX_NR_PAIRS + 1) / 2)
-// #define GUARANTEED_CAPACITY_OF_PAIRS ((MIN_NR_KEYS * MIN_NR_PAIRS * (MAX_NUM_NODES_IN_DPU - 1) + 2 * MIN_NR_PAIRS) \
-//                                       / (MIN_NR_KEYS + 1))
-
 #endif /* USE_RBTREE */
 
 
