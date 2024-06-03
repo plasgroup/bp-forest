@@ -48,3 +48,13 @@ target_link_options(common_simulator INTERFACE
     -DSTACK_SIZE_DEFAULT=2560
     -DNR_TASKLETS=${NR_TASKLETS_SIMULATOR}
 )
+
+
+# upimulator
+add_library(common_upimulator_device INTERFACE)
+target_link_libraries(common_upimulator_device INTERFACE common_base)
+target_compile_definitions(common_upimulator_device INTERFACE
+    STACK_SIZE_DEFAULT=2560
+    NR_TASKLETS=${NR_TASKLETS_UPIMULATOR}
+    UPIMULATOR
+)

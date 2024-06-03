@@ -1,11 +1,17 @@
-set(PKG_CONFIG_EXECUTABLE dpu-pkg-config)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(DPU_CONFIG IMPORTED_TARGET dpu)
+if("UPMEM" IN_LIST targets OR "simulator" IN_LIST targets)
+    set(PKG_CONFIG_EXECUTABLE dpu-pkg-config)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(DPU_CONFIG IMPORTED_TARGET dpu)
+endif()
 
 file(GLOB HOST_SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/*.cpp")
 find_package(Threads REQUIRED)
 
 foreach(build_version IN LISTS targets)
+    if("${build_version}" STREQUAL "upimulator_device")
+        continue()
+    endif()
+
     add_executable(host_app_${build_version} ${HOST_SOURCE})
     target_include_directories(host_app_${build_version} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/inc)
 

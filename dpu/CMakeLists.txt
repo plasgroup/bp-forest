@@ -10,7 +10,12 @@ endif(DEFINED USE_RBTREE)
 
 foreach(build_version IN LISTS targets)
     if(NOT "${build_version}" STREQUAL "host_only")
-        add_executable(dpu_program_${build_version} ${DPU_SOURCE})
+        if(NOT TARGET dpu_program_${build_version})
+            add_executable(dpu_program_${build_version} ${DPU_SOURCE})
+        else()
+            cmake_policy(SET CMP0079 NEW)
+            target_include_directories(dpu_program_${build_version} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src)
+        endif()
         target_include_directories(dpu_program_${build_version} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/inc)
 
         target_link_libraries(dpu_program_${build_version} common_${build_version})
