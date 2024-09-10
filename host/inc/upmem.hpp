@@ -1,22 +1,15 @@
 #ifndef __UPMEM_HPP__
 #define __UPMEM_HPP__
 
+#include "batch_transfer_buffer.hpp"
 #include "common.h"
-#include "host_data_structures.hpp"
+#include "dpu_set.hpp"
 #include "host_params.hpp"
 
 #include <array>
 #include <memory>
-#include <optional>
 #include <utility>
 
-extern std::unique_ptr<dpu_requests_t[]> dpu_requests;
-union DPUResultsUnion {
-    dpu_get_results_t get[MAX_NR_DPUS];
-    dpu_succ_results_t succ[MAX_NR_DPUS];
-};
-extern std::unique_ptr<DPUResultsUnion> dpu_results;
-extern dpu_init_param_t dpu_init_param[MAX_NR_DPUS];
 
 void upmem_init(void);
 void upmem_release(void);
@@ -24,12 +17,46 @@ dpu_id_t upmem_get_nr_dpus(void);
 //! @return [first, last)
 std::pair<dpu_id_t, dpu_id_t> upmem_get_dpu_range_in_rank(dpu_id_t idx_rank);
 
-void upmem_send_task(const uint64_t task, BatchCtx& batch_ctx,
-    float* send_time, float* exec_time);
-void upmem_receive_get_results(BatchCtx& batch_ctx, float* receive_time);
-void upmem_receive_succ_results(BatchCtx& batch_ctx, float* receive_time);
-void upmem_receive_num_kvpairs(HostTree* host_tree, float* receive_time);
 
-void upmem_migrate_kvpairs(MigrationPlanType& plan, HostTree& host_tree);
+struct UPMEM_AsyncDuration;
+
+inline DPUSet select_rank(dpu_id_t index);
+
+template <bool ToDPU, class BatchTransferBuffer>
+inline void xfer_with_dpu(const DPUSet& set, uint32_t offset, BatchTransferBuffer&& buf, UPMEM_AsyncDuration&);
+template <typename T>
+inline void broadcast_to_dpu(const DPUSet& set, uint32_t offset, const Single<T>& datum, UPMEM_AsyncDuration&);
+template <bool ToDPU, class ScatteredBatchTransferBuffer>
+inline void scatter_gather_with_dpu(const DPUSet& set, uint32_t offset, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration&);
+
+template <class BatchTransferBuffer>
+inline void send_to_dpu(const DPUSet& set, uint32_t offset, BatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
+{
+    xfer_with_dpu<true>(set, offset, std::forward<BatchTransferBuffer>(buf), async);
+}
+template <class BatchTransferBuffer>
+inline void recv_from_dpu(const DPUSet& set, uint32_t offset, BatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
+{
+    xfer_with_dpu<false>(set, offset, std::forward<BatchTransferBuffer>(buf), async);
+}
+
+template <class ScatteredBatchTransferBuffer>
+inline void gather_to_dpu(const DPUSet& set, uint32_t offset, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
+{
+    scatter_gather_with_dpu<true>(set, offset, std::forward<ScatteredBatchTransferBuffer>(buf), async);
+}
+template <class ScatteredBatchTransferBuffer>
+inline void scatter_from_dpu(const DPUSet& set, uint32_t offset, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
+{
+    scatter_gather_with_dpu<false>(set, offset, std::forward<ScatteredBatchTransferBuffer>(buf), async);
+}
+
+inline void execute(const DPUSet& set, UPMEM_AsyncDuration&);
+
+template <class Func>
+inline void then_call(const DPUSet& set, Func&, UPMEM_AsyncDuration&);
+
+
+#include "upmem.ipp"
 
 #endif /* __UPMEM_HPP__ */

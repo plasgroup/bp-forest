@@ -25,8 +25,8 @@ __host migration_ratio_param_t migration_ratio_param;
 __host migration_key_param_t migration_key_param;
 #endif /* !BULK_MIGRATION */
 __host migration_pairs_param_t migration_pairs_param;
-__mram_noinit key_int64_t migrated_keys[MAX_NUM_PAIRS_IN_DPU];
-__mram_noinit value_ptr_t migrated_values[MAX_NUM_PAIRS_IN_DPU];
+__mram_noinit key_uint64_t migrated_keys[MAX_NUM_PAIRS_IN_DPU];
+__mram_noinit value_uint64_t migrated_values[MAX_NUM_PAIRS_IN_DPU];
 #endif /* !DISABLE_MIGRATION */
 
 __host unsigned end_idx;
@@ -46,9 +46,9 @@ int main()
         if (tid == 0) {
             init_Tree();
             if (dpu_init_param.end_inclusive >= dpu_init_param.start) {
-                key_int64_t k = dpu_init_param.start;
+                key_uint64_t k = dpu_init_param.start;
                 while (true) {
-                    value_ptr_t v = k;
+                    value_uint64_t v = k;
                     TreeInsert(k, v);
                     if (dpu_init_param.end_inclusive - k < dpu_init_param.interval)
                         break;
@@ -154,7 +154,7 @@ int main()
         const unsigned end_index = end_idx * (tid + 1) / NR_TASKLETS;
 
         for (unsigned idx_req = start_index; idx_req < end_index; idx_req++) {
-            const key_int64_t key = request_buffer[idx_req].key;
+            const key_uint64_t key = request_buffer[idx_req].key;
             results.get[idx_req].key = key;
             results.get[idx_req].get_result = TreeGet(key);
         }

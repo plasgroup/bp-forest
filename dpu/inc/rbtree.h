@@ -19,12 +19,12 @@ typedef struct __attribute__((packed)) {
 
 typedef struct {
     NodeHeader header;
-    key_int64_t key;
-    value_ptr_t value;
+    key_uint64_t key;
+    value_uint64_t value;
 } Node;
 _Static_assert(sizeof(Node) == SIZEOF_NODE, "sizeof(Node) == SIZEOF_NODE");
 
 typedef struct {
     NodeHeader header;
-    key_int64_t key;
+    key_uint64_t key;
 } NodeHeaderAndKey;

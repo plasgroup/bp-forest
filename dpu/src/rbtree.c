@@ -67,7 +67,7 @@ NodePtr next_node(NodePtr node)
     }
 }
 
-void TreeInsert(key_int64_t key, __dma_aligned value_ptr_t value)
+void TreeInsert(key_uint64_t key, __dma_aligned value_uint64_t value)
 {
     if (root == NODE_NULLPTR) {
         __dma_aligned Node new_child_data;
@@ -106,7 +106,7 @@ void TreeInsert(key_int64_t key, __dma_aligned value_ptr_t value)
                 break;
             }
         } else {
-            mram_write(&value, &Deref(node).value, sizeof(value_ptr_t));
+            mram_write(&value, &Deref(node).value, sizeof(value_uint64_t));
             return;
         }
     }
@@ -319,7 +319,7 @@ void TreeInsert(key_int64_t key, __dma_aligned value_ptr_t value)
     }
 }
 
-value_ptr_t TreeGet(key_int64_t key)
+value_uint64_t TreeGet(key_uint64_t key)
 {
     if (root == NODE_NULLPTR) {
         return 0;

@@ -7,7 +7,7 @@
 
 struct PiecewiseConstantWorkloadMetadata {
     // same meaning as the constructor parameters of std::piecewise_constant_distribution
-    std::vector<key_int64_t> intervals;
+    std::vector<key_uint64_t> intervals;
     std::vector<double> densities;
 
     template <class Archive>
@@ -16,7 +16,7 @@ struct PiecewiseConstantWorkloadMetadata {
 
 struct PiecewiseConstantWorkload {
     PiecewiseConstantWorkloadMetadata metadata;
-    std::vector<key_int64_t> data;
+    std::vector<key_uint64_t> data;
 
     template <class Archive>
     void serialize(Archive& ar);

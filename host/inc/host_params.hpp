@@ -33,7 +33,7 @@ constexpr size_t DEFAULT_NR_BATCHES = 20;
 #ifndef NUM_INIT_REQS
 constexpr size_t NUM_INIT_REQS = 20000 * MAX_NR_DPUS;
 #endif
-constexpr key_int64_t INIT_KEY_INTERVAL = (KEY_MAX - KEY_MIN) / (NUM_INIT_REQS - 1);
+constexpr key_uint64_t INIT_KEY_INTERVAL = (KEY_MAX - KEY_MIN) / (NUM_INIT_REQS - 1);
 
 
 using dpu_id_t = uint32_t;
@@ -60,3 +60,10 @@ using MigrationPlanType = std::array<std::optional<std::array<double, MAX_NR_DPU
 #else
 using MigrationPlanType = std::array<migration_ratio_param_t, MAX_NR_DPUS>;
 #endif
+
+#ifndef INVERSED_REBALANCING_NOISE_MARGIN
+#define INVERSED_REBALANCING_NOISE_MARGIN 5
+#endif
+//! @brief With this value as x, rebalancing is performed 
+//!        when the number of queries exceeds (1 + 1/x) times the original upper limit.
+constexpr unsigned InversedRebalancingNoiseMargin = INVERSED_REBALANCING_NOISE_MARGIN;

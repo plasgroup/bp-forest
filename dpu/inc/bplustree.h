@@ -49,7 +49,7 @@ _Static_assert(HAS_SINGLE_BIT_UINT(sizeof(ChildInfo)), "HAS_SINGLE_BIT_UINT(size
 #define ALIGNOF_CHILDINFO_DMA (8 / sizeof(ChildInfo))
 
 
-#define MAX_NR_CHILDREN ((SIZEOF_NODE / (sizeof(key_int64_t) + sizeof(ChildInfo))) / 2 * 2)
+#define MAX_NR_CHILDREN ((SIZEOF_NODE / (sizeof(key_uint64_t) + sizeof(ChildInfo))) / 2 * 2)
 
 #define MIN_NR_KEYS ((MAX_NR_CHILDREN - 1) / 2)
 #define MIN_NR_PAIRS ((MAX_NR_PAIRS + 1) / 2)
@@ -57,12 +57,12 @@ _Static_assert(HAS_SINGLE_BIT_UINT(sizeof(ChildInfo)), "HAS_SINGLE_BIT_UINT(size
                                       / (MIN_NR_KEYS + 1))
 
 typedef struct {
-    __dma_aligned key_int64_t keys[MAX_NR_CHILDREN - 1];
+    __dma_aligned key_uint64_t keys[MAX_NR_CHILDREN - 1];
     __dma_aligned ChildInfo children[MAX_NR_CHILDREN];
 } InternalNodeBody;
 typedef struct {
-    __dma_aligned key_int64_t keys[MAX_NR_PAIRS];
-    __dma_aligned value_ptr_t values[MAX_NR_PAIRS];
+    __dma_aligned key_uint64_t keys[MAX_NR_PAIRS];
+    __dma_aligned value_uint64_t values[MAX_NR_PAIRS];
     NodePtr right;
     NodePtr left;
 } LeafNodeBody;
@@ -83,10 +83,10 @@ typedef struct {
     __dma_aligned NodeHeader header;
     union {
         struct {
-            __dma_aligned key_int64_t keys[MAX_NR_CHILDREN - 1];
+            __dma_aligned key_uint64_t keys[MAX_NR_CHILDREN - 1];
         } inl;
         struct {
-            __dma_aligned key_int64_t keys[MAX_NR_PAIRS];
+            __dma_aligned key_uint64_t keys[MAX_NR_PAIRS];
         } lf;
     } body;
 } NodeHeaderAndKeys;

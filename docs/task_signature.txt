@@ -1,0 +1,56 @@
+uint32_t task_no
+
+TASK_INIT
+    (uint32_t, (Key, Value)[]) -> ()
+TASK_GET
+    (uint16_t, uint16_t, Key[]) -> Value[]
+    cold/hot それぞれへのクエリ数を受け取る
+TASK_PRED
+    (uint16_t, uint16_t, Key[]) -> Value[]
+    cold/hot それぞれへのクエリ数を受け取る
+TASK_SCAN
+    (uint16_t, uint16_t, (Key, Key)[]) -> (uint32_t, uint32_t, uint32_t[], (uint32_t, uint32_t)[], (uint32_t, uint32_t)[], Value[])
+    cold/hot それぞれへのクエリ数を受け取る
+    cold/hot それぞれから返す値の数を最初に教える
+    cold range の切れ目 (hot range を取り出したところ) が値配列の何番目にあるかを教える
+    cold range へのクエリそれぞれへの始端・終端の位置を、直前の「切れ目」からのオフセットで教える
+    hot range へのクエリそれぞれへの始端・終端の位置を教える
+TASK_INSERT
+    (uint16_t, uint16_t, (Key, Value)[]) -> ()
+    cold/hot それぞれへのクエリ数を受け取る
+TASK_DELETE
+    (uint16_t, uint16_t, Key[]) -> (Key, Key)
+    cold/hot それぞれへのクエリ数を受け取る
+    最小のキーを教える
+        predで常に答えを得られるように
+
+TASK_SUMMARIZE
+    ; () -> (uint16_t, Key[], uint16_t[])
+    () -> (uint32_t, uint32_t, Key[], uint16_t[])
+    全要素数と、サマリーを構成する要素の数と、サマリーの中身
+TASK_EXTRACT
+    ; (uint16_t, (Key, Key)[]) -> (uint32_t[], (Key, Value)[])  ; アラインメントを考えると16bitを使う必要なし
+    (uint32_t, (Key, Key)[]) -> (uint32_t[], (Key, Value)[])
+    キー範囲は閉区間
+TASK_CONSTRUCT_HOT
+    (uint32_t, (Key, Value)[]) -> ()
+TASK_FLATTEN_HOT
+    () -> (uint32_t, (Key, Value)[])
+TASK_RESTORE
+    ; (uint16_t, uint32_t[], (Key, Value)[]) -> ()
+    (uint32_t, uint32_t[], (Key, Value)[]) -> ()
+
+
+一部のタスクでは、taskletsによる並列化が難しい
+    並列化すると、先頭以外のスレッドが返り値配列のどのオフセットから書き込めばいいかが分からない
+        対策1: 並列化しない
+        対策2: 適当な場所に書き込んでおき、あとで詰める
+        対策2: 適当な場所に書き込んでおき、どんな順番になったかをCPU側に教えることで、DPUから転送するときに詰める
+    関連するタスク:
+        TASK_SCAN
+        TASK_SUMMARIZE
+        TASK_EXTRACT
+        TASK_FLATTEN_HOT
+
+単一taskletでも困るTASK_SUMMARIZE
+    uint16_t[4] + Key[4] ごとにブロック化して対応

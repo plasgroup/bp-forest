@@ -25,7 +25,7 @@ __host uint32_t num_kvpairs;
 
 // binary search
 #ifndef USE_LINEAR_SEARCH
-static unsigned findUpperBound(key_int64_t __mram_ptr* keys, unsigned size, key_int64_t key)
+static unsigned findUpperBound(key_uint64_t __mram_ptr* keys, unsigned size, key_uint64_t key)
 {
     int l = -1, r = (int)size;
     while (l < r - 1) {
@@ -37,7 +37,7 @@ static unsigned findUpperBound(key_int64_t __mram_ptr* keys, unsigned size, key_
     }
     return (unsigned)r;
 }
-__attribute__((unused)) static unsigned findUpperBoundWRAM(key_int64_t* keys, unsigned size, key_int64_t key)
+__attribute__((unused)) static unsigned findUpperBoundWRAM(key_uint64_t* keys, unsigned size, key_uint64_t key)
 {
     int l = -1, r = (int)size;
     while (l < r - 1) {
@@ -53,7 +53,7 @@ __attribute__((unused)) static unsigned findUpperBoundWRAM(key_int64_t* keys, un
 
 #ifdef USE_LINEAR_SEARCH
 // linear search
-static unsigned findUpperBound(key_int64_t __mram_ptr* keys, unsigned size, key_int64_t key)
+static unsigned findUpperBound(key_uint64_t __mram_ptr* keys, unsigned size, key_uint64_t key)
 {
     unsigned ret = 0;
     for (; ret < size; ret++) {
@@ -81,7 +81,7 @@ void init_Tree(void)
  * @param value value related to key
  * @return Whether key is updated
  */
-void TreeInsert(__dma_aligned key_int64_t key, __dma_aligned value_ptr_t value)
+void TreeInsert(__dma_aligned key_uint64_t key, __dma_aligned value_uint64_t value)
 {
     uint8_t idx_child_cache[MAX_HEIGHT];
     unsigned depth = 0;
@@ -102,20 +102,20 @@ void TreeInsert(__dma_aligned key_int64_t key, __dma_aligned value_ptr_t value)
 
     if (Deref(node).header.numKeys != MAX_NR_PAIRS) {
         if (idx_to_insert == Deref(node).header.numKeys) {
-            mram_write(&key, &Deref(node).body.lf.keys[idx_to_insert], sizeof(key_int64_t));
-            mram_write(&value, &Deref(node).body.lf.values[idx_to_insert], sizeof(value_ptr_t));
+            mram_write(&key, &Deref(node).body.lf.keys[idx_to_insert], sizeof(key_uint64_t));
+            mram_write(&value, &Deref(node).body.lf.values[idx_to_insert], sizeof(value_uint64_t));
         } else {
             {
-                __dma_aligned key_int64_t moved_keys[MAX_NR_PAIRS];
-                mram_read(&Deref(node).body.lf.keys[idx_to_insert], &moved_keys[1], sizeof(key_int64_t) * (Deref(node).header.numKeys - idx_to_insert));
+                __dma_aligned key_uint64_t moved_keys[MAX_NR_PAIRS];
+                mram_read(&Deref(node).body.lf.keys[idx_to_insert], &moved_keys[1], sizeof(key_uint64_t) * (Deref(node).header.numKeys - idx_to_insert));
                 moved_keys[0] = key;
-                mram_write(&moved_keys[0], &Deref(node).body.lf.keys[idx_to_insert], sizeof(key_int64_t) * (Deref(node).header.numKeys - idx_to_insert + 1));
+                mram_write(&moved_keys[0], &Deref(node).body.lf.keys[idx_to_insert], sizeof(key_uint64_t) * (Deref(node).header.numKeys - idx_to_insert + 1));
             }
             {
-                __dma_aligned value_ptr_t moved_values[MAX_NR_PAIRS];
-                mram_read(&Deref(node).body.lf.values[idx_to_insert], &moved_values[1], sizeof(value_ptr_t) * (Deref(node).header.numKeys - idx_to_insert));
+                __dma_aligned value_uint64_t moved_values[MAX_NR_PAIRS];
+                mram_read(&Deref(node).body.lf.values[idx_to_insert], &moved_values[1], sizeof(value_uint64_t) * (Deref(node).header.numKeys - idx_to_insert));
                 moved_values[0] = value;
-                mram_write(&moved_values[0], &Deref(node).body.lf.values[idx_to_insert], sizeof(value_ptr_t) * (Deref(node).header.numKeys - idx_to_insert + 1));
+                mram_write(&moved_values[0], &Deref(node).body.lf.values[idx_to_insert], sizeof(value_uint64_t) * (Deref(node).header.numKeys - idx_to_insert + 1));
             }
         }
         Deref(node).header.numKeys += 1;
@@ -144,35 +144,35 @@ void TreeInsert(__dma_aligned key_int64_t key, __dma_aligned value_ptr_t value)
 
         if (idx_to_insert >= node_numKeys) {
             {
-                __dma_aligned key_int64_t moved_keys[/* new_node_numKeys */ (MAX_NR_PAIRS + 1) / 2];
-                mram_read(&Deref(node).body.lf.keys[node_numKeys], &moved_keys[0], sizeof(key_int64_t) * (new_node_numKeys - 1));
+                __dma_aligned key_uint64_t moved_keys[/* new_node_numKeys */ (MAX_NR_PAIRS + 1) / 2];
+                mram_read(&Deref(node).body.lf.keys[node_numKeys], &moved_keys[0], sizeof(key_uint64_t) * (new_node_numKeys - 1));
                 memmove(&moved_keys[idx_to_insert - node_numKeys + 1], &moved_keys[idx_to_insert - node_numKeys], MAX_NR_PAIRS - idx_to_insert);
                 moved_keys[idx_to_insert - node_numKeys] = key;
                 key = moved_keys[0];
-                mram_write(&moved_keys[0], &Deref(new_node).body.lf.keys[0], sizeof(key_int64_t) * new_node_numKeys);
+                mram_write(&moved_keys[0], &Deref(new_node).body.lf.keys[0], sizeof(key_uint64_t) * new_node_numKeys);
             }
             {
-                __dma_aligned value_ptr_t moved_values[/* new_node_numKeys */ (MAX_NR_PAIRS + 1) / 2];
-                mram_read(&Deref(node).body.lf.values[node_numKeys], &moved_values[0], sizeof(value_ptr_t) * (new_node_numKeys - 1));
+                __dma_aligned value_uint64_t moved_values[/* new_node_numKeys */ (MAX_NR_PAIRS + 1) / 2];
+                mram_read(&Deref(node).body.lf.values[node_numKeys], &moved_values[0], sizeof(value_uint64_t) * (new_node_numKeys - 1));
                 memmove(&moved_values[idx_to_insert - node_numKeys + 1], &moved_values[idx_to_insert - node_numKeys], MAX_NR_PAIRS - idx_to_insert);
                 moved_values[idx_to_insert - node_numKeys] = value;
-                mram_write(&moved_values[0], &Deref(new_node).body.lf.values[0], sizeof(value_ptr_t) * new_node_numKeys);
+                mram_write(&moved_values[0], &Deref(new_node).body.lf.values[0], sizeof(value_uint64_t) * new_node_numKeys);
             }
         } else {
             {
-                __dma_aligned key_int64_t moved_keys[MAX_NR_PAIRS + 1];
-                mram_read(&Deref(node).body.lf.keys[idx_to_insert], &moved_keys[1], sizeof(key_int64_t) * (MAX_NR_PAIRS - idx_to_insert));
+                __dma_aligned key_uint64_t moved_keys[MAX_NR_PAIRS + 1];
+                mram_read(&Deref(node).body.lf.keys[idx_to_insert], &moved_keys[1], sizeof(key_uint64_t) * (MAX_NR_PAIRS - idx_to_insert));
                 moved_keys[0] = key;
                 key = moved_keys[node_numKeys - 1 - idx_to_insert];
-                mram_write(&moved_keys[node_numKeys - 1 - idx_to_insert], &Deref(new_node).body.lf.keys[0], sizeof(key_int64_t) * new_node_numKeys);
-                mram_write(&moved_keys[0], &Deref(node).body.lf.keys[idx_to_insert], sizeof(key_int64_t) * (node_numKeys - idx_to_insert));
+                mram_write(&moved_keys[node_numKeys - 1 - idx_to_insert], &Deref(new_node).body.lf.keys[0], sizeof(key_uint64_t) * new_node_numKeys);
+                mram_write(&moved_keys[0], &Deref(node).body.lf.keys[idx_to_insert], sizeof(key_uint64_t) * (node_numKeys - idx_to_insert));
             }
             {
-                __dma_aligned value_ptr_t moved_values[MAX_NR_PAIRS + 1];
-                mram_read(&Deref(node).body.lf.values[idx_to_insert], &moved_values[1], sizeof(value_ptr_t) * (MAX_NR_PAIRS - idx_to_insert));
+                __dma_aligned value_uint64_t moved_values[MAX_NR_PAIRS + 1];
+                mram_read(&Deref(node).body.lf.values[idx_to_insert], &moved_values[1], sizeof(value_uint64_t) * (MAX_NR_PAIRS - idx_to_insert));
                 moved_values[0] = value;
-                mram_write(&moved_values[node_numKeys - 1 - idx_to_insert], &Deref(new_node).body.lf.values[0], sizeof(value_ptr_t) * new_node_numKeys);
-                mram_write(&moved_values[0], &Deref(node).body.lf.values[idx_to_insert], sizeof(value_ptr_t) * (node_numKeys - idx_to_insert));
+                mram_write(&moved_values[node_numKeys - 1 - idx_to_insert], &Deref(new_node).body.lf.values[0], sizeof(value_uint64_t) * new_node_numKeys);
+                mram_write(&moved_values[0], &Deref(node).body.lf.values[idx_to_insert], sizeof(value_uint64_t) * (node_numKeys - idx_to_insert));
             }
         }
 
@@ -202,7 +202,7 @@ void TreeInsert(__dma_aligned key_int64_t key, __dma_aligned value_ptr_t value)
 
             if (Deref(parent).header.numKeys != MAX_NR_CHILDREN - 1) {
                 if (idx_to_insert == Deref(parent).header.numKeys) {
-                    mram_write(&key, &Deref(parent).body.inl.keys[idx_to_insert], sizeof(key_int64_t));
+                    mram_write(&key, &Deref(parent).body.inl.keys[idx_to_insert], sizeof(key_uint64_t));
 
 #ifdef CACHE_CHILD_HEADER_IN_LINK
                     __dma_aligned ChildInfo buf[16 / sizeof(ChildInfo)];
@@ -237,10 +237,10 @@ void TreeInsert(__dma_aligned key_int64_t key, __dma_aligned value_ptr_t value)
 
                 } else {
                     {
-                        __dma_aligned key_int64_t moved_keys[MAX_NR_CHILDREN - 1];
-                        mram_read(&Deref(parent).body.inl.keys[idx_to_insert], &moved_keys[1], sizeof(key_int64_t) * (Deref(parent).header.numKeys - idx_to_insert));
+                        __dma_aligned key_uint64_t moved_keys[MAX_NR_CHILDREN - 1];
+                        mram_read(&Deref(parent).body.inl.keys[idx_to_insert], &moved_keys[1], sizeof(key_uint64_t) * (Deref(parent).header.numKeys - idx_to_insert));
                         moved_keys[0] = key;
-                        mram_write(&moved_keys[0], &Deref(parent).body.inl.keys[idx_to_insert], sizeof(key_int64_t) * (Deref(parent).header.numKeys - idx_to_insert + 1));
+                        mram_write(&moved_keys[0], &Deref(parent).body.inl.keys[idx_to_insert], sizeof(key_uint64_t) * (Deref(parent).header.numKeys - idx_to_insert + 1));
                     }
                     {
                         __dma_aligned ChildInfo moved_children[(MAX_NR_CHILDREN + ALIGNOF_CHILDINFO_DMA - 1) / ALIGNOF_CHILDINFO_DMA * ALIGNOF_CHILDINFO_DMA];
@@ -360,7 +360,7 @@ void TreeInsert(__dma_aligned key_int64_t key, __dma_aligned value_ptr_t value)
                         Deref(new_parent).body.inl.keys[idx_dest] = Deref(parent).body.inl.keys[idx_src];
                     }
                     if (idx_to_insert != parent_numKeys) {
-                        const key_int64_t to_grandparent = Deref(parent).body.inl.keys[parent_numKeys - 1];
+                        const key_uint64_t to_grandparent = Deref(parent).body.inl.keys[parent_numKeys - 1];
                         for (unsigned idx_dest = parent_numKeys - 1; idx_dest > idx_to_insert; idx_dest--) {
                             Deref(parent).body.inl.keys[idx_dest] = Deref(parent).body.inl.keys[idx_dest - 1];
                         }
@@ -381,7 +381,7 @@ void TreeInsert(__dma_aligned key_int64_t key, __dma_aligned value_ptr_t value)
 
 #ifdef EXPLICIT_DMA_IN_GET
 #if defined(DMA_WHOLE_NODE)
-value_ptr_t TreeGet(key_int64_t key)
+value_uint64_t TreeGet(key_uint64_t key)
 {
     __dma_aligned Node cache;
 
@@ -400,7 +400,7 @@ value_ptr_t TreeGet(key_int64_t key)
     return 0;
 }
 #elif defined(DMA_WHOLE_KEY_ARRAY)
-value_ptr_t TreeGet(key_int64_t key)
+value_uint64_t TreeGet(key_uint64_t key)
 {
     __dma_aligned NodeHeaderAndKeys cache;
 
@@ -420,7 +420,7 @@ value_ptr_t TreeGet(key_int64_t key)
 }
 #elif defined(DMA_VALID_KEYS)
 #ifdef CACHE_CHILD_HEADER_IN_LINK
-value_ptr_t TreeGet(key_int64_t key)
+value_uint64_t TreeGet(key_uint64_t key)
 {
     union __dma_aligned {  // same structure
         NodeHeader header;
@@ -431,15 +431,15 @@ value_ptr_t TreeGet(key_int64_t key)
     NodePtr node = root;
     mram_read(&Deref(node).header, &cache, sizeof(cache));
     while (!cache.header.isLeaf) {
-        __dma_aligned key_int64_t keys_cache[MAX_NR_CHILDREN - 1];
-        mram_read(&Deref(node).body.inl.keys[0], &keys_cache[0], sizeof(key_int64_t) * cache.header.numKeys);
+        __dma_aligned key_uint64_t keys_cache[MAX_NR_CHILDREN - 1];
+        mram_read(&Deref(node).body.inl.keys[0], &keys_cache[0], sizeof(key_uint64_t) * cache.header.numKeys);
 
         mram_read(&Deref(node).body.inl.children[findUpperBoundWRAM(keys_cache, cache.header.numKeys, key)], &cache, sizeof(cache));
         node = cache.child.ptr;
     }
 
-    __dma_aligned key_int64_t keys_cache[MAX_NR_PAIRS];
-    mram_read(&Deref(node).body.lf.keys[0], &keys_cache[0], sizeof(key_int64_t) * cache.header.numKeys);
+    __dma_aligned key_uint64_t keys_cache[MAX_NR_PAIRS];
+    mram_read(&Deref(node).body.lf.keys[0], &keys_cache[0], sizeof(key_uint64_t) * cache.header.numKeys);
     const unsigned idx_pair_plus_1 = findUpperBoundWRAM(keys_cache, cache.header.numKeys, key);
     if (idx_pair_plus_1 != 0 && keys_cache[idx_pair_plus_1 - 1] == key) {
         return Deref(node).body.lf.values[idx_pair_plus_1 - 1];
@@ -448,7 +448,7 @@ value_ptr_t TreeGet(key_int64_t key)
     return 0;
 }
 #else  /* CACHE_CHILD_HEADER_IN_LINK */
-value_ptr_t TreeGet(key_int64_t key)
+value_uint64_t TreeGet(key_uint64_t key)
 {
     union __dma_aligned {
         NodeHeader header;
@@ -458,15 +458,15 @@ value_ptr_t TreeGet(key_int64_t key)
     NodePtr node = root;
     mram_read(&Deref(node).header, &cache, sizeof(cache));
     while (!cache.header.isLeaf) {
-        __dma_aligned key_int64_t keys_cache[MAX_NR_CHILDREN - 1];
-        mram_read(&Deref(node).body.inl.keys[0], &keys_cache[0], sizeof(key_int64_t) * cache.header.numKeys);
+        __dma_aligned key_uint64_t keys_cache[MAX_NR_CHILDREN - 1];
+        mram_read(&Deref(node).body.inl.keys[0], &keys_cache[0], sizeof(key_uint64_t) * cache.header.numKeys);
 
         node = Deref(node).body.inl.children[findUpperBoundWRAM(keys_cache, cache.header.numKeys, key)].ptr;
         mram_read(&Deref(node).header, &cache, sizeof(cache));
     }
 
-    __dma_aligned key_int64_t keys_cache[MAX_NR_PAIRS];
-    mram_read(&Deref(node).body.lf.keys[0], &keys_cache[0], sizeof(key_int64_t) * cache.header.numKeys);
+    __dma_aligned key_uint64_t keys_cache[MAX_NR_PAIRS];
+    mram_read(&Deref(node).body.lf.keys[0], &keys_cache[0], sizeof(key_uint64_t) * cache.header.numKeys);
     const unsigned idx_pair_plus_1 = findUpperBoundWRAM(keys_cache, cache.header.numKeys, key);
     if (idx_pair_plus_1 != 0 && keys_cache[idx_pair_plus_1 - 1] == key) {
         return Deref(node).body.lf.values[idx_pair_plus_1 - 1];
@@ -483,7 +483,7 @@ value_ptr_t TreeGet(key_int64_t key)
  * @param key key
  * @return value related to the key
  */
-value_ptr_t TreeGet(key_int64_t key)
+value_uint64_t TreeGet(key_uint64_t key)
 {
     NodePtr node = root;
     while (!Deref(node).header.isLeaf) {
@@ -505,12 +505,12 @@ value_ptr_t TreeGet(key_int64_t key)
  * @param key key
  * @return value related to the key
  */
-// KVPair TreeSucc(key_int64_t key)
+// KVPair TreeSucc(key_uint64_t key)
 // {
 // }
 
 
-void TreeSerialize(key_int64_t __mram_ptr* keys_dest, value_ptr_t __mram_ptr* values_dest)
+void TreeSerialize(key_uint64_t __mram_ptr* keys_dest, value_uint64_t __mram_ptr* values_dest)
 {
     NodePtr leaf = root;
     while (!Deref(leaf).header.isLeaf) {
@@ -528,7 +528,7 @@ void TreeSerialize(key_int64_t __mram_ptr* keys_dest, value_ptr_t __mram_ptr* va
     init_Tree();
 }
 
-uint32_t TreeExtractFirstPairs(key_int64_t __mram_ptr* keys_dest, value_ptr_t __mram_ptr* values_dest, key_int64_t delimiter)
+uint32_t TreeExtractFirstPairs(key_uint64_t __mram_ptr* keys_dest, value_uint64_t __mram_ptr* values_dest, key_uint64_t delimiter)
 {
     NodePtr leaf = root;
     while (!Deref(leaf).header.isLeaf) {
@@ -769,7 +769,7 @@ uint32_t TreeExtractFirstPairs(key_int64_t __mram_ptr* keys_dest, value_ptr_t __
     return nr_serialized;
 }
 
-key_int64_t TreeNthKeyFromLeft(uint32_t nth)
+key_uint64_t TreeNthKeyFromLeft(uint32_t nth)
 {
     NodePtr leaf = root;
     while (!Deref(leaf).header.isLeaf) {
@@ -785,7 +785,7 @@ key_int64_t TreeNthKeyFromLeft(uint32_t nth)
     }
     return 0;
 }
-key_int64_t TreeNthKeyFromRight(uint32_t nth)
+key_uint64_t TreeNthKeyFromRight(uint32_t nth)
 {
     NodePtr leaf = root;
     while (!Deref(leaf).header.isLeaf) {
@@ -801,13 +801,13 @@ key_int64_t TreeNthKeyFromRight(uint32_t nth)
     }
 }
 
-void TreeInsertSortedPairsToLeft(const key_int64_t __mram_ptr* keys_src, const value_ptr_t __mram_ptr* values_src, uint32_t nr_pairs)
+void TreeInsertSortedPairsToLeft(const key_uint64_t __mram_ptr* keys_src, const value_uint64_t __mram_ptr* values_src, uint32_t nr_pairs)
 {
     for (uint32_t i = 0; i < nr_pairs; i++) {
         TreeInsert(keys_src[i], values_src[i]);
     }
 }
-void TreeInsertSortedPairsToRight(const key_int64_t __mram_ptr* keys_src, const value_ptr_t __mram_ptr* values_src, uint32_t nr_pairs)
+void TreeInsertSortedPairsToRight(const key_uint64_t __mram_ptr* keys_src, const value_uint64_t __mram_ptr* values_src, uint32_t nr_pairs)
 {
     for (uint32_t i = 0; i < nr_pairs; i++) {
         TreeInsert(keys_src[i], values_src[i]);

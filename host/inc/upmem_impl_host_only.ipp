@@ -1,23 +1,25 @@
 #include "batch_transfer_buffer.hpp"
 #include "dpu_set.hpp"
-#include "emulation.hpp"
 #include "host_params.hpp"
 #include "sg_block_info.hpp"
 #include "statistics.hpp"
+#include "upmem_emulator.hpp"
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <type_traits>
 #include <utility>
 
 
 static constexpr dpu_id_t NrDPUs = MAX_NR_DPUS;
 static constexpr dpu_id_t NrDPUsInRank = MAX_NR_DPUS_IN_RANK;
-Emulation emu[NrDPUs];
+static std::optional<UPMEMEmulator<NrDPUs>> emulator;
 
 
 inline UPMEM_AsyncDuration::~UPMEM_AsyncDuration()
@@ -28,15 +30,12 @@ static inline void upmem_init_impl()
 {
     all_dpu.reset();
     all_dpu.flip();
-
-    for (dpu_id_t i = 0; i < NrDPUs; i++) {
-        emu[i].init(i);
-    }
+    emulator.emplace();
 }
 static void upmem_release_impl()
 {
     all_dpu.reset();
-    Emulation::terminate();
+    emulator.reset();
 }
 
 
@@ -60,7 +59,7 @@ static DPUSet select_dpu(dpu_id_t index)
     result.set(index);
     return result;
 }
-static DPUSet select_rank(dpu_id_t index)
+DPUSet select_rank(dpu_id_t index)
 {
     assert(index < NR_RANKS);
     DPUSet result;
@@ -72,7 +71,7 @@ static DPUSet select_rank(dpu_id_t index)
 
 
 template <bool ToDPU, class BatchTransferBuffer>
-static void xfer_with_dpu(const DPUSet& set, const char* symbol, BatchTransferBuffer&& buf, UPMEM_AsyncDuration&)
+void xfer_with_dpu(const DPUSet& set, uint32_t offset, BatchTransferBuffer&& buf, UPMEM_AsyncDuration&)
 {
     uint64_t total_xfer_bytes = 0;
     uint64_t total_effective_bytes = 0;
@@ -85,7 +84,7 @@ static void xfer_with_dpu(const DPUSet& set, const char* symbol, BatchTransferBu
                 static_assert(std::is_trivially_copyable_v<std::remove_pointer_t<decltype(ptr)>>,
                     "non-trivial copying cannot be performed between CPU and DPU");
 
-                void* mram_addr = emu[i].get_addr_of_symbol(symbol);
+                void* mram_addr = emulator->get_comm_buffer(i) + offset;
                 if constexpr (ToDPU)
                     std::memcpy(mram_addr, ptr, size);
                 else
@@ -102,13 +101,13 @@ static void xfer_with_dpu(const DPUSet& set, const char* symbol, BatchTransferBu
 }
 
 template <typename T>
-static void broadcast_to_dpu(const DPUSet& set, const char* symbol, const Single<T>& datum, UPMEM_AsyncDuration& async)
+void broadcast_to_dpu(const DPUSet& set, uint32_t offset, const Single<T>& datum, UPMEM_AsyncDuration& async)
 {
-    xfer_with_dpu<true>(set, symbol, datum, async);
+    xfer_with_dpu<true>(set, offset, datum, async);
 }
 
 template <bool ToDPU, class ScatteredBatchTransferBuffer>
-static void scatter_gather_with_dpu(const DPUSet& set, const char* symbol, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration&)
+void scatter_gather_with_dpu(const DPUSet& set, uint32_t offset, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration&)
 {
     uint64_t total_xfer_bytes = 0;
     uint64_t total_effective_bytes = 0;
@@ -116,7 +115,7 @@ static void scatter_gather_with_dpu(const DPUSet& set, const char* symbol, Scatt
         size_t max_xfer_bytes = 0;
         for (dpu_id_t j = 0; i < NrDPUs && j < NrDPUsInRank; i++, j++) {
             if (set[i]) {
-                uintptr_t mram_addr = reinterpret_cast<uintptr_t>(emu[i].get_addr_of_symbol(symbol));
+                std::byte* mram_addr = emulator->get_comm_buffer(i) + offset;
                 const size_t xfer_bytes = buf.bytes_for_dpu(i);
                 size_t left_xfer_bytes = xfer_bytes;
 
@@ -124,9 +123,9 @@ static void scatter_gather_with_dpu(const DPUSet& set, const char* symbol, Scatt
                 for (block_id_t idx_block = 0; buf(&block, i, idx_block); idx_block++) {
                     assert(left_xfer_bytes >= block.length);
                     if constexpr (ToDPU)
-                        std::memcpy(reinterpret_cast<void*>(mram_addr), block.addr, block.length);
+                        std::memcpy(mram_addr, block.addr, block.length);
                     else
-                        std::memcpy(block.addr, reinterpret_cast<const void*>(mram_addr), block.length);
+                        std::memcpy(block.addr, mram_addr, block.length);
                     mram_addr += block.length;
                     left_xfer_bytes -= block.length;
                     total_effective_bytes += block.length;
@@ -141,16 +140,16 @@ static void scatter_gather_with_dpu(const DPUSet& set, const char* symbol, Scatt
 #endif /* MEASURE_XFER_BYTES */
 }
 
-static void execute(const DPUSet& set, UPMEM_AsyncDuration&)
+void execute(const DPUSet& set, UPMEM_AsyncDuration&)
 {
     for (dpu_id_t i = 0; i < NrDPUs; i++)
         if (set[i])
-            emu[i].execute();
-    Emulation::wait_all();
+            emulator->launch_dpu(i);
+    emulator->wait_all();
 }
 
 template <class Func>
-static void then_call(const DPUSet& set, Func& func, UPMEM_AsyncDuration& async)
+void then_call(const DPUSet& set, Func& func, UPMEM_AsyncDuration& async)
 {
     if (set == all_dpu) {
         for (dpu_id_t idx_rank = 0; idx_rank < NR_RANKS; idx_rank++) {
