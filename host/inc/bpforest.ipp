@@ -201,7 +201,7 @@ inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], va
         route_get_queries<true>(nr_queries, keys, result);
     }
 
-    if (!check_if_get_queries_balance(nr_queries)) {
+    if (param.balancing > 0 && !check_if_get_queries_balance(nr_queries)) {
         if (nr_hot_ranges > 0) {
             restore_hot_ranges();
 
@@ -397,14 +397,14 @@ inline bool BPForest::check_if_get_queries_balance(size_t nr_queries)
                                         * (1 + InversedRebalancingNoiseMargin) / InversedRebalancingNoiseMargin
                                         / nr_cold_ranges;
     for (dpu_id_t idx_range = 0; idx_range < nr_cold_ranges; idx_range++) {
-        if (queries.cold[idx_range].size() <= cold_range_threshold) {
+        if (queries.cold[idx_range].size() > cold_range_threshold) {
             return false;
         }
     }
 
     const size_t hot_range_threshold = static_cast<size_t>(static_cast<double>(nr_queries) * threshold_nr_queries_to_hot);
     for (dpu_id_t idx_range = 0; idx_range < nr_hot_ranges; idx_range++) {
-        if (queries.hot[idx_range].size() <= hot_range_threshold) {
+        if (queries.hot[idx_range].size() > hot_range_threshold) {
             return false;
         }
     }
@@ -450,7 +450,7 @@ struct BPForest::GetQuerySender {
     }
     size_t bytes_for_dpu(dpu_id_t dpu) const
     {
-        return sizeof(uint32_t) + sizeof(uint16_t) * 2 + sizeof(key_uint64_t) * (nr_cold_hot_queries[dpu][0] + nr_cold_hot_queries[dpu][1]);
+        return sizeof(uint32_t) + sizeof(uint16_t) * 2 + sizeof(key_uint64_t) * (size_t{nr_cold_hot_queries[dpu][0]} + nr_cold_hot_queries[dpu][1]);
     }
 };
 struct BPForest::GetResultReceiver {
@@ -489,6 +489,7 @@ inline void BPForest::execute_get_in_dpus()
 
     std::array<std::array<uint16_t, 2>, MAX_NR_DPUS> nr_cold_hot_queries;
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
+        assert(queries.cold[idx_dpu].size() <= std::numeric_limits<uint16_t>::max());
         nr_cold_hot_queries[idx_dpu][0] = static_cast<uint16_t>(queries.cold[idx_dpu].size());
 
         const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];

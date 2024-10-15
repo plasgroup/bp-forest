@@ -37,7 +37,7 @@ int main(int argc, char* argv[])
     const size_t key_num = a.get<size_t>("keynum");
     const uint64_t min = KEY_MIN;
     const uint64_t num_partitions = a.get<uint64_t>("elementnum");
-    const uint64_t range = KEY_MAX / num_partitions;  // key range per 1 division
+    const uint64_t range = (KEY_MAX - KEY_MIN) / num_partitions;  // key range per 1 division
 
     PiecewiseConstantWorkload generated;
     generated.metadata.intervals.reserve(num_partitions + 1u);
@@ -48,13 +48,13 @@ int main(int argc, char* argv[])
 
     std::unique_ptr<ycsbc::Generator<uint64_t>> generator;
     if (a.exist("scramble")) {
-        generator.reset(new ycsbc::ScrambledZipfianGenerator(min, num_partitions, zipfian_const));
+        generator.reset(new ycsbc::ScrambledZipfianGenerator(0, num_partitions - 1, zipfian_const));
         generated.metadata.densities.resize(num_partitions);
         for (uint64_t idx_part = 0; idx_part < num_partitions; idx_part++) {
             generated.metadata.densities.at(num_partitions - 1 - utils::FNVHash64(idx_part) % num_partitions) = std::pow(idx_part + 1, -zipfian_const);
         }
     } else {
-        generator.reset(new ycsbc::ZipfianGenerator(min, num_partitions, zipfian_const));
+        generator.reset(new ycsbc::ZipfianGenerator(0, num_partitions - 1, zipfian_const));
         for (uint64_t idx_part = 0; idx_part < num_partitions; idx_part++) {
             generated.metadata.densities.push_back(std::pow(num_partitions - idx_part, -zipfian_const));
         }
@@ -79,12 +79,12 @@ int main(int argc, char* argv[])
             printf("[zipfianconst = %.2f] %.2f%% completed\n", zipfian_const, ((double)i / (double)key_num) * 100);
             start_time = clock();
         }
-        uint64_t which_range = num_partitions - 1 - generator->Next();
+        uint64_t which_range = generator->Next();
         uint64_t in_range = rand_in_range(mt);
-        generated.data.push_back(which_range * range + in_range);
+        generated.data.push_back(min + which_range * range + in_range);
         distribution[which_range]++;
     }
-    for (unsigned i = 0; i < 10; i++) {
+    for (unsigned i = 0; i < num_partitions; i++) {
         if (a.exist("showinfo")) {
             std::cout << "num keys in " << i << "th range: " << distribution[i] << ", " << 100 * (double)distribution[i] / (double)key_num << "%" << std::endl;
         }

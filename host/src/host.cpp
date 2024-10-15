@@ -6,8 +6,8 @@
 
 #include "bpforest.hpp"
 #include "common.h"
-#include "host_params.hpp"
 #include "extendable_buffer.hpp"
+#include "host_params.hpp"
 #include "piecewise_constant_workload.hpp"
 #include "statistics.hpp"
 #include "upmem.hpp"
@@ -76,49 +76,44 @@ struct Option {
     void parse(int argc, char* argv[])
     {
         cmdline::parser a;
+        a.add<unsigned>("balancing-param", 0, "the tunable parameter for compute/memory load balancing in B+-Forest", false, 1);
         a.add<std::string>("zipfianconst", 'a', "zipfian constant", false, "0.99");
         a.add<std::string>("workload_dir", 'w', "directory containing workload files", false, "workload");
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
-        a.add<int>("migration_num", 'm', "migration_num per batch", false, 5);
         a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, succ", false, "get");
-        a.add<dpu_id_t>("print-load", 'q', "print number of queries sent for each dpu", false, 0);
-        a.add<dpu_id_t>("print-subtree-size", 'e', "print number of elements for each dpu", false, 0);
-        a.add<dpu_id_t>("print-migration-plan", 0, "print ratio of migrated elements from each dpu", false, 0);
+        a.add<dpu_id_t>("print-compute-load", 'c', "print number of queries sent for each dpu", false, 0);
+        a.add<dpu_id_t>("print-memory-load", 'm', "print number of KV pairs stored in each dpu", false, 0);
+        a.add("print-perf", 'p', "print performance metrics");
         a.parse_check(argc, argv);
 
+        balancing_param = a.get<unsigned>("balancing-param");
         alpha = a.get<std::string>("zipfianconst");
         workload_file = a.get<std::string>("workload_dir") + ("/zipf_const_" + alpha + ".bin");
         nr_batches = a.get<int>("num_batches");
-        nr_migrations_per_batch = a.get<int>("migration_num");
 
         if (a.get<std::string>("ops") == "get")
-            op_type = OP_TYPE_GET;
+            op_type = TASK_GET;
         else if (a.get<std::string>("ops") == "insert")
-            op_type = OP_TYPE_INSERT;
+            op_type = TASK_INSERT;
         else if (a.get<std::string>("ops") == "pred")
-            op_type = OP_TYPE_PRED;
+            op_type = TASK_PRED;
         else {
             fprintf(stderr, "invalid operation type: %s\n", a.get<std::string>("ops").c_str());
             exit(1);
         }
 
-        print_load = a.get<dpu_id_t>("print-load");
-        print_subtree_size = a.get<dpu_id_t>("print-subtree-size");
-        print_migration_plan = a.get<dpu_id_t>("print-migration-plan");
+        print_compute_load = a.get<dpu_id_t>("print-compute-load");
+        print_memory_load = a.get<dpu_id_t>("print-memory-load");
+        print_perf = a.exist("print-perf");
     }
 
+    unsigned balancing_param;
     std::string alpha;
     std::string workload_file;
     int nr_batches;
-    int nr_migrations_per_batch;
-    enum OpType {
-        OP_TYPE_GET,
-        OP_TYPE_INSERT,
-        OP_TYPE_PRED
-    } op_type;
-    dpu_id_t print_load;
-    dpu_id_t print_subtree_size;
-    dpu_id_t print_migration_plan;
+    TaskID op_type;
+    dpu_id_t print_compute_load, print_memory_load;
+    bool print_perf;
 } opt;
 
 #ifdef DEBUG_ON
@@ -151,7 +146,6 @@ void check_get_results(size_t nr_queries, key_uint64_t keys[], value_uint64_t va
 {
     for (unsigned index = 0; index < nr_queries; index++) {
         const auto it = verify_db.find(keys[index]);
-if (it != verify_db.end() && values[index] != it->second) printf("error: keys[%u]: %lu -> %lu\n", index, keys[index], values[index]);
         if (it == verify_db.end())
             MyAssert(values[index] == 0);
         else
@@ -160,7 +154,7 @@ if (it != verify_db.end() && values[index] != it->second) printf("error: keys[%u
 }
 #endif /* DEBUG_ON */
 
-[[nodiscard]] BPForest initialize_bpforest([[maybe_unused]] PiecewiseConstantWorkloadMetadata& workload_dist)
+[[nodiscard]] BPForest initialize_bpforest([[maybe_unused]] PiecewiseConstantWorkloadMetadata& workload_dist, const BPForest::Param& param = {})
 {
     // the initial keys are: KEY_MIN + INIT_KEY_INTERVAL * {0, 1, 2, ..., NUM_INIT_REQS - 1}
 
@@ -174,7 +168,7 @@ if (it != verify_db.end() && values[index] != it->second) printf("error: keys[%u
 #endif /* DEBUG_ON */
     }
 
-    return BPForest{init_pairs.size(), &init_pairs[0]};
+    return BPForest{init_pairs.size(), &init_pairs[0], param};
 }
 
 #ifdef HOST_MULTI_THREAD
@@ -370,7 +364,7 @@ PreprocessWorker ppwk[HOST_MULTI_THREAD];
 #ifdef TOUCH_QUERIES_IN_ADVANCE
 key_uint64_t accumulated_key_numbers = 0;
 #endif /* TOUCH_QUERIES_IN_ADVANCE */
-size_t do_one_batch(const uint64_t task, int batch_num, WorkloadBuffer& workload_buffer, BPForest& forest)
+size_t do_one_batch(const uint64_t task, [[maybe_unused]] int batch_num, WorkloadBuffer& workload_buffer, BPForest& forest)
 {
 #ifdef PRINT_DEBUG
     printf("======= batch %d =======\n", batch_num);
@@ -445,7 +439,7 @@ int main(int argc, char* argv[])
     }
 
     /* initialization */
-    BPForest forest = initialize_bpforest(workload.metadata);
+    BPForest forest = initialize_bpforest(workload.metadata, {opt.balancing_param});
 #ifdef PRINT_DEBUG
     printf("initialization finished\n");
 #endif
@@ -454,51 +448,44 @@ int main(int argc, char* argv[])
 
     /* main routine */
     uint64_t total_num_keys = 0;
-    printf("alpha, NR_DPUS, NR_TASKLETS, batch_num, num_keys, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time, execution_time, receive_result_time, batch_time, throughput\n");
+    if (opt.print_perf) {
+        printf("alpha, NR_DPUS, NR_TASKLETS, batch_num, num_keys, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time, execution_time, receive_result_time, batch_time, throughput\n");
+    }
     for (int idx_batch = 0; idx_batch < opt.nr_batches; idx_batch++) {
-        size_t num_keys;
-        switch (opt.op_type) {
-        case Option::OP_TYPE_GET:
-            num_keys = do_one_batch(TASK_GET, idx_batch, workload_buffer, forest);
-            break;
-        case Option::OP_TYPE_INSERT:
-            num_keys = do_one_batch(TASK_INSERT, idx_batch, workload_buffer, forest);
-            break;
-        case Option::OP_TYPE_PRED:
-            num_keys = do_one_batch(TASK_PRED, idx_batch, workload_buffer, forest);
-            break;
-        default:
-            abort();
+        size_t num_keys = do_one_batch(opt.op_type, idx_batch, workload_buffer, forest);
+
+#ifdef HOST_ONLY
+        (*emulator).print_nr_queries_in_last_batch(std::cout, opt.print_compute_load);
+        (*emulator).print_nr_pairs(std::cout, opt.print_memory_load);
+#endif
+
+        if (opt.print_perf) {
+            total_num_keys += num_keys;
+            batch_time = preprocess_time1 + preprocess_time2 + migration_plan_time + migration_time + send_time + execution_time + receive_result_time;
+            total_preprocess_time1 += preprocess_time1;
+            total_preprocess_time2 += preprocess_time2;
+            total_migration_plan_time += migration_plan_time;
+            total_migration_time += migration_time;
+            total_send_time += send_time;
+            total_execution_time += execution_time;
+            total_receive_result_time += receive_result_time;
+            total_batch_time += batch_time;
+            double throughput = static_cast<double>(num_keys) / batch_time;
+            printf("%s, %d, %d, %d, %ld, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
+                opt.alpha.c_str(), upmem_get_nr_dpus(), NR_TASKLETS, idx_batch,
+                num_keys, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time,
+                execution_time, receive_result_time, batch_time, throughput);
         }
-        total_num_keys += num_keys;
-        batch_time = preprocess_time1 + preprocess_time2 + migration_plan_time + migration_time + send_time + execution_time + receive_result_time;
-        total_preprocess_time1 += preprocess_time1;
-        total_preprocess_time2 += preprocess_time2;
-        total_migration_plan_time += migration_plan_time;
-        total_migration_time += migration_time;
-        total_send_time += send_time;
-        total_execution_time += execution_time;
-        total_receive_result_time += receive_result_time;
-        total_batch_time += batch_time;
-        double throughput = static_cast<double>(num_keys) / batch_time;
-        printf("%s, %d, %d, %d, %ld, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
-            opt.alpha.c_str(), upmem_get_nr_dpus(), NR_TASKLETS, idx_batch,
-            num_keys, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time,
-            execution_time, receive_result_time, batch_time, throughput);
     }
 
 
-#ifdef PRINT_DEBUG
-    printf("alpha, num_dpus_redundant, num_dpus_multiple, num_tasklets, num_CPU_Trees, num_DPU_Trees, num_queries, num_reqs_for_cpu, num_reqs_for_dpu, num_reqs_{cpu/(cpu+dpu)}, send_time, execution_time_cpu, execution_time_cpu_and_dpu, exec_time_{cpu/(cpu&dpu)}[%%], send_and_execution_time, total_time, throughput\n");
-#endif
-    //printf("%ld,%ld,%ld\n", total_num_keys_cpu, total_num_keys_dpu, total_num_keys_cpu + total_num_keys_dpu);
-    //printf("%s, %d, %d, %d, %d, %ld, %ld, %ld, %ld, %0.5f, %0.5f, %0.5f, %0.3f, %0.5f, %0.0f\n", alpha.c_str(), NR_DPUS, NR_TASKLETS, NUM_BPTREE_IN_CPU, NUM_BPTREE_IN_DPU * NR_DPUS, (long int)2 * total_num_keys, 2 * total_num_keys_cpu, 2 * total_num_keys_dpu, 100 * total_num_keys_cpu / total_num_keys, send_time, cpu_time,
-    //    execution_time, 100 * cpu_time / execution_time, send_and_execution_time, total_time, throughput);
-    double throughput = static_cast<double>(total_num_keys) / total_batch_time;
-    printf("%s, %d, %d, total, %d,, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f\n",
-        opt.alpha.c_str(), upmem_get_nr_dpus(), NR_TASKLETS,
-        opt.nr_batches, total_preprocess_time1, total_preprocess_time2, total_migration_plan_time, total_migration_time, total_send_time,
-        total_execution_time, total_receive_result_time, total_batch_time, throughput);
+    if (opt.print_perf) {
+        double throughput = static_cast<double>(total_num_keys) / total_batch_time;
+        printf("%s, %d, %d, total, %d,, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f\n",
+            opt.alpha.c_str(), upmem_get_nr_dpus(), NR_TASKLETS,
+            opt.nr_batches, total_preprocess_time1, total_preprocess_time2, total_migration_plan_time, total_migration_time, total_send_time,
+            total_execution_time, total_receive_result_time, total_batch_time, throughput);
+    }
 
 #ifdef MEASURE_XFER_BYTES
     xfer_statistics.print();

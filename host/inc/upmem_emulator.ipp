@@ -5,6 +5,7 @@
 #include "host_params.hpp"
 
 #include <mutex>
+#include <ostream>
 #include <thread>
 
 
@@ -86,4 +87,31 @@ inline void UPMEMEmulator<NrDPUs>::wait_all()
 #ifdef EMU_MULTI_THREAD
     worker_manager.wait_all();
 #endif /* EMU_MULTI_THREAD */
+}
+
+template <dpu_id_t NrDPUs>
+inline void UPMEMEmulator<NrDPUs>::print_nr_queries_in_last_batch(std::ostream& ostr, dpu_id_t nr_dpus_to_print) const
+{
+    if (nr_dpus_to_print > 0) {
+        for (dpu_id_t idx_dpu = 0; idx_dpu < NrDPUs && idx_dpu < nr_dpus_to_print; idx_dpu++) {
+            if (idx_dpu != 0) {
+                ostr << ", ";
+            }
+            ostr << (dpus[idx_dpu].get_nr_queries_to_cold_range_in_last_batch() + dpus[idx_dpu].get_nr_queries_to_hot_range_in_last_batch());
+        }
+        ostr << std::endl;
+    }
+}
+template <dpu_id_t NrDPUs>
+inline void UPMEMEmulator<NrDPUs>::print_nr_pairs(std::ostream& ostr, dpu_id_t nr_dpus_to_print) const
+{
+    if (nr_dpus_to_print > 0) {
+        for (dpu_id_t idx_dpu = 0; idx_dpu < NrDPUs && idx_dpu < nr_dpus_to_print; idx_dpu++) {
+            if (idx_dpu != 0) {
+                ostr << ", ";
+            }
+            ostr << (dpus[idx_dpu].get_nr_pairs_in_cold_range() + dpus[idx_dpu].get_nr_pairs_in_hot_range());
+        }
+        ostr << std::endl;
+    }
 }

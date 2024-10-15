@@ -1,12 +1,14 @@
 #pragma once
 
 #include "common.h"
+#include "host_params.hpp"
 #include "workload_types.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <utility>
 #include <vector>
@@ -43,6 +45,13 @@ private:
     void task_construct_hot(unsigned nr_pairs, const KVPair pairs[]);
     uint32_t /* nr_pairs */ task_flatten_hot(KVPair pairs[]);
     void task_restore(unsigned nr_ranges, const uint32_t nr_pairs[], const KVPair pairs[]);
+
+public:
+    unsigned get_nr_queries_to_cold_range_in_last_batch() const;
+    unsigned get_nr_queries_to_hot_range_in_last_batch() const;
+
+    unsigned get_nr_pairs_in_cold_range() const;
+    unsigned get_nr_pairs_in_hot_range() const;
 };
 
 

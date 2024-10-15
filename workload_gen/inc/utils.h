@@ -48,7 +48,7 @@ inline double RandomDouble(double min = 0.0, double max = 1.0)
 ///
 inline char RandomPrintChar()
 {
-    return rand() % 94 + 33;
+    return static_cast<char>(rand() % 94 + 33);
 }
 
 class Exception : public std::exception

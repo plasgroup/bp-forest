@@ -382,3 +382,23 @@ inline void DPUEmulator::task_restore(const unsigned nr_ranges, const uint32_t n
 
     cold_incisions.clear();
 }
+
+inline unsigned DPUEmulator::get_nr_queries_to_cold_range_in_last_batch() const
+{
+    const unsigned nr_cold_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram_2nd[4]));
+    return nr_cold_queries;
+}
+inline unsigned DPUEmulator::get_nr_queries_to_hot_range_in_last_batch() const
+{
+    const unsigned nr_hot_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram_2nd[6]));
+    return nr_hot_queries;
+}
+
+inline unsigned DPUEmulator::get_nr_pairs_in_cold_range() const
+{
+    return static_cast<unsigned>(cold_tree.size());
+}
+inline unsigned DPUEmulator::get_nr_pairs_in_hot_range() const
+{
+    return static_cast<unsigned>(hot_tree.size());
+}
