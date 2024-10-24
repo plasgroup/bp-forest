@@ -97,6 +97,8 @@ struct Option {
             op_type = TASK_INSERT;
         else if (a.get<std::string>("ops") == "pred")
             op_type = TASK_PRED;
+        else if (a.get<std::string>("ops") == "rmq")
+            op_type = TASK_RANGE_MIN;
         else {
             fprintf(stderr, "invalid operation type: %s\n", a.get<std::string>("ops").c_str());
             exit(1);
@@ -406,6 +408,18 @@ size_t do_one_batch(const uint64_t task, [[maybe_unused]] int batch_num, Workloa
 #endif /* DEBUG_ON */
     }
 
+    if (task == TASK_RANGE_MIN) {
+        static ExtendableBuffer<value_uint64_t> result;
+        static ExtendableBuffer<KeyRange> ranges;
+        ranges.reserve(num_keys_batch);
+        for (size_t idx_query = 0; idx_query < num_keys_batch; idx_query++) {
+            ranges[idx_query].begin = batch_keys[idx_query];
+            ranges[idx_query].end = ranges[idx_query].begin + INIT_KEY_INTERVAL * 100;
+        }
+        result.reserve(num_keys_batch);
+        forest.batch_range_minimum(num_keys_batch, &ranges[0], &result[0]);
+    }
+
     return num_keys_batch;
 }
 
@@ -455,7 +469,11 @@ int main(int argc, char* argv[])
         size_t num_keys = do_one_batch(opt.op_type, idx_batch, workload_buffer, forest);
 
 #ifdef HOST_ONLY
-        (*emulator).print_nr_queries_in_last_batch(std::cout, opt.print_compute_load);
+        if (opt.op_type == TASK_RANGE_MIN) {
+            (*emulator).print_nr_RMQ_delims_in_last_batch(std::cout, opt.print_compute_load);
+        } else {
+            (*emulator).print_nr_queries_in_last_batch(std::cout, opt.print_compute_load);
+        }
         (*emulator).print_nr_pairs(std::cout, opt.print_memory_load);
 #endif
 

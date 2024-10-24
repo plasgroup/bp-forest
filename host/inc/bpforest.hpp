@@ -42,6 +42,7 @@ struct BPForest {
     ~BPForest() {}
 
     void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
+    void batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t result[]);
     void batch_scan(size_t nr_queries, const KeyRange ranges[], BatchScanResult& result);
 
 private:
@@ -61,11 +62,15 @@ private:
 
     struct {
         std::array<std::vector<uint64_t>, MAX_NR_DPUS> cold, hot;
-    } queries;
+    } pt_qrys;
+    ExtendableBuffer<uint64_t> rg_qry_data;
+    ExtendableBuffer<std::array<size_t, 2>> rg_qry_to_minirg;
+    std::vector<size_t> rg_lump_end_indices;
     struct {
         std::array<std::vector<size_t>, MAX_NR_DPUS> cold, hot;
     } orig_idxs;
 
+public:  // TODO: privatize
     struct Summary {
         uint32_t nr_pairs;
         uint32_t nr_entries;
@@ -74,6 +79,8 @@ private:
         key_uint64_t head_key(uint32_t i) const { return blocks[i / 4].head_keys[i % 4]; }
         uint16_t nr_keys(uint32_t i) const { return blocks[i / 4].nr_keys[i % 4]; }
     };
+
+private:
     std::array<Summary, MAX_NR_DPUS> summaries;
 
     // used in rebalancing
@@ -88,6 +95,44 @@ private:
     void execute_get_in_dpus();
     struct GetQuerySender;
     struct GetResultReceiver;
+
+    size_t /* nr_delim_keys */ preprocess_rmq(const size_t nr_queries, const KeyRange ranges[]);
+    template <bool HasHotRanges>
+    void route_rmq(
+        size_t nr_delim_keys,
+        std::array<size_t, MAX_NR_DPUS + 1>& cold_range_to_delim_idx,
+        std::array<std::array<size_t, 2>, MAX_NR_DPUS>& hot_range_to_delim_idx,
+        std::array<bool, MAX_NR_DPUS + 1>& if_cold_begins_middle,
+        std::array<bool, MAX_NR_DPUS + 1>& if_hot_begins_middle,
+        std::array<bool, MAX_NR_DPUS + 1>& if_hot_ends_middle,
+        std::array<size_t, MAX_NR_DPUS + 1>& cold_range_to_lump_idx,
+        std::array<std::array<size_t, 2>, MAX_NR_DPUS + 1>& hot_range_to_lump_idx) const;
+    bool check_if_rmq_balance(size_t nr_delims,
+        const std::array<size_t, MAX_NR_DPUS + 1>& cold_range_to_delim_idx,
+        const std::array<std::array<size_t, 2>, MAX_NR_DPUS>& hot_range_to_delim_idx,
+        const std::array<bool, MAX_NR_DPUS + 1>& if_cold_begins_middle,
+        const std::array<bool, MAX_NR_DPUS + 1>& if_hot_begins_middle,
+        const std::array<bool, MAX_NR_DPUS + 1>& if_hot_ends_middle) const;
+    size_t nr_rmq_to_cold(dpu_id_t idx_cold,
+        const std::array<size_t, MAX_NR_DPUS + 1>& cold_range_to_delim_idx,
+        const std::array<std::array<size_t, 2>, MAX_NR_DPUS>& hot_range_to_delim_idx,
+        const std::array<bool, MAX_NR_DPUS + 1>& if_cold_begins_middle,
+        const std::array<bool, MAX_NR_DPUS + 1>& if_hot_begins_middle,
+        const std::array<bool, MAX_NR_DPUS + 1>& if_hot_ends_middle) const;
+    size_t nr_rmq_to_hot(dpu_id_t idx_hot,
+        const std::array<std::array<size_t, 2>, MAX_NR_DPUS>& hot_range_to_delim_idx,
+        const std::array<bool, MAX_NR_DPUS + 1>& if_hot_begins_middle,
+        const std::array<bool, MAX_NR_DPUS + 1>& if_hot_ends_middle) const;
+    void execute_rmq_in_dpus(
+        const std::array<size_t, MAX_NR_DPUS + 1>& cold_range_to_delim_idx,
+        const std::array<std::array<size_t, 2>, MAX_NR_DPUS>& hot_range_to_delim_idx,
+        const std::array<bool, MAX_NR_DPUS + 1>& if_cold_begins_middle,
+        const std::array<bool, MAX_NR_DPUS + 1>& if_hot_begins_middle,
+        const std::array<bool, MAX_NR_DPUS + 1>& if_hot_ends_middle,
+        const std::array<size_t, MAX_NR_DPUS + 1>& cold_range_to_lump_idx,
+        const std::array<std::array<size_t, 2>, MAX_NR_DPUS + 1>& hot_range_to_lump_idx);
+    struct RMQSender;
+    struct RMQResultReceiver;
 
     // //! @return whether any hot range is to be restored
     // bool propagete_rebalancing(

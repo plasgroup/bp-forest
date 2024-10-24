@@ -97,7 +97,20 @@ inline void UPMEMEmulator<NrDPUs>::print_nr_queries_in_last_batch(std::ostream& 
             if (idx_dpu != 0) {
                 ostr << ", ";
             }
-            ostr << (dpus[idx_dpu].get_nr_queries_to_cold_range_in_last_batch() + dpus[idx_dpu].get_nr_queries_to_hot_range_in_last_batch());
+            ostr << (dpus[idx_dpu].get_nr_GET_queries_to_cold_range_in_last_batch() + dpus[idx_dpu].get_nr_GET_queries_to_hot_range_in_last_batch());
+        }
+        ostr << std::endl;
+    }
+}
+template <dpu_id_t NrDPUs>
+inline void UPMEMEmulator<NrDPUs>::print_nr_RMQ_delims_in_last_batch(std::ostream& ostr, dpu_id_t nr_dpus_to_print) const
+{
+    if (nr_dpus_to_print > 0) {
+        for (dpu_id_t idx_dpu = 0; idx_dpu < NrDPUs && idx_dpu < nr_dpus_to_print; idx_dpu++) {
+            if (idx_dpu != 0) {
+                ostr << ", ";
+            }
+            ostr << (dpus[idx_dpu].get_nr_RMQ_delims_to_cold_range_in_last_batch() + dpus[idx_dpu].get_nr_RMQ_delims_to_hot_range_in_last_batch());
         }
         ostr << std::endl;
     }

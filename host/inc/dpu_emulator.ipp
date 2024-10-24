@@ -57,6 +57,20 @@ inline void DPUEmulator::execute()
         *nr_cold_values = task_scan_cold(nr_cold_queries, ranges, incision_pos, result_ranges, values);
         *nr_hot_values = task_scan_hot(nr_hot_queries, ranges + nr_cold_queries, result_ranges + nr_cold_queries, values + *nr_cold_values);
     } break;
+    case TASK_RANGE_MIN: {
+        const unsigned nr_cold_lumps = *std::launder(reinterpret_cast<uint16_t*>(&mram[4])),
+                       nr_hot_lumps = *std::launder(reinterpret_cast<uint16_t*>(&mram[6]));
+        const uint16_t* end_indices = std::launder(reinterpret_cast<uint16_t*>(&mram[8]));
+        const key_uint64_t* delim_keys = std::launder(reinterpret_cast<key_uint64_t*>(&mram[(8 + sizeof(uint16_t) * (nr_cold_lumps + nr_hot_lumps) + 7) / 8 * 8]));
+
+        const uint16_t nr_cold_delims = (nr_cold_lumps > 0 ? end_indices[nr_cold_lumps - 1] : 0),
+                       nr_hot_delims = (nr_hot_lumps > 0 ? end_indices[nr_cold_lumps + nr_hot_lumps - 1] : 0);
+        const unsigned nr_cold_results = nr_cold_delims - nr_cold_lumps, nr_hot_results = nr_hot_delims - nr_hot_lumps;
+
+        value_uint64_t* const result = new (&mram_2nd[0]) value_uint64_t[nr_cold_results + nr_hot_results];
+        task_range_min(cold_tree, nr_cold_lumps, end_indices, delim_keys, result);
+        task_range_min(cold_tree, nr_hot_lumps, end_indices + nr_cold_lumps, delim_keys + nr_cold_delims, result + nr_cold_results);
+    } break;
     case TASK_INSERT: {
         const unsigned nr_cold_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram[4])),
                        nr_hot_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram[6]));
@@ -183,6 +197,23 @@ inline void DPUEmulator::task_pred(const Tree& tree, const unsigned nr_queries, 
             result[i] = iter->second;
         } else {
             result[i] = 0;
+        }
+    }
+}
+inline void DPUEmulator::task_range_min(const Tree& tree, unsigned nr_lumps, const uint16_t end_indices[], const key_uint64_t delim_keys[], value_uint64_t result[])
+{
+    unsigned idx_result = 0;
+    uint16_t idx_delim_key = 0;
+    for (unsigned idx_lump = 0; idx_lump < nr_lumps; idx_lump++) {
+        auto iter = tree.lower_bound(delim_keys[idx_delim_key]);
+        for (idx_delim_key++; idx_delim_key < end_indices[idx_lump]; idx_delim_key++) {
+            value_uint64_t min = std::numeric_limits<value_uint64_t>::max();
+            while (iter != tree.end() && iter->first <= delim_keys[idx_delim_key]) {
+                min = std::min(min, iter->second);
+                iter++;
+            }
+            result[idx_result] = min;
+            idx_result++;
         }
     }
 }
@@ -383,15 +414,33 @@ inline void DPUEmulator::task_restore(const unsigned nr_ranges, const uint32_t n
     cold_incisions.clear();
 }
 
-inline unsigned DPUEmulator::get_nr_queries_to_cold_range_in_last_batch() const
+inline unsigned DPUEmulator::get_nr_GET_queries_to_cold_range_in_last_batch() const
 {
     const unsigned nr_cold_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram_2nd[4]));
     return nr_cold_queries;
 }
-inline unsigned DPUEmulator::get_nr_queries_to_hot_range_in_last_batch() const
+inline unsigned DPUEmulator::get_nr_GET_queries_to_hot_range_in_last_batch() const
 {
     const unsigned nr_hot_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram_2nd[6]));
     return nr_hot_queries;
+}
+
+inline unsigned DPUEmulator::get_nr_RMQ_delims_to_cold_range_in_last_batch() const
+{
+    const unsigned nr_cold_lumps = *std::launder(reinterpret_cast<uint16_t*>(&mram_2nd[4]));
+    const uint16_t* end_indices = std::launder(reinterpret_cast<uint16_t*>(&mram_2nd[8]));
+
+    const uint16_t nr_cold_delims = (nr_cold_lumps > 0 ? end_indices[nr_cold_lumps - 1] : 0);
+    return nr_cold_delims;
+}
+inline unsigned DPUEmulator::get_nr_RMQ_delims_to_hot_range_in_last_batch() const
+{
+    const unsigned nr_cold_lumps = *std::launder(reinterpret_cast<uint16_t*>(&mram_2nd[4])),
+                   nr_hot_lumps = *std::launder(reinterpret_cast<uint16_t*>(&mram_2nd[6]));
+    const uint16_t* end_indices = std::launder(reinterpret_cast<uint16_t*>(&mram_2nd[8]));
+
+    const uint16_t nr_hot_delims = (nr_hot_lumps > 0 ? end_indices[nr_cold_lumps + nr_hot_lumps - 1] : 0);
+    return nr_hot_delims;
 }
 
 inline unsigned DPUEmulator::get_nr_pairs_in_cold_range() const

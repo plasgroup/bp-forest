@@ -36,6 +36,7 @@ private:
         uint32_t incision_pos[], IndexRange result_ranges[], value_uint64_t values[]);
     uint32_t /* nr_values */ task_scan_hot(unsigned nr_queries, const KeyRange ranges[],
         IndexRange result_ranges[], value_uint64_t values[]);
+    void task_range_min(const Tree& tree, unsigned nr_lumps, const uint16_t end_indices[], const key_uint64_t delim_keys[], value_uint64_t result[]);
     void task_insert(Tree& tree, unsigned nr_queries, const KVPair pairs[]);
     key_uint64_t /* min_key */ task_delete(Tree& tree, unsigned nr_queries, const key_uint64_t keys[]);
 
@@ -47,8 +48,11 @@ private:
     void task_restore(unsigned nr_ranges, const uint32_t nr_pairs[], const KVPair pairs[]);
 
 public:
-    unsigned get_nr_queries_to_cold_range_in_last_batch() const;
-    unsigned get_nr_queries_to_hot_range_in_last_batch() const;
+    unsigned get_nr_GET_queries_to_cold_range_in_last_batch() const;
+    unsigned get_nr_GET_queries_to_hot_range_in_last_batch() const;
+
+    unsigned get_nr_RMQ_delims_to_cold_range_in_last_batch() const;
+    unsigned get_nr_RMQ_delims_to_hot_range_in_last_batch() const;
 
     unsigned get_nr_pairs_in_cold_range() const;
     unsigned get_nr_pairs_in_hot_range() const;

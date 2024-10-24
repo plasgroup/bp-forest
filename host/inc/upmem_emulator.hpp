@@ -58,6 +58,7 @@ public:
     void wait_all();
 
     void print_nr_queries_in_last_batch(std::ostream&, dpu_id_t nr_dpus_to_print) const;
+    void print_nr_RMQ_delims_in_last_batch(std::ostream&, dpu_id_t nr_dpus_to_print) const;
     void print_nr_pairs(std::ostream&, dpu_id_t nr_dpus_to_print) const;
 };
 
