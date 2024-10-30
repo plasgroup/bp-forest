@@ -69,7 +69,7 @@ inline void DPUEmulator::execute()
 
         value_uint64_t* const result = new (&mram_2nd[0]) value_uint64_t[nr_cold_results + nr_hot_results];
         task_range_min(cold_tree, nr_cold_lumps, end_indices, delim_keys, result);
-        task_range_min(cold_tree, nr_hot_lumps, end_indices + nr_cold_lumps, delim_keys + nr_cold_delims, result + nr_cold_results);
+        task_range_min(hot_tree, nr_hot_lumps, end_indices + nr_cold_lumps, delim_keys + nr_cold_delims, result + nr_cold_results);
     } break;
     case TASK_INSERT: {
         const unsigned nr_cold_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram[4])),

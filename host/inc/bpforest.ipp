@@ -1144,6 +1144,7 @@ void BPForest::execute_rmq_in_dpus(
             nr_lumps[idx_dpu][1] = static_cast<uint16_t>(tmp);
         }
 
+        size_t lump_end_indices_size;
         cold_ranges_to_minirange_idx[idx_dpu] = nr_miniranges;
         if (cold_to_hot[idx_dpu] == cold_to_hot[idx_dpu + 1]) {
             const size_t idx_delim_begin = cold_range_to_delim_idx[idx_dpu] - if_cold_begins_middle[idx_dpu],
@@ -1158,17 +1159,17 @@ void BPForest::execute_rmq_in_dpus(
             assert(nr_cold_lumps <= std::numeric_limits<uint16_t>::max());
             nr_lumps[idx_dpu][0] = static_cast<uint16_t>(nr_cold_lumps);
 
-            lump_end_indices[idx_dpu].reserve(
-                (nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1]
-                    + 8 / sizeof(uint16_t) - 1)
-                * (8 / sizeof(uint16_t)));
+            lump_end_indices_size = (nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1]
+                                        + 8 / sizeof(uint16_t) - 1)
+                                    / (8 / sizeof(uint16_t)) * (8 / sizeof(uint16_t));
+            lump_end_indices[idx_dpu].reserve(lump_end_indices_size);
 
             for (size_t idx_lump = cold_idx_lump_begin; idx_lump + 1 < cold_idx_lump_end; idx_lump++) {
                 const size_t tmp = rg_lump_end_indices[idx_lump] - idx_offset;
                 assert(tmp <= std::numeric_limits<uint16_t>::max());
                 lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
             }
-            {
+            if (nr_cold_lumps != 0) {
                 const size_t tmp = idx_delim_end - idx_offset;
                 assert(tmp <= std::numeric_limits<uint16_t>::max());
                 lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
@@ -1206,10 +1207,10 @@ void BPForest::execute_rmq_in_dpus(
             }
             assert(nr_cold_lumps <= std::numeric_limits<uint16_t>::max());
             nr_lumps[idx_dpu][0] = static_cast<uint16_t>(nr_cold_lumps);
-            lump_end_indices[idx_dpu].reserve(
-                (nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1]
-                    + 8 / sizeof(uint16_t) - 1)
-                * (8 / sizeof(uint16_t)));
+            lump_end_indices_size = (nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1]
+                                        + 8 / sizeof(uint16_t) - 1)
+                                    / (8 / sizeof(uint16_t)) * (8 / sizeof(uint16_t));
+            lump_end_indices[idx_dpu].reserve(lump_end_indices_size);
             {
                 size_t nr_sent_delims = 0;
                 dpu_id_t idx_hot = cold_to_hot[idx_dpu];
@@ -1226,9 +1227,11 @@ void BPForest::execute_rmq_in_dpus(
                         assert(tmp <= std::numeric_limits<uint16_t>::max());
                         lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
                     }
-                    const size_t tmp = idx_delim_end - idx_offset;
-                    assert(tmp <= std::numeric_limits<uint16_t>::max());
-                    lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
+                    if (cold_idx_lump_begin != cold_idx_lump_end) {
+                        const size_t tmp = idx_delim_end - idx_offset;
+                        assert(tmp <= std::numeric_limits<uint16_t>::max());
+                        lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
+                    }
 
                     nr_sent_delims += idx_delim_end - idx_delim_begin;
                     nr_miniranges += (idx_delim_end - idx_delim_begin) - (cold_idx_lump_end - cold_idx_lump_begin) - if_hot_begins_middle[idx_hot];
@@ -1263,9 +1266,11 @@ void BPForest::execute_rmq_in_dpus(
                             assert(tmp <= std::numeric_limits<uint16_t>::max());
                             lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
                         }
-                        const size_t tmp = idx_delim_end - idx_offset;
-                        assert(tmp <= std::numeric_limits<uint16_t>::max());
-                        lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
+                        if (cold_idx_lump_begin != cold_idx_lump_end) {
+                            const size_t tmp = idx_delim_end - idx_offset;
+                            assert(tmp <= std::numeric_limits<uint16_t>::max());
+                            lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
+                        }
 
                         nr_sent_delims += idx_delim_end - idx_delim_begin;
                         nr_miniranges += (idx_delim_end - idx_delim_begin) - (cold_idx_lump_end - cold_idx_lump_begin) - if_hot_begins_middle[idx_hot + 1];
@@ -1277,16 +1282,18 @@ void BPForest::execute_rmq_in_dpus(
                                  idx_offset = idx_delim_begin - nr_sent_delims;
                     const size_t cold_idx_lump_begin = hot_range_to_lump_idx[idx_hot][1]
                                                        + (hot_range_to_delim_idx[idx_hot][1] != 0 && !if_hot_ends_middle[idx_hot]),
-                                 cold_idx_lump_end = cold_range_to_lump_idx[idx_dpu]
-                                                     + (cold_range_to_delim_idx[idx_dpu] != 0);
+                                 cold_idx_lump_end = cold_range_to_lump_idx[idx_dpu + 1]
+                                                     + (cold_range_to_delim_idx[idx_dpu + 1] != 0);
                     for (size_t idx_lump = cold_idx_lump_begin; idx_lump + 1 < cold_idx_lump_end; idx_lump++) {
                         const size_t tmp = rg_lump_end_indices[idx_lump] - idx_offset;
                         assert(tmp <= std::numeric_limits<uint16_t>::max());
                         lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
                     }
-                    const size_t tmp = idx_delim_end - idx_offset;
-                    assert(tmp <= std::numeric_limits<uint16_t>::max());
-                    lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
+                    if (cold_idx_lump_begin != cold_idx_lump_end) {
+                        const size_t tmp = idx_delim_end - idx_offset;
+                        assert(tmp <= std::numeric_limits<uint16_t>::max());
+                        lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
+                    }
 
                     nr_miniranges += (idx_delim_end - idx_delim_begin) - (cold_idx_lump_end - cold_idx_lump_begin) - if_cold_begins_middle[idx_dpu + 1];
                 }
@@ -1302,15 +1309,15 @@ void BPForest::execute_rmq_in_dpus(
                 assert(tmp <= std::numeric_limits<uint16_t>::max());
                 lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
             }
-            const size_t tmp = idx_delim_end - idx_offset;
-            assert(tmp <= std::numeric_limits<uint16_t>::max());
-            lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
-
-            // nr_hot_miniranges[idx_hot] = idx_delim_begin - idx_delim_end - nr_lumps[idx_dpu][1] - if_hot_ends_middle[idx_hot];
+            if (hot_idx_lump_begin != hot_idx_lump_end) {
+                const size_t tmp = idx_delim_end - idx_offset;
+                assert(tmp <= std::numeric_limits<uint16_t>::max());
+                lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
+            }
         }
         cold_ranges_to_minirange_idx[nr_cold_ranges] = nr_miniranges;
 
-        lump_end_indices[idx_dpu].resize(lump_end_indices[idx_dpu].capacity());
+        lump_end_indices[idx_dpu].resize(lump_end_indices_size);
     }
 
     std::array<value_uint64_t, MAX_NR_DPUS + 1> cold_to_be_agged;
