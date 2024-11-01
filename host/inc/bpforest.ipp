@@ -503,6 +503,7 @@ inline void BPForest::execute_get_in_dpus()
     scatter_from_dpu(all_dpu, 0, GetResultReceiver{this}, async);
 }
 
+
 inline void BPForest::batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t result[])
 {
     using std::get;
@@ -855,7 +856,7 @@ inline size_t BPForest::nr_rmq_to_hot(dpu_id_t idx_hot,
 
 struct BPForest::RMQSender {
     static constexpr uint32_t TaskNo = TASK_RANGE_MIN;
-    BPForest* const forest;
+    const BPForest* const forest;
 
     const std::array<uint16_t, 2>* const nr_lumps;
     const std::vector<uint16_t>* const lump_end_indices;
@@ -865,7 +866,7 @@ struct BPForest::RMQSender {
     const std::array<bool, MAX_NR_DPUS + 1>* const if_hot_begins_middle;
     const std::array<bool, MAX_NR_DPUS + 1>* const if_hot_ends_middle;
 
-    RMQSender(BPForest* forest,
+    RMQSender(const BPForest* forest,
         const std::array<uint16_t, 2>* nr_lumps,
         const std::vector<uint16_t>* lump_end_indices,
         const std::array<size_t, MAX_NR_DPUS + 1>& cold_range_to_delim_idx,
@@ -1369,10 +1370,10 @@ union UInt32Packet {
     uint64_t size_adjuster;
 };
 struct BPForest::HotKVPairsFlattenedCollecter {
-    BPForest* forest;
-    UInt32Packet* nr_received_kvpairs;
+    BPForest* const forest;
+    const UInt32Packet* const nr_received_kvpairs;
 
-    HotKVPairsFlattenedCollecter(BPForest* forest, UInt32Packet* nr_received_kvpairs) : forest{forest}, nr_received_kvpairs{nr_received_kvpairs} {}
+    HotKVPairsFlattenedCollecter(BPForest* forest, const UInt32Packet* nr_received_kvpairs) : forest{forest}, nr_received_kvpairs{nr_received_kvpairs} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
     {
@@ -1380,7 +1381,7 @@ struct BPForest::HotKVPairsFlattenedCollecter {
         case 0: {
             const dpu_id_t idx_hot = forest->dpu_to_hot_range[dpu_index];
             if (idx_hot != INVALID_DPU_ID) {
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(&forest->hot_kvpairs[idx_hot][0]));
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<KVPair*>(&forest->hot_kvpairs[idx_hot][0])));
                 out->length = sizeof(KVPair) * nr_received_kvpairs[dpu_index].data;
                 return true;
             } else {
@@ -1398,22 +1399,22 @@ struct BPForest::HotKVPairsFlattenedCollecter {
     }
 };
 struct BPForest::HotKVPairsRestorer {
-    BPForest* forest;
-    std::array<uint32_t, 2>* task_header;
-    uint32_t* nr_hot_kvpairs;
+    const BPForest* const forest;
+    const std::array<uint32_t, 2>* const task_header;
+    const uint32_t* const nr_hot_kvpairs;
     static constexpr uint32_t Padding = 0;
 
-    HotKVPairsRestorer(BPForest* forest, std::array<uint32_t, 2>* task_header, uint32_t* nr_hot_kvpairs) : forest{forest}, task_header{task_header}, nr_hot_kvpairs{nr_hot_kvpairs} {}
+    HotKVPairsRestorer(const BPForest* forest, const std::array<uint32_t, 2>* task_header, const uint32_t* nr_hot_kvpairs) : forest{forest}, task_header{task_header}, nr_hot_kvpairs{nr_hot_kvpairs} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
     {
         switch (block_index) {
         case 0:
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(&task_header[dpu_index]));
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<uint32_t*>(&task_header[dpu_index][0])));
             out->length = sizeof(uint32_t) * 2;
             return true;
         case 1:
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(&nr_hot_kvpairs[forest->cold_to_hot[dpu_index]]));
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<uint32_t*>(&nr_hot_kvpairs[forest->cold_to_hot[dpu_index]])));
             out->length = sizeof(uint32_t) * task_header[dpu_index][1];
             return true;
         case 2:
@@ -1424,7 +1425,7 @@ struct BPForest::HotKVPairsRestorer {
             const dpu_id_t idx_hot_to_each_dpu = block_index - 3;
             if (idx_hot_to_each_dpu < forest->cold_to_hot[dpu_index + 1] - forest->cold_to_hot[dpu_index]) {
                 const dpu_id_t idx_hot = forest->cold_to_hot[dpu_index] + idx_hot_to_each_dpu;
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(&forest->hot_kvpairs[idx_hot][0]));
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<KVPair*>(&forest->hot_kvpairs[idx_hot][0])));
                 out->length = sizeof(KVPair) * nr_hot_kvpairs[idx_hot];
                 return true;
             } else {
@@ -1448,9 +1449,15 @@ inline void BPForest::restore_hot_ranges()
     std::array<uint32_t, MAX_NR_DPUS> nr_hot_kvpairs;
 
     {
+        std::array<UInt32Packet, MAX_NR_DPUS> task_nos;
+        std::array<UInt32Packet, MAX_NR_DPUS> nr_received_kvpairs;
+
+        std::mutex mutex;
+        std::condition_variable cond;
+        dpu_id_t nr_finished_preparing_for_restoring = 0;
+
         UPMEM_AsyncDuration async;
 
-        std::array<UInt32Packet, MAX_NR_DPUS> task_nos;
         for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
             task_nos[idx_dpu].data = (dpu_to_hot_range[idx_dpu] != INVALID_DPU_ID ? TASK_FLATTEN_HOT : TASK_NONE);
         }
@@ -1458,12 +1465,7 @@ inline void BPForest::restore_hot_ranges()
 
         execute(all_dpu, async);
 
-        std::array<UInt32Packet, MAX_NR_DPUS> nr_received_kvpairs;
         recv_from_dpu(all_dpu, 0, EachInArray{&nr_received_kvpairs[0]}, async);
-
-        std::mutex mutex;
-        std::condition_variable cond;
-        dpu_id_t nr_finished_preparing_for_restoring = 0;
 
         const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration async) {
             const std::pair<dpu_id_t, dpu_id_t> dpu_range = upmem_get_dpu_range_in_rank(rank_id);
@@ -1489,17 +1491,29 @@ inline void BPForest::restore_hot_ranges()
         then_call(all_dpu, func, async);
 
         std::unique_lock<std::mutex> lock{mutex};
+        /*
+          when cond.wait() returns, the following completed:
+            send_to_dpu(task_nos)
+            execute(TASK_FLATTEN_HOT)
+            recv_from_dpu(nr_received_kvpairs)
+        */
         cond.wait(lock, [&] { return nr_finished_preparing_for_restoring == NR_RANKS; });
+
+        /*
+          when `async` object is destroyed, the following completed:
+            then_call()
+            scatter_from_dpu(HotKVPairsFlattenedCollecter)
+        */
     }
 
     {
-        UPMEM_AsyncDuration async;
-
         std::array<std::array<uint32_t, 2>, MAX_NR_DPUS> task_header;
         for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
             task_header[idx_cold][1] = cold_to_hot[idx_cold + 1] - cold_to_hot[idx_cold];
             task_header[idx_cold][0] = (task_header[idx_cold][1] != 0 ? TASK_RESTORE : TASK_NONE);
         }
+
+        UPMEM_AsyncDuration async;
 
         gather_to_dpu(all_dpu, 0, HotKVPairsRestorer{this, &task_header[0], &nr_hot_kvpairs[0]}, async);
         execute(all_dpu, async);
@@ -1508,14 +1522,14 @@ inline void BPForest::restore_hot_ranges()
 
 struct BPForest::SummaryMetadataReceiver {
     static constexpr bool IsSizeVarying = false;
-    Summary* summary;
+    Summary* const summary;
 
     uint32_t* for_dpu(dpu_id_t dpu) const { return &summary[dpu].nr_pairs; }
     size_t bytes_for_dpu(dpu_id_t) const { return sizeof(uint32_t) * 2; }
 };
 struct BPForest::SummaryReceiver {
-    Summary* summary;
-    const bool* cold_range_rebalanced;
+    Summary* const summary;
+    const bool* const cold_range_rebalanced;
 
     SummaryReceiver(Summary* summary, const bool* cold_range_rebalanced) : summary{summary}, cold_range_rebalanced{cold_range_rebalanced} {}
 
@@ -1524,7 +1538,7 @@ struct BPForest::SummaryReceiver {
         switch (block_index) {
         case 0:
             if (cold_range_rebalanced[dpu_index]) {
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(&summary[dpu_index].blocks[0]));
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<SummaryBlock*>(&summary[dpu_index].blocks[0])));
                 out->length = static_cast<uint32_t>(sizeof(SummaryBlock) * ((summary[dpu_index].nr_entries + 3) / 4));
                 return true;
             } else {
@@ -1551,14 +1565,14 @@ inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_ran
     }
 
     {
+        std::mutex mutex;
+        std::condition_variable cond;
+        dpu_id_t nr_finished_preparing_for_summary = 0;
+
         UPMEM_AsyncDuration async;
         send_to_dpu(all_dpu, 0, EachInArray{&task_nos[0]}, async);
         execute(all_dpu, async);
         recv_from_dpu(all_dpu, 0, SummaryMetadataReceiver{&summaries[0]}, async);
-
-        std::mutex mutex;
-        std::condition_variable cond;
-        dpu_id_t nr_finished_preparing_for_summary = 0;
 
         const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration async) {
             const std::pair<dpu_id_t, dpu_id_t> dpu_range = upmem_get_dpu_range_in_rank(rank_id);
@@ -1579,31 +1593,43 @@ inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_ran
         then_call(all_dpu, func, async);
 
         std::unique_lock<std::mutex> lock{mutex};
+        /*
+          when cond.wait() returns, the following completed:
+            send_to_dpu(task_nos)
+            execute(TASK_SUMMARIZE)
+            recv_from_dpu(SummaryMetadataReceiver)
+        */
         cond.wait(lock, [&] { return nr_finished_preparing_for_summary == NR_RANKS; });
+
+        /*
+          when `async` object is destroyed, the following completed:
+            then_call()
+            scatter_from_dpu(SummaryReceiver)
+        */
     }
 }
 
 struct BPForest::HotKVPairsExtracter {
-    BPForest* forest;
+    const BPForest* const forest;
 
-    uint32_t* task_nos;
-    uint32_t* nr_hot_ranges_from_each_dpu;
-    KeyRange* key_ranges;
-    HotKVPairsExtracter(BPForest* forest, uint32_t* task_nos, uint32_t* nr_hot_ranges_from_each_dpu, KeyRange* key_ranges) : forest{forest}, task_nos{task_nos}, nr_hot_ranges_from_each_dpu{nr_hot_ranges_from_each_dpu}, key_ranges{key_ranges} {}
+    const uint32_t* const task_nos;
+    const uint32_t* const nr_hot_ranges_from_each_dpu;
+    const KeyRange* const key_ranges;
+    HotKVPairsExtracter(const BPForest* forest, const uint32_t* task_nos, const uint32_t* nr_hot_ranges_from_each_dpu, const KeyRange* key_ranges) : forest{forest}, task_nos{task_nos}, nr_hot_ranges_from_each_dpu{nr_hot_ranges_from_each_dpu}, key_ranges{key_ranges} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
     {
         switch (block_index) {
         case 0:
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(&task_nos[dpu_index]));
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<uint32_t*>(&task_nos[dpu_index])));
             out->length = sizeof(uint32_t);
             return true;
         case 1:
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(&nr_hot_ranges_from_each_dpu[dpu_index]));
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<uint32_t*>(&nr_hot_ranges_from_each_dpu[dpu_index])));
             out->length = sizeof(uint32_t);
             return true;
         case 2:
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(&key_ranges[forest->cold_to_hot[dpu_index]]));
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<KeyRange*>(&key_ranges[forest->cold_to_hot[dpu_index]])));
             out->length = sizeof(KeyRange) * (forest->cold_to_hot[dpu_index + 1] - forest->cold_to_hot[dpu_index]);
             return true;
         default:
@@ -1613,16 +1639,16 @@ struct BPForest::HotKVPairsExtracter {
     size_t bytes_for_dpu(dpu_id_t dpu) const { return sizeof(uint32_t) * 2 + sizeof(KeyRange) * (forest->cold_to_hot[dpu + 1] - forest->cold_to_hot[dpu]); }
 };
 struct BPForest::NrHotKVPairsCollecter {
-    BPForest* forest;
-    uint32_t* nr_hot_kvpairs;
+    const BPForest* const forest;
+    uint32_t* const nr_hot_kvpairs;
 
-    NrHotKVPairsCollecter(BPForest* forest, uint32_t* nr_hot_kvpairs) : forest{forest}, nr_hot_kvpairs{nr_hot_kvpairs} {}
+    NrHotKVPairsCollecter(const BPForest* forest, uint32_t* nr_hot_kvpairs) : forest{forest}, nr_hot_kvpairs{nr_hot_kvpairs} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
     {
         switch (block_index) {
         case 0:
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(&nr_hot_kvpairs[forest->cold_to_hot[dpu_index]]));
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<uint32_t*>(&nr_hot_kvpairs[forest->cold_to_hot[dpu_index]])));
             out->length = sizeof(uint32_t) * (forest->cold_to_hot[dpu_index + 1] - forest->cold_to_hot[dpu_index]);
             return true;
         default:
@@ -1632,18 +1658,18 @@ struct BPForest::NrHotKVPairsCollecter {
     size_t bytes_for_dpu(dpu_id_t dpu) const { return sizeof(uint32_t) * (forest->cold_to_hot[dpu + 1] - forest->cold_to_hot[dpu]); }
 };
 struct BPForest::HotKVPairsExtractedCollecter {
-    BPForest* forest;
-    uint32_t* nr_hot_kvpairs;
+    BPForest* const forest;
+    uint32_t* const nr_hot_kvpairs;
 
-    alignas(64) std::byte garbage[MAX_NR_DPUS][64];
+    std::byte (*const garbage)[64];
 
-    HotKVPairsExtractedCollecter(BPForest* forest, uint32_t* nr_hot_kvpairs) : forest{forest}, nr_hot_kvpairs{nr_hot_kvpairs} {}
+    HotKVPairsExtractedCollecter(BPForest* forest, uint32_t* nr_hot_kvpairs, std::byte (*garbage)[64]) : forest{forest}, nr_hot_kvpairs{nr_hot_kvpairs}, garbage{garbage} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
     {
         switch (block_index) {
         case 0:
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(&nr_hot_kvpairs[forest->cold_to_hot[dpu_index]]));
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<uint32_t*>(&nr_hot_kvpairs[forest->cold_to_hot[dpu_index]])));
             out->length = sizeof(uint32_t) * (forest->cold_to_hot[dpu_index + 1] - forest->cold_to_hot[dpu_index]);
             return true;
         case 1:
@@ -1654,7 +1680,7 @@ struct BPForest::HotKVPairsExtractedCollecter {
             const dpu_id_t idx_hot_from_each_dpu = block_index - 2;
             if (idx_hot_from_each_dpu < forest->cold_to_hot[dpu_index + 1] - forest->cold_to_hot[dpu_index]) {
                 const dpu_id_t idx_hot = forest->cold_to_hot[dpu_index] + idx_hot_from_each_dpu;
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(&forest->hot_kvpairs[idx_hot][0]));
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<KVPair*>(&forest->hot_kvpairs[idx_hot][0])));
                 out->length = sizeof(KVPair) * nr_hot_kvpairs[idx_hot];
                 return true;
             } else {
@@ -1673,22 +1699,22 @@ struct BPForest::HotKVPairsExtractedCollecter {
     }
 };
 struct BPForest::HotRangeConstructor {
-    BPForest* forest;
-    std::array<uint32_t, 2>* task_header;
+    const BPForest* const forest;
+    const std::array<uint32_t, 2>* const task_header;
 
-    HotRangeConstructor(BPForest* forest, std::array<uint32_t, 2>* task_header) : forest{forest}, task_header{task_header} {}
+    HotRangeConstructor(const BPForest* forest, const std::array<uint32_t, 2>* task_header) : forest{forest}, task_header{task_header} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
     {
         switch (block_index) {
         case 0:
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(&task_header[dpu_index]));
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<uint32_t*>(&task_header[dpu_index][0])));
             out->length = sizeof(uint32_t) * 2;
             return true;
         case 1: {
             const dpu_id_t idx_hot = forest->dpu_to_hot_range[dpu_index];
             if (idx_hot != INVALID_DPU_ID) {
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(&forest->hot_kvpairs[idx_hot][0]));
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<KVPair*>(&forest->hot_kvpairs[idx_hot][0])));
                 out->length = sizeof(KVPair) * task_header[dpu_index][1];
                 return true;
             } else {
@@ -1705,29 +1731,29 @@ inline void BPForest::extract_and_distribute_hot_ranges()
 {
     std::array<uint32_t, MAX_NR_DPUS> nr_hot_pairs;
     {
-        UPMEM_AsyncDuration async;
-
-        {
-            std::array<uint32_t, MAX_NR_DPUS> task_nos;
-            std::array<uint32_t, MAX_NR_DPUS> nr_hot_ranges_from_each_dpu;
-            std::array<KeyRange, MAX_NR_DPUS> key_ranges;
-            for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
-                nr_hot_ranges_from_each_dpu[idx_cold] = cold_to_hot[idx_cold + 1] - cold_to_hot[idx_cold];
-                task_nos[idx_cold] = (nr_hot_ranges_from_each_dpu[idx_cold] != 0 ? TASK_EXTRACT : TASK_NONE);
-            }
-            for (dpu_id_t idx_hot = 0; idx_hot < nr_hot_ranges; idx_hot++) {
-                key_ranges[idx_hot] = {hot_delims[idx_hot], hot_max_key[idx_hot]};
-            }
-
-            gather_to_dpu(all_dpu, 0, HotKVPairsExtracter{this, &task_nos[0], &nr_hot_ranges_from_each_dpu[0], &key_ranges[0]}, async);
-        }
-        execute(all_dpu, async);
-
-        scatter_from_dpu(all_dpu, 0, NrHotKVPairsCollecter{this, &nr_hot_pairs[0]}, async);
+        std::array<uint32_t, MAX_NR_DPUS> task_nos;
+        std::array<uint32_t, MAX_NR_DPUS> nr_hot_ranges_from_each_dpu;
+        std::array<KeyRange, MAX_NR_DPUS> key_ranges;
+        alignas(64) std::byte garbage[MAX_NR_DPUS][64];
 
         std::mutex mutex;
         std::condition_variable cond;
         dpu_id_t nr_finished_extraction = 0;
+
+        UPMEM_AsyncDuration async;
+
+        for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
+            nr_hot_ranges_from_each_dpu[idx_cold] = cold_to_hot[idx_cold + 1] - cold_to_hot[idx_cold];
+            task_nos[idx_cold] = (nr_hot_ranges_from_each_dpu[idx_cold] != 0 ? TASK_EXTRACT : TASK_NONE);
+        }
+        for (dpu_id_t idx_hot = 0; idx_hot < nr_hot_ranges; idx_hot++) {
+            key_ranges[idx_hot] = {hot_delims[idx_hot], hot_max_key[idx_hot]};
+        }
+        gather_to_dpu(all_dpu, 0, HotKVPairsExtracter{this, &task_nos[0], &nr_hot_ranges_from_each_dpu[0], &key_ranges[0]}, async);
+
+        execute(all_dpu, async);
+
+        scatter_from_dpu(all_dpu, 0, NrHotKVPairsCollecter{this, &nr_hot_pairs[0]}, async);
 
         const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration async) {
             const std::pair<dpu_id_t, dpu_id_t> dpu_range = upmem_get_dpu_range_in_rank(rank_id);
@@ -1735,7 +1761,7 @@ inline void BPForest::extract_and_distribute_hot_ranges()
                 hot_kvpairs[idx_hot].reserve(nr_hot_pairs[idx_hot]);
             }
 
-            scatter_from_dpu(all_dpu, 0, HotKVPairsExtractedCollecter{this, &nr_hot_pairs[0]}, async);
+            scatter_from_dpu(all_dpu, 0, HotKVPairsExtractedCollecter{this, &nr_hot_pairs[0], &garbage[0]}, async);
 
             {
                 std::lock_guard<std::mutex> lock{mutex};
@@ -1746,12 +1772,22 @@ inline void BPForest::extract_and_distribute_hot_ranges()
         then_call(all_dpu, func, async);
 
         std::unique_lock<std::mutex> lock{mutex};
+        /*
+          when cond.wait() returns, the following completed:
+            gather_to_dpu(HotKVPairsExtracter)
+            execute(TASK_EXTRACT)
+            scatter_from_dpu(NrHotKVPairsCollecter)
+        */
         cond.wait(lock, [&] { return nr_finished_extraction == NR_RANKS; });
+
+        /*
+          when `async` object is destroyed, the following completed:
+            then_call()
+            scatter_from_dpu(HotKVPairsExtractedCollecter)
+        */
     }
 
     {
-        UPMEM_AsyncDuration async;
-
         std::array<std::array<uint32_t, 2 /* {task_no, nr_pairs} */>, MAX_NR_DPUS> task_header;
         for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
             const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
@@ -1762,6 +1798,7 @@ inline void BPForest::extract_and_distribute_hot_ranges()
             }
         }
 
+        UPMEM_AsyncDuration async;
         gather_to_dpu(all_dpu, 0, HotRangeConstructor{this, &task_header[0]}, async);
         execute(all_dpu, async);
     }
