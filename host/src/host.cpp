@@ -80,7 +80,7 @@ struct Option {
         a.add<std::string>("zipfianconst", 'a', "zipfian constant", false, "0.99");
         a.add<std::string>("workload_dir", 'w', "directory containing workload files", false, "workload");
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
-        a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, succ", false, "get");
+        a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq", false, "get");
         a.add<dpu_id_t>("print-compute-load", 'c', "print number of queries sent for each dpu", false, 0);
         a.add<dpu_id_t>("print-memory-load", 'm', "print number of KV pairs stored in each dpu", false, 0);
         a.add("print-perf", 'p', "print performance metrics");
