@@ -1,7 +1,8 @@
 #pragma once
 
-#include "workload_types.h"
+#include "dpu_params.h"
 #include "node_ptr.h"
+#include "workload_types.h"
 
 #include <attributes.h>
 

@@ -4,7 +4,6 @@
 #include "common.h"
 #include "dpu_set.hpp"
 #include "host_params.hpp"
-#include "scattered_batch_transfer_buffer.hpp"
 #include "statistics.hpp"
 #include "utils.hpp"
 #include "workload_types.h"
@@ -61,36 +60,3 @@ void upmem_release()
 {
     upmem_release_impl();
 }
-
-
-#ifdef PRINT_DEBUG
-[[maybe_unused]] static const char* task_name(uint64_t task)
-{
-    switch (TASK_GET_ID(task)) {
-    case TASK_INIT:
-        return "INIT";
-    case TASK_GET:
-        return "GET";
-    case TASK_PRED:
-        return "PRED";
-    case TASK_SCAN:
-        return "SCAN";
-    case TASK_INSERT:
-        return "INSERT";
-    case TASK_DELETE:
-        return "DELETE";
-    case TASK_SUMMARIZE:
-        return "SUMMARIZE";
-    case TASK_EXTRACT:
-        return "EXTRACT";
-    case TASK_CONSTRUCT_HOT:
-        return "CONSTRUCT_HOT";
-    case TASK_FLATTEN_HOT:
-        return "FLATTEN_HOT";
-    case TASK_RESTORE:
-        return "RESTORE";
-    default:
-        return "unknown-task";
-    }
-}
-#endif /* PRINT_DEBUG */

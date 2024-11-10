@@ -1,9 +1,3 @@
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#include "extendable_buffer.hpp"
-#include <stdint.h>
-#endif
-
 #include "bpforest.hpp"
 #include "common.h"
 #include "extendable_buffer.hpp"
@@ -133,14 +127,6 @@ struct EqualByKey {
         return lhs.key == rhs.key;
     }
 };
-
-#if defined(HOST_MULTI_THREAD)
-static std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]>& dpu_req_copy_impl(dpu_id_t nr_dpus)
-{
-    static std::unique_ptr<each_request_t[][MAX_REQ_NUM_IN_A_DPU]> impl{new each_request_t[nr_dpus][MAX_REQ_NUM_IN_A_DPU]};
-    return impl;
-}
-#endif
 
 #define MyAssert(expr) (static_cast<bool>(expr) ? void(0) : ((std::cerr << __FILE__ ":" << __LINE__ << ": Assertion `" #expr "' failed" << std::endl), std::abort()))
 
@@ -447,9 +433,7 @@ int main(int argc, char* argv[])
     std::cout << "NR_RANKS:" << NR_RANKS << std::endl
               << "NR_TASKLETS:" << NR_TASKLETS << std::endl
               << "requests per batch:" << NUM_REQUESTS_PER_BATCH << std::endl
-              << "init elements in total:" << NUM_INIT_REQS << std::endl
-              << "MAX_NUM_NODES_IN_DPU:" << MAX_NUM_NODES_IN_DPU << std::endl
-              << "estm. max elems in seat:" << MAX_NUM_PAIRS_IN_DPU << std::endl;
+              << "init elements in total:" << NUM_INIT_REQS << std::endl;
 #endif
 
     upmem_init();

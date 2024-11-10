@@ -2,10 +2,12 @@
 
 #include "bit_ops_macro.h"
 #include "common.h"
+#include "dpu_params.h"
 #include "node_ptr.h"
 #include "workload_types.h"
 
 #include <attributes.h>
+#include <limits.h>
 
 
 typedef struct {
@@ -14,13 +16,13 @@ typedef struct {
 } NodeLink;
 _Static_assert(sizeof(NodeLink) == 4, "sizeof(NodeLink) == 4");
 _Static_assert(_Alignof(NodeLink) == 4, "_Alignof(NodeLink) == 4");
-static const NodeLink NODELINK_NULLPTR = {NODE_NULLPTR & ((1u << (32 - CEIL_LOG2_UINT32(SIZEOF_NODE))) - 1u), UINT_MAX & ((1u << CEIL_LOG2_UINT32(SIZEOF_NODE)) - 1u)};
+static const NodeLink NODELINK_NULLPTR = {NODE_NULLPTR, UINT_MAX&((1u << CEIL_LOG2_UINT32(SIZEOF_NODE)) - 1u)};
 
 
 #define MAX_NR_CHILDREN ((SIZEOF_NODE + sizeof(key_uint64_t)) / (sizeof(key_uint64_t) + sizeof(NodeLink)))
 #define MIN_NR_CHILDREN ((MAX_NR_CHILDREN + 1) / 2)
 
-// #define MAX_NR_PAIRS  // defined in common/inc/common.h
+#define MAX_NR_PAIRS ((SIZEOF_NODE - 16) / (sizeof(key_uint64_t) + sizeof(value_uint64_t)))
 #define MIN_NR_PAIRS ((MAX_NR_PAIRS + 1) / 2)
 
 typedef struct {

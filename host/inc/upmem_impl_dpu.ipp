@@ -9,6 +9,7 @@ extern "C" {
 #include <dpu_types.h>
 }
 
+#include <cassert>
 #include <algorithm>
 #include <array>
 #include <cstddef>
