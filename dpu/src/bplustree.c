@@ -133,7 +133,8 @@ static void INIT_wait_for_out_lifted_ready(void)
 static void INIT_notify_end_of_use_of_out_lifted(void)
 {
     __asm__("acquire id, %[base] + %[nr_tasklets], true, .+1\n"
-            "resume id, -1" ::[base] "i"(&AtomicBits), [nr_tasklets] "i"(TASK_INIT_NR_TASKLETS)
+            "resume id, -1" ::[base] "i"(&AtomicBits),
+            [nr_tasklets] "i"(TASK_INIT_NR_TASKLETS)
             :);
 }
 static void INIT_wait_for_end_of_use_of_out_lifted(void)
