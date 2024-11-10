@@ -118,28 +118,30 @@ static unsigned INIT_idx_child_to_idx_parent(unsigned idx_child, unsigned nr_chi
 
 static void INIT_notify_ready_for_out_lifted(void)
 {
-    __asm__("acquire id, %[base], true, .+1" ::[base] "i"(&AtomicBits)
+    __asm__("acquire id, %[base], t, .+1\n"
+            "resume id, 1" ::[base] "i"(&AtomicBits)
             :);
 }
 static void INIT_wait_for_out_lifted_ready(void)
 {
     __asm__("0:\n"
             "release id, %[base] - 1, nz, .+2\n"
-            "jump 0b" ::[base] "i"(&AtomicBits)
+            "stop true, 0b" ::[base] "i"(&AtomicBits)
             :);
 }
 
 static void INIT_notify_end_of_use_of_out_lifted(void)
 {
-    __asm__("acquire id, %[base] + %[nr_tasklets], true, .+1" ::[base] "i"(&AtomicBits), [nr_tasklets] "i"(NR_TASKLETS)
+    __asm__("acquire id, %[base] + %[nr_tasklets], true, .+1\n"
+            "resume id, -1" ::[base] "i"(&AtomicBits), [nr_tasklets] "i"(TASK_INIT_NR_TASKLETS)
             :);
 }
 static void INIT_wait_for_end_of_use_of_out_lifted(void)
 {
     __asm__("0:\n"
             "release id, %[base] + %[nr_tasklets] + 1, nz, .+2\n"
-            "jump 0b" ::[base] "i"(&AtomicBits),
-            [nr_tasklets] "i"(NR_TASKLETS)
+            "stop true, 0b" ::[base] "i"(&AtomicBits),
+            [nr_tasklets] "i"(TASK_INIT_NR_TASKLETS)
             :);
 }
 
@@ -377,6 +379,7 @@ void task_init(void)
 
                     const unsigned incoming_links = lifted_links;
                     {  // Fetch the links to children before rewriting lifted_links_offset
+                        _Static_assert((TASK_INIT_NR_CACHED_INPUT_LIFT * sizeof(LinkLift)) % 8 == 0, "(TASK_INIT_NR_CACHED_INPUT_LIFT * sizeof(LinkLift)) % 8 == 0");
                         mram_read((__mram_ptr void*)(incoming_links - lifted_links_offset),
                             (void*)((uintptr_t)(&wks->in.lifted[idx_child_cache]) - lifted_links_offset),
                             sizeof(LinkLift) * (TASK_INIT_NR_CACHED_INPUT_LIFT - idx_child_cache) + lifted_links_offset);
@@ -397,6 +400,7 @@ void task_init(void)
 
                         for (; idx_child < idx_child_end_for_this_node; idx_child++, idx_child_in_this_node++) {
                             if (idx_child_cache == TASK_INIT_NR_CACHED_INPUT_LIFT) {
+                                _Static_assert((TASK_INIT_NR_CACHED_INPUT_LIFT * sizeof(LinkLift)) % 8 == 0, "(TASK_INIT_NR_CACHED_INPUT_LIFT * sizeof(LinkLift)) % 8 == 0");
                                 mram_read((__mram_ptr void*)(incoming_links + sizeof(LinkLift) * (idx_child - idx_child_begin_from_me)),
                                     &wks->in.lifted[0],
                                     sizeof(LinkLift) * TASK_INIT_NR_CACHED_INPUT_LIFT);
