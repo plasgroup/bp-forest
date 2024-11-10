@@ -46,7 +46,7 @@ extern "C" {
 #endif
 
 #define MAX_NUM_NODES_IN_DPU (MRAM_CABIN_BYTES / SIZEOF_NODE)
-#define MAX_NR_PAIRS ((SIZEOF_NODE - 16) / 16)  // depends on the definition of `Node' in dpu/inc/bplustree.h
+#define MAX_NR_PAIRS ((SIZEOF_NODE - 16) / (sizeof(key_uint64_t) + sizeof(value_uint64_t)))  // depends on the definition of `Node' in dpu/inc/bplustree.h
 #define MAX_NUM_PAIRS_IN_DPU (MAX_NUM_NODES_IN_DPU * MAX_NR_PAIRS)
 
 #endif /* USE_RBTREE */

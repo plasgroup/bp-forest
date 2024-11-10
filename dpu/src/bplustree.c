@@ -1,983 +1,620 @@
 #include "bplustree.h"
 
 #include "allocator.h"
+#include "bit_ops_macro.h"
 #include "common.h"
+#include "div_by_const.h"
+#include "input_header.h"
+#include "node_ptr.h"
 #include "tree.h"
 #include "workload_types.h"
 
 #include <attributes.h>
+#include <defs.h>
 #include <mram.h>
 
 #include <assert.h>
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+
+#define DEBUG_PRINT(datum) printf("th[%02d] " __FILE__ ":%d: " #datum " = %u (0x%x)\n", me(), __LINE__, datum, datum)
 
 
-#define MAX_HEIGHT (CEIL_LOG2_UINT32((uint32_t)(MAX_NUM_NODES_IN_DPU)) / FLOOR_LOG2_UINT32((uint32_t)(MAX_NR_CHILDREN)) + 1)
-
-NodePtr root;
-
-__host uint32_t num_kvpairs;
-
-
-// binary search
-#ifndef USE_LINEAR_SEARCH
-static unsigned findUpperBound(key_uint64_t __mram_ptr* keys, unsigned size, key_uint64_t key)
-{
-    int l = -1, r = (int)size;
-    while (l < r - 1) {
-        int mid = (l + r) / 2;
-        if (keys[mid] > key)
-            r = mid;
-        else
-            l = mid;
-    }
-    return (unsigned)r;
-}
-__attribute__((unused)) static unsigned findUpperBoundWRAM(key_uint64_t* keys, unsigned size, key_uint64_t key)
-{
-    int l = -1, r = (int)size;
-    while (l < r - 1) {
-        int mid = (l + r) / 2;
-        if (keys[mid] > key)
-            r = mid;
-        else
-            l = mid;
-    }
-    return (unsigned)r;
-}
+#ifndef TASK_INIT_NR_TASKLETS
+#define TASK_INIT_NR_TASKLETS NR_TASKLETS
 #endif
 
-#ifdef USE_LINEAR_SEARCH
-// linear search
-static unsigned findUpperBound(key_uint64_t __mram_ptr* keys, unsigned size, key_uint64_t key)
-{
-    unsigned ret = 0;
-    for (; ret < size; ret++) {
-        if (keys[ret] > key)
-            return ret;
-    }
-    return ret;
-}
+#ifndef TASK_INIT_NR_CACHED_KVPAIRS
+#define TASK_INIT_NR_CACHED_KVPAIRS 1
 #endif
-void init_Tree(void)
+
+#ifndef TASK_INIT_NR_CACHED_INPUT_LIFT
+#define TASK_INIT_NR_CACHED_INPUT_LIFT 2
+#endif
+
+#ifndef TASK_INIT_NR_CACHED_OUTPUT_LIFT
+#define TASK_INIT_NR_CACHED_OUTPUT_LIFT (MAX_NR_CHILDREN / 2 * 2)
+#endif
+
+#ifndef TASK_INIT_NR_CACHED_NODES
+#define TASK_INIT_NR_CACHED_NODES 1
+#endif
+
+
+static DEFINE_DIV_BY(MAX_NR_PAIRS, BITWIDTH_UINT32(MAX_NR_PAIRS* MAX_NUM_NODES_IN_DPU), _NR_PAIRS);
+static DEFINE_DIV_BY(MAX_NR_CHILDREN, NODE_PTR_WIDTH, _NR_NODES);
+
+static DEFINE_DIV_BY(TASK_INIT_NR_TASKLETS, NODE_PTR_WIDTH, _NR_NODES);
+static DEFINE_DIV_BY(TASK_INIT_NR_CACHED_OUTPUT_LIFT, NODE_PTR_WIDTH, _NR_NODES);
+
+// HEIGHT <= log_{MIN_NR_CHILDREN} [ (MAX_NUM_NODES_IN_DPU - 1) * (MIN_NR_CHILDREN - 1) / 2.0 + 1 ]
+#define MAX_HEIGHT ((CEIL_LOG2_UINT32((MAX_NUM_NODES_IN_DPU - 1) * (MIN_NR_CHILDREN - 1) + 2) - 1) / FLOOR_LOG2_UINT32(MIN_NR_CHILDREN))
+
+Node cold_root;
+uint8_t cold_height;
+uint8_t cold_root_numKeys;
+
+static uint8_t __atomic_bit AtomicBits[NR_TASKLETS * 2];
+
+typedef struct {
+    uint32_t key_parts[2];
+    NodeLink child;
+} LinkLift;
+
+typedef struct {
+    union {
+        __dma_aligned KVPair pairs[TASK_INIT_NR_CACHED_KVPAIRS];
+        __dma_aligned LinkLift lifted[TASK_INIT_NR_CACHED_INPUT_LIFT];
+    } in;
+    struct {
+        __dma_aligned LinkLift lifted[TASK_INIT_NR_CACHED_OUTPUT_LIFT];
+        unsigned nr_cached_lift;
+    } out;
+    __dma_aligned Node nodes[TASK_INIT_NR_CACHED_NODES];
+} InitWorkspace;
+
+union {
+    InitWorkspace init[TASK_INIT_NR_TASKLETS];
+} workspace;
+
+
+__attribute__((unused)) static bool TreeCheckStructure(Node* root, unsigned height, unsigned root_numKeys);
+
+
+static unsigned distribution_begin(unsigned per_tasklet, unsigned remainder, unsigned tasklet_id)
 {
-    Allocator_reset();
-    root = Allocate_node();
-    Deref(root).header.isLeaf = true;
-    Deref(root).header.numKeys = 0;
-    Deref(root).body.lf.right = NODE_NULLPTR;
-    Deref(root).body.lf.left = NODE_NULLPTR;
-    num_kvpairs = 0;
+    return per_tasklet * tasklet_id + (tasklet_id <= remainder ? tasklet_id : remainder);
 }
-/**
- * @brief 
- * If key already exists in the tree, update value and return true. 
- * If not, insert key and return false.
- * @param key key to insert
- * @param value value related to key
- * @return Whether key is updated
- */
-void TreeInsert(__dma_aligned key_uint64_t key, __dma_aligned value_uint64_t value)
+static unsigned distribution_length(unsigned per_tasklet, unsigned remainder, unsigned tasklet_id)
 {
-    uint8_t idx_child_cache[MAX_HEIGHT];
-    unsigned depth = 0;
+    return per_tasklet + (tasklet_id < remainder);
+}
 
-    NodePtr node = root;
-    while (!Deref(node).header.isLeaf) {
-        const unsigned idx_child = findUpperBound(Deref(node).body.inl.keys, Deref(node).header.numKeys, key);
-        idx_child_cache[depth++] = (uint8_t)idx_child;
-        node = Deref(node).body.inl.children[idx_child].ptr;
-    }
+//! @sa /docs/tree_initialization.md
+//! @return Sum of nr. of KV pairs that [0, idx_leaf)-th leaves have
+static unsigned INIT_idx_leaf_to_idx_pair(unsigned idx_leaf, unsigned nr_leaves, bool is_2nd_last_leaf_not_full, unsigned nr_pairs)
+{
+    return (idx_leaf + is_2nd_last_leaf_not_full < nr_leaves ? idx_leaf * MAX_NR_PAIRS
+                                                             : (idx_leaf == nr_leaves ? nr_pairs
+                                                                                      : nr_pairs - MIN_NR_PAIRS));
+}
+//! @sa /docs/tree_initialization.md
+//! @return Sum of nr. of children that [0, idx_parent)-th parents have
+static unsigned INIT_idx_parent_to_idx_child(unsigned idx_parent, unsigned nr_parents, bool is_2nd_last_parent_not_full, unsigned nr_children)
+{
+    return (idx_parent + is_2nd_last_parent_not_full < nr_parents ? idx_parent * MAX_NR_CHILDREN
+                                                                  : (idx_parent == nr_parents ? nr_children
+                                                                                              : nr_children - MIN_NR_CHILDREN));
+}
+//! @sa /docs/tree_initialization.md
+//! @return max{ i | INIT_idx_parent_to_idx_child(i, nr_parents, _) <= idx_chlid }
+static unsigned INIT_idx_child_to_idx_parent(unsigned idx_child, unsigned nr_children, unsigned nr_parents)
+{
+    return (idx_child + MIN_NR_CHILDREN < nr_children ? DIV_NR_NODES_BY_MAX_NR_CHILDREN(idx_child)
+                                                      : (idx_child < nr_children ? nr_parents - 1
+                                                                                 : nr_parents));
+}
 
-    const unsigned idx_to_insert = findUpperBound(Deref(node).body.lf.keys, Deref(node).header.numKeys, key);
-    if (idx_to_insert != 0 && Deref(node).body.lf.keys[idx_to_insert - 1] == key) {
-        Deref(node).body.lf.values[idx_to_insert - 1] = value;
-        return;
-    }
-    num_kvpairs++;
+static void INIT_notify_ready_for_out_lifted(void)
+{
+    __asm__("acquire id, %[base], true, .+1" ::[base] "i"(&AtomicBits)
+            :);
+}
+static void INIT_wait_for_out_lifted_ready(void)
+{
+    __asm__("0:\n"
+            "release id, %[base] - 1, nz, .+2\n"
+            "jump 0b" ::[base] "i"(&AtomicBits)
+            :);
+}
 
-    if (Deref(node).header.numKeys != MAX_NR_PAIRS) {
-        if (idx_to_insert == Deref(node).header.numKeys) {
-            mram_write(&key, &Deref(node).body.lf.keys[idx_to_insert], sizeof(key_uint64_t));
-            mram_write(&value, &Deref(node).body.lf.values[idx_to_insert], sizeof(value_uint64_t));
+static void INIT_notify_end_of_use_of_out_lifted(void)
+{
+    __asm__("acquire id, %[base] + %[nr_tasklets], true, .+1" ::[base] "i"(&AtomicBits), [nr_tasklets] "i"(NR_TASKLETS)
+            :);
+}
+static void INIT_wait_for_end_of_use_of_out_lifted(void)
+{
+    __asm__("0:\n"
+            "release id, %[base] + %[nr_tasklets] + 1, nz, .+2\n"
+            "jump 0b" ::[base] "i"(&AtomicBits),
+            [nr_tasklets] "i"(NR_TASKLETS)
+            :);
+}
+
+static void INIT_receive_lifted_links_from_junior(unsigned nr_children_received, Node* dest_node, key_uint64_t* key_min_subtree)
+{
+    unsigned idx_junior = me() - 1, nr_lift_left_in_this_junior = workspace.init[idx_junior].out.nr_cached_lift;
+    for (unsigned idx_child_in_this_node_p1 = nr_children_received; idx_child_in_this_node_p1 > 0; idx_child_in_this_node_p1--, nr_lift_left_in_this_junior--) {
+        while (nr_lift_left_in_this_junior == 0) {
+            idx_junior--;
+            nr_lift_left_in_this_junior = workspace.init[idx_junior].out.nr_cached_lift;
+        }
+        const unsigned idx_child_in_this_node = idx_child_in_this_node_p1 - 1;
+        const LinkLift* const p_lift = &workspace.init[idx_junior].out.lifted[nr_lift_left_in_this_junior - 1];
+        const key_uint64_t key = ((key_uint64_t)p_lift->key_parts[0] << 32) + p_lift->key_parts[1];
+        if (idx_child_in_this_node == 0) {
+            *key_min_subtree = key;
         } else {
-            {
-                __dma_aligned key_uint64_t moved_keys[MAX_NR_PAIRS];
-                mram_read(&Deref(node).body.lf.keys[idx_to_insert], &moved_keys[1], sizeof(key_uint64_t) * (Deref(node).header.numKeys - idx_to_insert));
-                moved_keys[0] = key;
-                mram_write(&moved_keys[0], &Deref(node).body.lf.keys[idx_to_insert], sizeof(key_uint64_t) * (Deref(node).header.numKeys - idx_to_insert + 1));
+            dest_node->inl.keys[idx_child_in_this_node - 1] = key;
+        }
+        dest_node->inl.children[idx_child_in_this_node] = p_lift->child;
+    }
+}
+
+//! @sa /docs/tree_initialization.md
+void task_init(void)
+{
+    static const uintptr_t initial_pairs = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8;
+
+    _Static_assert(TASK_INIT_NR_TASKLETS > 0, "TASK_INIT_NR_TASKLETS > 0");
+    if (me() < TASK_INIT_NR_TASKLETS) {
+        InitWorkspace* const wks = &workspace.init[me()];
+
+        const unsigned nr_pairs = input_header.init.nr_pairs;
+        if (nr_pairs == 0) {
+            if (me() == 0) {
+                cold_height = 0;
+                cold_root_numKeys = 0;
             }
-            {
-                __dma_aligned value_uint64_t moved_values[MAX_NR_PAIRS];
-                mram_read(&Deref(node).body.lf.values[idx_to_insert], &moved_values[1], sizeof(value_uint64_t) * (Deref(node).header.numKeys - idx_to_insert));
-                moved_values[0] = value;
-                mram_write(&moved_values[0], &Deref(node).body.lf.values[idx_to_insert], sizeof(value_uint64_t) * (Deref(node).header.numKeys - idx_to_insert + 1));
+            return;
+        }
+
+        assert(nr_pairs <= (MAX_NR_PAIRS * MAX_NUM_NODES_IN_DPU));
+        unsigned nr_nodes = DIV_NR_PAIRS_BY_MAX_NR_PAIRS(nr_pairs + MAX_NR_PAIRS - 1);
+        Node* node_cache = (nr_nodes == 1 ? &cold_root : &wks->nodes[0]);
+
+        // Distribute the leaf initialization task among the tasklets
+        const unsigned nr_leaves_per_tasklet = DIV_NR_NODES_BY_TASK_INIT_NR_TASKLETS(nr_nodes),
+                       nr_remainder_leaves = nr_nodes - nr_leaves_per_tasklet * TASK_INIT_NR_TASKLETS,
+                       nr_leaves_for_me = distribution_length(nr_leaves_per_tasklet, nr_remainder_leaves, me());
+        unsigned idx_node_begin = distribution_begin(nr_leaves_per_tasklet, nr_remainder_leaves, me()),
+                 idx_node_end = idx_node_begin + nr_leaves_for_me;
+
+        // Correspondence between the distributed leaves and KV pairs
+        const bool is_2nd_last_node_not_full = nr_nodes > 1u && MAX_NR_PAIRS * (nr_nodes - 1u) + MIN_NR_PAIRS > nr_pairs;
+        unsigned idx_pair = INIT_idx_leaf_to_idx_pair(idx_node_begin, nr_nodes, is_2nd_last_node_not_full, nr_pairs);
+        const uintptr_t pairs_for_me = initial_pairs + sizeof(KVPair) * idx_pair;
+
+        // Distribute the initialization task of 2nd layer among the tasklets
+        unsigned nr_parents = DIV_NR_NODES_BY_MAX_NR_CHILDREN(nr_nodes + MAX_NR_CHILDREN - 1),
+                 idx_parent_begin = INIT_idx_child_to_idx_parent(idx_node_begin, nr_nodes, nr_parents),
+                 idx_parent_end = INIT_idx_child_to_idx_parent(idx_node_end, nr_nodes, nr_parents);
+
+        // Correspondence between the distributed 2nd layer and leaves
+        bool is_2nd_last_parent_not_full = nr_parents > 1u && MAX_NR_CHILDREN * (nr_parents - 1u) + MIN_NR_CHILDREN > nr_nodes;
+        unsigned idx_node_begin_used_by_me = INIT_idx_parent_to_idx_child(idx_parent_begin, nr_parents, is_2nd_last_parent_not_full, nr_nodes),
+                 idx_node_end_used_by_me = INIT_idx_parent_to_idx_child(idx_parent_end, nr_parents, is_2nd_last_parent_not_full, nr_nodes);
+
+        // Data move required to resolve the mismatch in the distribution of the leaf and 2nd layer.
+        bool is_any_node_sent_from_junior_to_senior = idx_node_end_used_by_me < idx_node_begin;
+        const unsigned idx_node_begin_sent_to_senior = (is_any_node_sent_from_junior_to_senior ? idx_node_begin : idx_node_end_used_by_me),
+                       nr_nodes_not_sent = idx_node_begin_sent_to_senior - idx_node_begin;
+
+        // Cursors on WRAM cache
+        unsigned idx_pair_cache = TASK_INIT_NR_CACHED_KVPAIRS;
+        unsigned idx_node_cache = 0;
+        // To place (idx_node_begin_sent_to_senior)-th node in wks->out.lifted[0], where should (idx_node_begin)-th be placed?
+        //     -> wks->out.lifted[idx_lift_cache_begin]
+        unsigned idx_lift_cache_begin = DIV_NR_NODES_BY_TASK_INIT_NR_CACHED_OUTPUT_LIFT(nr_nodes_not_sent + TASK_INIT_NR_CACHED_OUTPUT_LIFT - 1u)
+                                            * TASK_INIT_NR_CACHED_OUTPUT_LIFT
+                                        - nr_nodes_not_sent,
+                 idx_lift_cache = idx_lift_cache_begin;
+
+        // Place the information lifted to the 2nd layer in the place where the KV pairs were
+        unsigned lifted_links_offset = (idx_lift_cache_begin % 2) * 4;  // (idx_lift_cache_begin % 2 != 0 ? 4 : 0)
+        uintptr_t lifted_links = pairs_for_me + lifted_links_offset;
+
+        if (idx_node_begin < idx_node_end) {
+            unsigned idx_node = idx_node_begin;
+            unsigned idx_pair_end_for_this_node = INIT_idx_leaf_to_idx_pair(idx_node + 1, nr_nodes, is_2nd_last_node_not_full, nr_pairs);
+            NodePtr left_node = (idx_node == 0 ? NODE_NULLPTR : idx_node - 1);
+            NodeLink link_to_this_node = {idx_node, idx_pair_end_for_this_node - idx_pair};
+
+            for (; idx_node < idx_node_end; idx_node++) {
+                {
+                    if (idx_node_cache == TASK_INIT_NR_CACHED_NODES) {
+                        mram_write(&node_cache[0], &Deref(idx_node - idx_node_cache), sizeof(Node) * idx_node_cache);
+                        idx_node_cache = 0;
+                    }
+
+                    for (unsigned idx_pair_in_this_node = 0; idx_pair < idx_pair_end_for_this_node; idx_pair++, idx_pair_in_this_node++) {
+                        if (idx_pair_cache == TASK_INIT_NR_CACHED_KVPAIRS) {
+                            mram_read((__mram_ptr KVPair*)(initial_pairs + sizeof(KVPair) * idx_pair), &wks->in.pairs[0],
+                                sizeof(KVPair) * TASK_INIT_NR_CACHED_KVPAIRS);
+                            idx_pair_cache = 0;
+                        }
+                        node_cache[idx_node_cache].lf.keys[idx_pair_in_this_node] = wks->in.pairs[idx_pair_cache].key;
+                        node_cache[idx_node_cache].lf.values[idx_pair_in_this_node] = wks->in.pairs[idx_pair_cache].value;
+                        idx_pair_cache++;
+                    }
+                    node_cache[idx_node_cache].lf.left = left_node;
+
+                    const key_uint64_t first_key = node_cache[idx_node_cache].lf.keys[0];
+                    wks->out.lifted[idx_lift_cache] = (LinkLift){{(uint32_t)(first_key >> 32), (uint32_t)first_key}, link_to_this_node};
+                    idx_lift_cache++;
+
+                    if (idx_lift_cache == TASK_INIT_NR_CACHED_OUTPUT_LIFT) {
+                        _Static_assert((TASK_INIT_NR_CACHED_OUTPUT_LIFT * sizeof(LinkLift)) % 8 == 0, "(TASK_INIT_NR_CACHED_OUTPUT_LIFT * sizeof(LinkLift)) % 8 == 0");
+                        const uintptr_t off_for_alignment = (idx_lift_cache_begin % 2) * 4;
+                        const unsigned size = sizeof(LinkLift) * (idx_lift_cache - idx_lift_cache_begin) + off_for_alignment;
+                        mram_write((void*)((uintptr_t)(&wks->out.lifted[idx_lift_cache_begin]) - off_for_alignment),
+                            (__mram_ptr void*)(lifted_links + sizeof(LinkLift) * (idx_node + 1 - idx_node_begin) - size),
+                            size);
+                        idx_lift_cache_begin = idx_lift_cache = 0;
+                    }
+                }
+
+                idx_pair_end_for_this_node = INIT_idx_leaf_to_idx_pair((idx_node + 1) + 1, nr_nodes, is_2nd_last_node_not_full, nr_pairs);
+                left_node = idx_node;
+                link_to_this_node = (NodeLink){idx_node + 1, idx_pair_end_for_this_node - idx_pair};
+
+                {
+                    node_cache[idx_node_cache].lf.right = link_to_this_node;
+                    idx_node_cache++;
+                }
+            }
+            if (idx_node_end == nr_nodes) {
+                node_cache[idx_node_cache - 1].lf.right = NODELINK_NULLPTR;
+            }
+            if (nr_nodes != 1) {  // otherwise, directly written to root in WRAM
+                mram_write(&node_cache[0], &Deref(idx_node_end - idx_node_cache), sizeof(Node) * idx_node_cache);
             }
         }
-        Deref(node).header.numKeys += 1;
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-        if (depth != 0) {
-            Deref(Deref(node).header.parent).body.inl.children[idx_child_cache[depth - 1]].numKeys = Deref(node).header.numKeys;
-        }
+
+
+        uint8_t tmp_height = 0;
+        NodePtr nr_nodes_in_lower = nr_nodes;
+        for (;; tmp_height++, nr_nodes_in_lower += nr_nodes) {
+            _Static_assert(TASK_INIT_NR_CACHED_OUTPUT_LIFT >= MAX_NR_CHILDREN - 1, "TASK_INIT_NR_CACHED_OUTPUT_LIFT >= MAX_NR_CHILDREN - 1");
+            wks->out.nr_cached_lift = idx_lift_cache;
+
+            if (nr_nodes == 1) {
+                if (idx_node_begin != idx_node_end) {
+                    cold_height = tmp_height;
+                    cold_root_numKeys = wks->out.lifted[TASK_INIT_NR_CACHED_OUTPUT_LIFT - 1].child.numKeys;
+#ifdef TASK_INIT_CHECK
+                    TreeCheckStructure(&cold_root, cold_height, cold_root_numKeys);
 #endif
-
-    } else {  // split leaf
-        uint8_t node_numKeys = (MAX_NR_PAIRS + 2) / 2, new_node_numKeys = (MAX_NR_PAIRS + 1) / 2;
-        bool is_new_node_leaf = true;
-
-        NodePtr new_node = Allocate_node();
-        Deref(new_node).header.isLeaf = true;
-        Deref(new_node).header.numKeys = new_node_numKeys;
-        // Deref(new_node).header.parent = ...  // it depends on whether the parent is to be splitted
-        Deref(new_node).body.lf.right = Deref(node).body.lf.right;
-        if (Deref(new_node).body.lf.right != NODE_NULLPTR) {
-            Deref(Deref(new_node).body.lf.right).body.lf.left = new_node;
-        }
-        Deref(new_node).body.lf.left = node;
-
-        Deref(node).header.numKeys = node_numKeys;
-        Deref(node).body.lf.right = new_node;
-
-        if (idx_to_insert >= node_numKeys) {
-            {
-                __dma_aligned key_uint64_t moved_keys[/* new_node_numKeys */ (MAX_NR_PAIRS + 1) / 2];
-                mram_read(&Deref(node).body.lf.keys[node_numKeys], &moved_keys[0], sizeof(key_uint64_t) * (new_node_numKeys - 1));
-                memmove(&moved_keys[idx_to_insert - node_numKeys + 1], &moved_keys[idx_to_insert - node_numKeys], MAX_NR_PAIRS - idx_to_insert);
-                moved_keys[idx_to_insert - node_numKeys] = key;
-                key = moved_keys[0];
-                mram_write(&moved_keys[0], &Deref(new_node).body.lf.keys[0], sizeof(key_uint64_t) * new_node_numKeys);
-            }
-            {
-                __dma_aligned value_uint64_t moved_values[/* new_node_numKeys */ (MAX_NR_PAIRS + 1) / 2];
-                mram_read(&Deref(node).body.lf.values[node_numKeys], &moved_values[0], sizeof(value_uint64_t) * (new_node_numKeys - 1));
-                memmove(&moved_values[idx_to_insert - node_numKeys + 1], &moved_values[idx_to_insert - node_numKeys], MAX_NR_PAIRS - idx_to_insert);
-                moved_values[idx_to_insert - node_numKeys] = value;
-                mram_write(&moved_values[0], &Deref(new_node).body.lf.values[0], sizeof(value_uint64_t) * new_node_numKeys);
-            }
-        } else {
-            {
-                __dma_aligned key_uint64_t moved_keys[MAX_NR_PAIRS + 1];
-                mram_read(&Deref(node).body.lf.keys[idx_to_insert], &moved_keys[1], sizeof(key_uint64_t) * (MAX_NR_PAIRS - idx_to_insert));
-                moved_keys[0] = key;
-                key = moved_keys[node_numKeys - 1 - idx_to_insert];
-                mram_write(&moved_keys[node_numKeys - 1 - idx_to_insert], &Deref(new_node).body.lf.keys[0], sizeof(key_uint64_t) * new_node_numKeys);
-                mram_write(&moved_keys[0], &Deref(node).body.lf.keys[idx_to_insert], sizeof(key_uint64_t) * (node_numKeys - idx_to_insert));
-            }
-            {
-                __dma_aligned value_uint64_t moved_values[MAX_NR_PAIRS + 1];
-                mram_read(&Deref(node).body.lf.values[idx_to_insert], &moved_values[1], sizeof(value_uint64_t) * (MAX_NR_PAIRS - idx_to_insert));
-                moved_values[0] = value;
-                mram_write(&moved_values[node_numKeys - 1 - idx_to_insert], &Deref(new_node).body.lf.values[0], sizeof(value_uint64_t) * new_node_numKeys);
-                mram_write(&moved_values[0], &Deref(node).body.lf.values[idx_to_insert], sizeof(value_uint64_t) * (node_numKeys - idx_to_insert));
-            }
-        }
-
-        for (;; depth--) {
-            if (depth == 0) {
-                const NodePtr new_root = Allocate_node();
-                Deref(new_root).header.isLeaf = false;
-                Deref(new_root).header.numKeys = 1;
-                Deref(new_root).body.inl.keys[0] = key;
-                Deref(new_root).body.inl.children[0].ptr = node;
-                Deref(new_root).body.inl.children[1].ptr = new_node;
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-                Deref(new_root).body.inl.children[0].numKeys = node_numKeys;
-                Deref(new_root).body.inl.children[0].isLeaf = is_new_node_leaf;
-                Deref(new_root).body.inl.children[1].numKeys = new_node_numKeys;
-                Deref(new_root).body.inl.children[1].isLeaf = is_new_node_leaf;
-#endif
-
-                root = new_root;
-                Deref(node).header.parent = Deref(new_node).header.parent = new_root;
-
+                }
                 return;
             }
 
-            const NodePtr parent = Deref(node).header.parent;
-            const unsigned idx_to_insert = idx_child_cache[depth - 1];
+            // Remember about children
+            const bool is_2nd_last_node_not_full = is_2nd_last_parent_not_full;
+            const unsigned nr_children = nr_nodes,
+                           idx_child_begin = idx_node_begin_used_by_me,
+                           idx_child_end = idx_node_end_used_by_me,
+                           idx_child_begin_from_me = idx_node_begin,
+                           idx_child_end_from_me = idx_node_end;
+            const bool is_any_child_sent_from_junior_to_senior = is_any_node_sent_from_junior_to_senior;
 
-            if (Deref(parent).header.numKeys != MAX_NR_CHILDREN - 1) {
-                if (idx_to_insert == Deref(parent).header.numKeys) {
-                    mram_write(&key, &Deref(parent).body.inl.keys[idx_to_insert], sizeof(key_uint64_t));
+            // Distribution of the initialization task
+            nr_nodes = nr_parents;
+            idx_node_begin = idx_parent_begin;
+            idx_node_end = idx_parent_end;
 
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-                    __dma_aligned ChildInfo buf[16 / sizeof(ChildInfo)];
-                    const unsigned idx_to_change = idx_to_insert,
-                                   idx_to_write = idx_to_change / ALIGNOF_CHILDINFO_DMA * ALIGNOF_CHILDINFO_DMA,
-                                   idx_to_change_in_buf = idx_to_change % ALIGNOF_CHILDINFO_DMA,
-                                   bytes_to_write = sizeof(ChildInfo) * (idx_to_change_in_buf == ALIGNOF_CHILDINFO_DMA - 1 ? ALIGNOF_CHILDINFO_DMA * 2 : ALIGNOF_CHILDINFO_DMA);
-                    if (idx_to_change_in_buf != 0) {
-                        mram_read(&Deref(parent).body.inl.children[idx_to_write], &buf[0], sizeof(ChildInfo) * ALIGNOF_CHILDINFO_DMA);
-                    }
-                    buf[idx_to_change_in_buf].ptr = node;
-                    buf[idx_to_change_in_buf].numKeys = node_numKeys;
-                    buf[idx_to_change_in_buf].isLeaf = is_new_node_leaf;
-                    buf[idx_to_change_in_buf + 1].ptr = new_node;
-                    buf[idx_to_change_in_buf + 1].numKeys = new_node_numKeys;
-                    buf[idx_to_change_in_buf + 1].isLeaf = is_new_node_leaf;
-                    mram_write(&buf[0], &Deref(parent).body.inl.children[idx_to_change], bytes_to_write);
-#else  /* CACHE_CHILD_HEADER_IN_LINK */
-                    __dma_aligned ChildInfo buf[8 / sizeof(ChildInfo)];
-                    const unsigned idx_new_child = idx_to_insert + 1,
-                                   nr_children_to_write = 8 / sizeof(ChildInfo),
-                                   idx_to_write = idx_new_child / nr_children_to_write * nr_children_to_write,
-                                   idx_new_child_in_buf = idx_new_child % nr_children_to_write;
-                    if (idx_new_child_in_buf == 0) {
-                        buf[0].ptr = new_node;
-                    } else {
-                        mram_read(&Deref(parent).body.inl.children[idx_to_write], &buf[0], sizeof(buf));
-                        buf[idx_new_child_in_buf].ptr = new_node;
-                    }
-                    mram_write(&buf[0], &Deref(parent).body.inl.children[idx_to_write], sizeof(buf));
-#endif /* CACHE_CHILD_HEADER_IN_LINK */
+            // Distribute the initialization task of the next layer up among the tasklets
+            nr_parents = DIV_NR_NODES_BY_MAX_NR_CHILDREN(nr_nodes + MAX_NR_CHILDREN - 1);
+            idx_parent_begin = INIT_idx_child_to_idx_parent(idx_node_begin, nr_nodes, nr_parents);
+            idx_parent_end = INIT_idx_child_to_idx_parent(idx_node_end, nr_nodes, nr_parents);
 
-                } else {
-                    {
-                        __dma_aligned key_uint64_t moved_keys[MAX_NR_CHILDREN - 1];
-                        mram_read(&Deref(parent).body.inl.keys[idx_to_insert], &moved_keys[1], sizeof(key_uint64_t) * (Deref(parent).header.numKeys - idx_to_insert));
-                        moved_keys[0] = key;
-                        mram_write(&moved_keys[0], &Deref(parent).body.inl.keys[idx_to_insert], sizeof(key_uint64_t) * (Deref(parent).header.numKeys - idx_to_insert + 1));
-                    }
-                    {
-                        __dma_aligned ChildInfo moved_children[(MAX_NR_CHILDREN + ALIGNOF_CHILDINFO_DMA - 1) / ALIGNOF_CHILDINFO_DMA * ALIGNOF_CHILDINFO_DMA];
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-                        const unsigned idx_to_change = idx_to_insert,
-                                       idx_to_readwrite = idx_to_change / ALIGNOF_CHILDINFO_DMA * ALIGNOF_CHILDINFO_DMA,
-                                       idx_to_change_in_buf = idx_to_change % ALIGNOF_CHILDINFO_DMA,
-                                       elems_to_read = Deref(parent).header.numKeys + 1 - idx_to_change,
-                                       bytes_to_read = sizeof(ChildInfo) * ((elems_to_read + ALIGNOF_CHILDINFO_DMA - 1) / ALIGNOF_CHILDINFO_DMA * ALIGNOF_CHILDINFO_DMA),
-                                       elems_to_write = Deref(parent).header.numKeys + 2 - idx_to_readwrite,
-                                       bytes_to_write = sizeof(ChildInfo) * ((elems_to_write + ALIGNOF_CHILDINFO_DMA - 1) / ALIGNOF_CHILDINFO_DMA * ALIGNOF_CHILDINFO_DMA);
-                        mram_read(&Deref(parent).body.inl.children[idx_to_readwrite], &moved_children[0], bytes_to_read);
-                        memmove(&moved_children[idx_to_change_in_buf + 2], &moved_children[idx_to_change_in_buf + 1], sizeof(ChildInfo) * (elems_to_read - idx_to_change_in_buf - 1));
-                        moved_children[idx_to_change_in_buf].numKeys = node_numKeys;
-                        moved_children[idx_to_change_in_buf + 1].ptr = new_node;
-                        moved_children[idx_to_change_in_buf + 1].numKeys = new_node_numKeys;
-                        moved_children[idx_to_change_in_buf + 1].isLeaf = is_new_node_leaf;
-                        mram_write(&moved_children[0], &Deref(parent).body.inl.children[idx_to_readwrite], bytes_to_write);
-#else  /* CACHE_CHILD_HEADER_IN_LINK */
-                        const unsigned idx_to_change = idx_to_insert + 1,
-                                       idx_to_readwrite = idx_to_change / ALIGNOF_CHILDINFO_DMA * ALIGNOF_CHILDINFO_DMA,
-                                       idx_to_change_in_buf = idx_to_change % ALIGNOF_CHILDINFO_DMA,
-                                       elems_to_read = Deref(parent).header.numKeys + 1 - idx_to_readwrite,
-                                       bytes_to_read = sizeof(ChildInfo) * ((elems_to_read + ALIGNOF_CHILDINFO_DMA - 1) / ALIGNOF_CHILDINFO_DMA * ALIGNOF_CHILDINFO_DMA),
-                                       elems_to_write = Deref(parent).header.numKeys + 2 - idx_to_readwrite,
-                                       bytes_to_write = sizeof(ChildInfo) * ((elems_to_write + ALIGNOF_CHILDINFO_DMA - 1) / ALIGNOF_CHILDINFO_DMA * ALIGNOF_CHILDINFO_DMA);
-                        mram_read(&Deref(parent).body.inl.children[idx_to_readwrite], &moved_children[0], bytes_to_read);
-                        memmove(&moved_children[idx_to_change_in_buf + 1], &moved_children[idx_to_change_in_buf], sizeof(ChildInfo) * (elems_to_read - idx_to_change_in_buf));
-                        moved_children[idx_to_change_in_buf].ptr = new_node;
-                        mram_write(&moved_children[0], &Deref(parent).body.inl.children[idx_to_readwrite], bytes_to_write);
-#endif /* CACHE_CHILD_HEADER_IN_LINK */
-                    }
-                }
-                Deref(parent).header.numKeys += 1;
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-                if (depth != 1) {
-                    Deref(Deref(parent).header.parent).body.inl.children[idx_child_cache[depth - 2]].numKeys = Deref(parent).header.numKeys;
-                }
-#endif
+            // Correspondence between the distributions of this layer and the next layer up
+            is_2nd_last_parent_not_full = nr_parents > 1u && MAX_NR_CHILDREN * (nr_parents - 1u) + MIN_NR_CHILDREN > nr_nodes;
+            idx_node_begin_used_by_me = INIT_idx_parent_to_idx_child(idx_parent_begin, nr_parents, is_2nd_last_parent_not_full, nr_nodes);
+            idx_node_end_used_by_me = INIT_idx_parent_to_idx_child(idx_parent_end, nr_parents, is_2nd_last_parent_not_full, nr_nodes);
 
-                Deref(new_node).header.parent = parent;
-                return;
+            // Data move required to resolve the mismatch in the distribution of this layer and the next layer up
+            is_any_node_sent_from_junior_to_senior = idx_node_end_used_by_me < idx_node_begin;
+            idx_lift_cache = 0;  // reset as default
+
+            if (is_any_child_sent_from_junior_to_senior) {
+                INIT_wait_for_out_lifted_ready();
+                INIT_notify_ready_for_out_lifted();
+                INIT_wait_for_end_of_use_of_out_lifted();
+                INIT_notify_end_of_use_of_out_lifted();
+                continue;
 
             } else {
-                const uint8_t parent_numKeys = MAX_NR_CHILDREN / 2, new_parent_numKeys = (MAX_NR_CHILDREN - 1) / 2;
-
-                const NodePtr new_parent = Allocate_node();
-                Deref(new_parent).header.isLeaf = false;
-                Deref(new_parent).header.numKeys = new_parent_numKeys;
-                // Deref(new_parent).header.parent = ...  // it depends on whether the grandparent is to be splitted
-
-                Deref(parent).header.numKeys = parent_numKeys;
-
-                // split: distribute keys and children as follows
-                //     input:
-                //         keys:      parent.key[0..(idx_to_insert - 1)] ++ [key] ++ parent.key[idx_to_insert..(MAX_CHILD - 1)]
-                //         children:  parent.children[0..idx_to_insert] ++ [new_node] ++ parent.children[(idx_to_insert + 1)..MAX_CHILD]
-                //     output:
-                //         keys:      parent.key[0..(parent_numKeys - 1)] ++ [key] ++ new_parent.key[0..(new_parent_numKeys - 1)]
-                //         children:  parent.children[0..parent_numKeys] ++ new_parent.children[0..new_parent_numKeys]
-                if (idx_to_insert >= parent_numKeys) {
-                    uint8_t idx_dest = new_parent_numKeys;
-                    for (unsigned idx_src = MAX_NR_CHILDREN - 1; idx_src > idx_to_insert; idx_src--, idx_dest--) {
-                        Deref(new_parent).body.inl.children[idx_dest] = Deref(parent).body.inl.children[idx_src];
-                        Deref(Deref(new_parent).body.inl.children[idx_dest].ptr).header.parent = new_parent;
-                    }
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-                    Deref(new_parent).body.inl.children[idx_dest].numKeys = new_node_numKeys;
-                    Deref(new_parent).body.inl.children[idx_dest].isLeaf = is_new_node_leaf;
-#endif
-                    Deref(new_parent).body.inl.children[idx_dest--].ptr = new_node;
-                    Deref(new_node).header.parent = new_parent;
-                    if (idx_to_insert != parent_numKeys) {
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-                        Deref(new_parent).body.inl.children[idx_dest].numKeys = node_numKeys;
-                        Deref(new_parent).body.inl.children[idx_dest].isLeaf = is_new_node_leaf;
-#endif
-                        Deref(new_parent).body.inl.children[idx_dest--].ptr = node;
-                        Deref(node).header.parent = new_parent;
-                    }
-                    for (unsigned idx_src = idx_to_insert - 1; idx_src > parent_numKeys; idx_src--, idx_dest--) {
-                        Deref(new_parent).body.inl.children[idx_dest] = Deref(parent).body.inl.children[idx_src];
-                        Deref(Deref(new_parent).body.inl.children[idx_dest].ptr).header.parent = new_parent;
-                    }
-                } else {
-                    for (uint8_t idx_src = parent_numKeys, idx_dest = 0; idx_dest <= new_parent_numKeys; idx_src++, idx_dest++) {
-                        Deref(new_parent).body.inl.children[idx_dest] = Deref(parent).body.inl.children[idx_src];
-                        Deref(Deref(new_parent).body.inl.children[idx_dest].ptr).header.parent = new_parent;
-                    }
-                    for (unsigned idx_src = parent_numKeys - 1; idx_src > idx_to_insert; idx_src--) {
-                        Deref(parent).body.inl.children[idx_src + 1] = Deref(parent).body.inl.children[idx_src];
-                    }
-                    Deref(parent).body.inl.children[idx_to_insert + 1].ptr = new_node;
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-                    Deref(parent).body.inl.children[idx_to_insert + 1].numKeys = new_node_numKeys;
-                    Deref(parent).body.inl.children[idx_to_insert + 1].isLeaf = is_new_node_leaf;
-#endif
-                    Deref(new_node).header.parent = parent;
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-                    Deref(parent).body.inl.children[idx_to_insert].numKeys = node_numKeys;
-                    Deref(parent).body.inl.children[idx_to_insert].isLeaf = is_new_node_leaf;
-#endif
+                if (idx_child_end != idx_child_end_from_me) {
+                    INIT_notify_ready_for_out_lifted();
                 }
 
-                if (idx_to_insert > parent_numKeys) {
-                    uint8_t idx_dest = new_parent_numKeys - 1;
-                    for (uint8_t idx_src = MAX_NR_CHILDREN - 1; idx_src > idx_to_insert; idx_src--, idx_dest--) {
-                        Deref(new_parent).body.inl.keys[idx_dest] = Deref(parent).body.inl.keys[idx_src - 1];
-                    }
-                    Deref(new_parent).body.inl.keys[idx_dest--] = key;
-                    for (unsigned idx_src = idx_to_insert - 1; idx_src > parent_numKeys; idx_src--, idx_dest--) {
-                        Deref(new_parent).body.inl.keys[idx_dest] = Deref(parent).body.inl.keys[idx_src];
-                    }
-                    key = Deref(parent).body.inl.keys[parent_numKeys];
-                } else {
-                    for (uint8_t idx_src = parent_numKeys, idx_dest = 0; idx_src < MAX_NR_CHILDREN - 1; idx_src++, idx_dest++) {
-                        Deref(new_parent).body.inl.keys[idx_dest] = Deref(parent).body.inl.keys[idx_src];
-                    }
-                    if (idx_to_insert != parent_numKeys) {
-                        const key_uint64_t to_grandparent = Deref(parent).body.inl.keys[parent_numKeys - 1];
-                        for (unsigned idx_dest = parent_numKeys - 1; idx_dest > idx_to_insert; idx_dest--) {
-                            Deref(parent).body.inl.keys[idx_dest] = Deref(parent).body.inl.keys[idx_dest - 1];
-                        }
-                        Deref(parent).body.inl.keys[idx_to_insert] = key;
-                        key = to_grandparent;
-                    }
+                if (nr_nodes == 1) {
+                    node_cache = &cold_root;
                 }
 
-                node = parent;
-                node_numKeys = parent_numKeys;
-                new_node = new_parent;
-                new_node_numKeys = new_parent_numKeys;
-                is_new_node_leaf = false;
-            }
-        }
-    }
-}
+                key_uint64_t key_min_subtree;
 
-#ifdef EXPLICIT_DMA_IN_GET
-#if defined(DMA_WHOLE_NODE)
-value_uint64_t TreeGet(key_uint64_t key)
-{
-    __dma_aligned Node cache;
+                const unsigned nr_children_received = idx_child_begin_from_me - idx_child_begin;
+                if (nr_children_received != 0) {
+                    INIT_wait_for_out_lifted_ready();
+                    INIT_receive_lifted_links_from_junior(nr_children_received, &node_cache[0], &key_min_subtree);
+                    INIT_notify_end_of_use_of_out_lifted();
+                }
+                if (idx_child_end != idx_child_end_from_me) {
+                    INIT_wait_for_end_of_use_of_out_lifted();
+                }
 
-    NodePtr node = root;
-    mram_read(&Deref(node), &cache, sizeof(Node));
-    while (!cache.header.isLeaf) {
-        node = cache.body.inl.children[findUpperBoundWRAM(cache.body.inl.keys, cache.header.numKeys, key)].ptr;
-        mram_read(&Deref(node), &cache, sizeof(Node));
-    }
+                if (idx_node_begin < idx_node_end) {
+                    // Correspondence between the distributed nodes and children
+                    unsigned idx_child = idx_child_begin_from_me;
 
-    const unsigned idx_pair_plus_1 = findUpperBoundWRAM(cache.body.lf.keys, cache.header.numKeys, key);
-    if (idx_pair_plus_1 != 0 && cache.body.lf.keys[idx_pair_plus_1 - 1] == key) {
-        return cache.body.lf.values[idx_pair_plus_1 - 1];
-    }
+                    // Data move required to resolve the mismatch in the distribution of this layer and the next layer up
+                    const unsigned idx_node_begin_sent_to_senior = (is_any_node_sent_from_junior_to_senior ? idx_node_begin : idx_node_end_used_by_me),
+                                   nr_nodes_not_sent = idx_node_begin_sent_to_senior - idx_node_begin;
 
-    return 0;
-}
-#elif defined(DMA_WHOLE_KEY_ARRAY)
-value_uint64_t TreeGet(key_uint64_t key)
-{
-    __dma_aligned NodeHeaderAndKeys cache;
+                    // Cursors on WRAM cache
+                    unsigned idx_child_cache = (lifted_links_offset != 0);
+                    unsigned idx_node_cache = 0;
+                    // To place (idx_node_begin_sent_to_senior)-th node in wks->out.lifted[0], where should (idx_node_begin)-th be placed?
+                    //     -> wks->out.lifted[idx_lift_cache_begin]
+                    unsigned idx_lift_cache_begin = DIV_NR_NODES_BY_TASK_INIT_NR_CACHED_OUTPUT_LIFT(nr_nodes_not_sent + TASK_INIT_NR_CACHED_OUTPUT_LIFT - 1u)
+                                                        * TASK_INIT_NR_CACHED_OUTPUT_LIFT
+                                                    - nr_nodes_not_sent;
+                    idx_lift_cache = idx_lift_cache_begin;
 
-    NodePtr node = root;
-    mram_read(&Deref(node), &cache, sizeof(NodeHeaderAndKeys));
-    while (!cache.header.isLeaf) {
-        node = Deref(node).body.inl.children[findUpperBoundWRAM(cache.body.inl.keys, cache.header.numKeys, key)].ptr;
-        mram_read(&Deref(node), &cache, sizeof(NodeHeaderAndKeys));
-    }
-
-    const unsigned idx_pair_plus_1 = findUpperBoundWRAM(cache.body.lf.keys, cache.header.numKeys, key);
-    if (idx_pair_plus_1 != 0 && cache.body.lf.keys[idx_pair_plus_1 - 1] == key) {
-        return Deref(node).body.lf.values[idx_pair_plus_1 - 1];
-    }
-
-    return 0;
-}
-#elif defined(DMA_VALID_KEYS)
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-value_uint64_t TreeGet(key_uint64_t key)
-{
-    union __dma_aligned {  // same structure
-        NodeHeader header;
-        ChildInfo child;
-        char size_adjuster[8];
-    } cache;
-
-    NodePtr node = root;
-    mram_read(&Deref(node).header, &cache, sizeof(cache));
-    while (!cache.header.isLeaf) {
-        __dma_aligned key_uint64_t keys_cache[MAX_NR_CHILDREN - 1];
-        mram_read(&Deref(node).body.inl.keys[0], &keys_cache[0], sizeof(key_uint64_t) * cache.header.numKeys);
-
-        mram_read(&Deref(node).body.inl.children[findUpperBoundWRAM(keys_cache, cache.header.numKeys, key)], &cache, sizeof(cache));
-        node = cache.child.ptr;
-    }
-
-    __dma_aligned key_uint64_t keys_cache[MAX_NR_PAIRS];
-    mram_read(&Deref(node).body.lf.keys[0], &keys_cache[0], sizeof(key_uint64_t) * cache.header.numKeys);
-    const unsigned idx_pair_plus_1 = findUpperBoundWRAM(keys_cache, cache.header.numKeys, key);
-    if (idx_pair_plus_1 != 0 && keys_cache[idx_pair_plus_1 - 1] == key) {
-        return Deref(node).body.lf.values[idx_pair_plus_1 - 1];
-    }
-
-    return 0;
-}
-#else  /* CACHE_CHILD_HEADER_IN_LINK */
-value_uint64_t TreeGet(key_uint64_t key)
-{
-    union __dma_aligned {
-        NodeHeader header;
-        char size_adjuster[8];
-    } cache;
-
-    NodePtr node = root;
-    mram_read(&Deref(node).header, &cache, sizeof(cache));
-    while (!cache.header.isLeaf) {
-        __dma_aligned key_uint64_t keys_cache[MAX_NR_CHILDREN - 1];
-        mram_read(&Deref(node).body.inl.keys[0], &keys_cache[0], sizeof(key_uint64_t) * cache.header.numKeys);
-
-        node = Deref(node).body.inl.children[findUpperBoundWRAM(keys_cache, cache.header.numKeys, key)].ptr;
-        mram_read(&Deref(node).header, &cache, sizeof(cache));
-    }
-
-    __dma_aligned key_uint64_t keys_cache[MAX_NR_PAIRS];
-    mram_read(&Deref(node).body.lf.keys[0], &keys_cache[0], sizeof(key_uint64_t) * cache.header.numKeys);
-    const unsigned idx_pair_plus_1 = findUpperBoundWRAM(keys_cache, cache.header.numKeys, key);
-    if (idx_pair_plus_1 != 0 && keys_cache[idx_pair_plus_1 - 1] == key) {
-        return Deref(node).body.lf.values[idx_pair_plus_1 - 1];
-    }
-
-    return 0;
-}
-#endif /* CACHE_CHILD_HEADER_IN_LINK */
-#endif /* DMA_VALID_KEYS */
-#else  /* EXPLICIT_DMA_IN_GET */
-/**
- * @brief 
- * get a value related to the key.
- * @param key key
- * @return value related to the key
- */
-value_uint64_t TreeGet(key_uint64_t key)
-{
-    NodePtr node = root;
-    while (!Deref(node).header.isLeaf) {
-        node = Deref(node).body.inl.children[findUpperBound(Deref(node).body.inl.keys, Deref(node).header.numKeys, key)].ptr;
-    }
-
-    const unsigned idx_pair_plus_1 = findUpperBound(Deref(node).body.lf.keys, Deref(node).header.numKeys, key);
-    if (idx_pair_plus_1 != 0 && Deref(node).body.lf.keys[idx_pair_plus_1 - 1] == key) {
-        return Deref(node).body.lf.values[idx_pair_plus_1 - 1];
-    }
-
-    return 0;
-}
-#endif /* EXPLICIT_DMA_IN_GET */
-
-/**
- * @brief
- * get the pair with the smallest key greater than the given key.
- * @param key key
- * @return value related to the key
- */
-// KVPair TreeSucc(key_uint64_t key)
-// {
-// }
-
-
-void TreeSerialize(key_uint64_t __mram_ptr* keys_dest, value_uint64_t __mram_ptr* values_dest)
-{
-    NodePtr leaf = root;
-    while (!Deref(leaf).header.isLeaf) {
-        leaf = Deref(leaf).body.inl.children[0].ptr;
-    }
-
-    do {
-        for (uint8_t i = 0; i < Deref(leaf).header.numKeys; i++) {
-            *(keys_dest++) = Deref(leaf).body.lf.keys[i];
-            *(values_dest++) = Deref(leaf).body.lf.values[i];
-        }
-        leaf = Deref(leaf).body.lf.right;
-    } while (leaf != NODE_NULLPTR);
-
-    init_Tree();
-}
-
-uint32_t TreeExtractFirstPairs(key_uint64_t __mram_ptr* keys_dest, value_uint64_t __mram_ptr* values_dest, key_uint64_t delimiter)
-{
-    NodePtr leaf = root;
-    while (!Deref(leaf).header.isLeaf) {
-        leaf = Deref(leaf).body.inl.children[0].ptr;
-    }
-
-    uint32_t nr_serialized = 0;
-
-    //--- copy&deletion: While copying keys and values in order from the left end of the tree, delete empty nodes ---//
-    for (;;) {
-        if (Deref(leaf).body.lf.keys[Deref(leaf).header.numKeys - 1] < delimiter) {  // copy all the pairs
-            nr_serialized += Deref(leaf).header.numKeys;
-            for (uint8_t i = 0; i < Deref(leaf).header.numKeys; i++) {
-                *(keys_dest++) = Deref(leaf).body.lf.keys[i];
-                *(values_dest++) = Deref(leaf).body.lf.values[i];
-            }
-            NodePtr deleted = leaf;
-            leaf = Deref(leaf).body.lf.right;
-            for (;;) {
-                if (deleted == root) {  // the whole tree get empty
-                    Deref(deleted).header.isLeaf = true;
-                    Deref(deleted).header.numKeys = 0;
-                    Deref(deleted).body.lf.right = Deref(deleted).body.lf.left = NODE_NULLPTR;
-                    num_kvpairs -= nr_serialized;
-                    return nr_serialized;
-                } else {
-                    const NodePtr parent = Deref(deleted).header.parent;
-                    const bool is_last_child = (Deref(parent).body.inl.children[Deref(parent).header.numKeys].ptr == deleted);
-                    Free_node(deleted);
-                    if (is_last_child) {
-                        deleted = parent;
-                    } else {
-                        break;
+                    const unsigned incoming_links = lifted_links;
+                    {  // Fetch the links to children before rewriting lifted_links_offset
+                        mram_read((__mram_ptr void*)(incoming_links - lifted_links_offset),
+                            (void*)((uintptr_t)(&wks->in.lifted[idx_child_cache]) - lifted_links_offset),
+                            sizeof(LinkLift) * (TASK_INIT_NR_CACHED_INPUT_LIFT - idx_child_cache) + lifted_links_offset);
                     }
-                }
-            }
-        } else {  // copy some of the pairs
-            uint8_t n_move = 0;
-            for (; Deref(leaf).body.lf.keys[n_move] < delimiter; n_move++) {  // TODO: binary search & bulk copy
-                *(keys_dest++) = Deref(leaf).body.lf.keys[n_move];
-                *(values_dest++) = Deref(leaf).body.lf.values[n_move];
-            }
-            if (n_move != 0) {
-                nr_serialized += n_move;
-                const uint8_t orig_numKeys = Deref(leaf).header.numKeys;
-                uint8_t i = 0;
-                for (; n_move < orig_numKeys; i++, n_move++) {
-                    Deref(leaf).body.lf.keys[i] = Deref(leaf).body.lf.keys[n_move];
-                    Deref(leaf).body.lf.values[i] = Deref(leaf).body.lf.values[n_move];
-                }
-                Deref(leaf).header.numKeys = i;
-            }
-            Deref(leaf).body.lf.left = NODE_NULLPTR;
-            break;
-        }
-    }
+                    // Place the information lifted to the 2nd layer in the place where the KV pairs were
+                    lifted_links_offset = (idx_lift_cache_begin % 2) * 4;
+                    lifted_links = pairs_for_me + lifted_links_offset;
 
-    //--- hole-filling: Ensure no internal node points to the deleted node as a child ---//
-    for (NodePtr node = leaf; node != root;) {
-        const NodePtr parent = Deref(node).header.parent;
-        if (Deref(parent).body.inl.children[0].ptr != node) {
-            unsigned live_child_idx = findUpperBound(Deref(parent).body.inl.keys, Deref(parent).header.numKeys, delimiter);
-            const uint8_t orig_numKeys = Deref(parent).header.numKeys;
-            uint8_t i = 0;
-            for (; live_child_idx < orig_numKeys; i++, live_child_idx++) {
-                Deref(parent).body.inl.keys[i] = Deref(parent).body.inl.keys[live_child_idx];
-                Deref(parent).body.inl.children[i] = Deref(parent).body.inl.children[live_child_idx];
-            }
-            Deref(parent).body.inl.children[i] = Deref(parent).body.inl.children[live_child_idx];
-            Deref(parent).header.numKeys = i;
-        }
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-        Deref(parent).body.inl.children[0].numKeys = Deref(node).header.numKeys;
-#endif
-        node = parent;
-    }
+                    unsigned idx_child_in_this_node = nr_children_received;
 
-    //--- regularization: Ensure no node has too few contents ---//
-    while (Deref(root).header.numKeys == 0) {  // while the root has too few contents
-        const NodePtr child = Deref(root).body.inl.children[0].ptr;
-        Free_node(root);
-        root = child;
-    }
-    if (root != leaf) {
-        for (NodePtr parent = root;;) {
-            const NodePtr node = Deref(parent).body.inl.children[0].ptr;
-            if (node == leaf) {
-                if (Deref(node).header.numKeys < MIN_NR_PAIRS) {
-                    const NodePtr sibling = Deref(parent).body.inl.children[1].ptr;
-                    const unsigned sum_num_pairs = Deref(node).header.numKeys + Deref(sibling).header.numKeys;
-                    if (sum_num_pairs >= MIN_NR_PAIRS * 2) {  // move kv-pairs from the sibling
-                        const uint8_t n_move = MIN_NR_PAIRS - Deref(node).header.numKeys;
-                        for (uint8_t src = 0, dest = Deref(node).header.numKeys; src < n_move; src++, dest++) {
-                            Deref(node).body.lf.keys[dest] = Deref(sibling).body.lf.keys[src];
-                            Deref(node).body.lf.values[dest] = Deref(sibling).body.lf.values[src];
+                    for (unsigned idx_node = idx_node_begin; idx_node < idx_node_end; idx_node++) {
+                        if (idx_node_cache == TASK_INIT_NR_CACHED_NODES) {
+                            mram_write(&node_cache[0], &Deref(nr_nodes_in_lower + idx_node - idx_node_cache), sizeof(Node) * idx_node_cache);
+                            idx_node_cache = 0;
                         }
-                        Deref(node).header.numKeys = MIN_NR_PAIRS;
-                        Deref(parent).body.inl.keys[0] = Deref(sibling).body.lf.keys[n_move];
-                        for (uint8_t src = n_move, dest = 0; src < Deref(sibling).header.numKeys; src++, dest++) {
-                            Deref(sibling).body.lf.keys[dest] = Deref(sibling).body.lf.keys[src];
-                            Deref(sibling).body.lf.values[dest] = Deref(sibling).body.lf.values[src];
-                        }
-                        Deref(sibling).header.numKeys = (uint8_t)(sum_num_pairs - MIN_NR_PAIRS);
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-                        Deref(parent).body.inl.children[0].ptr = node;
-                        Deref(parent).body.inl.children[0].numKeys = MIN_NR_PAIRS;
-                        Deref(parent).body.inl.children[0].isLeaf = true;
-                        Deref(parent).body.inl.children[1].ptr = sibling;
-                        Deref(parent).body.inl.children[1].numKeys = (uint8_t)(sum_num_pairs - MIN_NR_PAIRS);
-                        Deref(parent).body.inl.children[1].isLeaf = true;
-#endif
 
-                    } else {  // merge node and the sibling
-                        for (unsigned src = Deref(sibling).header.numKeys - 1, dest = sum_num_pairs - 1; dest >= Deref(node).header.numKeys; src--, dest--) {
-                            Deref(sibling).body.lf.keys[dest] = Deref(sibling).body.lf.keys[src];
-                            Deref(sibling).body.lf.values[dest] = Deref(sibling).body.lf.values[src];
-                        }
-                        for (uint8_t i = 0; i < Deref(node).header.numKeys; i++) {
-                            Deref(sibling).body.lf.keys[i] = Deref(node).body.lf.keys[i];
-                            Deref(sibling).body.lf.values[i] = Deref(node).body.lf.values[i];
-                        }
-                        Deref(sibling).header.numKeys = (uint8_t)sum_num_pairs;
-                        Deref(sibling).body.lf.left = NODE_NULLPTR;
-                        Free_node(node);
+                        const unsigned idx_child_end_for_this_node = INIT_idx_parent_to_idx_child(idx_node + 1, nr_nodes, is_2nd_last_node_not_full, nr_children);
 
-                        if (Deref(parent).header.numKeys <= 1) {
-                            Free_node(parent);
-                            root = sibling;
-                        } else {
-                            Deref(parent).body.inl.children[0].ptr = sibling;
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-                            Deref(parent).body.inl.children[0].numKeys = (uint8_t)sum_num_pairs;
-                            Deref(parent).body.inl.children[0].isLeaf = true;
-#endif
-                            uint8_t i = 1;
-                            for (; i < Deref(parent).header.numKeys; i++) {
-                                Deref(parent).body.inl.keys[i - 1] = Deref(parent).body.inl.keys[i];
-                                Deref(parent).body.inl.children[i] = Deref(parent).body.inl.children[i + 1];
+                        for (; idx_child < idx_child_end_for_this_node; idx_child++, idx_child_in_this_node++) {
+                            if (idx_child_cache == TASK_INIT_NR_CACHED_INPUT_LIFT) {
+                                mram_read((__mram_ptr void*)(incoming_links + sizeof(LinkLift) * (idx_child - idx_child_begin_from_me)),
+                                    &wks->in.lifted[0],
+                                    sizeof(LinkLift) * TASK_INIT_NR_CACHED_INPUT_LIFT);
+                                idx_child_cache = 0;
                             }
-                            Deref(parent).header.numKeys = i - 1;
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-                            Deref(Deref(parent).header.parent).body.inl.children[0].ptr = parent;
-                            Deref(Deref(parent).header.parent).body.inl.children[0].numKeys = i - 1;
-                            Deref(Deref(parent).header.parent).body.inl.children[0].isLeaf = false;
-#endif
-                        }
-                    }
-                }
-                break;
-            } else {
-                if (Deref(node).header.numKeys < MIN_NR_KEYS + 1) {
-                    const NodePtr sibling = Deref(parent).body.inl.children[1].ptr;
-                    const unsigned sum_num_keys = Deref(node).header.numKeys + Deref(sibling).header.numKeys;
-                    if (sum_num_keys >= MIN_NR_KEYS * 2 + 1) {  // move kv-pairs from the sibling
-                        const uint8_t n_move = MIN_NR_KEYS + 1 - Deref(node).header.numKeys;
-                        for (uint8_t i = 0; i < n_move; i++) {
-                            Deref(Deref(sibling).body.inl.children[i].ptr).header.parent = node;
-                        }
-                        Deref(node).body.inl.keys[Deref(node).header.numKeys] = Deref(parent).body.inl.keys[0];
-                        for (uint8_t src = 0, dest = Deref(node).header.numKeys + 1; src < n_move - 1; src++, dest++) {
-                            Deref(node).body.inl.keys[dest] = Deref(sibling).body.inl.keys[src];
-                        }
-                        Deref(parent).body.inl.keys[0] = Deref(sibling).body.inl.keys[n_move - 1];
-                        for (uint8_t src = n_move, dest = 0; src < Deref(sibling).header.numKeys; src++, dest++) {
-                            Deref(sibling).body.inl.keys[dest] = Deref(sibling).body.inl.keys[src];
-                        }
-
-                        for (uint8_t src = 0, dest = Deref(node).header.numKeys + 1; src < n_move; src++, dest++) {
-                            Deref(node).body.inl.children[dest] = Deref(sibling).body.inl.children[src];
-                        }
-                        for (uint8_t src = n_move, dest = 0; src < Deref(sibling).header.numKeys + 1; src++, dest++) {
-                            Deref(sibling).body.inl.children[dest] = Deref(sibling).body.inl.children[src];
-                        }
-
-                        Deref(node).header.numKeys = MIN_NR_KEYS + 1;
-                        Deref(sibling).header.numKeys = (uint8_t)(sum_num_keys - (MIN_NR_KEYS + 1));
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-                        Deref(parent).body.inl.children[0].ptr = node;
-                        Deref(parent).body.inl.children[0].numKeys = MIN_NR_KEYS + 1;
-                        Deref(parent).body.inl.children[0].isLeaf = false;
-                        Deref(parent).body.inl.children[1].ptr = sibling;
-                        Deref(parent).body.inl.children[1].numKeys = (uint8_t)(sum_num_keys - (MIN_NR_KEYS + 1));
-                        Deref(parent).body.inl.children[1].isLeaf = false;
-#endif
-
-                    } else {  // merge node and the sibling
-                        _Static_assert(MAX_NR_CHILDREN % 2 == 0, "Eager merging requires even number for MAX_NR_CHILDREN");
-                        for (uint8_t i = 0; i < Deref(node).header.numKeys + 1; i++) {
-                            Deref(Deref(node).body.inl.children[i].ptr).header.parent = sibling;
-                        }
-                        for (unsigned src = Deref(sibling).header.numKeys - 1, dest = sum_num_keys; dest >= Deref(node).header.numKeys + 1; src--, dest--) {
-                            Deref(sibling).body.inl.keys[dest] = Deref(sibling).body.inl.keys[src];
-                        }
-                        Deref(sibling).body.inl.keys[Deref(node).header.numKeys] = Deref(parent).body.inl.keys[0];
-                        for (uint8_t i = 0; i < Deref(node).header.numKeys; i++) {
-                            Deref(sibling).body.inl.keys[i] = Deref(node).body.inl.keys[i];
-                        }
-
-                        for (unsigned src = Deref(sibling).header.numKeys, dest = sum_num_keys + 1; dest >= Deref(node).header.numKeys + 1; src--, dest--) {
-                            Deref(sibling).body.inl.children[dest] = Deref(sibling).body.inl.children[src];
-                        }
-                        for (uint8_t i = 0; i < Deref(node).header.numKeys + 1; i++) {
-                            Deref(sibling).body.inl.children[i] = Deref(node).body.inl.children[i];
-                        }
-                        Deref(sibling).header.numKeys = (uint8_t)(sum_num_keys + 1);
-                        Free_node(node);
-
-                        if (Deref(parent).header.numKeys <= 1) {
-                            Free_node(parent);
-                            root = sibling;
-                        } else {
-                            Deref(parent).body.inl.children[0].ptr = sibling;
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-                            Deref(parent).body.inl.children[0].numKeys = (uint8_t)(sum_num_keys + 1);
-                            Deref(parent).body.inl.children[0].isLeaf = false;
-#endif
-                            uint8_t i = 1;
-                            for (; i < Deref(parent).header.numKeys; i++) {
-                                Deref(parent).body.inl.keys[i - 1] = Deref(parent).body.inl.keys[i];
-                                Deref(parent).body.inl.children[i] = Deref(parent).body.inl.children[i + 1];
+                            const LinkLift* const p_lift = &wks->in.lifted[idx_child_cache];
+                            const key_uint64_t key = ((key_uint64_t)p_lift->key_parts[0] << 32) + p_lift->key_parts[1];
+                            if (idx_child_in_this_node == 0) {
+                                key_min_subtree = key;
+                            } else {
+                                node_cache[idx_node_cache].inl.keys[idx_child_in_this_node - 1] = key;
                             }
-                            Deref(parent).header.numKeys = i - 1;
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-                            Deref(Deref(parent).header.parent).body.inl.children[0].ptr = parent;
-                            Deref(Deref(parent).header.parent).body.inl.children[0].numKeys = i - 1;
-                            Deref(Deref(parent).header.parent).body.inl.children[0].isLeaf = false;
-#endif
+                            node_cache[idx_node_cache].inl.children[idx_child_in_this_node] = p_lift->child;
+                            idx_child_cache++;
                         }
-                        parent = sibling;
-                        continue;
+                        idx_node_cache++;
+
+                        const NodeLink link_to_this_node = {nr_nodes_in_lower + idx_node, idx_child_in_this_node - 1};
+                        idx_child_in_this_node = 0;
+
+                        wks->out.lifted[idx_lift_cache] = (LinkLift){{(uint32_t)(key_min_subtree >> 32), (uint32_t)key_min_subtree}, link_to_this_node};
+                        idx_lift_cache++;
+                        if (idx_lift_cache == TASK_INIT_NR_CACHED_OUTPUT_LIFT) {
+                            _Static_assert((TASK_INIT_NR_CACHED_OUTPUT_LIFT * sizeof(LinkLift)) % 8 == 0, "(TASK_INIT_NR_CACHED_OUTPUT_LIFT * sizeof(LinkLift)) % 8 == 0");
+                            const uintptr_t off_for_alignment = (idx_lift_cache_begin % 2) * 4;
+                            const unsigned size = sizeof(LinkLift) * (idx_lift_cache - idx_lift_cache_begin) + off_for_alignment;
+                            mram_write((void*)((uintptr_t)(&wks->out.lifted[idx_lift_cache_begin]) - off_for_alignment),
+                                (__mram_ptr void*)(lifted_links + sizeof(LinkLift) * (idx_node + 1 - idx_node_begin) - size),
+                                size);
+                            idx_lift_cache_begin = idx_lift_cache = 0;
+                        }
+                    }
+                    if (nr_nodes != 1) {  // otherwise, directly written to root in WRAM
+                        mram_write(&node_cache[0], &Deref(nr_nodes_in_lower + idx_node_end - idx_node_cache), sizeof(Node) * idx_node_cache);
                     }
                 }
-                parent = node;
             }
         }
     }
-    num_kvpairs -= nr_serialized;
-    return nr_serialized;
 }
 
-key_uint64_t TreeNthKeyFromLeft(uint32_t nth)
-{
-    NodePtr leaf = root;
-    while (!Deref(leaf).header.isLeaf) {
-        leaf = Deref(leaf).body.inl.children[0].ptr;
-    }
-
-    for (;; leaf = Deref(leaf).body.lf.right) {
-        if (nth < Deref(leaf).header.numKeys) {
-            return Deref(leaf).body.lf.keys[nth];
-        } else {
-            nth -= Deref(leaf).header.numKeys;
-        }
-    }
-    return 0;
-}
-key_uint64_t TreeNthKeyFromRight(uint32_t nth)
-{
-    NodePtr leaf = root;
-    while (!Deref(leaf).header.isLeaf) {
-        leaf = Deref(leaf).body.inl.children[Deref(leaf).header.numKeys].ptr;
-    }
-
-    for (;; leaf = Deref(leaf).body.lf.left) {
-        if (nth < Deref(leaf).header.numKeys) {
-            return Deref(leaf).body.lf.keys[Deref(leaf).header.numKeys - 1 - nth];
-        } else {
-            nth -= Deref(leaf).header.numKeys;
-        }
-    }
-}
-
-void TreeInsertSortedPairsToLeft(const key_uint64_t __mram_ptr* keys_src, const value_uint64_t __mram_ptr* values_src, uint32_t nr_pairs)
-{
-    for (uint32_t i = 0; i < nr_pairs; i++) {
-        TreeInsert(keys_src[i], values_src[i]);
-    }
-}
-void TreeInsertSortedPairsToRight(const key_uint64_t __mram_ptr* keys_src, const value_uint64_t __mram_ptr* values_src, uint32_t nr_pairs)
-{
-    for (uint32_t i = 0; i < nr_pairs; i++) {
-        TreeInsert(keys_src[i], values_src[i]);
-    }
-}
-
-
-#ifdef DEBUG_ON
-#define QUEUE_SIZE (MAX_NUM_NODES_IN_DPU)
-#include "node_queue.h"
-
-void showNode(NodePtr cur, int nodeNo)
-{  // show single node
-    printf("[Node No. %d]\n", nodeNo);
-    if (Deref(cur).header.isLeaf == true) {
-        cur == root ? printf("this is a Root LeafNode (addr %p)\n", cur)
-                    : printf("this is a LeafNode (addr %p)\n", cur);
-        printf("0. parent: %x\n", Deref(cur).header.parent);
-        printf("1. number of keys: %d\n", Deref(cur).header.numKeys);
-        printf("2. keys:[ ");
-        for (int i = 0; i < Deref(cur).header.numKeys; i++) {
-            printf("%lx ", Deref(cur).body.lf.keys[i]);
-        }
-        printf("]\n");
-        printf("3. value pointers:[ ");
-        for (int i = 0; i < Deref(cur).header.numKeys; i++) {
-            printf("%lx ", Deref(cur).body.lf.values[i]);
-        }
-        printf("]\n");
-        printf("4. leaf connections, left: %x right: %x\n", Deref(cur).body.lf.left,
-            Deref(cur).body.lf.right);
-    } else {
-        cur == root ? printf("this is a Root InternalNode (addr %x)\n", cur)
-                    : printf("this is an InternalNode (addr %x)\n", cur);
-        printf("0. parent: %x\n", Deref(cur).header.parent);
-        printf("1. number of keys: %d\n", Deref(cur).header.numKeys);
-        printf("2. keys:[ ");
-        for (int i = 0; i < Deref(cur).header.numKeys; i++) {
-            printf("%lx ", Deref(cur).body.inl.keys[i]);
-        }
-        printf("]\n");
-        printf("3. children:[ ");
-        for (int i = 0; i <= Deref(cur).header.numKeys; i++) {
-            printf("%x ", Deref(cur).body.inl.children[i].ptr);
-        }
-        printf("]\n");
-    }
-    printf("\n");
-}
-
-void TreePrintLeaves()
-{
-    NodePtr leaf = root;
-    while (!Deref(leaf).header.isLeaf) {
-        leaf = Deref(leaf).body.inl.children[0].ptr;
-    }
-
-    int cnt = 0;
-    while (leaf != NODE_NULLPTR) {
-        showNode(leaf, cnt);
-        leaf = Deref(leaf).body.lf.right;
-        cnt++;
-    }
-    printf("\n");
-}
-
-void TreePrintKeys()
-{
-    NodePtr leaf = root;
-    while (!Deref(leaf).header.isLeaf) {
-        leaf = Deref(leaf).body.inl.children[0].ptr;
-    }
-
-    while (leaf != NODE_NULLPTR) {
-        for (uint8_t i = 0; i < Deref(leaf).header.numKeys; i++) {
-            printf("%lx ", Deref(leaf).body.lf.keys[i]);
-        }
-        leaf = Deref(leaf).body.lf.right;
-    }
-    printf("\n");
-}
-bool TreeCheckStructure()
+static bool checkLeaf(NodeLink link)
 {
     bool success = true;
-    initQueue();
-    enqueue(root);
-    for (int nodeNo = 0; !isQueueEmpty(); nodeNo++) {
-        NodePtr cur = dequeue();
-        if (Deref(cur).header.isLeaf) {
-            const NodePtr left = Deref(cur).body.lf.left, right = Deref(cur).body.lf.right;
-            if (left != NODE_NULLPTR) {
-                if (!Deref(left).header.isLeaf) {
-                    success = false;
-                    printf("Node[%d]: %p is a leaf but %p->left (%p) is not.\n", nodeNo, cur, cur, left);
-                }
-                if (Deref(left).body.lf.right != cur) {
-                    success = false;
-                    printf("Node[%d]: %p->left->right == %p != %p\n", nodeNo, cur, Deref(left).body.lf.right, cur);
-                }
-            }
-            if (right != NODE_NULLPTR) {
-                if (!Deref(right).header.isLeaf) {
-                    success = false;
-                    printf("Node[%d]: %p is a leaf but %p->right (%p) is not.\n", nodeNo, cur, cur, right);
-                }
-                if (Deref(right).body.lf.left != cur) {
-                    success = false;
-                    printf("Node[%d]: %p->right->left == %p != %p\n", nodeNo, cur, Deref(right).body.lf.left, cur);
-                }
-            }
+
+    __dma_aligned Node leaf;
+    mram_read(&Deref(link.ptr), &leaf, sizeof(Node));
+
+    const NodePtr left = leaf.lf.left;
+    if (left != NODE_NULLPTR) {
+        union {
+            NodeLink link_from_left;
+            __dma_aligned uint64_t aligner;
+        } cache;
+        mram_read(&Deref(left).lf.right, &cache, 8);
+        if (cache.link_from_left.ptr != link.ptr) {
+            success = false;
+            printf("Node[%u].left->right.ptr == %u != %u\n", link.ptr, cache.link_from_left.ptr, link.ptr);
+        }
+        if (cache.link_from_left.numKeys != link.numKeys) {
+            success = false;
+            printf("Node[%u].left->right.numKeys == %u != %u\n", link.ptr, cache.link_from_left.numKeys, link.numKeys);
+        }
+    }
+    const NodeLink right = leaf.lf.right;
+    if (right.ptr != NODELINK_NULLPTR.ptr) {
+        union {
+            NodePtr ptr_from_right;
+            __dma_aligned uint64_t aligner;
+        } cache;
+        mram_read(&Deref(right.ptr).lf.left, &cache, 8);
+        if (cache.ptr_from_right != link.ptr) {
+            success = false;
+            printf("Node[%u].right->left == %u != %u\n", link.ptr, cache.ptr_from_right, link.ptr);
+        }
+    }
+    for (unsigned i = 1; i < link.numKeys; i++) {
+        if (leaf.lf.keys[i - 1] >= leaf.lf.keys[i]) {
+            success = false;
+            printf("Node[%u].keys[%u] == %lu >= %lu == Node[%u].keys[%u]\n", link.ptr, i - 1, leaf.lf.keys[i - 1], leaf.lf.keys[i], link.ptr, i);
+        }
+    }
+    return success;
+}
+
+static bool checkInternal(NodeLink link, bool is_child_leaf)
+{
+    bool success = true;
+
+    __dma_aligned Node internal;
+    mram_read(&Deref(link.ptr), &internal, sizeof(Node));
+
+    for (unsigned i = 1; i < link.numKeys; i++) {
+        if (internal.inl.keys[i - 1] >= internal.inl.keys[i]) {
+            success = false;
+            printf("Node[%u].keys[%u] == %lu >= %lu == Node[%u].keys[%u]\n", link.ptr, i - 1, internal.inl.keys[i - 1], internal.inl.keys[i], link.ptr, i);
+        }
+    }
+    for (unsigned i = 0; i <= link.numKeys; i++) {
+        const NodeLink child_link = internal.inl.children[i];
+        if (child_link.ptr == NODE_NULLPTR) {
+            success = false;
+            printf("Node[%u].children[%u] == null\n", link.ptr, i);
         } else {
-            for (uint8_t i = 0; i <= Deref(cur).header.numKeys; i++) {
-                const ChildInfo child = Deref(cur).body.inl.children[i];
-                if (child.ptr == NODE_NULLPTR) {
-                    success = false;
-                    printf("Node[%d]: %p->children[%u] == null\n", nodeNo, cur, i);
+            __dma_aligned key_uint64_t key_in_child;
+            if (i != 0) {
+                mram_read((is_child_leaf ? &Deref(child_link.ptr).lf.keys[0]
+                                         : &Deref(child_link.ptr).inl.keys[0]),
+                    &key_in_child, sizeof(key_uint64_t));
+                if (is_child_leaf) {
+                    if (internal.inl.keys[i - 1] > key_in_child) {
+                        success = false;
+                        printf("Node[%u].keys[%u] > Node[%u].children[%u]->keys[0]\n", link.ptr, i - 1, link.ptr, i);
+                    }
                 } else {
-                    if (Deref(child.ptr).header.parent != cur) {
+                    if (internal.inl.keys[i - 1] >= key_in_child) {
                         success = false;
-                        printf("Node[%d]: %p->children[%u].ptr->header.parent == %p != %p\n", nodeNo, cur, i, Deref(child.ptr).header.parent, cur);
+                        printf("Node[%u].keys[%u] >= Node[%u].children[%u]->keys[0]\n", link.ptr, i - 1, link.ptr, i);
                     }
-                    if (i != 0 && Deref(cur).body.inl.keys[i - 1] > (Deref(child.ptr).header.isLeaf ? Deref(child.ptr).body.lf.keys : Deref(child.ptr).body.inl.keys)[0]) {
-                        success = false;
-                        printf("Node[%d]: %p->children[%u].ptr->header.numKeys < %p->key[%u]\n", nodeNo, cur, i, cur, i - 1);
-                    }
-                    if (i != Deref(cur).header.numKeys && (Deref(child.ptr).header.isLeaf ? Deref(child.ptr).body.lf.keys : Deref(child.ptr).body.inl.keys)[Deref(child.ptr).header.numKeys - 1] >= Deref(cur).body.inl.keys[i]) {
-                        success = false;
-                        printf("Node[%d]: %p->children[%u].ptr->header.numKeys >= %p->key[%u]\n", nodeNo, cur, i, cur, i);
-                    }
-#ifdef CACHE_CHILD_HEADER_IN_LINK
-                    if (child.numKeys != Deref(child.ptr).header.numKeys) {
-                        success = false;
-                        printf("Node[%d]: %p->children[%u].numKeys == %u != %u\n", nodeNo, cur, i, child.numKeys, Deref(child.ptr).header.numKeys);
-                    }
-                    if (child.isLeaf != Deref(child.ptr).header.isLeaf) {
-                        success = false;
-                        printf("Node[%d]: %p->children[%u].isLeaf == %u != %u\n", nodeNo, cur, i, child.isLeaf, Deref(child.ptr).header.isLeaf);
-                    }
-#endif /* CACHE_CHILD_HEADER_IN_LINK */
                 }
             }
-            for (int i = 0; i <= Deref(cur).header.numKeys; i++) {
-                enqueue(Deref(cur).body.inl.children[i].ptr);
+            if (i != link.numKeys) {
+                mram_read((is_child_leaf ? &Deref(child_link.ptr).lf.keys[child_link.numKeys - 1]
+                                         : &Deref(child_link.ptr).inl.keys[child_link.numKeys - 1]),
+                    &key_in_child, sizeof(key_uint64_t));
+                if (internal.inl.keys[i] <= key_in_child) {
+                    success = false;
+                    printf("Node[%u].keys[%u] <= Node[%u].children[%u]->keys[%u]\n", link.ptr, i, link.ptr, i, child_link.numKeys - 1);
+                }
             }
         }
     }
     return success;
 }
 
-void TreePrintRoot()
+static bool TreeCheckStructure(Node* root, unsigned height, unsigned root_numKeys)
 {
-    printf("rootNode\n");
-    showNode(root, 0);
-}
+    bool success = true;
 
-void TreePrintAll()
-{  // show all node (BFS)
-    int nodeNo = 0;
-    initQueue();
-    enqueue(root);
-    while (!isQueueEmpty()) {
-        NodePtr cur = dequeue();
-        showNode(cur, nodeNo);
-        nodeNo++;
-        if (!Deref(cur).header.isLeaf) {
-            for (int i = 0; i <= Deref(cur).header.numKeys; i++) {
-                enqueue(Deref(cur).body.inl.children[i].ptr);
+    struct {
+        NodeLink link;
+        unsigned nr_visited_children;
+    } stack[MAX_HEIGHT];
+    unsigned stack_height = 0;
+
+    if (height == 0) {
+        for (unsigned i = 1; i < root_numKeys; i++) {
+            if (root->lf.keys[i - 1] >= root->lf.keys[i]) {
+                success = false;
+                printf("Root.keys[%u] == %lu >= %lu == Root.keys[%u]\n", i - 1, root->lf.keys[i - 1], root->lf.keys[i], i);
+            }
+        }
+    } else {
+        for (unsigned idx_child_of_root = 0; idx_child_of_root <= root_numKeys; idx_child_of_root++) {
+            stack[0].link = root->inl.children[idx_child_of_root];
+            stack[0].nr_visited_children = 0;
+            stack_height = 1;
+
+            while (stack_height != 0) {
+                if (stack_height == height) {  // leaf
+                    success = (checkLeaf(stack[stack_height - 1].link) && success);
+                    stack_height--;
+                } else {  // internal
+                    const unsigned nr_visited = stack[stack_height - 1].nr_visited_children;
+                    if (nr_visited <= stack[stack_height - 1].link.numKeys) {
+                        stack[stack_height - 1].nr_visited_children++;
+                        stack[stack_height].link = Deref(stack[stack_height - 1].link.ptr).inl.children[nr_visited];
+                        stack[stack_height].nr_visited_children = 0;
+                        stack_height++;
+                    } else {
+                        checkInternal(stack[stack_height - 1].link, stack_height + 1 == height);
+                        stack_height--;
+                    }
+                }
+            }
+        }
+
+        const bool is_child_of_root_leaf = (height == 1);
+        for (unsigned i = 1; i < root_numKeys; i++) {
+            if (root->inl.keys[i - 1] >= root->inl.keys[i]) {
+                success = false;
+                printf("Root.keys[%u] == %lu >= %lu == Root.keys[%u]\n", i - 1, root->inl.keys[i - 1], root->inl.keys[i], i);
+            }
+        }
+        for (unsigned i = 0; i <= root_numKeys; i++) {
+            const NodeLink child_link = root->inl.children[i];
+            if (child_link.ptr == NODE_NULLPTR) {
+                success = false;
+                printf("Root.children[%u] == null\n", i);
+            } else {
+                __dma_aligned key_uint64_t key_in_child;
+                if (i != 0) {
+                    mram_read((is_child_of_root_leaf ? &Deref(child_link.ptr).lf.keys[0]
+                                                     : &Deref(child_link.ptr).inl.keys[0]),
+                        &key_in_child, sizeof(key_uint64_t));
+                    if (is_child_of_root_leaf) {
+                        if (root->inl.keys[i - 1] > key_in_child) {
+                            success = false;
+                            printf("Root.keys[%u] > Root.children[%u]->keys[0]\n", i - 1, i);
+                        }
+                    } else {
+                        if (root->inl.keys[i - 1] >= key_in_child) {
+                            success = false;
+                            printf("Root.keys[%u] >= Root.children[%u]->keys[0]\n", i - 1, i);
+                        }
+                    }
+                }
+                if (i != root_numKeys) {
+                    mram_read((is_child_of_root_leaf ? &Deref(child_link.ptr).lf.keys[child_link.numKeys - 1]
+                                                     : &Deref(child_link.ptr).inl.keys[child_link.numKeys - 1]),
+                        &key_in_child, sizeof(key_uint64_t));
+                    if (root->inl.keys[i] <= key_in_child) {
+                        success = false;
+                        printf("Root.keys[%u] <= Root.children[%u]->keys[%u]\n", i, i, child_link.numKeys - 1);
+                    }
+                }
             }
         }
     }
+    return success;
 }
-
-#endif /* DEBUG_ON */
