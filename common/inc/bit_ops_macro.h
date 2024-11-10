@@ -11,22 +11,36 @@ extern "C" {
 
 #define RSHIFT_OR(n, shift) ((n) | ((n) >> (shift)))
 #define CEIL_TO_ONES_UINT32(n) (RSHIFT_OR(RSHIFT_OR(RSHIFT_OR(RSHIFT_OR(RSHIFT_OR((n), 1u), 2u), 4u), 8u), 16u))
+#define CEIL_TO_ONES_UINT64(n) (RSHIFT_OR(CEIL_TO_ONES_UINT32(n), 32u))
 
 #define BIT_CEIL_UINT32(n) (CEIL_TO_ONES_UINT32((n)-1u) + 1u)
+#define BIT_CEIL_UINT64(n) (CEIL_TO_ONES_UINT64((n)-1u) + 1u)
 #define BIT_FLOOR_UINT32(n) (CEIL_TO_ONES_UINT32(n) & ~(CEIL_TO_ONES_UINT32(n) >> 1u))
+#define BIT_FLOOR_UINT64(n) (CEIL_TO_ONES_UINT64(n) & ~(CEIL_TO_ONES_UINT64(n) >> 1u))
 
-#define BITWIDTH_OF_POW2_UINT32(n)         \
-    ((((n)&0xaaaaaaaau) != 0u) * 1u        \
-        + (((n)&0xccccccccu) != 0u) * 2u   \
-        + (((n)&0xf0f0f0f0u) != 0u) * 4u   \
-        + (((n)&0xff00ff00u) != 0u) * 8u   \
-        + (((n)&0xffff0000u) != 0u) * 16u) \
-        + ((n) != 0u)
+#define BITWIDTH_OF_POW2_UINT32(n)                               \
+    (1u * (((n)&0b11111111111111111111111111111111u) != 0u)      \
+        + (((n)&0b10101010101010101010101010101010u) != 0u) * 1u \
+        + (((n)&0b11001100110011001100110011001100u) != 0u) * 2u \
+        + (((n)&0b11110000111100001111000011110000u) != 0u) * 4u \
+        + (((n)&0b11111111000000001111111100000000u) != 0u) * 8u \
+        + (((n)&0b11111111111111110000000000000000u) != 0u) * 16u)
+#define BITWIDTH_OF_POW2_UINT64(n)                                                                 \
+    (1u * (((n)&0b1111111111111111111111111111111111111111111111111111111111111111ul) != 0u)       \
+        + (((n)&0b1010101010101010101010101010101010101010101010101010101010101010ul) != 0u) * 1u  \
+        + (((n)&0b1100110011001100110011001100110011001100110011001100110011001100ul) != 0u) * 2u  \
+        + (((n)&0b1111000011110000111100001111000011110000111100001111000011110000ul) != 0u) * 4u  \
+        + (((n)&0b1111111100000000111111110000000011111111000000001111111100000000ul) != 0u) * 8u  \
+        + (((n)&0b1111111111111111000000000000000011111111111111110000000000000000ul) != 0u) * 16u \
+        + (((n)&0b1111111111111111111111111111111100000000000000000000000000000000ul) != 0u) * 32u)
 
 #define BITWIDTH_UINT32(n) (BITWIDTH_OF_POW2_UINT32(BIT_FLOOR_UINT32(n)))
+#define BITWIDTH_UINT64(n) (BITWIDTH_OF_POW2_UINT64(BIT_FLOOR_UINT64(n)))
 
-#define CEIL_LOG2_UINT32(x) (BITWIDTH_OF_POW2_UINT32(BIT_CEIL_UINT32(x)) - 1u)
 #define FLOOR_LOG2_UINT32(x) (BITWIDTH_OF_POW2_UINT32(BIT_FLOOR_UINT32(x)) - 1u)
+#define FLOOR_LOG2_UINT64(x) (BITWIDTH_OF_POW2_UINT64(BIT_FLOOR_UINT64(x)) - 1u)
+#define CEIL_LOG2_UINT32(x) (FLOOR_LOG2_UINT32(x) + (!HAS_SINGLE_BIT_UINT(x)))
+#define CEIL_LOG2_UINT64(x) (FLOOR_LOG2_UINT64(x) + (!HAS_SINGLE_BIT_UINT(x)))
 
 #ifdef __cplusplus
 }  // extern "C"
