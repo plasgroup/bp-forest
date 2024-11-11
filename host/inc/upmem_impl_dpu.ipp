@@ -1,3 +1,5 @@
+#pragma once
+
 #include "batch_transfer_buffer.hpp"
 #include "dpu_set.hpp"
 #include "host_params.hpp"
@@ -9,29 +11,30 @@ extern "C" {
 #include <dpu_types.h>
 }
 
-#include <cassert>
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <mutex>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <type_traits>
 #include <utility>
+#include <variant>
 
 
-static dpu_set_t all_dpu_impl;
-static std::array<dpu_set_t, NR_RANKS> each_rank_impl;
-static std::array<dpu_set_t, MAX_NR_DPUS> each_dpu_impl;
+inline dpu_set_t all_dpu_impl;
+inline std::array<dpu_set_t, NR_RANKS> each_rank_impl;
+inline std::array<dpu_set_t, MAX_NR_DPUS> each_dpu_impl;
 
-static std::array<dpu_id_t, NR_RANKS + 1> first_dpu_id_in_each_rank;
+inline std::array<dpu_id_t, NR_RANKS + 1> first_dpu_id_in_each_rank;
 
-static struct dpu_program_t* dpu_program_impl;
-static struct dpu_symbol_t comm_buffer_handler;
+inline struct dpu_program_t* dpu_program_impl;
+inline struct dpu_symbol_t comm_buffer_handler;
 
 
-UPMEM_AsyncDuration::~UPMEM_AsyncDuration()
+inline UPMEM_AsyncDuration::~UPMEM_AsyncDuration()
 {
     if (all) {
         DPU_ASSERT(dpu_sync(all_dpu_impl));
@@ -43,7 +46,7 @@ UPMEM_AsyncDuration::~UPMEM_AsyncDuration()
     }
 }
 
-static void upmem_init_impl()
+inline void upmem_init_impl()
 {
     std::ostringstream sstr;
     sstr <<
@@ -79,7 +82,7 @@ static void upmem_init_impl()
 
     DPU_ASSERT(dpu_get_symbol(dpu_program_impl, DPU_MRAM_HEAP_POINTER_NAME, &comm_buffer_handler));
 }
-static void upmem_release_impl()
+inline void upmem_release_impl()
 {
     DPU_ASSERT(dpu_free(all_dpu_impl));
 }
@@ -98,25 +101,25 @@ struct VisitorOf_nr_dpus_in_set {
         return 1;
     }
 };
-static dpu_id_t nr_dpus_in_set(const DPUSet& set)
+inline dpu_id_t nr_dpus_in_set(const DPUSet& set)
 {
     return std::visit(VisitorOf_nr_dpus_in_set{}, set);
 }
-dpu_id_t upmem_get_nr_dpus()
+inline dpu_id_t upmem_get_nr_dpus()
 {
     return first_dpu_id_in_each_rank.back();
 }
-std::pair<dpu_id_t, dpu_id_t> upmem_get_dpu_range_in_rank(dpu_id_t idx_rank)
+inline std::pair<dpu_id_t, dpu_id_t> upmem_get_dpu_range_in_rank(dpu_id_t idx_rank)
 {
     return {first_dpu_id_in_each_rank[idx_rank], first_dpu_id_in_each_rank[idx_rank + 1]};
 }
 
-static DPUSet select_dpu(dpu_id_t index)
+inline DPUSet select_dpu(dpu_id_t index)
 {
     assert(index < upmem_get_nr_dpus());
     return {DPUSetSingle{index}};
 }
-DPUSet select_rank(dpu_id_t index)
+inline DPUSet select_rank(dpu_id_t index)
 {
     assert(index < NR_RANKS);
     return {DPUSetRanks{index, index + 1}};
@@ -194,7 +197,7 @@ struct VisitorOf_xfer_with_dpu {
     }
 };
 template <bool ToDPU, class BatchTransferBuffer>
-void xfer_with_dpu(const DPUSet& set, uint32_t offset, BatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
+inline void xfer_with_dpu(const DPUSet& set, uint32_t offset, BatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
 {
     std::visit(VisitorOf_xfer_with_dpu<ToDPU, BatchTransferBuffer>{offset, std::forward<BatchTransferBuffer>(buf), async}, set);
 }
@@ -228,7 +231,7 @@ struct VisitorOf_broadcast_to_dpu {
     }
 };
 template <typename T>
-void broadcast_to_dpu(const DPUSet& set, uint32_t offset, const Single<T>& datum, UPMEM_AsyncDuration& async)
+inline void broadcast_to_dpu(const DPUSet& set, uint32_t offset, const Single<T>& datum, UPMEM_AsyncDuration& async)
 {
     std::visit(VisitorOf_broadcast_to_dpu<T>{offset, datum, async}, set);
 }
@@ -288,7 +291,7 @@ struct VisitorOf_scatter_gather_with_dpu {
     }
 };
 template <bool ToDPU, class ScatteredBatchTransferBuffer>
-void scatter_gather_with_dpu(const DPUSet& set, uint32_t offset, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
+inline void scatter_gather_with_dpu(const DPUSet& set, uint32_t offset, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
 {
     std::visit(VisitorOf_scatter_gather_with_dpu<ToDPU, ScatteredBatchTransferBuffer>{offset, std::forward<ScatteredBatchTransferBuffer>(buf), async}, set);
 }
@@ -339,7 +342,7 @@ struct VisitorOf_execute {
 #endif /* PRINT_DEBUG */
     }
 };
-void execute(const DPUSet& set, UPMEM_AsyncDuration& async)
+inline void execute(const DPUSet& set, UPMEM_AsyncDuration& async)
 {
     std::visit(VisitorOf_execute{async}, set);
 }
@@ -388,7 +391,7 @@ struct VisitorOf_then_call {
     }
 };
 template <class Func>
-void then_call(const DPUSet& set, Func& func, UPMEM_AsyncDuration& async)
+inline void then_call(const DPUSet& set, Func& func, UPMEM_AsyncDuration& async)
 {
     std::visit(*(new VisitorOf_then_call<Func>{func, async}), set);
 }

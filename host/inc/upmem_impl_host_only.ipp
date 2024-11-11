@@ -1,3 +1,5 @@
+#pragma once
+
 #include "batch_transfer_buffer.hpp"
 #include "dpu_set.hpp"
 #include "host_params.hpp"
@@ -11,55 +13,55 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <memory>
+#include <iostream>
 #include <optional>
 #include <type_traits>
 #include <utility>
 
 
-static constexpr dpu_id_t NrDPUs = MAX_NR_DPUS;
-static constexpr dpu_id_t NrDPUsInRank = MAX_NR_DPUS_IN_RANK;
-static std::optional<UPMEMEmulator<NrDPUs>> emulator;
+constexpr dpu_id_t NrDPUs = MAX_NR_DPUS;
+constexpr dpu_id_t NrDPUsInRank = MAX_NR_DPUS_IN_RANK;
+inline std::optional<UPMEMEmulator<NrDPUs>> emulator;
 
 
 inline UPMEM_AsyncDuration::~UPMEM_AsyncDuration()
 {
 }
 
-static inline void upmem_init_impl()
+inline void upmem_init_impl()
 {
     all_dpu.reset();
     all_dpu.flip();
     emulator.emplace();
 }
-static void upmem_release_impl()
+inline void upmem_release_impl()
 {
     all_dpu.reset();
     emulator.reset();
 }
 
 
-static dpu_id_t nr_dpus_in_set(const DPUSet& set)
+inline dpu_id_t nr_dpus_in_set(const DPUSet& set)
 {
     return static_cast<dpu_id_t>(set.count());
 }
-dpu_id_t upmem_get_nr_dpus()
+inline dpu_id_t upmem_get_nr_dpus()
 {
     return NrDPUs;
 }
-std::pair<dpu_id_t, dpu_id_t> upmem_get_dpu_range_in_rank(dpu_id_t idx_rank)
+inline std::pair<dpu_id_t, dpu_id_t> upmem_get_dpu_range_in_rank(dpu_id_t idx_rank)
 {
     return {NrDPUsInRank * idx_rank, NrDPUsInRank * (idx_rank + 1)};
 }
 
-static DPUSet select_dpu(dpu_id_t index)
+inline DPUSet select_dpu(dpu_id_t index)
 {
     assert(index < upmem_get_nr_dpus());
     DPUSet result;
     result.set(index);
     return result;
 }
-DPUSet select_rank(dpu_id_t index)
+inline DPUSet select_rank(dpu_id_t index)
 {
     assert(index < NR_RANKS);
     DPUSet result;
@@ -71,7 +73,7 @@ DPUSet select_rank(dpu_id_t index)
 
 
 template <bool ToDPU, class BatchTransferBuffer>
-void xfer_with_dpu(const DPUSet& set, uint32_t offset, BatchTransferBuffer&& buf, UPMEM_AsyncDuration&)
+inline void xfer_with_dpu(const DPUSet& set, uint32_t offset, BatchTransferBuffer&& buf, UPMEM_AsyncDuration&)
 {
     uint64_t total_xfer_bytes = 0;
     uint64_t total_effective_bytes = 0;
@@ -101,13 +103,13 @@ void xfer_with_dpu(const DPUSet& set, uint32_t offset, BatchTransferBuffer&& buf
 }
 
 template <typename T>
-void broadcast_to_dpu(const DPUSet& set, uint32_t offset, const Single<T>& datum, UPMEM_AsyncDuration& async)
+inline void broadcast_to_dpu(const DPUSet& set, uint32_t offset, const Single<T>& datum, UPMEM_AsyncDuration& async)
 {
     xfer_with_dpu<true>(set, offset, datum, async);
 }
 
 template <bool ToDPU, class ScatteredBatchTransferBuffer>
-void scatter_gather_with_dpu(const DPUSet& set, uint32_t offset, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration&)
+inline void scatter_gather_with_dpu(const DPUSet& set, uint32_t offset, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration&)
 {
     uint64_t total_xfer_bytes = 0;
     uint64_t total_effective_bytes = 0;
@@ -140,7 +142,7 @@ void scatter_gather_with_dpu(const DPUSet& set, uint32_t offset, ScatteredBatchT
 #endif /* MEASURE_XFER_BYTES */
 }
 
-void execute(const DPUSet& set, UPMEM_AsyncDuration&)
+inline void execute(const DPUSet& set, UPMEM_AsyncDuration&)
 {
     for (dpu_id_t i = 0; i < NrDPUs; i++)
         if (set[i])
@@ -149,7 +151,7 @@ void execute(const DPUSet& set, UPMEM_AsyncDuration&)
 }
 
 template <class Func>
-void then_call(const DPUSet& set, Func& func, UPMEM_AsyncDuration& async)
+inline void then_call(const DPUSet& set, Func& func, UPMEM_AsyncDuration& async)
 {
     if (set == all_dpu) {
         for (dpu_id_t idx_rank = 0; idx_rank < NR_RANKS; idx_rank++) {
