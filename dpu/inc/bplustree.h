@@ -42,3 +42,25 @@ typedef union {
     char size_adjuster[SIZEOF_NODE];
 } Node;
 _Static_assert(sizeof(Node) == SIZEOF_NODE, "sizeof(Node) == SIZEOF_NODE");
+
+
+typedef struct {
+    uint32_t key_parts[2];
+    NodeLink child;
+} LinkLift;
+
+typedef struct {
+    union {
+        __dma_aligned KVPair pairs[TASK_INIT_NR_CACHED_KVPAIRS];
+        __dma_aligned LinkLift lifted[TASK_INIT_NR_CACHED_INPUT_LIFT];
+    } in;
+    struct {
+        __dma_aligned LinkLift lifted[TASK_INIT_NR_CACHED_OUTPUT_LIFT];
+        unsigned nr_cached_lift;
+    } out;
+    __dma_aligned Node nodes[TASK_INIT_NR_CACHED_NODES];
+} InitWorkspace;
+
+typedef struct {
+    InitWorkspace init[TASK_INIT_NR_TASKLETS];
+} TreeWorkspace;

@@ -19,7 +19,7 @@
                       : ((NODE_HEADER).left))
 
 
-#define MAX_HEIGHT (FLOOR_LOG2_UINT32((uint32_t)(MAX_NUM_NODES_IN_DPU)) * 2)
+#define MAX_HEIGHT (FLOOR_LOG2_UINT32((uint32_t)(MAX_NR_NODES)) * 2)
 
 NodePtr root;
 
@@ -349,7 +349,7 @@ value_uint64_t TreeGet(key_uint64_t key)
 
 
 #ifdef DEBUG_ON
-#define QUEUE_SIZE (MAX_NUM_NODES_IN_DPU / 2)
+#define QUEUE_SIZE (MAX_NR_NODES / 2)
 #include "node_queue.h"
 
 void showNode(NodePtr cur, int nodeNo)
