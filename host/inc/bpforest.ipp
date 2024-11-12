@@ -8,12 +8,14 @@
 #include "host_params.hpp"
 #include "log_buffer.hpp"
 #include "sg_block_info.hpp"
+#include "statistics.hpp"
 #include "upmem.hpp"
 #include "workload_types.h"
 
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstddef>
@@ -82,9 +84,13 @@ void BPForest::ditribute_initial_data(size_t nr_pairs, const KVPair sorted_pairs
         cursor += nr_pairs_in_each_dpus[idx_dpu];
     }
 
-    UPMEM_AsyncDuration async;
-    gather_to_dpu(all_dpu, 0, TaskInitInput{&nr_pairs_in_each_dpus[0], &pairs_for_each_dpus[0]}, async);
-    execute(all_dpu, async);
+    {
+        StopWatch t{ForestInitTime};
+
+        UPMEM_AsyncDuration async;
+        gather_to_dpu(all_dpu, 0, TaskInitInput{&nr_pairs_in_each_dpus[0], &pairs_for_each_dpus[0]}, async);
+        execute(all_dpu, async);
+    }
 
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
     std::unique_ptr<LogBuffer> log = read_log(all_dpu);

@@ -105,4 +105,7 @@ struct StopWatch final {
     }
 };
 
+
+inline std::chrono::nanoseconds ForestInitTime;
+
 #endif /* __STATISTICS_HPP__ */

@@ -80,6 +80,7 @@ struct Option {
         a.add<dpu_id_t>("print-compute-load", 'c', "print number of queries sent for each dpu", false, 0);
         a.add<dpu_id_t>("print-memory-load", 'm', "print number of KV pairs stored in each dpu", false, 0);
         a.add("print-perf", 'p', "print performance metrics");
+        a.add("print-init-time", 0, "print elapsed time for initialization of BPForest");
         a.parse_check(argc, argv);
 
         dump_param_file = a.get<std::string>("dump-params");
@@ -104,6 +105,7 @@ struct Option {
         print_compute_load = a.get<dpu_id_t>("print-compute-load");
         print_memory_load = a.get<dpu_id_t>("print-memory-load");
         print_perf = a.exist("print-perf");
+        print_init_time = a.exist("print-init-time");
     }
 
     std::string dump_param_file;
@@ -113,7 +115,7 @@ struct Option {
     int nr_batches;
     TaskID op_type;
     dpu_id_t print_compute_load, print_memory_load;
-    bool print_perf;
+    bool print_perf, print_init_time;
 } opt;
 
 #ifdef DEBUG_ON
@@ -468,6 +470,10 @@ int main(int argc, char* argv[])
         forest.print_params(dump_param_file);
     }
     WorkloadBuffer workload_buffer{std::move(workload.data)};
+
+    if (opt.print_init_time) {
+        std::cout << "#ForestInitTime[ns]: " << ForestInitTime.count() << std::endl;
+    }
 
     /* main routine */
     uint64_t total_num_keys = 0;
