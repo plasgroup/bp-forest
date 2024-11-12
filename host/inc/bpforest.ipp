@@ -9,7 +9,6 @@
 #include "log_buffer.hpp"
 #include "sg_block_info.hpp"
 #include "upmem.hpp"
-#include "upmem.ipp"
 #include "workload_types.h"
 
 #include <algorithm>
