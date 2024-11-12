@@ -1,7 +1,6 @@
 #pragma once
 
 #include "host_params.hpp"
-#include "upmem.hpp"
 
 #include <array>
 #include <cstddef>

@@ -44,6 +44,7 @@ enum TaskID : uint32_t {
     TASK_CONSTRUCT_HOT,
     TASK_FLATTEN_HOT,
     TASK_RESTORE,
+    TASK_PRINT_PARAMS,
     TASK_NONE
 };
 

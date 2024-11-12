@@ -29,3 +29,6 @@ typedef struct {
     NodeHeader header;
     key_uint64_t key;
 } NodeHeaderAndKey;
+
+typedef struct {
+} TreeWorkspace;

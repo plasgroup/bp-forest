@@ -4,8 +4,10 @@
 #include "common.h"
 #include "dpu_set.hpp"
 #include "host_params.hpp"
+#include "log_buffer.hpp"
 
 #include <array>
+#include <memory>
 #include <utility>
 
 
@@ -40,6 +42,7 @@ template <class ScatteredBatchTransferBuffer>
 inline void scatter_from_dpu(const DPUSet& set, uint32_t offset, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration& async);
 
 inline void execute(const DPUSet& set, UPMEM_AsyncDuration&);
+inline std::unique_ptr<LogBuffer> read_log(const DPUSet& set);
 
 template <class Func>
 inline void then_call(const DPUSet& set, Func&, UPMEM_AsyncDuration&);

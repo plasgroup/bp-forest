@@ -2,11 +2,14 @@
 
 #include "bpforest.hpp"
 
+#include "batch_transfer_buffer.hpp"
 #include "common.h"
 #include "dpu_set.hpp"
 #include "host_params.hpp"
+#include "log_buffer.hpp"
 #include "sg_block_info.hpp"
 #include "upmem.hpp"
+#include "upmem.ipp"
 #include "workload_types.h"
 
 #include <algorithm>
@@ -16,19 +19,26 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <mutex>
+#include <ostream>
 #include <tuple>
 #include <utility>
 
 
 inline BPForest::BPForest(size_t nr_pairs, const KVPair sorted_pairs[], const Param& param)
-    : nr_cold_ranges{upmem_get_nr_dpus()}, param{param}
+    : nr_cold_ranges{(upmem_init(), upmem_get_nr_dpus())}, param{param}
 {
     dpu_to_hot_range.fill(INVALID_DPU_ID);
 
     ditribute_initial_data(nr_pairs, sorted_pairs);
+}
+inline BPForest::~BPForest()
+{
+    upmem_release();
 }
 
 struct TaskInitInput {
@@ -76,6 +86,11 @@ void BPForest::ditribute_initial_data(size_t nr_pairs, const KVPair sorted_pairs
     UPMEM_AsyncDuration async;
     gather_to_dpu(all_dpu, 0, TaskInitInput{&nr_pairs_in_each_dpus[0], &pairs_for_each_dpus[0]}, async);
     execute(all_dpu, async);
+
+#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+    std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+    std::cout << log->get() << std::flush;
+#endif
 }
 
 struct GetQueryWithIndexProxy {
@@ -502,6 +517,11 @@ inline void BPForest::execute_get_in_dpus()
     gather_to_dpu(all_dpu, 0, GetQuerySender{this, &nr_cold_hot_queries[0]}, async);
     execute(all_dpu, async);
     scatter_from_dpu(all_dpu, 0, GetResultReceiver{this}, async);
+
+#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+    std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+    std::cout << log->get() << std::flush;
+#endif
 }
 
 
@@ -1332,6 +1352,10 @@ void BPForest::execute_rmq_in_dpus(
         execute(all_dpu, async);
         scatter_from_dpu(all_dpu, 0, RMQResultReceiver{this, &cold_ranges_to_minirange_idx[0], &hot_ranges_to_minirange_idx[0], &cold_to_be_agged[0], &hot_to_be_agged[0], &if_cold_begins_middle[0], &if_hot_begins_middle[0], &if_hot_ends_middle[0]}, async);
     }
+#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+    std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+    std::cout << log->get() << std::flush;
+#endif
 
     for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
         if (cold_to_hot[idx_cold] == cold_to_hot[idx_cold + 1]) {
@@ -1803,4 +1827,82 @@ inline void BPForest::extract_and_distribute_hot_ranges()
         gather_to_dpu(all_dpu, 0, HotRangeConstructor{this, &task_header[0]}, async);
         execute(all_dpu, async);
     }
+}
+
+
+inline void BPForest::print_params(std::ostream& ostr) const
+{
+    const DPUSet dpu0 = select_dpu(0);
+    UInt32Packet task_desc;
+    task_desc.data = TASK_PRINT_PARAMS;
+
+    UPMEM_AsyncDuration async;
+    send_to_dpu(dpu0, 0, Single{task_desc}, async);
+    execute(dpu0, async);
+
+#ifndef HOST_ONLY
+    const std::unique_ptr<LogBuffer> log = read_log(dpu0);
+    const size_t pos_1st_linebreak = std::strcspn(log->get(), "\n");
+    ostr << &log->get()[pos_1st_linebreak + 1] << std::flush;
+#endif
+
+    ostr << "NR_RANKS: " << NR_RANKS << std::endl
+         << "UPMEM_SIMULATOR: " <<
+#ifdef UPMEM_SIMULATOR
+        1
+#else
+        0
+#endif
+         << std::endl
+         << "HOST_ONLY: " <<
+#ifdef HOST_ONLY
+        1
+#else
+        0
+#endif
+         << std::endl
+         << "MAX_NR_DPUS_IN_RANK: " << MAX_NR_DPUS_IN_RANK << std::endl
+         << "NUM_REQUESTS_PER_BATCH: " << NUM_REQUESTS_PER_BATCH << std::endl
+         << "DEFAULT_NR_BATCHES: " << DEFAULT_NR_BATCHES << std::endl
+         << "NUM_INIT_REQS: " << NUM_INIT_REQS << std::endl
+         << "INIT_KEY_INTERVAL: " << INIT_KEY_INTERVAL << std::endl
+         << "InversedRebalancingNoiseMargin: " << InversedRebalancingNoiseMargin << std::endl
+         << "TOUCH_QUERIES_IN_ADVANCE: " <<
+#ifdef TOUCH_QUERIES_IN_ADVANCE
+        1
+#else
+        0
+#endif
+         << std::endl
+         << "DEBUG_ON: " <<
+#ifdef DEBUG_ON
+        1
+#else
+        0
+#endif
+         << std::endl
+         << "PRINT_DEBUG: " <<
+#ifdef PRINT_DEBUG
+        1
+#else
+        0
+#endif
+         << std::endl
+#ifdef HOST_ONLY
+         << "MEASURE_XFER_BYTES: " <<
+#ifdef MEASURE_XFER_BYTES
+        1
+#else
+        0
+#endif
+         << std::endl
+         << "UPMEM_TRACE: " <<
+#ifdef UPMEM_TRACE
+        1
+#else
+        0
+#endif
+         << std::endl
+#endif
+        ;
 }

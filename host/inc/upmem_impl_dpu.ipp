@@ -3,6 +3,7 @@
 #include "batch_transfer_buffer.hpp"
 #include "dpu_set.hpp"
 #include "host_params.hpp"
+#include "log_buffer.hpp"
 #include "upmem.hpp"
 
 extern "C" {
@@ -17,7 +18,6 @@ extern "C" {
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
-#include <mutex>
 #include <sstream>
 #include <type_traits>
 #include <utility>
@@ -299,25 +299,9 @@ inline void scatter_gather_with_dpu(const DPUSet& set, uint32_t offset, Scattere
 struct VisitorOf_execute {
     UPMEM_AsyncDuration& async;
 
-    static dpu_error_t bypass_logs(struct dpu_set_t set, uint32_t /* rank_id */, void* /* arg */)
-    {
-        static std::mutex mutex;
-        std::lock_guard<std::mutex> lock{mutex};
-
-        dpu_set_t dpu;
-        DPU_FOREACH(set, dpu)
-        {
-            DPU_ASSERT(dpu_log_read(dpu, stdout));
-        }
-        return DPU_OK;
-    }
-
     void operator()(const DPUSetAll&) const
     {
         DPU_ASSERT(dpu_launch(all_dpu_impl, DPU_ASYNCHRONOUS));
-#ifdef PRINT_DEBUG
-        DPU_ASSERT(dpu_callback(all_dpu_impl, &bypass_logs, nullptr, DPU_CALLBACK_ASYNC));
-#endif /* PRINT_DEBUG */
         async.all = true;
     }
 
@@ -326,9 +310,6 @@ struct VisitorOf_execute {
         const DPUSetRanks ranks = ranks_;
         for (dpu_id_t idx_rank = ranks.idx_rank_begin; idx_rank < ranks.idx_rank_end; idx_rank++) {
             DPU_ASSERT(dpu_launch(each_rank_impl[idx_rank], DPU_ASYNCHRONOUS));
-#ifdef PRINT_DEBUG
-            DPU_ASSERT(dpu_callback(each_rank_impl[idx_rank], &bypass_logs, nullptr, DPU_CALLBACK_ASYNC));
-#endif /* PRINT_DEBUG */
             async.rank[idx_rank] = true;
         }
     }
@@ -337,14 +318,53 @@ struct VisitorOf_execute {
     {
         dpu_set_t dpu_impl = each_dpu_impl[d.idx_dpu];
         DPU_ASSERT(dpu_launch(dpu_impl, DPU_SYNCHRONOUS));
-#ifdef PRINT_DEBUG
-        DPU_ASSERT(dpu_callback(dpu_impl, &bypass_logs, nullptr, DPU_CALLBACK_DEFAULT));
-#endif /* PRINT_DEBUG */
     }
 };
 inline void execute(const DPUSet& set, UPMEM_AsyncDuration& async)
 {
     std::visit(VisitorOf_execute{async}, set);
+}
+
+struct VisitorOf_read_log {
+    std::unique_ptr<LogBuffer> operator()(const DPUSetAll&) const
+    {
+        LogStream stream;
+
+        dpu_set_t dpu;
+        DPU_FOREACH(all_dpu_impl, dpu)
+        {
+            DPU_ASSERT(dpu_log_read(dpu, stream.get()));
+        }
+
+        return std::move(stream).close();
+    }
+
+    std::unique_ptr<LogBuffer> operator()(const DPUSetRanks& ranks_) const
+    {
+        LogStream stream;
+
+        const DPUSetRanks ranks = ranks_;
+        for (dpu_id_t idx_rank = ranks.idx_rank_begin; idx_rank < ranks.idx_rank_end; idx_rank++) {
+            dpu_set_t dpu;
+            DPU_FOREACH(each_rank_impl[idx_rank], dpu)
+            {
+                DPU_ASSERT(dpu_log_read(dpu, stream.get()));
+            }
+        }
+
+        return std::move(stream).close();
+    }
+
+    std::unique_ptr<LogBuffer> operator()(const DPUSetSingle& d) const
+    {
+        LogStream stream;
+        DPU_ASSERT(dpu_log_read(each_dpu_impl[d.idx_dpu], stream.get()));
+        return std::move(stream).close();
+    }
+};
+inline std::unique_ptr<LogBuffer> read_log(const DPUSet& set)
+{
+    return std::visit(VisitorOf_read_log{}, set);
 }
 
 template <class Func>

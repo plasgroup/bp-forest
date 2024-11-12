@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <ostream>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -39,11 +40,13 @@ struct BPForest {
     using Param = BPForestParameter;
 
     BPForest(size_t nr_pairs, const KVPair sorted_pairs[], const Param& = {});
-    ~BPForest() {}
+    ~BPForest();
 
     void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
     void batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t result[]);
     void batch_scan(size_t nr_queries, const KeyRange ranges[], BatchScanResult& result);
+
+    void print_params(std::ostream&) const;
 
 private:
     const dpu_id_t nr_cold_ranges;

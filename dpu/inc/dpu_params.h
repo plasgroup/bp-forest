@@ -1,9 +1,17 @@
 #pragma once
 /* Listing parameters and setting default values */
 
+/* !!!!!!!!!!!!!!! UPDATE print_params.h TOGETHER !!!!!!!!!!!!!! */
+/* !!!!!!!!!!!!!!! UPDATE print_params.h TOGETHER !!!!!!!!!!!!!! */
+/* !!!!!!!!!!!!!!! UPDATE print_params.h TOGETHER !!!!!!!!!!!!!! */
+/* !!!!!!!!!!!!!!! UPDATE print_params.h TOGETHER !!!!!!!!!!!!!! */
+/* !!!!!!!!!!!!!!! UPDATE print_params.h TOGETHER !!!!!!!!!!!!!! */
+
 #ifndef MRAM_FOR_TREE
 #define MRAM_FOR_TREE (27u * 1024u * 1024u)
 #endif
+
+// #define BITMAP_IN_MRAM
 
 
 #ifdef USE_RBTREE
@@ -15,9 +23,6 @@
 #ifndef SIZEOF_NODE
 #define SIZEOF_NODE (256u)
 #endif
-
-
-// #define BITMAP_IN_MRAM
 
 
 #ifndef TASK_INIT_NR_TASKLETS
@@ -43,6 +48,9 @@ _Static_assert(TASK_INIT_NR_TASKLETS <= NR_TASKLETS, "TASK_INIT_NR_TASKLETS <= N
 
 // #define TASK_INIT_CHECK
 
+#endif /* USE_RBTREE */
+
+
 #ifndef TASK_INIT_BITMAP_NR_TASKLETS
 #define TASK_INIT_BITMAP_NR_TASKLETS NR_TASKLETS
 #endif
@@ -50,6 +58,4 @@ _Static_assert(TASK_INIT_BITMAP_NR_TASKLETS <= NR_TASKLETS, "TASK_INIT_BITMAP_NR
 
 #ifndef TASK_INIT_NR_CACHED_WORDS
 #define TASK_INIT_NR_CACHED_WORDS 2
-#endif
-
 #endif

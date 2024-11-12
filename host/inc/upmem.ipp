@@ -51,3 +51,25 @@ inline void upmem_release()
 {
     upmem_release_impl();
 }
+
+template <class BatchTransferBuffer>
+inline void send_to_dpu(const DPUSet& set, uint32_t offset, BatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
+{
+    xfer_with_dpu<true>(set, offset, std::forward<BatchTransferBuffer>(buf), async);
+}
+template <class BatchTransferBuffer>
+inline void recv_from_dpu(const DPUSet& set, uint32_t offset, BatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
+{
+    xfer_with_dpu<false>(set, offset, std::forward<BatchTransferBuffer>(buf), async);
+}
+
+template <class ScatteredBatchTransferBuffer>
+inline void gather_to_dpu(const DPUSet& set, uint32_t offset, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
+{
+    scatter_gather_with_dpu<true>(set, offset, std::forward<ScatteredBatchTransferBuffer>(buf), async);
+}
+template <class ScatteredBatchTransferBuffer>
+inline void scatter_from_dpu(const DPUSet& set, uint32_t offset, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
+{
+    scatter_gather_with_dpu<false>(set, offset, std::forward<ScatteredBatchTransferBuffer>(buf), async);
+}

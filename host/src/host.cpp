@@ -13,6 +13,7 @@
 
 #include <cmdline.h>
 
+#include <ios>
 #include <pthread.h>
 #include <sched.h>
 #include <sys/time.h>
@@ -70,6 +71,7 @@ struct Option {
     void parse(int argc, char* argv[])
     {
         cmdline::parser a;
+        a.add<std::string>("dump-params", 0, "file path to output parameters");
         a.add<unsigned>("balancing-param", 0, "the tunable parameter for compute/memory load balancing in B+-Forest", false, 1);
         a.add<std::string>("zipfianconst", 'a', "zipfian constant", false, "0.99");
         a.add<std::string>("workload_dir", 'w', "directory containing workload files", false, "workload");
@@ -80,6 +82,7 @@ struct Option {
         a.add("print-perf", 'p', "print performance metrics");
         a.parse_check(argc, argv);
 
+        dump_param_file = a.get<std::string>("dump-params");
         balancing_param = a.get<unsigned>("balancing-param");
         alpha = a.get<std::string>("zipfianconst");
         workload_file = a.get<std::string>("workload_dir") + ("/zipf_const_" + alpha + ".bin");
@@ -103,6 +106,7 @@ struct Option {
         print_perf = a.exist("print-perf");
     }
 
+    std::string dump_param_file;
     unsigned balancing_param;
     std::string alpha;
     std::string workload_file;
@@ -436,8 +440,6 @@ int main(int argc, char* argv[])
               << "init elements in total:" << NUM_INIT_REQS << std::endl;
 #endif
 
-    upmem_init();
-
     /* load workload file */
     PiecewiseConstantWorkload workload;
     {
@@ -457,6 +459,14 @@ int main(int argc, char* argv[])
     printf("initialization finished\n");
 #endif
 
+    {
+        std::ofstream dump_param_file(opt.dump_param_file, std::ios_base::app);
+        if (!dump_param_file) {
+            std::cerr << "cannot open file: " << opt.dump_param_file << std::endl;
+            std::quick_exit(1);
+        }
+        forest.print_params(dump_param_file);
+    }
     WorkloadBuffer workload_buffer{std::move(workload.data)};
 
     /* main routine */
@@ -508,6 +518,5 @@ int main(int argc, char* argv[])
     xfer_statistics.print();
 #endif /* MEASURE_XFER_BYTES */
 
-    upmem_release();
     return 0;
 }

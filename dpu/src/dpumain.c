@@ -1,5 +1,6 @@
-#include "input_header.h"
 #include "common.h"
+#include "input_header.h"
+#include "print_params.h"
 #include "tree.h"
 
 #include <barrier.h>
@@ -28,9 +29,14 @@ int main()
         task_init();
     case TASK_NONE:
         break;
+    case TASK_PRINT_PARAMS:
+        if (me() == 0) {
+            print_params();
+        }
+        break;
     default:
         if (me() == 0) {
-            printf("no such a task: task %d\n", input_header.task_no);
+            printf("no such a task: task %u\n", input_header.task_no);
         }
         return -1;
     }

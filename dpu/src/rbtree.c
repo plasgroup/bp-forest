@@ -28,7 +28,7 @@ __host uint32_t num_kvpairs;
 
 void init_Tree(void)
 {
-    Allocator_reset();
+    Allocator_init(0);
     root = NODE_NULLPTR;
 }
 

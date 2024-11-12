@@ -1,6 +1,13 @@
 #pragma once
+/* Listing parameters and setting default values */
 
-#include "common.h"
+/* !!!!!!!!!!!!!!! UPDATE BPForest::print_params() TOGETHER !!!!!!!!!!!!!! */
+/* !!!!!!!!!!!!!!! UPDATE BPForest::print_params() TOGETHER !!!!!!!!!!!!!! */
+/* !!!!!!!!!!!!!!! UPDATE BPForest::print_params() TOGETHER !!!!!!!!!!!!!! */
+/* !!!!!!!!!!!!!!! UPDATE BPForest::print_params() TOGETHER !!!!!!!!!!!!!! */
+/* !!!!!!!!!!!!!!! UPDATE BPForest::print_params() TOGETHER !!!!!!!!!!!!!! */
+
+#include "workload_types.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -44,3 +51,14 @@ using block_id_t = uint32_t;
 //! @brief With this value as x, rebalancing is performed 
 //!        when the number of queries exceeds (1 + 1/x) times the original upper limit.
 constexpr unsigned InversedRebalancingNoiseMargin = INVERSED_REBALANCING_NOISE_MARGIN;
+
+
+// #define TOUCH_QUERIES_IN_ADVANCE
+// #define DEBUG_ON
+// #define PRINT_DEBUG
+
+#ifdef HOST_ONLY
+// #define MEASURE_XFER_BYTES
+#else
+// #define UPMEM_TRACE
+#endif
