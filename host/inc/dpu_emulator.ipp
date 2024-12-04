@@ -61,15 +61,15 @@ inline void DPUEmulator::execute()
         const unsigned nr_cold_lumps = *std::launder(reinterpret_cast<uint16_t*>(&mram[4])),
                        nr_hot_lumps = *std::launder(reinterpret_cast<uint16_t*>(&mram[6]));
         const uint16_t* end_indices = std::launder(reinterpret_cast<uint16_t*>(&mram[8]));
-        const key_uint64_t* delim_keys = std::launder(reinterpret_cast<key_uint64_t*>(&mram[(8 + sizeof(uint16_t) * (nr_cold_lumps + nr_hot_lumps) + 7) / 8 * 8]));
+        const key_uint64_t* delim_keys = std::launder(reinterpret_cast<key_uint64_t*>(&mram[(8 + sizeof(uint16_t) * (nr_cold_lumps + nr_hot_lumps + 2) + 7) / 8 * 8]));
 
-        const uint16_t nr_cold_delims = (nr_cold_lumps > 0 ? end_indices[nr_cold_lumps - 1] : 0),
-                       nr_hot_delims = (nr_hot_lumps > 0 ? end_indices[nr_cold_lumps + nr_hot_lumps - 1] : 0);
+        const uint16_t nr_cold_delims = end_indices[nr_cold_lumps],
+                       nr_hot_delims = end_indices[nr_cold_lumps + nr_hot_lumps + 1];
         const unsigned nr_cold_results = nr_cold_delims - nr_cold_lumps, nr_hot_results = nr_hot_delims - nr_hot_lumps;
 
-        value_uint64_t* const result = new (&mram_2nd[0]) value_uint64_t[nr_cold_results + nr_hot_results];
+        value_uint64_t* const result = new (&mram_2nd[RMQ_RESULT_OFFSET]) value_uint64_t[nr_cold_results + nr_hot_results];
         task_range_min(cold_tree, nr_cold_lumps, end_indices, delim_keys, result);
-        task_range_min(hot_tree, nr_hot_lumps, end_indices + nr_cold_lumps, delim_keys + nr_cold_delims, result + nr_cold_results);
+        task_range_min(hot_tree, nr_hot_lumps, end_indices + nr_cold_lumps + 1, delim_keys + nr_cold_delims, result + nr_cold_results);
     } break;
     case TASK_INSERT: {
         const unsigned nr_cold_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram[4])),
@@ -89,9 +89,10 @@ inline void DPUEmulator::execute()
     } break;
     case TASK_SUMMARIZE: {
         uint32_t* const nr_pairs = new (&mram_2nd[0]) uint32_t;
-        uint32_t* const nr_entries = new (&mram_2nd[4]) uint32_t;
-        SummaryBlock* const summary_blocks = std::launder(reinterpret_cast<SummaryBlock*>(&mram_2nd[8]));
-        std::tie(*nr_pairs, *nr_entries) = task_summarize(summary_blocks);
+        new (&mram_2nd[4]) uint16_t{1};
+        uint16_t* const nr_blocks = new (&mram_2nd[6]) uint16_t;
+        SummaryBlock* const summary_blocks = std::launder(reinterpret_cast<SummaryBlock*>(&mram_2nd[(6 + MAX_NR_SUMMARY_CHUNKS) / 4 * 8]));
+        std::tie(*nr_pairs, *nr_blocks) = task_summarize(summary_blocks);
     } break;
     case TASK_EXTRACT: {
         const unsigned nr_ranges = *std::launder(reinterpret_cast<uint32_t*>(&mram[4]));
@@ -206,7 +207,7 @@ inline void DPUEmulator::task_range_min(const Tree& tree, unsigned nr_lumps, con
     uint16_t idx_delim_key = 0;
     for (unsigned idx_lump = 0; idx_lump < nr_lumps; idx_lump++) {
         auto iter = tree.lower_bound(delim_keys[idx_delim_key]);
-        for (idx_delim_key++; idx_delim_key < end_indices[idx_lump]; idx_delim_key++) {
+        for (idx_delim_key++; idx_delim_key < end_indices[idx_lump + 1]; idx_delim_key++) {
             value_uint64_t min = std::numeric_limits<value_uint64_t>::max();
             while (iter != tree.end() && iter->first <= delim_keys[idx_delim_key]) {
                 min = std::min(min, iter->second);
@@ -350,7 +351,7 @@ inline key_uint64_t /* min_key */ DPUEmulator::task_delete(Tree& tree, const uns
     return tree.begin()->first;
 }
 
-inline std::pair<uint32_t /* nr_pairs */, uint32_t /* nr_entries */> DPUEmulator::task_summarize(SummaryBlock summary_blocks[])
+inline std::pair<uint32_t /* nr_pairs */, uint16_t /* nr_blocks */> DPUEmulator::task_summarize(SummaryBlock summary_blocks[])
 {
     uint32_t nr_pairs = 0, nr_entries = 0;
     for (const auto& pair : cold_tree) {
@@ -359,7 +360,23 @@ inline std::pair<uint32_t /* nr_pairs */, uint32_t /* nr_entries */> DPUEmulator
         nr_pairs += 1;
         nr_entries++;
     }
-    return {nr_pairs, nr_entries};
+
+    const uint32_t block_idx = nr_entries / 4;
+    uint32_t idx_in_block = nr_entries % 4;
+    if (idx_in_block == 0) {
+        return {nr_pairs, block_idx};
+    } else {
+        const key_uint64_t last_head_key = summary_blocks[block_idx].head_keys[idx_in_block - 1];
+        const uint16_t last_nr_keys = summary_blocks[block_idx].nr_keys[idx_in_block - 1];
+
+        for (; idx_in_block < 4; idx_in_block++) {
+            summary_blocks[block_idx].head_keys[idx_in_block] = last_head_key;
+            summary_blocks[block_idx].nr_keys[idx_in_block - 1] = 0;
+        }
+        summary_blocks[block_idx].nr_keys[3] = last_nr_keys;
+
+        return {nr_pairs, block_idx + 1};
+    }
 }
 inline void DPUEmulator::task_extract(const unsigned nr_ranges, const KeyRange ranges[],
     uint32_t nr_pairs[], KVPair pairs[])

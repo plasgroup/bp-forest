@@ -7,6 +7,8 @@
 /* !!!!!!!!!!!!!!! UPDATE BPForest::print_params() TOGETHER !!!!!!!!!!!!!! */
 /* !!!!!!!!!!!!!!! UPDATE BPForest::print_params() TOGETHER !!!!!!!!!!!!!! */
 
+#include "common_params.h"
+
 #include "workload_types.h"
 
 #include <cstddef>
@@ -14,28 +16,19 @@
 #include <limits>
 
 
-#ifndef NR_RANKS
-#error NR_RANKS should always be defined
-#endif
-
-#ifdef UPMEM_SIMULATOR
-constexpr size_t MAX_NR_DPUS_IN_RANK = 1;
-#else
-constexpr size_t MAX_NR_DPUS_IN_RANK = 64;
-#endif
 
 constexpr size_t MAX_NR_DPUS = MAX_NR_DPUS_IN_RANK * NR_RANKS;
 
 #ifndef NUM_REQUESTS_PER_BATCH
-constexpr size_t NUM_REQUESTS_PER_BATCH = 1000000;
+#define NUM_REQUESTS_PER_BATCH 1000000
 #endif
 
 #ifndef DEFAULT_NR_BATCHES
-constexpr size_t DEFAULT_NR_BATCHES = 20;
+#define DEFAULT_NR_BATCHES 20
 #endif
 
 #ifndef NUM_INIT_REQS
-constexpr size_t NUM_INIT_REQS = 20000 * MAX_NR_DPUS;
+#define NUM_INIT_REQS (20000 * MAX_NR_DPUS)
 #endif
 constexpr key_uint64_t INIT_KEY_INTERVAL = (KEY_MAX - KEY_MIN) / (NUM_INIT_REQS - 1);
 

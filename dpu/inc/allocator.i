@@ -4,6 +4,7 @@
 
 #include "bitmap.h"
 #include "node_ptr.h"
+#include "sync.h"
 #include "tree_impl.h"
 
 #include <attributes.h>
@@ -25,10 +26,16 @@ static void Allocator_init(const unsigned n)
 
 inline NodePtr Allocate_node()
 {
-    int id = bitmap_find_and_set_first_zero(allocated_bitmap, next_alloc, MAX_NR_NODES);
-    assert(id >= 0);
+    int id;
 
-    next_alloc = (NodePtr)id + 1;
+    acquire_lock();
+    {
+        id = bitmap_find_and_set_first_zero(allocated_bitmap, next_alloc, MAX_NR_NODES);
+        next_alloc = (NodePtr)id + 1;
+    }
+    release_lock();
+
+    assert(id >= 0);
     return (NodePtr)id;
 }
 

@@ -26,15 +26,15 @@ static DEFINE_DIV_BY(TASK_INIT_BITMAP_NR_TASKLETS, BITWIDTH_UINT32(MAX_NR_NODES 
 
 static void INIT_barrier_wait_for_preparing_bitmap_cache(void)
 {
-    if (me() != TASK_INIT_BITMAP_NR_TASKLETS - 1) {
-        wait_for_next_ready();
-    }
     if (me() != 0) {
-        notify_prev_of_readiness();
         wait_for_prev_ready();
     }
     if (me() != TASK_INIT_BITMAP_NR_TASKLETS - 1) {
         notify_next_of_readiness();
+        wait_for_next_ready();
+    }
+    if (me() != 0) {
+        notify_prev_of_readiness();
     }
 }
 

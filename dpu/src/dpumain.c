@@ -1,6 +1,5 @@
 #include "common.h"
 #include "input_header.h"
-#include "print_params.h"
 #include "tree.h"
 
 #include <barrier.h>
@@ -21,18 +20,27 @@ int main()
 {
     if (me() == LAST_TASKLET) {
         mram_read(DPU_MRAM_HEAP_POINTER, &input_header, sizeof(input_header));
+printf("task: %u\n", input_header.task_no);
     }
     barrier_wait(&my_barrier);
 
     switch (input_header.task_no) {
     case TASK_INIT:
         task_init();
-    case TASK_NONE:
         break;
-    case TASK_PRINT_PARAMS:
-        if (me() == 0) {
-            print_params();
-        }
+    case TASK_RANGE_MIN:
+        task_range_min();
+        break;
+    case TASK_SUMMARIZE:
+        task_summarize();
+        break;
+    case TASK_EXTRACT:
+        task_extract();
+        break;
+    case TASK_CONSTRUCT_HOT:
+        task_construct_hot();
+        break;
+    case TASK_NONE:
         break;
     default:
         if (me() == 0) {

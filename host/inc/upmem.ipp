@@ -15,7 +15,11 @@
 
 
 struct UPMEM_AsyncDuration {
+    UPMEM_AsyncDuration() = default;
     ~UPMEM_AsyncDuration();
+
+    UPMEM_AsyncDuration(const UPMEM_AsyncDuration&) = delete;
+    UPMEM_AsyncDuration& operator=(const UPMEM_AsyncDuration&) = delete;
 
 #ifndef HOST_ONLY
     bool all{};

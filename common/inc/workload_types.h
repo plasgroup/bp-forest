@@ -16,6 +16,7 @@ typedef uint64_t key_uint64_t;
 #define KEY_MAX (UINT64_MAX)
 
 typedef uint64_t value_uint64_t;
+#define VALUE_MAX (UINT64_MAX)
 
 
 #ifdef __cplusplus

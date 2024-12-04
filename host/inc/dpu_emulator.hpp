@@ -40,7 +40,7 @@ private:
     void task_insert(Tree& tree, unsigned nr_queries, const KVPair pairs[]);
     key_uint64_t /* min_key */ task_delete(Tree& tree, unsigned nr_queries, const key_uint64_t keys[]);
 
-    std::pair<uint32_t /* nr_pairs */, uint32_t /* nr_entries */> task_summarize(SummaryBlock summary_blocks[]);
+    std::pair<uint32_t /* nr_pairs */, uint16_t /* nr_blocks */> task_summarize(SummaryBlock summary_blocks[]);
     void task_extract(unsigned nr_ranges, const KeyRange ranges[],
         uint32_t nr_pairs[], KVPair pairs[]);
     void task_construct_hot(unsigned nr_pairs, const KVPair pairs[]);

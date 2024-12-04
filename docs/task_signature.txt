@@ -18,7 +18,7 @@ TASK_SCAN
 TASK_RANGE_MIN
     (uint16_t, uint16_t, uint16_t[], Key[]) -> Value[]
     cold/hot それぞれへの、連続・重複するクエリをまとめた後の、かたまりの数を受け取る
-    cold/hot それぞれごとの、次↓の配列における、各かたまりの終点のインデックス+1を受け取る
+    cold/hot それぞれごとの、次↓の配列における、各かたまりの始点のインデックスを受け取る (末尾には下の配列全体の要素数がくっつく)
     かたまりごとに、その中のクエリを処理するのに必要な小範囲を示す (始点[0], 終点[0] = 始点[1]-1, 終点[1] = 始点[2]-1, ..., 終点[n]) を受け取る (終点はinclusive)
 TASK_INSERT
     (uint16_t, uint16_t, (Key, Value)[]) -> ()
@@ -30,9 +30,12 @@ TASK_DELETE
         predで常に答えを得られるように
 
 TASK_SUMMARIZE
-    ; () -> (uint16_t, Key[], uint16_t[])
-    () -> (uint32_t, uint32_t, Key[], uint16_t[])
-    全要素数と、サマリーを構成する要素の数と、サマリーの中身
+    () -> (uint32_t, uint16_t, uint16_t[], (uint16_t[4], Key[4])[])
+    ; サマリーの中身は、ある程度の塊に分けてシャッフルしたような並びになっている
+    全要素数を返す
+    「塊」の数を返す
+    それぞれの塊が、正しい順番に並べた時に何個目で終わるかを返す
+    ; 例: (xx, 2, (6, 2, 4), (block0, block1, block2, block3, block4, block5)) は、 (block2, block3, block4, block5, block0, block1) とすれば正しい順番になることを示している
 TASK_EXTRACT
     ; (uint16_t, (Key, Key)[]) -> (uint32_t[], (Key, Value)[])  ; アラインメントを考えると16bitを使う必要なし
     (uint32_t, (Key, Key)[]) -> (uint32_t[], (Key, Value)[])

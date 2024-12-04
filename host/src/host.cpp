@@ -78,7 +78,11 @@ struct Option {
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
         a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq", false, "get");
         a.add<dpu_id_t>("print-compute-load", 'c', "print number of queries sent for each dpu", false, 0);
+        a.add<dpu_id_t>("print-cold-compute-load", 0, "print number of queries sent for cold ranges in each dpu", false, 0);
+        a.add<dpu_id_t>("print-hot-compute-load", 0, "print number of queries sent for hot ranges in each dpu", false, 0);
         a.add<dpu_id_t>("print-memory-load", 'm', "print number of KV pairs stored in each dpu", false, 0);
+        a.add<dpu_id_t>("print-cold-memory-load", 0, "print number of KV pairs stored in cold ranges in each dpu", false, 0);
+        a.add<dpu_id_t>("print-hot-memory-load", 0, "print number of KV pairs stored in hot ranges in each dpu", false, 0);
         a.add("print-perf", 'p', "print performance metrics");
         a.add("print-init-time", 0, "print elapsed time for initialization of BPForest");
         a.parse_check(argc, argv);
@@ -104,6 +108,10 @@ struct Option {
 
         print_compute_load = a.get<dpu_id_t>("print-compute-load");
         print_memory_load = a.get<dpu_id_t>("print-memory-load");
+        print_cold_compute_load = a.get<dpu_id_t>("print-cold-compute-load");
+        print_cold_memory_load = a.get<dpu_id_t>("print-cold-memory-load");
+        print_hot_compute_load = a.get<dpu_id_t>("print-hot-compute-load");
+        print_hot_memory_load = a.get<dpu_id_t>("print-hot-memory-load");
         print_perf = a.exist("print-perf");
         print_init_time = a.exist("print-init-time");
     }
@@ -115,6 +123,7 @@ struct Option {
     int nr_batches;
     TaskID op_type;
     dpu_id_t print_compute_load, print_memory_load;
+    dpu_id_t print_cold_compute_load, print_cold_memory_load, print_hot_compute_load, print_hot_memory_load;
     bool print_perf, print_init_time;
 } opt;
 
@@ -434,14 +443,6 @@ int main(int argc, char* argv[])
 {
     opt.parse(argc, argv);
 
-    /* In current implementation, bitmap word is 64 bit. So NR_SEAT_IN_DPU must not be greater than 64. */
-#ifdef PRINT_DEBUG
-    std::cout << "NR_RANKS:" << NR_RANKS << std::endl
-              << "NR_TASKLETS:" << NR_TASKLETS << std::endl
-              << "requests per batch:" << NUM_REQUESTS_PER_BATCH << std::endl
-              << "init elements in total:" << NUM_INIT_REQS << std::endl;
-#endif
-
     /* load workload file */
     PiecewiseConstantWorkload workload;
     {
@@ -486,10 +487,16 @@ int main(int argc, char* argv[])
 #ifdef HOST_ONLY
         if (opt.op_type == TASK_RANGE_MIN) {
             (*emulator).print_nr_RMQ_delims_in_last_batch(std::cout, opt.print_compute_load);
+            (*emulator).print_nr_cold_RMQ_delims_in_last_batch(std::cout, opt.print_cold_compute_load);
+            (*emulator).print_nr_hot_RMQ_delims_in_last_batch(std::cout, opt.print_hot_compute_load);
         } else {
             (*emulator).print_nr_queries_in_last_batch(std::cout, opt.print_compute_load);
+            (*emulator).print_nr_cold_queries_in_last_batch(std::cout, opt.print_cold_compute_load);
+            (*emulator).print_nr_hot_queries_in_last_batch(std::cout, opt.print_hot_compute_load);
         }
         (*emulator).print_nr_pairs(std::cout, opt.print_memory_load);
+        (*emulator).print_nr_cold_pairs(std::cout, opt.print_cold_memory_load);
+        (*emulator).print_nr_hot_pairs(std::cout, opt.print_hot_memory_load);
 #endif
 
         if (opt.print_perf) {

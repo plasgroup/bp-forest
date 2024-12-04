@@ -10,13 +10,13 @@ typedef struct __dma_aligned InputHeader {
         } init, construct_hot;
         struct {
             uint16_t nr_cold_qrys, nr_hot_qrys;
-        } get, rmq;
+        } get;
+        struct {
+            uint16_t nr_cold_lumps, nr_hot_lumps;
+        } rmq;
         struct {
             uint32_t nr_ranges;
-        } extract;
-        struct {
-            uint32_t nr_ranges;
-        } restore;
+        } extract, restore;
     };
 } InputHeader;
 extern InputHeader input_header;

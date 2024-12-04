@@ -4,6 +4,7 @@
 
 #include "batch_transfer_buffer.hpp"
 #include "common.h"
+#include "common_params.h"
 #include "dpu_set.hpp"
 #include "host_params.hpp"
 #include "log_buffer.hpp"
@@ -25,6 +26,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <ostream>
 #include <tuple>
 #include <utility>
@@ -264,6 +266,7 @@ inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], va
                     GetQueryWithIndexIterator{{&cold_queries[cold_queries.size()], &cold_orig_idxs[cold_queries.size()]}});
 
                 const Summary& summary = summaries[idx_cold];
+                const uint32_t nr_entries = summary.nr_blocks * 4;
                 const uint32_t max_nr_pairs_in_hot = (summary.nr_pairs + param.balancing - 1) / param.balancing;
 
                 size_t nr_left_queries = cold_queries.size();
@@ -273,12 +276,12 @@ inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], va
                 uint32_t hot_candidate_begin = 0;
                 uint32_t nr_pairs_in_candidate = 0;
                 size_t idx_query = 0;
-                query_idxs.reserve(summary.nr_entries + 1);
+                query_idxs.reserve(nr_entries + 1);
                 query_idxs[0] = 0;
-                for (uint32_t idx_summary_entry = 0; idx_summary_entry < summary.nr_entries; idx_summary_entry++) {
+                for (uint32_t idx_summary_entry = 0; idx_summary_entry < nr_entries; idx_summary_entry++) {
                     const key_uint64_t max_key
-                        = (idx_summary_entry + 1 == summary.nr_entries ? KEY_MAX
-                                                                       : summary.head_key(idx_summary_entry + 1) - 1);
+                        = (idx_summary_entry + 1 == nr_entries ? KEY_MAX
+                                                               : summary.head_key(idx_summary_entry + 1) - 1);
                     while (idx_query < cold_queries.size() && cold_queries[idx_query] <= max_key) {
                         idx_query++;
                     }
@@ -295,9 +298,9 @@ inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], va
                     if (nr_queries_in_hot >= min_nr_queries_in_hot) {
                         hot_delims[idx_new_hot] = summary.head_key(hot_candidate_begin);
                         hot_max_key[idx_new_hot]
-                            = (idx_summary_entry + 1 == summary.nr_entries ? (idx_cold + 1 == nr_cold_ranges ? KEY_MAX
-                                                                                                             : cold_delims[idx_cold + 1] - 1)
-                                                                           : summary.head_key(idx_summary_entry + 1) - 1);
+                            = (idx_summary_entry + 1 == nr_entries ? (idx_cold + 1 == nr_cold_ranges ? KEY_MAX
+                                                                                                     : cold_delims[idx_cold + 1] - 1)
+                                                                   : summary.head_key(idx_summary_entry + 1) - 1);
 
                         pt_qrys.hot[idx_new_hot].reserve(nr_queries_in_hot);
                         std::move(&cold_queries[idx_query_begin], &cold_queries[idx_query], std::back_inserter(pt_qrys.hot[idx_new_hot]));
@@ -577,6 +580,7 @@ inline void BPForest::batch_range_minimum(size_t nr_queries, const KeyRange rang
 
             if (cold_range_rebalanced[idx_cold]) {
                 const Summary& summary = summaries[idx_cold];
+                const uint32_t nr_entries = summary.nr_blocks * 4;
                 const uint32_t max_nr_pairs_in_hot = (summary.nr_pairs + param.balancing - 1) / param.balancing;
 
                 size_t idx_delim = cold_range_to_delim_idx[idx_cold];
@@ -587,12 +591,12 @@ inline void BPForest::batch_range_minimum(size_t nr_queries, const KeyRange rang
 
                 uint32_t hot_candidate_begin = 0;
                 uint32_t nr_pairs_in_candidate = 0;
-                query_idxs.reserve(summary.nr_entries + 1);
+                query_idxs.reserve(nr_entries + 1);
                 query_idxs[0] = idx_delim;
-                for (uint32_t idx_summary_entry = 0; idx_summary_entry < summary.nr_entries; idx_summary_entry++) {
+                for (uint32_t idx_summary_entry = 0; idx_summary_entry < nr_entries; idx_summary_entry++) {
                     const key_uint64_t max_key
-                        = (idx_summary_entry + 1 == summary.nr_entries ? KEY_MAX
-                                                                       : summary.head_key(idx_summary_entry + 1) - 1);
+                        = (idx_summary_entry + 1 == nr_entries ? KEY_MAX
+                                                               : summary.head_key(idx_summary_entry + 1) - 1);
                     while (idx_delim < end_idx_delim && rg_qry_data[idx_delim] <= max_key) {
                         idx_delim++;
                     }
@@ -608,9 +612,9 @@ inline void BPForest::batch_range_minimum(size_t nr_queries, const KeyRange rang
                     if (nr_delims_in_hot >= min_nr_delims_in_hot) {
                         hot_delims[idx_new_hot] = summary.head_key(hot_candidate_begin);
                         hot_max_key[idx_new_hot]
-                            = (idx_summary_entry + 1 == summary.nr_entries ? (idx_cold + 1 == nr_cold_ranges ? KEY_MAX
-                                                                                                             : cold_delims[idx_cold + 1] - 1)
-                                                                           : summary.head_key(idx_summary_entry + 1) - 1);
+                            = (idx_summary_entry + 1 == nr_entries ? (idx_cold + 1 == nr_cold_ranges ? KEY_MAX
+                                                                                                     : cold_delims[idx_cold + 1] - 1)
+                                                                   : summary.head_key(idx_summary_entry + 1) - 1);
 
                         hot_range_to_delim_idx[idx_new_hot] = {idx_delim_begin, idx_delim};
 
@@ -1186,11 +1190,12 @@ void BPForest::execute_rmq_in_dpus(
             assert(nr_cold_lumps <= std::numeric_limits<uint16_t>::max());
             nr_lumps[idx_dpu][0] = static_cast<uint16_t>(nr_cold_lumps);
 
-            lump_end_indices_size = (nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1]
+            lump_end_indices_size = (nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1] + 2
                                         + 8 / sizeof(uint16_t) - 1)
                                     / (8 / sizeof(uint16_t)) * (8 / sizeof(uint16_t));
             lump_end_indices[idx_dpu].reserve(lump_end_indices_size);
 
+            lump_end_indices[idx_dpu].push_back(0);
             for (size_t idx_lump = cold_idx_lump_begin; idx_lump + 1 < cold_idx_lump_end; idx_lump++) {
                 const size_t tmp = rg_lump_end_indices[idx_lump] - idx_offset;
                 assert(tmp <= std::numeric_limits<uint16_t>::max());
@@ -1234,10 +1239,12 @@ void BPForest::execute_rmq_in_dpus(
             }
             assert(nr_cold_lumps <= std::numeric_limits<uint16_t>::max());
             nr_lumps[idx_dpu][0] = static_cast<uint16_t>(nr_cold_lumps);
-            lump_end_indices_size = (nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1]
+            assert(nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1] <= MAX_NR_RMQ_LUMPS);
+            lump_end_indices_size = (nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1] + 2
                                         + 8 / sizeof(uint16_t) - 1)
                                     / (8 / sizeof(uint16_t)) * (8 / sizeof(uint16_t));
             lump_end_indices[idx_dpu].reserve(lump_end_indices_size);
+            lump_end_indices[idx_dpu].push_back(0);
             {
                 size_t nr_sent_delims = 0;
                 dpu_id_t idx_hot = cold_to_hot[idx_dpu];
@@ -1327,6 +1334,7 @@ void BPForest::execute_rmq_in_dpus(
             }
         }
 
+        lump_end_indices[idx_dpu].push_back(0);
         if (idx_hot != INVALID_DPU_ID) {
             const size_t idx_delim_begin = hot_range_to_delim_idx[idx_hot][0] - if_hot_begins_middle[idx_hot],
                          idx_delim_end = hot_range_to_delim_idx[idx_hot][1] + if_hot_ends_middle[idx_hot],
@@ -1355,7 +1363,7 @@ void BPForest::execute_rmq_in_dpus(
 
         gather_to_dpu(all_dpu, 0, RMQSender{this, &nr_lumps[0], &lump_end_indices[0], cold_range_to_delim_idx, hot_range_to_delim_idx, if_cold_begins_middle, if_hot_begins_middle, if_hot_ends_middle}, async);
         execute(all_dpu, async);
-        scatter_from_dpu(all_dpu, 0, RMQResultReceiver{this, &cold_ranges_to_minirange_idx[0], &hot_ranges_to_minirange_idx[0], &cold_to_be_agged[0], &hot_to_be_agged[0], &if_cold_begins_middle[0], &if_hot_begins_middle[0], &if_hot_ends_middle[0]}, async);
+        scatter_from_dpu(all_dpu, RMQ_RESULT_OFFSET, RMQResultReceiver{this, &cold_ranges_to_minirange_idx[0], &hot_ranges_to_minirange_idx[0], &cold_to_be_agged[0], &hot_to_be_agged[0], &if_cold_begins_middle[0], &if_hot_begins_middle[0], &if_hot_ends_middle[0]}, async);
     }
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
     std::unique_ptr<LogBuffer> log = read_log(all_dpu);
@@ -1497,7 +1505,7 @@ inline void BPForest::restore_hot_ranges()
 
         recv_from_dpu(all_dpu, 0, EachInArray{&nr_received_kvpairs[0]}, async);
 
-        const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration async) {
+        const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration& async) {
             const std::pair<dpu_id_t, dpu_id_t> dpu_range = upmem_get_dpu_range_in_rank(rank_id);
             for (dpu_id_t idx_dpu = dpu_range.first; idx_dpu < dpu_range.second; idx_dpu++) {
                 const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
@@ -1550,69 +1558,126 @@ inline void BPForest::restore_hot_ranges()
     }
 }
 
-struct BPForest::SummaryMetadataReceiver {
-    static constexpr bool IsSizeVarying = false;
-    Summary* const summary;
-
-    uint32_t* for_dpu(dpu_id_t dpu) const { return &summary[dpu].nr_pairs; }
-    size_t bytes_for_dpu(dpu_id_t) const { return sizeof(uint32_t) * 2; }
+struct SummaryChunkInfo {
+    uint16_t nr_chunks;
+    std::array<uint16_t, MAX_NR_SUMMARY_CHUNKS> end_indices;
+    std::array<uint16_t, MAX_NR_SUMMARY_CHUNKS> begin_indices;
 };
-struct BPForest::SummaryReceiver {
+struct BPForest::SummaryHeadReceiver {
     Summary* const summary;
+    SummaryChunkInfo* const chunk_infos;
     const bool* const cold_range_rebalanced;
 
-    SummaryReceiver(Summary* summary, const bool* cold_range_rebalanced) : summary{summary}, cold_range_rebalanced{cold_range_rebalanced} {}
+    SummaryHeadReceiver(Summary* summary, SummaryChunkInfo* chunk_infos, const bool* cold_range_rebalanced)
+        : summary{summary}, chunk_infos{chunk_infos}, cold_range_rebalanced{cold_range_rebalanced} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
     {
-        switch (block_index) {
-        case 0:
-            if (cold_range_rebalanced[dpu_index]) {
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<SummaryBlock*>(&summary[dpu_index].blocks[0])));
-                out->length = static_cast<uint32_t>(sizeof(SummaryBlock) * ((summary[dpu_index].nr_entries + 3) / 4));
+        if (cold_range_rebalanced[dpu_index]) {
+            switch (block_index) {
+            case 0:
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<uint32_t*>(&summary[dpu_index].nr_pairs)));
+                out->length = sizeof(uint32_t);
                 return true;
-            } else {
+            case 1:
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<uint16_t*>(&chunk_infos[dpu_index].nr_chunks)));
+                out->length = sizeof(uint16_t) * 2;
+                return true;
+            default:
                 return false;
             }
-        default:
+        } else {
             return false;
         }
     }
     size_t bytes_for_dpu(dpu_id_t dpu) const
     {
-        if (cold_range_rebalanced[dpu]) {
-            return sizeof(SummaryBlock) * (summary[dpu].nr_entries + 3) / 4;
+        return cold_range_rebalanced[dpu] * (sizeof(uint32_t) + sizeof(uint16_t) * 2);
+    }
+};
+struct BPForest::SummaryChunkInfoReceiver {
+    static constexpr bool IsSizeVarying = true;
+    SummaryChunkInfo* const chunk_infos;
+
+    uint16_t* for_dpu(dpu_id_t dpu) const { return &chunk_infos[dpu].end_indices[1]; }
+    size_t bytes_for_dpu(dpu_id_t dpu) const { return sizeof(uint16_t) * ((chunk_infos[dpu].nr_chunks + 2) / 4 * 4); }
+};
+struct BPForest::SummaryReceiver {
+    Summary* const summary;
+    const SummaryChunkInfo* const chunk_infos;
+
+    SummaryReceiver(Summary* summary, const SummaryChunkInfo* chunk_infos) : summary{summary}, chunk_infos{chunk_infos} {}
+
+    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
+    {
+        if (block_index < chunk_infos[dpu_index].nr_chunks) {
+            const uint16_t chunk_begin_idx = chunk_infos[dpu_index].begin_indices[block_index],
+                           chunk_end_idx = chunk_infos[dpu_index].end_indices[block_index];
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<SummaryBlock*>(&summary[dpu_index].blocks[chunk_begin_idx])));
+            out->length = sizeof(SummaryBlock) * (chunk_end_idx - chunk_begin_idx);
+            return true;
         } else {
-            return 0;
+            return false;
         }
+    }
+    size_t bytes_for_dpu(dpu_id_t dpu) const
+    {
+        return sizeof(SummaryBlock) * summary[dpu].nr_blocks;
     }
 };
 inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_range_rebalanced)
 {
     std::array<UInt32Packet, MAX_NR_DPUS> task_nos;
+    std::array<SummaryChunkInfo, MAX_NR_DPUS> chunk_infos;
+
     for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
-        task_nos[idx_cold].data = (cold_range_rebalanced[idx_cold] ? TASK_SUMMARIZE : TASK_NONE);
+        if (cold_range_rebalanced[idx_cold]) {
+            task_nos[idx_cold].data = TASK_SUMMARIZE;
+        } else {
+            task_nos[idx_cold].data = TASK_NONE;
+            chunk_infos[idx_cold].nr_chunks = 0;
+        }
     }
 
-    {
-        std::mutex mutex;
-        std::condition_variable cond;
-        dpu_id_t nr_finished_preparing_for_summary = 0;
+    std::mutex mutex;
+    std::condition_variable cond;
+    dpu_id_t nr_finished_preparing_for_summary = 0;
 
-        UPMEM_AsyncDuration async;
-        send_to_dpu(all_dpu, 0, EachInArray{&task_nos[0]}, async);
-        execute(all_dpu, async);
-        recv_from_dpu(all_dpu, 0, SummaryMetadataReceiver{&summaries[0]}, async);
+    UPMEM_AsyncDuration async;
+    send_to_dpu(all_dpu, 0, EachInArray{&task_nos[0]}, async);
+    execute(all_dpu, async);
+    scatter_from_dpu(all_dpu, 0, SummaryHeadReceiver{&summaries[0], &chunk_infos[0], &cold_range_rebalanced[0]}, async);
 
-        const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration async) {
+    std::array<std::function<void(uint32_t, UPMEM_AsyncDuration&)>, NR_RANKS> func2;
+    for (dpu_id_t rank_id = 0; rank_id < NR_RANKS; rank_id++) {
+        func2[rank_id] = [&, rank_id](uint32_t, UPMEM_AsyncDuration& async) {
             const std::pair<dpu_id_t, dpu_id_t> dpu_range = upmem_get_dpu_range_in_rank(rank_id);
             for (dpu_id_t idx_dpu = dpu_range.first; idx_dpu < dpu_range.second; idx_dpu++) {
+                Summary& summary = summaries[idx_dpu];
                 if (cold_range_rebalanced[idx_dpu]) {
-                    summaries[idx_dpu].blocks.reserve((summaries[idx_dpu].nr_entries + 3) / 4);
+                    SummaryChunkInfo& chunk_info = chunk_infos[idx_dpu];
+                    const uint16_t nr_chunks = chunk_info.nr_chunks;
+
+                    std::array<uint16_t, MAX_NR_SUMMARY_CHUNKS> sorted_idx_to_current_idx;
+                    std::iota(&sorted_idx_to_current_idx[0], &sorted_idx_to_current_idx[nr_chunks], uint16_t{0});
+                    std::sort(&sorted_idx_to_current_idx[0], &sorted_idx_to_current_idx[nr_chunks], [&](uint16_t lhs, uint16_t rhs) {
+                        return chunk_info.end_indices[lhs] < chunk_info.end_indices[rhs];
+                    });
+
+                    chunk_info.begin_indices[sorted_idx_to_current_idx[0]] = 0;
+                    for (uint16_t sorted_chunk_idx = 1; sorted_chunk_idx < nr_chunks; sorted_chunk_idx++) {
+                        chunk_info.begin_indices[sorted_idx_to_current_idx[sorted_chunk_idx]]
+                            = chunk_info.end_indices[sorted_idx_to_current_idx[sorted_chunk_idx - 1]];
+                    }
+                    summary.nr_blocks = chunk_info.end_indices[sorted_idx_to_current_idx[nr_chunks - 1]];
+                    summary.blocks.reserve(summary.nr_blocks);
+                } else {
+                    summary.nr_blocks = 0;
                 }
             }
 
-            scatter_from_dpu(select_rank(rank_id), sizeof(uint32_t) * 2, SummaryReceiver{&summaries[0], &cold_range_rebalanced[0]}, async);
+            scatter_from_dpu(select_rank(rank_id), (6 + sizeof(uint16_t) * MAX_NR_SUMMARY_CHUNKS + 7) / 8 * 8,
+                SummaryReceiver{&summaries[0], &chunk_infos[0]}, async);
 
             {
                 std::lock_guard<std::mutex> lock{mutex};
@@ -1620,23 +1685,31 @@ inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_ran
             }
             cond.notify_one();
         };
-        then_call(all_dpu, func, async);
-
-        std::unique_lock<std::mutex> lock{mutex};
-        /*
-          when cond.wait() returns, the following completed:
-            send_to_dpu(task_nos)
-            execute(TASK_SUMMARIZE)
-            recv_from_dpu(SummaryMetadataReceiver)
-        */
-        cond.wait(lock, [&] { return nr_finished_preparing_for_summary == NR_RANKS; });
-
-        /*
-          when `async` object is destroyed, the following completed:
-            then_call()
-            scatter_from_dpu(SummaryReceiver)
-        */
     }
+
+    const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration& async) {
+        const DPUSet rank = select_rank(rank_id);
+        recv_from_dpu(rank, 8, SummaryChunkInfoReceiver{&chunk_infos[0]}, async);
+        then_call(rank, func2[rank_id], async);
+    };
+    then_call(all_dpu, func, async);
+
+    std::unique_lock<std::mutex> lock{mutex};
+    /*
+      when cond.wait() returns, the following completed:
+        send_to_dpu(task_nos)
+        execute(TASK_SUMMARIZE)
+        scatter_from_dpu(SummaryHeadReceiver)
+        then_call(func)
+        recv_from_dpu(SummaryChunkInfoReceiver)
+    */
+    cond.wait(lock, [&] { return nr_finished_preparing_for_summary == NR_RANKS; });
+
+    /*
+      when `async` object is destroyed, the following completed:
+        then_call(func2)
+        scatter_from_dpu(SummaryReceiver)
+    */
 }
 
 struct BPForest::HotKVPairsExtracter {
@@ -1785,13 +1858,13 @@ inline void BPForest::extract_and_distribute_hot_ranges()
 
         scatter_from_dpu(all_dpu, 0, NrHotKVPairsCollecter{this, &nr_hot_pairs[0]}, async);
 
-        const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration async) {
+        const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration& async) {
             const std::pair<dpu_id_t, dpu_id_t> dpu_range = upmem_get_dpu_range_in_rank(rank_id);
             for (dpu_id_t idx_hot = cold_to_hot[dpu_range.first]; idx_hot < cold_to_hot[dpu_range.second]; idx_hot++) {
                 hot_kvpairs[idx_hot].reserve(nr_hot_pairs[idx_hot]);
             }
 
-            scatter_from_dpu(all_dpu, 0, HotKVPairsExtractedCollecter{this, &nr_hot_pairs[0], &garbage[0]}, async);
+            scatter_from_dpu(select_rank(rank_id), 0, HotKVPairsExtractedCollecter{this, &nr_hot_pairs[0], &garbage[0]}, async);
 
             {
                 std::lock_guard<std::mutex> lock{mutex};
@@ -1837,77 +1910,60 @@ inline void BPForest::extract_and_distribute_hot_ranges()
 
 inline void BPForest::print_params(std::ostream& ostr) const
 {
-    const DPUSet dpu0 = select_dpu(0);
-    UInt32Packet task_desc;
-    task_desc.data = TASK_PRINT_PARAMS;
-
-    UPMEM_AsyncDuration async;
-    send_to_dpu(dpu0, 0, Single{task_desc}, async);
-    execute(dpu0, async);
-
 #ifndef HOST_ONLY
-    const std::unique_ptr<LogBuffer> log = read_log(dpu0);
-    const size_t pos_1st_linebreak = std::strcspn(log->get(), "\n");
-    ostr << &log->get()[pos_1st_linebreak + 1] << std::flush;
+    ostr << get_param_dump().get();
 #endif
 
-    ostr << "NR_RANKS: " << NR_RANKS << std::endl
-         << "UPMEM_SIMULATOR: " <<
+    // clang-format off
+#define STRINGIFY(x) #x
+#define EXPAND_STRINGIFY(x) STRINGIFY(x)
+    ostr << "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n"
+            "MAX_NR_SUMMARY_CHUNKS: " EXPAND_STRINGIFY(MAX_NR_SUMMARY_CHUNKS) "\n"
+            "RMQ_RESULT_OFFSET: " EXPAND_STRINGIFY(RMQ_RESULT_OFFSET) "\n"
+            "MAX_NR_RMQ_LUMPS: " EXPAND_STRINGIFY(MAX_NR_RMQ_LUMPS) "\n"
 #ifdef UPMEM_SIMULATOR
-        1
+            "UPMEM_SIMULATOR: 1\n"
 #else
-        0
+            "UPMEM_SIMULATOR: 0\n"
 #endif
-         << std::endl
-         << "HOST_ONLY: " <<
 #ifdef HOST_ONLY
-        1
+            "HOST_ONLY: 1\n"
 #else
-        0
+            "HOST_ONLY: 0\n"
 #endif
-         << std::endl
-         << "MAX_NR_DPUS_IN_RANK: " << MAX_NR_DPUS_IN_RANK << std::endl
-         << "NUM_REQUESTS_PER_BATCH: " << NUM_REQUESTS_PER_BATCH << std::endl
-         << "DEFAULT_NR_BATCHES: " << DEFAULT_NR_BATCHES << std::endl
-         << "NUM_INIT_REQS: " << NUM_INIT_REQS << std::endl
-         << "INIT_KEY_INTERVAL: " << INIT_KEY_INTERVAL << std::endl
-         << "InversedRebalancingNoiseMargin: " << InversedRebalancingNoiseMargin << std::endl
-         << "TOUCH_QUERIES_IN_ADVANCE: " <<
+            "NUM_REQUESTS_PER_BATCH: " EXPAND_STRINGIFY(NUM_REQUESTS_PER_BATCH) "\n"
+            "DEFAULT_NR_BATCHES: " EXPAND_STRINGIFY(DEFAULT_NR_BATCHES) "\n"
+            "NUM_INIT_REQS: " EXPAND_STRINGIFY(NUM_INIT_REQS) "\n"
+            "INVERSED_REBALANCING_NOISE_MARGIN: " EXPAND_STRINGIFY(INVERSED_REBALANCING_NOISE_MARGIN) "\n"
 #ifdef TOUCH_QUERIES_IN_ADVANCE
-        1
+            "TOUCH_QUERIES_IN_ADVANCE: 1\n"
 #else
-        0
+            "TOUCH_QUERIES_IN_ADVANCE: 0\n"
 #endif
-         << std::endl
-         << "DEBUG_ON: " <<
 #ifdef DEBUG_ON
-        1
+            "DEBUG_ON: 1\n"
 #else
-        0
+            "DEBUG_ON: 0\n"
 #endif
-         << std::endl
-         << "PRINT_DEBUG: " <<
 #ifdef PRINT_DEBUG
-        1
+            "PRINT_DEBUG: 1\n"
 #else
-        0
+            "PRINT_DEBUG: 0\n"
 #endif
-         << std::endl
 #ifdef HOST_ONLY
-         << "MEASURE_XFER_BYTES: " <<
 #ifdef MEASURE_XFER_BYTES
-        1
+            "MEASURE_XFER_BYTES: 1\n"
 #else
-        0
+            "MEASURE_XFER_BYTES: 0\n"
 #endif
-         << std::endl
-         << "UPMEM_TRACE: " <<
 #ifdef UPMEM_TRACE
-        1
+            "UPMEM_TRACE: 1\n"
 #else
-        0
+            "UPMEM_TRACE: 0\n"
 #endif
-         << std::endl
 #endif
-        ;
+         << std::flush;
+#undef STRINGIFY
+#undef EXPAND_STRINGIFY
+    // clang-format on
 }

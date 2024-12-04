@@ -42,10 +42,16 @@ template <class ScatteredBatchTransferBuffer>
 inline void scatter_from_dpu(const DPUSet& set, uint32_t offset, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration& async);
 
 inline void execute(const DPUSet& set, UPMEM_AsyncDuration&);
+#ifndef HOST_ONLY
 inline std::unique_ptr<LogBuffer> read_log(const DPUSet& set);
+#endif
 
 template <class Func>
 inline void then_call(const DPUSet& set, Func&, UPMEM_AsyncDuration&);
+
+#ifndef HOST_ONLY
+inline std::unique_ptr<char[]> get_param_dump();
+#endif
 
 
 #include "upmem.ipp"

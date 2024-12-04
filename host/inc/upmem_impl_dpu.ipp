@@ -1,6 +1,7 @@
 #pragma once
 
 #include "batch_transfer_buffer.hpp"
+#include "common_params.h"
 #include "dpu_set.hpp"
 #include "host_params.hpp"
 #include "log_buffer.hpp"
@@ -18,6 +19,7 @@ extern "C" {
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <type_traits>
 #include <utility>
@@ -55,7 +57,7 @@ inline void upmem_init_impl()
 #else
         "sgXferEnable=true,sgXferMaxBlocksPerDpu="
 #endif
-         << (2 * MAX_NR_DPUS + 4);
+         << std::max<size_t>({2 * MAX_NR_DPUS + 4, MAX_NR_SUMMARY_CHUNKS});
 
     DPU_ASSERT(dpu_alloc_ranks(NR_RANKS, sstr.str().c_str(), &all_dpu_impl));
 
@@ -140,16 +142,20 @@ struct VisitorOf_xfer_with_dpu {
                 size_t max_xfer_bytes_in_rank = 0;
                 const dpu_id_t idx_dpu_end_in_rank = first_dpu_id_in_each_rank[idx_rank + 1];
                 for (; idx_dpu < idx_dpu_end_in_rank; idx_dpu++) {
-                    auto* const ptr = buf.for_dpu(idx_dpu);
                     const auto size = buf.bytes_for_dpu(idx_dpu);
-                    static_assert(std::is_trivially_copyable_v<std::remove_pointer_t<decltype(ptr)>>,
-                        "non-trivial copying cannot be performed between CPU and DPU");
+                    if (size != 0) {
+                        auto* const ptr = buf.for_dpu(idx_dpu);
+                        static_assert(std::is_trivially_copyable_v<std::remove_pointer_t<decltype(ptr)>>,
+                            "non-trivial copying cannot be performed between CPU and DPU");
 
-                    DPU_ASSERT(dpu_prepare_xfer(each_dpu_impl[idx_dpu], ptr));
-                    max_xfer_bytes_in_rank = std::max(max_xfer_bytes_in_rank, size);
+                        DPU_ASSERT(dpu_prepare_xfer(each_dpu_impl[idx_dpu], ptr));
+                        max_xfer_bytes_in_rank = std::max(max_xfer_bytes_in_rank, size);
+                    }
                 }
-                DPU_ASSERT(dpu_push_xfer_symbol(each_rank_impl[idx_rank], Direction, comm_buffer_handler, offset, max_xfer_bytes_in_rank, DPU_XFER_ASYNC));
-                async.rank[idx_rank] = true;
+                if (max_xfer_bytes_in_rank != 0) {
+                    DPU_ASSERT(dpu_push_xfer_symbol(each_rank_impl[idx_rank], Direction, comm_buffer_handler, offset, max_xfer_bytes_in_rank, DPU_XFER_ASYNC));
+                    async.rank[idx_rank] = true;
+                }
             }
 
         } else {
@@ -168,20 +174,34 @@ struct VisitorOf_xfer_with_dpu {
         for (dpu_id_t idx_rank = ranks.idx_rank_begin, idx_dpu = first_dpu_id_in_each_rank[idx_rank]; idx_rank < ranks.idx_rank_end; idx_rank++) {
             size_t max_xfer_bytes_in_rank = 0;
             const dpu_id_t idx_dpu_end_in_rank = first_dpu_id_in_each_rank[idx_rank + 1];
-            for (; idx_dpu < idx_dpu_end_in_rank; idx_dpu++) {
-                auto* const ptr = buf.for_dpu(idx_dpu);
-                static_assert(std::is_trivially_copyable_v<std::remove_pointer_t<decltype(ptr)>>,
-                    "non-trivial copying cannot be performed between CPU and DPU");
-                DPU_ASSERT(dpu_prepare_xfer(each_dpu_impl[idx_dpu], ptr));
-
-                if (buf.IsSizeVarying) {
+            if (buf.IsSizeVarying) {
+                for (; idx_dpu < idx_dpu_end_in_rank; idx_dpu++) {
                     const auto size = buf.bytes_for_dpu(idx_dpu);
-                    max_xfer_bytes_in_rank = std::max(max_xfer_bytes_in_rank, size);
+                    if (size != 0) {
+                        auto* const ptr = buf.for_dpu(idx_dpu);
+                        static_assert(std::is_trivially_copyable_v<std::remove_pointer_t<decltype(ptr)>>,
+                            "non-trivial copying cannot be performed between CPU and DPU");
+
+                        DPU_ASSERT(dpu_prepare_xfer(each_dpu_impl[idx_dpu], ptr));
+                        max_xfer_bytes_in_rank = std::max(max_xfer_bytes_in_rank, size);
+                    }
                 }
+                if (max_xfer_bytes_in_rank != 0) {
+                    DPU_ASSERT(dpu_push_xfer_symbol(each_rank_impl[idx_rank], Direction, comm_buffer_handler, offset,
+                        max_xfer_bytes_in_rank, DPU_XFER_ASYNC));
+                    async.rank[idx_rank] = true;
+                }
+            } else {
+                for (; idx_dpu < idx_dpu_end_in_rank; idx_dpu++) {
+                    auto* const ptr = buf.for_dpu(idx_dpu);
+                    static_assert(std::is_trivially_copyable_v<std::remove_pointer_t<decltype(ptr)>>,
+                        "non-trivial copying cannot be performed between CPU and DPU");
+                    DPU_ASSERT(dpu_prepare_xfer(each_dpu_impl[idx_dpu], ptr));
+                }
+                DPU_ASSERT(dpu_push_xfer_symbol(each_rank_impl[idx_rank], Direction, comm_buffer_handler, offset,
+                    buf.bytes_for_dpu(idx_dpu_end_in_rank), DPU_XFER_ASYNC));
+                async.rank[idx_rank] = true;
             }
-            DPU_ASSERT(dpu_push_xfer_symbol(each_rank_impl[idx_rank], Direction, comm_buffer_handler, offset,
-                (buf.IsSizeVarying ? max_xfer_bytes_in_rank : buf.bytes_for_dpu(idx_dpu_end_in_rank)), DPU_XFER_ASYNC));
-            async.rank[idx_rank] = true;
         }
     }
 
@@ -414,4 +434,15 @@ template <class Func>
 inline void then_call(const DPUSet& set, Func& func, UPMEM_AsyncDuration& async)
 {
     std::visit(*(new VisitorOf_then_call<Func>{func, async}), set);
+}
+
+inline std::unique_ptr<char[]> get_param_dump()
+{
+    uint64_t param_dump_size;
+    DPU_ASSERT(dpu_copy_from(each_dpu_impl[0], "ParamDumpSize", 0, &param_dump_size, sizeof(uint64_t)));
+
+    std::unique_ptr<char[]> result{new char[param_dump_size]};
+    DPU_ASSERT(dpu_copy_from(each_dpu_impl[0], "ParamDump", 0, &result[0], param_dump_size));
+
+    return result;
 }

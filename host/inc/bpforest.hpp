@@ -76,7 +76,7 @@ private:
 public:  // TODO: privatize
     struct Summary {
         uint32_t nr_pairs;
-        uint32_t nr_entries;
+        uint32_t nr_blocks;
         ExtendableBuffer<SummaryBlock> blocks;
 
         key_uint64_t head_key(uint32_t i) const { return blocks[i / 4].head_keys[i % 4]; }
@@ -147,7 +147,8 @@ private:
     struct HotKVPairsRestorer;
 
     void take_summary(const std::array<bool, MAX_NR_DPUS>& cold_range_rebalanced);
-    struct SummaryMetadataReceiver;
+    struct SummaryHeadReceiver;
+    struct SummaryChunkInfoReceiver;
     struct SummaryReceiver;
 
     void extract_and_distribute_hot_ranges();

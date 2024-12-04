@@ -1,52 +1,79 @@
 #pragma once
 /* Listing parameters and setting default values */
 
-/* !!!!!!!!!!!!!!! UPDATE print_params.h TOGETHER !!!!!!!!!!!!!! */
-/* !!!!!!!!!!!!!!! UPDATE print_params.h TOGETHER !!!!!!!!!!!!!! */
-/* !!!!!!!!!!!!!!! UPDATE print_params.h TOGETHER !!!!!!!!!!!!!! */
-/* !!!!!!!!!!!!!!! UPDATE print_params.h TOGETHER !!!!!!!!!!!!!! */
-/* !!!!!!!!!!!!!!! UPDATE print_params.h TOGETHER !!!!!!!!!!!!!! */
+/* !!!!!!!!!!!!!!! UPDATE param_dump.c TOGETHER !!!!!!!!!!!!!! */
+/* !!!!!!!!!!!!!!! UPDATE param_dump.c TOGETHER !!!!!!!!!!!!!! */
+/* !!!!!!!!!!!!!!! UPDATE param_dump.c TOGETHER !!!!!!!!!!!!!! */
+/* !!!!!!!!!!!!!!! UPDATE param_dump.c TOGETHER !!!!!!!!!!!!!! */
+/* !!!!!!!!!!!!!!! UPDATE param_dump.c TOGETHER !!!!!!!!!!!!!! */
+
+#include "common_params.h"
+
 
 #ifndef MRAM_FOR_TREE
-#define MRAM_FOR_TREE (27u * 1024u * 1024u)
+#define MRAM_FOR_TREE 28311552  // 27 * 1024 * 1024
 #endif
 
 // #define BITMAP_IN_MRAM
 
 
 #ifdef USE_RBTREE
-#define SIZEOF_NODE (24u)
+#define SIZEOF_NODE 24
 
 
 #else /* USE_RBTREE */
 
 #ifndef SIZEOF_NODE
-#define SIZEOF_NODE (256u)
+#define SIZEOF_NODE 256
 #endif
 
 
-#ifndef TASK_INIT_NR_TASKLETS
-#define TASK_INIT_NR_TASKLETS NR_TASKLETS
+#ifndef TREE_CONSTRUCT_NR_TASKLETS
+#define TREE_CONSTRUCT_NR_TASKLETS NR_TASKLETS
 #endif
-_Static_assert(TASK_INIT_NR_TASKLETS <= NR_TASKLETS, "TASK_INIT_NR_TASKLETS <= NR_TASKLETS");
+_Static_assert(TREE_CONSTRUCT_NR_TASKLETS <= NR_TASKLETS, "TREE_CONSTRUCT_NR_TASKLETS <= NR_TASKLETS");
 
-#ifndef TASK_INIT_NR_CACHED_KVPAIRS
-#define TASK_INIT_NR_CACHED_KVPAIRS 1
-#endif
-
-#ifndef TASK_INIT_NR_CACHED_INPUT_LIFT
-#define TASK_INIT_NR_CACHED_INPUT_LIFT 2
+#ifndef TREE_CONSTRUCT_NR_CACHED_KVPAIRS
+#define TREE_CONSTRUCT_NR_CACHED_KVPAIRS 1
 #endif
 
-#ifndef TASK_INIT_NR_CACHED_OUTPUT_LIFT
-#define TASK_INIT_NR_CACHED_OUTPUT_LIFT (MAX_NR_CHILDREN / 2 * 2)
+#ifndef TREE_CONSTRUCT_NR_CACHED_INPUT_LIFT
+#define TREE_CONSTRUCT_NR_CACHED_INPUT_LIFT 2
 #endif
 
-#ifndef TASK_INIT_NR_CACHED_NODES
-#define TASK_INIT_NR_CACHED_NODES 1
+#ifndef TREE_CONSTRUCT_NR_CACHED_OUTPUT_LIFT
+#define TREE_CONSTRUCT_NR_CACHED_OUTPUT_LIFT (MAX_NR_CHILDREN / 2 * 2)
 #endif
 
 // #define TASK_INIT_CHECK
+
+
+#ifndef TASK_SUMMARIZE_NR_TASKLETS
+#define TASK_SUMMARIZE_NR_TASKLETS NR_TASKLETS
+#endif
+_Static_assert(TASK_SUMMARIZE_NR_TASKLETS <= NR_TASKLETS, "TASK_SUMMARIZE_NR_TASKLETS <= NR_TASKLETS");
+
+
+// #define TASK_EXTRACT_CHECK
+
+// #define TASK_CONSTRUCT_HOT_CHECK
+
+
+#ifndef TASK_RANGE_MIN_NR_TASKLETS
+#define TASK_RANGE_MIN_NR_TASKLETS NR_TASKLETS
+#endif
+
+#ifndef TASK_RANGE_MIN_NR_CACHED_LUMP_END_INDICES
+#define TASK_RANGE_MIN_NR_CACHED_LUMP_END_INDICES 4
+#endif
+
+#ifndef TASK_RANGE_MIN_NR_CACHED_DELIM_KEYS
+#define TASK_RANGE_MIN_NR_CACHED_DELIM_KEYS 1
+#endif
+
+#ifndef TASK_RANGE_MIN_NR_CACHED_RESULTS
+#define TASK_RANGE_MIN_NR_CACHED_RESULTS 1
+#endif
 
 #endif /* USE_RBTREE */
 
