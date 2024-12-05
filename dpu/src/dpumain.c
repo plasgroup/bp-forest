@@ -20,7 +20,6 @@ int main()
 {
     if (me() == LAST_TASKLET) {
         mram_read(DPU_MRAM_HEAP_POINTER, &input_header, sizeof(input_header));
-printf("task: %u\n", input_header.task_no);
     }
     barrier_wait(&my_barrier);
 

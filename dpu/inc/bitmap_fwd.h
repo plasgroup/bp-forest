@@ -9,9 +9,10 @@
 
 typedef uint64_t bitmap_word_t;
 #define BITMAP_WORD_MAX UINT64_MAX
+#define BITMAP_WORD_C(literal) UINT64_C(literal)
 
 #define LOG_BITS_IN_BMPWD 6
-#define BITS_IN_BMPWD (1 << LOG_BITS_IN_BMPWD)
+#define BITS_IN_BMPWD (BITMAP_WORD_C(1) << LOG_BITS_IN_BMPWD)
 
 
 #ifdef BITMAP_IN_MRAM

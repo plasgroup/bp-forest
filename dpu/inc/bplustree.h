@@ -120,6 +120,7 @@ typedef struct {
     uint16_t nr_committed_blocks;
 } SummarizeWorkspace;
 _Static_assert(sizeof(SummaryBlock[NR_SUMMARY_BLOCKS_PER_CHUNK]) <= 2048, "sizeof(SummaryBlock[NR_SUMMARY_BLOCKS_PER_CHUNK]) <= 2048");
+_Static_assert(NR_SUMMARY_BLOCKS_PER_CHUNK >= 1, "NR_SUMMARY_BLOCKS_PER_CHUNK >= 1");
 
 typedef struct {
     __dma_aligned NodeLink children_cache[2];

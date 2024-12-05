@@ -142,7 +142,7 @@ static int bitmap_find_and_set_first_zero_range(bitmap_word_ptr bitmap,
             id = (id + BITS_IN_BMPWD) & ~(BITS_IN_BMPWD - 1u);
             continue;
         }
-        for (pat = 1 << (id & (BITS_IN_BMPWD - 1u)); pat != 0;
+        for (pat = BITMAP_WORD_C(1) << (id & (BITS_IN_BMPWD - 1u)); pat != 0;
              id++, pat <<= 1)
             if ((word & pat) == 0) {
                 bitmap[index] |= pat;

@@ -25,6 +25,7 @@
 
 
 #define DEBUG_PRINT(datum) printf("th[%02d] " __FILE__ ":%d: " #datum " = %u (0x%x)\n", me(), __LINE__, datum, datum)
+#define DEBUG_PRINT_L(datum) printf("th[%02d] " __FILE__ ":%d: " #datum " = %lu (0x%lx)\n", me(), __LINE__, datum, datum)
 
 
 static DEFINE_DIV_BY(MAX_NR_PAIRS, BITWIDTH_UINT32(MAX_NR_PAIRS* MAX_NR_NODES), _NR_PAIRS);
@@ -71,7 +72,7 @@ static uint16_t search_for_pair_index(const key_uint64_t* keys, uint8_t nr_keys,
 }
 
 
-__attribute__((unused)) static bool check_tree_structure(Node* root, unsigned height, unsigned root_numKeys);
+__attribute__((unused)) static bool check_tree_structure(const Node* root, unsigned height, unsigned root_numKeys);
 
 
 //! @sa /docs/tree_initialization.md
@@ -412,7 +413,7 @@ static void TREE_CONSTRUCT_barrier(void)
     }
 }
 
-static NodePtr INIT_allocater(unsigned idx_node)
+static NodePtr INIT_allocator(unsigned idx_node)
 {
     return idx_node;
 }
@@ -420,7 +421,7 @@ void task_init(void)
 {
     _Static_assert(TREE_CONSTRUCT_NR_TASKLETS > 0, "TREE_CONSTRUCT_NR_TASKLETS > 0");
     if (me() < TREE_CONSTRUCT_NR_TASKLETS) {
-        const unsigned nr_allocated_nodes = construct_tree(&cold_root_numKeys, &cold_root, &cold_height, &cold_min_key, INIT_allocater);
+        const unsigned nr_allocated_nodes = construct_tree(&cold_root_numKeys, &cold_root, &cold_height, &cold_min_key, INIT_allocator);
 
         TREE_CONSTRUCT_barrier();
 
@@ -475,7 +476,7 @@ static void RANGE_MIN_commit_next_result(value_uint64_t* results_cache, unsigned
         *idx_result_in_cache = 0;
     }
 }
-static void RANGE_MIN_execute(const Node* const root, const uint8_t height, const uint8_t root_numKey,
+static void RANGE_MIN_execute(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
     const uintptr_t lump_end_indices, const uint16_t idx_lump_begin, const uint16_t idx_lump_end,
     const uintptr_t delim_keys, const uintptr_t results)
 {
@@ -510,7 +511,7 @@ static void RANGE_MIN_execute(const Node* const root, const uint8_t height, cons
             const key_uint64_t range_begin = wks_me->delim_keys[idx_delim_in_cache];
             idx_delim_in_cache++;
 
-            uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKey, range_begin);
+            uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, range_begin);
 
             RANGE_MIN_prepare_next_lump_end_index(&wks_me->lump_end_indices[0], &idx_lump_in_cache, &cursor_on_lump_end_indices);
             const uint16_t idx_delim_end = wks_me->lump_end_indices[idx_lump_in_cache];
@@ -522,7 +523,7 @@ static void RANGE_MIN_execute(const Node* const root, const uint8_t height, cons
                 idx_delim_in_cache++;
 
                 value_uint64_t min = VALUE_MAX;
-                for (; idx_pair < root_numKey && root->lf.keys[idx_pair] <= range_end; idx_pair++) {
+                for (; idx_pair < root_numKeys && root->lf.keys[idx_pair] <= range_end; idx_pair++) {
                     if (min > root->lf.values[idx_pair]) {
                         min = root->lf.values[idx_pair];
                     }
@@ -538,7 +539,7 @@ static void RANGE_MIN_execute(const Node* const root, const uint8_t height, cons
             const key_uint64_t range_begin = wks_me->delim_keys[idx_delim_in_cache];
             idx_delim_in_cache++;
 
-            NodeLink link = root->inl.children[search_for_child_index(&root->inl.keys[0], root_numKey, range_begin)];
+            NodeLink link = root->inl.children[search_for_child_index(&root->inl.keys[0], root_numKeys, range_begin)];
             for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
                 mram_read(&Deref(link.ptr).inl.keys[0], &wks_me->node_cache.inl.keys[0], sizeof(key_uint64_t) * link.numKeys);
                 const uint16_t idx_child = search_for_child_index(&wks_me->node_cache.inl.keys[0], link.numKeys, range_begin);
@@ -1151,6 +1152,16 @@ static void EXTRACT_nodes(void)
                         wks->node_cache.inl.keys[idx_dest] = wks->node_cache.inl.keys[idx_src_begin + idx_dest];
                     }
                     mram_write(&wks->node_cache, &Deref(right_cut.ptr), sizeof(Node));
+
+                    const NodeLink new_link = {right_cut.ptr, nr_keys};
+                    if (stack_height == 1) {
+                        cold_root.inl.children[nr_passed_children_of_root] = new_link;
+                    } else {
+                        ExtractStackElem* const parent_stack_elem = &wks->stack[stack_height - 2];
+                        const uint16_t idx_as_child = parent_stack_elem->nr_passed_children;
+                        parent_stack_elem->children_cache[idx_as_child % 2] = new_link;
+                        mram_write(&parent_stack_elem->children_cache[0], &Deref(parent_stack_elem->node.ptr).inl.children[idx_as_child / 2 * 2], sizeof(NodeLink) * 2);
+                    }
                 }
 
                 bool is_child_alive = false;
@@ -1182,18 +1193,20 @@ static void EXTRACT_nodes(void)
                         cold_height = 0;
                         cold_root_numKeys = 0;
                     } else {
-                        if (nr_left_alive_children == 0) {
-                            cold_min_key = next_key;
-                        } else {
-                            cold_root.inl.keys[nr_left_alive_children - 1] = next_key;
-                        }
-                        const uint16_t move_offset = idx_right_alive_children_begin - nr_left_alive_children;
-                        for (uint16_t idx_dest = nr_left_alive_children, idx_src = idx_right_alive_children_begin;; idx_dest++, idx_src++) {
-                            cold_root.inl.children[idx_src - move_offset] = cold_root.inl.children[idx_src];
-                            if (idx_src == cold_root_numKeys) {
-                                break;
+                        if (nr_right_alive_children != 0) {
+                            if (nr_left_alive_children == 0) {
+                                cold_min_key = next_key;
+                            } else {
+                                cold_root.inl.keys[nr_left_alive_children - 1] = next_key;
                             }
-                            cold_root.inl.keys[idx_src - move_offset] = cold_root.inl.keys[idx_src];
+                            const uint16_t move_offset = idx_right_alive_children_begin - nr_left_alive_children;
+                            for (uint16_t idx_dest = nr_left_alive_children, idx_src = idx_right_alive_children_begin;; idx_dest++, idx_src++) {
+                                cold_root.inl.children[idx_src - move_offset] = cold_root.inl.children[idx_src];
+                                if (idx_src == cold_root_numKeys) {
+                                    break;
+                                }
+                                cold_root.inl.keys[idx_src - move_offset] = cold_root.inl.keys[idx_src];
+                            }
                         }
                         cold_root_numKeys = (uint8_t)(nr_alive_children - 1);
                     }
@@ -1266,7 +1279,7 @@ void task_extract(void)
 }
 
 
-static NodePtr CONSTRUCT_HOT_allocater(unsigned idx_node)
+static NodePtr CONSTRUCT_HOT_allocator(unsigned idx_node)
 {
     (void)idx_node;
     return Allocate_node();
@@ -1275,7 +1288,7 @@ void task_construct_hot(void)
 {
     _Static_assert(TREE_CONSTRUCT_NR_TASKLETS > 0, "TREE_CONSTRUCT_NR_TASKLETS > 0");
     if (me() < TREE_CONSTRUCT_NR_TASKLETS) {
-        construct_tree(&hot_root_numKeys, &hot_root, &hot_height, &hot_min_key, CONSTRUCT_HOT_allocater);
+        construct_tree(&hot_root_numKeys, &hot_root, &hot_height, &hot_min_key, CONSTRUCT_HOT_allocator);
 
 #ifdef TASK_CONSTRUCT_HOT_CHECK
         TREE_CONSTRUCT_barrier();
@@ -1385,7 +1398,7 @@ static bool checkInternal(NodeLink link, bool is_child_leaf)
     return success;
 }
 
-static bool check_tree_structure(Node* root, unsigned height, unsigned root_numKeys)
+static bool check_tree_structure(const Node* root, unsigned height, unsigned root_numKeys)
 {
     bool success = true;
 

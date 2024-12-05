@@ -22,6 +22,7 @@ __mram_noinit Node nodes_storage[MAX_NR_NODES];
 static void Allocator_init(const unsigned n)
 {
     bitmap_init(allocated_bitmap, n);
+    next_alloc = n;
 }
 
 inline NodePtr Allocate_node()
