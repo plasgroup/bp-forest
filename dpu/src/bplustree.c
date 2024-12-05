@@ -882,7 +882,7 @@ void task_summarize(void)
                         idx_summary_in_cache++;
 
                         if (idx_summary_in_cache == NR_SUMMARY_BLOCKS_PER_CHUNK * 4) {
-                            static const uint16_t written_bytes = NR_SUMMARY_BLOCKS_PER_CHUNK * 4 * sizeof(SummaryBlock);
+                            static const uint16_t written_bytes = NR_SUMMARY_BLOCKS_PER_CHUNK * sizeof(SummaryBlock);
                             acquire_lock();
                             const uint32_t orig_nr_allocated_bytes = wks->nr_allocated_bytes;
                             wks->nr_allocated_bytes = orig_nr_allocated_bytes + written_bytes;
