@@ -1983,6 +1983,7 @@ inline void BPForest::print_params(std::ostream& ostr) const
             "UPMEM_TRACE: 0\n"
 #endif
 #endif
+         << "param.balancing: " << param.balancing << "\n"
          << std::flush;
 #undef STRINGIFY
 #undef EXPAND_STRINGIFY
