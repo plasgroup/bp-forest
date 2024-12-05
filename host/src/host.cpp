@@ -477,9 +477,8 @@ int main(int argc, char* argv[])
     }
 
     /* main routine */
-    uint64_t total_num_keys = 0;
     if (opt.print_perf) {
-        printf("alpha, NR_DPUS, NR_TASKLETS, batch_num, num_keys, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time, execution_time, receive_result_time, batch_time, throughput\n");
+        printf("alpha, NR_DPUS, NR_TASKLETS, batch_num, num_keys, rebalancing_time[ns], send_exec_recv_time[ns], batch_time[ns]\n");
     }
     for (int idx_batch = 0; idx_batch < opt.nr_batches; idx_batch++) {
         size_t num_keys = do_one_batch(opt.op_type, idx_batch, workload_buffer, forest);
@@ -500,31 +499,10 @@ int main(int argc, char* argv[])
 #endif
 
         if (opt.print_perf) {
-            total_num_keys += num_keys;
-            batch_time = preprocess_time1 + preprocess_time2 + migration_plan_time + migration_time + send_time + execution_time + receive_result_time;
-            total_preprocess_time1 += preprocess_time1;
-            total_preprocess_time2 += preprocess_time2;
-            total_migration_plan_time += migration_plan_time;
-            total_migration_time += migration_time;
-            total_send_time += send_time;
-            total_execution_time += execution_time;
-            total_receive_result_time += receive_result_time;
-            total_batch_time += batch_time;
-            double throughput = static_cast<double>(num_keys) / batch_time;
-            printf("%s, %d, %d, %d, %ld, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.0f\n",
+            printf("%s, %d, %d, %d, %ld, %ld, %ld, %ld\n",
                 opt.alpha.c_str(), upmem_get_nr_dpus(), NR_TASKLETS, idx_batch,
-                num_keys, preprocess_time1, preprocess_time2, migration_plan_time, migration_time, send_time,
-                execution_time, receive_result_time, batch_time, throughput);
+                num_keys, RebalancingTime.count(), QuerySendExecRecvTime.count(), BatchTotalTime.count());
         }
-    }
-
-
-    if (opt.print_perf) {
-        double throughput = static_cast<double>(total_num_keys) / total_batch_time;
-        printf("%s, %d, %d, total, %d,, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f, %0.5f\n",
-            opt.alpha.c_str(), upmem_get_nr_dpus(), NR_TASKLETS,
-            opt.nr_batches, total_preprocess_time1, total_preprocess_time2, total_migration_plan_time, total_migration_time, total_send_time,
-            total_execution_time, total_receive_result_time, total_batch_time, throughput);
     }
 
 #ifdef MEASURE_XFER_BYTES

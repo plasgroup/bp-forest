@@ -107,5 +107,6 @@ struct StopWatch final {
 
 
 inline std::chrono::nanoseconds ForestInitTime;
+inline std::chrono::nanoseconds BatchTotalTime, RebalancingTime, QuerySendExecRecvTime;
 
 #endif /* __STATISTICS_HPP__ */

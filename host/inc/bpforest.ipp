@@ -535,6 +535,8 @@ inline void BPForest::execute_get_in_dpus()
 
 inline void BPForest::batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t result[])
 {
+    StopWatch timer{BatchTotalTime};
+
     using std::get;
 
     const size_t nr_delim_keys = preprocess_rmq(nr_queries, ranges);
@@ -559,6 +561,8 @@ inline void BPForest::batch_range_minimum(size_t nr_queries, const KeyRange rang
     }
 
     if (param.balancing > 0 && !check_if_rmq_balance(nr_delim_keys, cold_range_to_delim_idx, hot_range_to_delim_idx, if_cold_begins_middle, if_hot_begins_middle, if_hot_ends_middle)) {
+        StopWatch timer{RebalancingTime};
+
         if (nr_hot_ranges > 0) {
             restore_hot_ranges();
         }
@@ -1359,6 +1363,7 @@ void BPForest::execute_rmq_in_dpus(
     std::array<std::array<value_uint64_t, 2>, MAX_NR_DPUS> hot_to_be_agged;
 
     {
+        StopWatch timer{QuerySendExecRecvTime};
         UPMEM_AsyncDuration async;
 
         gather_to_dpu(all_dpu, 0, RMQSender{this, &nr_lumps[0], &lump_end_indices[0], cold_range_to_delim_idx, hot_range_to_delim_idx, if_cold_begins_middle, if_hot_begins_middle, if_hot_ends_middle}, async);
