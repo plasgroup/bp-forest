@@ -1127,6 +1127,7 @@ static void EXTRACT_nodes(void)
                     mram_write(&wks->node_cache.lf.left, &Deref(wks->node_cache.lf.right.ptr).lf.left, 8);
                 }
 
+std::cont << "hot[" << idx_hot << "] = " << nr_pairs << std::endl;
                 if (idx_hot % 2 == 0) {
                     wks->nr_pairs_cache[0] = nr_pairs;
                 } else {
