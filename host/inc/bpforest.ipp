@@ -579,7 +579,6 @@ inline void BPForest::batch_range_minimum(size_t nr_queries, const KeyRange rang
                 cold_range_rebalanced[idx_cold] = (nr_sent_delims > cold_range_threshold);
             }
             take_summary(cold_range_rebalanced);
-// std::cout << "take_summary fin" << std::endl;
 
             const size_t min_nr_delims_in_hot = (nr_delim_keys + nr_cold_ranges - 1) / nr_cold_ranges;
             dpu_id_t idx_new_hot = 0;
@@ -1876,7 +1875,6 @@ inline void BPForest::extract_and_distribute_hot_ranges()
             for (dpu_id_t idx_hot = cold_to_hot[dpu_range.first]; idx_hot < cold_to_hot[dpu_range.second]; idx_hot++) {
                 hot_kvpairs[idx_hot].reserve(nr_hot_pairs[idx_hot]);
             }
-// std::cout << "after recv info of kv pairs" << std::endl;
 
             scatter_from_dpu(select_rank(rank_id), 0, HotKVPairsExtractedCollecter{this, &nr_hot_pairs[0], &garbage[0]}, async);
 
@@ -1903,7 +1901,6 @@ inline void BPForest::extract_and_distribute_hot_ranges()
             scatter_from_dpu(HotKVPairsExtractedCollecter)
         */
     }
-// std::cout << "extracted pairs come" << std::endl;
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
     {
         std::unique_ptr<LogBuffer> log = read_log(all_dpu);
