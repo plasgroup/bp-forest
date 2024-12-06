@@ -1876,7 +1876,7 @@ inline void BPForest::extract_and_distribute_hot_ranges()
             for (dpu_id_t idx_hot = cold_to_hot[dpu_range.first]; idx_hot < cold_to_hot[dpu_range.second]; idx_hot++) {
                 hot_kvpairs[idx_hot].reserve(nr_hot_pairs[idx_hot]);
             }
-std::cout << "after recv info of kv pairs" << std::endl;
+// std::cout << "after recv info of kv pairs" << std::endl;
 
             scatter_from_dpu(select_rank(rank_id), 0, HotKVPairsExtractedCollecter{this, &nr_hot_pairs[0], &garbage[0]}, async);
 
