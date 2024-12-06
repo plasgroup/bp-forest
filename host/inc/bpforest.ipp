@@ -1008,7 +1008,7 @@ struct BPForest::RMQSender {
             nr_sent_delims += forest->nr_rmq_to_hot(idx_hot, *hot_range_to_delim_idx, *if_hot_begins_middle, *if_hot_ends_middle);
         }
 
-        std::cout << "RMQSender[" << dpu << "]" << sizeof(uint32_t) + sizeof(uint16_t) * 2 + sizeof(uint16_t) * lump_end_indices[dpu].size() + sizeof(key_uint64_t) * nr_sent_delims << std::endl;
+        // std::cout << "RMQSender[" << dpu << "]" << sizeof(uint32_t) + sizeof(uint16_t) * 2 + sizeof(uint16_t) * lump_end_indices[dpu].size() + sizeof(key_uint64_t) * nr_sent_delims << std::endl;
         return sizeof(uint32_t)
                + sizeof(uint16_t) * 2
                + sizeof(uint16_t) * lump_end_indices[dpu].size()
@@ -1152,7 +1152,7 @@ struct BPForest::RMQResultReceiver {
             nr_miniranges += if_hot_ends_middle[idx_hot];
         }
 
-        std::cout << "RMQResultReceiver[" << dpu << "]" << sizeof(value_uint64_t) * nr_miniranges << std::endl;
+        // std::cout << "RMQResultReceiver[" << dpu << "]" << sizeof(value_uint64_t) * nr_miniranges << std::endl;
         return sizeof(value_uint64_t) * nr_miniranges;
     }
 };
