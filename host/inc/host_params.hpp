@@ -10,6 +10,7 @@
 #include "common_params.h"
 
 #include "workload_types.h"
+#include "common.h"
 
 #include <cstddef>
 #include <cstdint>

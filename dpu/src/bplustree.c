@@ -1013,7 +1013,7 @@ static void EXTRACT_nodes(void)
     }
 
     static const uintptr_t result_nr_pairs = (uintptr_t)DPU_MRAM_HEAP_POINTER;
-    const uintptr_t result_pairs = result_nr_pairs + sizeof(uint32_t) * ((input_header.extract.nr_ranges + 1) / 2 * 2);
+    const uintptr_t result_pairs = result_nr_pairs + (NR_RANKS * MAX_NR_DPUS_IN_RANK * sizeof(uint32_t) + 7) / 8 * 8;
 
     if (me() == 0) {
         if (cold_height == 0) {
@@ -1293,6 +1293,7 @@ void task_construct_hot(void)
 #ifdef TASK_CONSTRUCT_HOT_CHECK
         TREE_CONSTRUCT_barrier();
         if (me() == 0) {
+            check_tree_structure(&cold_root, cold_height, cold_root_numKeys);
             check_tree_structure(&hot_root, hot_height, hot_root_numKeys);
         }
 #endif

@@ -254,7 +254,6 @@ inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], va
             cold_range_rebalanced[idx_cold] = (pt_qrys.cold[idx_cold].size() > cold_range_threshold);
         }
         take_summary(cold_range_rebalanced);
-std::cout << "take_summary fin" << std::endl;
 
         const size_t min_nr_queries_in_hot = (nr_queries + nr_cold_ranges - 1) / nr_cold_ranges;
         dpu_id_t idx_new_hot = 0;
@@ -580,7 +579,6 @@ inline void BPForest::batch_range_minimum(size_t nr_queries, const KeyRange rang
                 cold_range_rebalanced[idx_cold] = (nr_sent_delims > cold_range_threshold);
             }
             take_summary(cold_range_rebalanced);
-std::cout << "take_summary fin" << std::endl;
 
             const size_t min_nr_delims_in_hot = (nr_delim_keys + nr_cold_ranges - 1) / nr_cold_ranges;
             dpu_id_t idx_new_hot = 0;
@@ -676,7 +674,7 @@ std::cout << "take_summary fin" << std::endl;
                 extract_and_distribute_hot_ranges();
             }
         }
-    } while(false);
+    } while (false);
 
     execute_rmq_in_dpus(
         cold_range_to_delim_idx, hot_range_to_delim_idx,
@@ -1010,7 +1008,6 @@ struct BPForest::RMQSender {
             nr_sent_delims += forest->nr_rmq_to_hot(idx_hot, *hot_range_to_delim_idx, *if_hot_begins_middle, *if_hot_ends_middle);
         }
 
-        // std::cout << "RMQSender[" << dpu << "]" << sizeof(uint32_t) + sizeof(uint16_t) * 2 + sizeof(uint16_t) * lump_end_indices[dpu].size() + sizeof(key_uint64_t) * nr_sent_delims << std::endl;
         return sizeof(uint32_t)
                + sizeof(uint16_t) * 2
                + sizeof(uint16_t) * lump_end_indices[dpu].size()
@@ -1154,7 +1151,6 @@ struct BPForest::RMQResultReceiver {
             nr_miniranges += if_hot_ends_middle[idx_hot];
         }
 
-        // std::cout << "RMQResultReceiver[" << dpu << "]" << sizeof(value_uint64_t) * nr_miniranges << std::endl;
         return sizeof(value_uint64_t) * nr_miniranges;
     }
 };
@@ -1776,37 +1772,19 @@ struct BPForest::NrHotKVPairsCollecter {
 };
 struct BPForest::HotKVPairsExtractedCollecter {
     BPForest* const forest;
-    uint32_t* const nr_hot_kvpairs;
+    const uint32_t* const nr_hot_kvpairs;
 
-    std::byte (*const garbage)[64];
-
-    HotKVPairsExtractedCollecter(BPForest* forest, uint32_t* nr_hot_kvpairs, std::byte (*garbage)[64]) : forest{forest}, nr_hot_kvpairs{nr_hot_kvpairs}, garbage{garbage} {}
+    HotKVPairsExtractedCollecter(BPForest* forest, const uint32_t* nr_hot_kvpairs) : forest{forest}, nr_hot_kvpairs{nr_hot_kvpairs} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
     {
-        switch (block_index) {
-        case 0:
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<uint32_t*>(&nr_hot_kvpairs[forest->cold_to_hot[dpu_index]])));
-            out->length = sizeof(uint32_t) * (forest->cold_to_hot[dpu_index + 1] - forest->cold_to_hot[dpu_index]);
-std::cout << "[" << dpu_index << ", " << block_index << "]" << "addr=" << out->addr << ", length=" << out->length << std::endl;
+        if (block_index < forest->cold_to_hot[dpu_index + 1] - forest->cold_to_hot[dpu_index]) {
+            const dpu_id_t idx_hot = forest->cold_to_hot[dpu_index] + block_index;
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<KVPair*>(&forest->hot_kvpairs[idx_hot][0])));
+            out->length = sizeof(KVPair) * nr_hot_kvpairs[idx_hot];
             return true;
-        case 1:
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(&garbage[dpu_index]));
-            out->length = sizeof(uint32_t) * ((forest->cold_to_hot[dpu_index + 1] - forest->cold_to_hot[dpu_index]) % 2);
-std::cout << "[" << dpu_index << ", " << block_index << "]" << "addr=" << out->addr << ", length=" << out->length << std::endl;
-            return true;
-        default: {
-            const dpu_id_t idx_hot_from_each_dpu = block_index - 2;
-            if (idx_hot_from_each_dpu < forest->cold_to_hot[dpu_index + 1] - forest->cold_to_hot[dpu_index]) {
-                const dpu_id_t idx_hot = forest->cold_to_hot[dpu_index] + idx_hot_from_each_dpu;
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<KVPair*>(&forest->hot_kvpairs[idx_hot][0])));
-                out->length = sizeof(KVPair) * nr_hot_kvpairs[idx_hot];
-std::cout << "[" << dpu_index << ", " << block_index << "]" << "addr=" << out->addr << ", length=" << out->length << std::endl;
-                return true;
-            } else {
-                return false;
-            }
-        }
+        } else {
+            return false;
         }
     }
     size_t bytes_for_dpu(dpu_id_t dpu) const
@@ -1854,7 +1832,6 @@ inline void BPForest::extract_and_distribute_hot_ranges()
         std::array<uint32_t, MAX_NR_DPUS> task_nos;
         std::array<uint32_t, MAX_NR_DPUS> nr_hot_ranges_from_each_dpu;
         std::array<KeyRange, MAX_NR_DPUS> key_ranges;
-        alignas(64) std::byte garbage[MAX_NR_DPUS][64];
 
         std::mutex mutex;
         std::condition_variable cond;
@@ -1881,8 +1858,7 @@ inline void BPForest::extract_and_distribute_hot_ranges()
                 hot_kvpairs[idx_hot].reserve(nr_hot_pairs[idx_hot]);
             }
 
-std::cout << "extract metadata recv" << std::endl;
-            scatter_from_dpu(select_rank(rank_id), 0, HotKVPairsExtractedCollecter{this, &nr_hot_pairs[0], &garbage[0]}, async);
+            scatter_from_dpu(select_rank(rank_id), (MAX_NR_DPUS * sizeof(uint32_t) + 7) / 8 * 8, HotKVPairsExtractedCollecter{this, &nr_hot_pairs[0]}, async);
 
             {
                 std::lock_guard<std::mutex> lock{mutex};
@@ -1907,7 +1883,6 @@ std::cout << "extract metadata recv" << std::endl;
             scatter_from_dpu(HotKVPairsExtractedCollecter)
         */
     }
-std::cout << "extract fin" << std::endl;
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
     {
         std::unique_ptr<LogBuffer> log = read_log(all_dpu);
@@ -1930,7 +1905,6 @@ std::cout << "extract fin" << std::endl;
         gather_to_dpu(all_dpu, 0, HotRangeConstructor{this, &task_header[0]}, async);
         execute(all_dpu, async);
     }
-std::cout << "hot fin" << std::endl;
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
     {
         std::unique_ptr<LogBuffer> log = read_log(all_dpu);
@@ -1950,14 +1924,14 @@ inline void BPForest::print_params(std::ostream& ostr) const
 #define STRINGIFY(x) #x
 #define EXPAND_STRINGIFY(x) STRINGIFY(x)
     ostr << "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n"
-            "MAX_NR_SUMMARY_CHUNKS: " EXPAND_STRINGIFY(MAX_NR_SUMMARY_CHUNKS) "\n"
-            "RMQ_RESULT_OFFSET: " EXPAND_STRINGIFY(RMQ_RESULT_OFFSET) "\n"
-            "MAX_NR_RMQ_LUMPS: " EXPAND_STRINGIFY(MAX_NR_RMQ_LUMPS) "\n"
 #ifdef UPMEM_SIMULATOR
             "UPMEM_SIMULATOR: 1\n"
 #else
             "UPMEM_SIMULATOR: 0\n"
 #endif
+            "MAX_NR_SUMMARY_CHUNKS: " EXPAND_STRINGIFY(MAX_NR_SUMMARY_CHUNKS) "\n"
+            "RMQ_RESULT_OFFSET: " EXPAND_STRINGIFY(RMQ_RESULT_OFFSET) "\n"
+            "MAX_NR_RMQ_LUMPS: " EXPAND_STRINGIFY(MAX_NR_RMQ_LUMPS) "\n"
 #ifdef HOST_ONLY
             "HOST_ONLY: 1\n"
 #else

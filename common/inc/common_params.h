@@ -12,6 +12,8 @@
 #error NR_RANKS should always be defined
 #endif
 
+// #define UPMEM_SIMULATOR
+
 
 #ifndef MAX_NR_SUMMARY_CHUNKS
 #define MAX_NR_SUMMARY_CHUNKS 635

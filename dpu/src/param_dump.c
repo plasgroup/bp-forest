@@ -8,6 +8,11 @@
 #define STRINGIFY(x) #x
 #define EXPAND_STRINGIFY(x) STRINGIFY(x)
 __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n"
+#ifdef UPMEM_SIMULATOR
+                                     "UPMEM_SIMULATOR: 1\n"
+#else
+                                     "UPMEM_SIMULATOR: 0\n"
+#endif
                                      "MAX_NR_SUMMARY_CHUNKS: " EXPAND_STRINGIFY(MAX_NR_SUMMARY_CHUNKS) "\n"
                                      "RMQ_RESULT_OFFSET: " EXPAND_STRINGIFY(RMQ_RESULT_OFFSET) "\n"
                                      "MAX_NR_RMQ_LUMPS: " EXPAND_STRINGIFY(MAX_NR_RMQ_LUMPS) "\n"

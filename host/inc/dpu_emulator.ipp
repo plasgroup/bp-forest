@@ -98,7 +98,7 @@ inline void DPUEmulator::execute()
         const unsigned nr_ranges = *std::launder(reinterpret_cast<uint32_t*>(&mram[4]));
         const KeyRange* const ranges = std::launder(reinterpret_cast<KeyRange*>(&mram[8]));
         uint32_t* const nr_pairs = new (&mram_2nd[0]) uint32_t[nr_ranges];
-        KVPair* const pairs = std::launder(reinterpret_cast<KVPair*>(&mram_2nd[((nr_ranges + 1) / 2 * 2) * 4]));
+        KVPair* const pairs = std::launder(reinterpret_cast<KVPair*>(&mram_2nd[(MAX_NR_DPUS * sizeof(uint32_t) + 7) / 8 * 8]));
         task_extract(nr_ranges, ranges, nr_pairs, pairs);
     } break;
     case TASK_CONSTRUCT_HOT: {
