@@ -579,7 +579,7 @@ inline void BPForest::batch_range_minimum(size_t nr_queries, const KeyRange rang
                 cold_range_rebalanced[idx_cold] = (nr_sent_delims > cold_range_threshold);
             }
             take_summary(cold_range_rebalanced);
-std::cout << "take_summary fin" << std::endl;
+// std::cout << "take_summary fin" << std::endl;
 
             const size_t min_nr_delims_in_hot = (nr_delim_keys + nr_cold_ranges - 1) / nr_cold_ranges;
             dpu_id_t idx_new_hot = 0;
