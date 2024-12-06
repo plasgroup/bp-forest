@@ -562,11 +562,12 @@ inline void BPForest::batch_range_minimum(size_t nr_queries, const KeyRange rang
             cold_range_to_lump_idx, hot_range_to_lump_idx);
     }
 
-    {
+    do {
         StopWatch timer{RebalancingTime};
         if (param.balancing > 0 && !check_if_rmq_balance(nr_delim_keys, cold_range_to_delim_idx, hot_range_to_delim_idx, if_cold_begins_middle, if_hot_begins_middle, if_hot_ends_middle)) {
             if (nr_hot_ranges > 0) {
-                throw std::runtime_error{"Rebalancing when hot ranges exist has not been implemented."};
+                // Rebalancing when hot ranges exist has not been implemented.
+                break;
                 restore_hot_ranges();
             }
 
@@ -673,7 +674,7 @@ inline void BPForest::batch_range_minimum(size_t nr_queries, const KeyRange rang
                 extract_and_distribute_hot_ranges();
             }
         }
-    }
+    } while(false);
 
     execute_rmq_in_dpus(
         cold_range_to_delim_idx, hot_range_to_delim_idx,
@@ -1007,6 +1008,7 @@ struct BPForest::RMQSender {
             nr_sent_delims += forest->nr_rmq_to_hot(idx_hot, *hot_range_to_delim_idx, *if_hot_begins_middle, *if_hot_ends_middle);
         }
 
+        std::cout << "RMQSender[" << dpu << "]" << sizeof(uint32_t) + sizeof(uint16_t) * 2 + sizeof(uint16_t) * lump_end_indices[dpu].size() + sizeof(key_uint64_t) * nr_sent_delims << std::endl;
         return sizeof(uint32_t)
                + sizeof(uint16_t) * 2
                + sizeof(uint16_t) * lump_end_indices[dpu].size()
@@ -1150,6 +1152,7 @@ struct BPForest::RMQResultReceiver {
             nr_miniranges += if_hot_ends_middle[idx_hot];
         }
 
+        std::cout << "RMQResultReceiver[" << dpu << "]" << sizeof(value_uint64_t) * nr_miniranges << std::endl;
         return sizeof(value_uint64_t) * nr_miniranges;
     }
 };

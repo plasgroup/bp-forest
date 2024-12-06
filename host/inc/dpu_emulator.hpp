@@ -17,8 +17,12 @@
 class DPUEmulator
 {
     static constexpr size_t MRAMSize = 1ul << 25;
-    std::unique_ptr<std::byte[]> mram{new (std::align_val_t{alignof(uint64_t)}) std::byte[MRAMSize]};
-    std::unique_ptr<std::byte[]> mram_2nd{new (std::align_val_t{alignof(uint64_t)}) std::byte[MRAMSize]};
+    struct alignas(uint64_t) MRAMImage {
+        std::byte impl[MRAMSize];
+    };
+    const std::unique_ptr<MRAMImage> mram_impl{new MRAMImage}, mram_2nd_impl{new MRAMImage};
+    std::byte* mram{&mram_impl->impl[0]};
+    std::byte* mram_2nd{&mram_2nd_impl->impl[0]};
 
     using Tree = std::map<key_uint64_t, value_uint64_t>;
     Tree cold_tree, hot_tree;
