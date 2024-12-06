@@ -1861,7 +1861,7 @@ inline void BPForest::extract_and_distribute_hot_ranges()
             {
                 std::lock_guard<std::mutex> lock{mutex};
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
-    std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+    std::unique_ptr<LogBuffer> log = read_log(select_rank(rank_id));
     std::cout << log->get() << std::flush;
 #endif
 for (dpu_id_t idx_hot = cold_to_hot[dpu_range.first]; idx_hot < cold_to_hot[dpu_range.second]; idx_hot++) {
