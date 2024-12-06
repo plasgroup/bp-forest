@@ -1878,6 +1878,7 @@ inline void BPForest::extract_and_distribute_hot_ranges()
                 hot_kvpairs[idx_hot].reserve(nr_hot_pairs[idx_hot]);
             }
 
+std::cout << "extract metadata recv" << std::endl;
             scatter_from_dpu(select_rank(rank_id), 0, HotKVPairsExtractedCollecter{this, &nr_hot_pairs[0], &garbage[0]}, async);
 
             {
