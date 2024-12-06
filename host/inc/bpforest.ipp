@@ -1788,10 +1788,12 @@ struct BPForest::HotKVPairsExtractedCollecter {
         case 0:
             out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<uint32_t*>(&nr_hot_kvpairs[forest->cold_to_hot[dpu_index]])));
             out->length = sizeof(uint32_t) * (forest->cold_to_hot[dpu_index + 1] - forest->cold_to_hot[dpu_index]);
+std::cout << "[" << dpu_index << ", " << block_index << "]" << "addr=" << out->addr << ", length=" << out->length << std::endl;
             return true;
         case 1:
             out->addr = static_cast<uint8_t*>(static_cast<void*>(&garbage[dpu_index]));
             out->length = sizeof(uint32_t) * ((forest->cold_to_hot[dpu_index + 1] - forest->cold_to_hot[dpu_index]) % 2);
+std::cout << "[" << dpu_index << ", " << block_index << "]" << "addr=" << out->addr << ", length=" << out->length << std::endl;
             return true;
         default: {
             const dpu_id_t idx_hot_from_each_dpu = block_index - 2;
@@ -1799,6 +1801,7 @@ struct BPForest::HotKVPairsExtractedCollecter {
                 const dpu_id_t idx_hot = forest->cold_to_hot[dpu_index] + idx_hot_from_each_dpu;
                 out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<KVPair*>(&forest->hot_kvpairs[idx_hot][0])));
                 out->length = sizeof(KVPair) * nr_hot_kvpairs[idx_hot];
+std::cout << "[" << dpu_index << ", " << block_index << "]" << "addr=" << out->addr << ", length=" << out->length << std::endl;
                 return true;
             } else {
                 return false;
