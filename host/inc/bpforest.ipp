@@ -1862,6 +1862,10 @@ inline void BPForest::extract_and_distribute_hot_ranges()
 
             {
                 std::lock_guard<std::mutex> lock{mutex};
+for (dpu_id_t idx_hot = cold_to_hot[dpu_range.first]; idx_hot < cold_to_hot[dpu_range.second]; idx_hot++) {
+    std::cout << "nr_hot_pairs[" << idx_hot << "] = " << nr_hot_pairs[idx_hot] << std::endl;
+}
+
                 nr_finished_extraction++;
             }
             cond.notify_one();
