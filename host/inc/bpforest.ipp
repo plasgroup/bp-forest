@@ -1903,7 +1903,7 @@ std::cout << "after recv info of kv pairs" << std::endl;
             scatter_from_dpu(HotKVPairsExtractedCollecter)
         */
     }
-std::cout << "extracted pairs come" << std::endl;
+// std::cout << "extracted pairs come" << std::endl;
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
     {
         std::unique_ptr<LogBuffer> log = read_log(all_dpu);
