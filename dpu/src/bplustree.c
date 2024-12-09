@@ -428,6 +428,9 @@ void task_init(void)
         _Static_assert(TASK_INIT_ALLOC_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS, "TASK_INIT_ALLOC_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS");
         Allocator_init(nr_allocated_nodes);
 
+if (me() == 0) {
+    printf("cold_height = %u\n", cold_height);
+}
 #ifdef TASK_INIT_CHECK
         TREE_CONSTRUCT_barrier();
         if (me() == 0) {
