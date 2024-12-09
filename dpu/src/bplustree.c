@@ -422,6 +422,9 @@ void task_init(void)
     _Static_assert(TREE_CONSTRUCT_NR_TASKLETS > 0, "TREE_CONSTRUCT_NR_TASKLETS > 0");
     if (me() < TREE_CONSTRUCT_NR_TASKLETS) {
         const unsigned nr_allocated_nodes = construct_tree(&cold_root_numKeys, &cold_root, &cold_height, &cold_min_key, INIT_allocator);
+if (me() == 0) {
+    printf("cold_height = %u\n", cold_height);
+}
 
         TREE_CONSTRUCT_barrier();
 
