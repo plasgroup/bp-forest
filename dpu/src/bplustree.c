@@ -1018,6 +1018,7 @@ static void EXTRACT_nodes(void)
     if (me() == 0) {
 printf(__FILE__ ":%d\n", __LINE__);
         if (cold_height == 0) {
+printf(__FILE__ ":%d\n", __LINE__);
             wks->nr_pairs_cache[0] = cold_root_numKeys;
             mram_write(&wks->nr_pairs_cache[0], (__mram_ptr uint32_t*)result_nr_pairs, 8);
 
