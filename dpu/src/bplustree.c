@@ -1270,6 +1270,7 @@ printf("hot[%u] = %u nr_pairs\n", idx_hot, nr_pairs);
 
 void task_extract(void)
 {
+printf("task_extract() enter\n");
     EXTRACT_nodes();
 
 #ifdef TASK_EXTRACT_CHECK
