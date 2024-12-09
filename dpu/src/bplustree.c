@@ -1016,6 +1016,7 @@ static void EXTRACT_nodes(void)
     const uintptr_t result_pairs = result_nr_pairs + (NR_RANKS * MAX_NR_DPUS_IN_RANK * sizeof(uint32_t) + 7) / 8 * 8;
 
     if (me() == 0) {
+printf(__FILE__ ":%d\n", __LINE__);
         if (cold_height == 0) {
             wks->nr_pairs_cache[0] = cold_root_numKeys;
             mram_write(&wks->nr_pairs_cache[0], (__mram_ptr uint32_t*)result_nr_pairs, 8);
@@ -1028,8 +1029,10 @@ static void EXTRACT_nodes(void)
             cold_root_numKeys = 0;
 
         } else {
+printf(__FILE__ ":%d\n", __LINE__);
             uint32_t idx_hot = 0, idx_pair = 0;
             for (; idx_hot < input_header.extract.nr_ranges; idx_hot++) {
+printf(__FILE__ ":%d\n", __LINE__);
                 const KeyRange range = wks->hot_ranges[idx_hot];
                 uint32_t nr_pairs = 0;
 
@@ -1063,6 +1066,7 @@ static void EXTRACT_nodes(void)
                 mram_read(&Deref(cursor.ptr), &wks->node_cache, sizeof(LeafNode));
 
                 for (;;) {
+printf(__FILE__ ":%d\n", __LINE__);
                     nr_pairs += cursor.numKeys;
                     for (uint8_t i = 0; i < cursor.numKeys; i++, idx_pair++) {
                         wks->kvpair = (KVPair){wks->node_cache.lf.keys[i], wks->node_cache.lf.values[i]};
