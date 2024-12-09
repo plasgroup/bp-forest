@@ -1658,6 +1658,8 @@ inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_ran
 std::cout << "TASK_SUMMARIZE send: " << task_nos[0].data << std::endl;
     send_to_dpu(all_dpu, 0, EachInArray{&task_nos[0]}, async);
     execute(all_dpu, async);
+std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+std::cout << log->get() << std::flush;
     scatter_from_dpu(all_dpu, 0, SummaryHeadReceiver{&summaries[0], &chunk_infos[0], &cold_range_rebalanced[0]}, async);
 
     std::array<std::function<void(uint32_t, UPMEM_AsyncDuration&)>, NR_RANKS> func2;
