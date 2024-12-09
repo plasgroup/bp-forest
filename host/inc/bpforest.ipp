@@ -672,6 +672,7 @@ inline void BPForest::batch_range_minimum(size_t nr_queries, const KeyRange rang
                 }
 
                 extract_and_distribute_hot_ranges();
+return;
             }
         }
     } while (false);
@@ -1837,6 +1838,7 @@ inline void BPForest::extract_and_distribute_hot_ranges()
         std::condition_variable cond;
         dpu_id_t nr_finished_extraction = 0;
 
+{
         UPMEM_AsyncDuration async;
 
         for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
@@ -1851,7 +1853,13 @@ inline void BPForest::extract_and_distribute_hot_ranges()
         execute(all_dpu, async);
 
         scatter_from_dpu(all_dpu, 0, NrHotKVPairsCollecter{this, &nr_hot_pairs[0]}, async);
+}
+for (dpu_id_t idx_hot = cold_to_hot[dpu_range.first]; idx_hot < cold_to_hot[dpu_range.second]; idx_hot++) {
+    std::cout << "nr_hot_pairs[" << idx_hot << "] = " << nr_hot_pairs[idx_hot] << std::endl;
+}
 
+#if 0
+        UPMEM_AsyncDuration async;
         const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration& async) {
             const std::pair<dpu_id_t, dpu_id_t> dpu_range = upmem_get_dpu_range_in_rank(rank_id);
             for (dpu_id_t idx_hot = cold_to_hot[dpu_range.first]; idx_hot < cold_to_hot[dpu_range.second]; idx_hot++) {
@@ -1862,9 +1870,6 @@ inline void BPForest::extract_and_distribute_hot_ranges()
                 std::lock_guard<std::mutex> lock{mutex};
     std::unique_ptr<LogBuffer> log = read_log(select_rank(rank_id));
     std::cout << log->get() << std::flush;
-for (dpu_id_t idx_hot = cold_to_hot[dpu_range.first]; idx_hot < cold_to_hot[dpu_range.second]; idx_hot++) {
-    std::cout << "nr_hot_pairs[" << idx_hot << "] = " << nr_hot_pairs[idx_hot] << std::endl;
-}
             }
             scatter_from_dpu(select_rank(rank_id), (MAX_NR_DPUS * sizeof(uint32_t) + 7) / 8 * 8, HotKVPairsExtractedCollecter{this, &nr_hot_pairs[0]}, async);
 
@@ -1920,6 +1925,7 @@ for (dpu_id_t idx_hot = cold_to_hot[dpu_range.first]; idx_hot < cold_to_hot[dpu_
         std::cout << log->get() << std::flush;
     }
 #endif
+#endif  // 0
 }
 
 
