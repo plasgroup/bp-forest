@@ -1856,6 +1856,8 @@ inline void BPForest::extract_and_distribute_hot_ranges()
 for (dpu_id_t idx_hot = 0; idx_hot < nr_hot_ranges; idx_hot++) {
     std::cout << "nr_hot_pairs[" << idx_hot << "] = " << nr_hot_pairs[idx_hot] << std::endl;
 }
+std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+std::cout << log->get() << std::flush;
 
 #if 0
         UPMEM_AsyncDuration async;
@@ -1867,8 +1869,6 @@ for (dpu_id_t idx_hot = 0; idx_hot < nr_hot_ranges; idx_hot++) {
 
             {
                 std::lock_guard<std::mutex> lock{mutex};
-    std::unique_ptr<LogBuffer> log = read_log(select_rank(rank_id));
-    std::cout << log->get() << std::flush;
             }
             scatter_from_dpu(select_rank(rank_id), (MAX_NR_DPUS * sizeof(uint32_t) + 7) / 8 * 8, HotKVPairsExtractedCollecter{this, &nr_hot_pairs[0]}, async);
 

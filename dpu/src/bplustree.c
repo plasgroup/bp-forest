@@ -1127,7 +1127,7 @@ static void EXTRACT_nodes(void)
                     mram_write(&wks->node_cache.lf.left, &Deref(wks->node_cache.lf.right.ptr).lf.left, 8);
                 }
 
-printf("hot[%u] = %unr_pairs\n", idx_hot, nr_pairs);
+printf("hot[%u] = %u nr_pairs\n", idx_hot, nr_pairs);
                 if (idx_hot % 2 == 0) {
                     wks->nr_pairs_cache[0] = nr_pairs;
                 } else {
