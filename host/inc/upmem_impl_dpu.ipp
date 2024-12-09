@@ -45,6 +45,7 @@ std::cout << "dpu_sync returns" << std::endl;
     for (dpu_id_t i = 0; i < NR_RANKS; i++) {
         if (rank[i]) {
             DPU_ASSERT(dpu_sync(each_rank_impl[i]));
+std::cout << "dpu_sync for rank " << i << " returns" << std::endl;
         }
     }
 }
