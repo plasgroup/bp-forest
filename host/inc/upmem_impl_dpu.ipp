@@ -40,6 +40,9 @@ inline UPMEM_AsyncDuration::~UPMEM_AsyncDuration()
 {
     if (all) {
         DPU_ASSERT(dpu_sync(all_dpu_impl));
+std::cout << "dpu_sync returns" << std::endl;
+auto log = read_log();
+std::cout << log->get() << std::flush;
     }
     for (dpu_id_t i = 0; i < NR_RANKS; i++) {
         if (rank[i]) {
