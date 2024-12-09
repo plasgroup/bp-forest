@@ -1854,7 +1854,7 @@ inline void BPForest::extract_and_distribute_hot_ranges()
 
         scatter_from_dpu(all_dpu, 0, NrHotKVPairsCollecter{this, &nr_hot_pairs[0]}, async);
 }
-for (dpu_id_t idx_hot = cold_to_hot[dpu_range.first]; idx_hot < cold_to_hot[dpu_range.second]; idx_hot++) {
+for (dpu_id_t idx_hot = 0; idx_hot < nr_hot_ranges; idx_hot++) {
     std::cout << "nr_hot_pairs[" << idx_hot << "] = " << nr_hot_pairs[idx_hot] << std::endl;
 }
 
