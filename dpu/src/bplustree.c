@@ -1055,6 +1055,7 @@ printf(__FILE__ ":%d\n", __LINE__);
 
                 uint8_t stack_height = 0;
                 for (; stack_height < cold_height - 1; stack_height++) {
+DEBUG_PRINT(stack_height);
                     wks->stack[stack_height].node = cursor;
 
                     mram_read(&Deref(cursor.ptr).inl.keys[0], &wks->node_cache.inl.keys[0], sizeof(key_uint64_t) * cursor.numKeys);
