@@ -1082,7 +1082,6 @@ for (unsigned i = 0; i < stack_height; i++) {
     DEBUG_PRINT(wks->stack[i].node.numKeys);
     DEBUG_PRINT(wks->stack[i].nr_passed_children);
 }
-return;
 
                 for (;;) {
 printf(__FILE__ ":%d\n", __LINE__);
