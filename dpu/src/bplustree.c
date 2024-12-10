@@ -1076,6 +1076,12 @@ DEBUG_PRINT(stack_height);
                 }
 
                 mram_read(&Deref(cursor.ptr), &wks->node_cache, sizeof(LeafNode));
+DEBUG_PRINT(stack_height);
+for (unsigned i = 0; i < stack_height; i++) {
+    DEBUG_PRINT(wks->stack[i].node.ptr);
+    DEBUG_PRINT(wks->stack[i].node.numKeys);
+    DEBUG_PRINT(wks->stack[i].nr_passed_children);
+}
 return;
 
                 for (;;) {
