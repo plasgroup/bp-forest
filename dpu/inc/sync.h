@@ -4,6 +4,8 @@
 
 #include <stdint.h>
 
+#include <defs.h>  // TODO: delete
+
 
 extern uint8_t __atomic_bit AtomicBits[NR_TASKLETS * 2];
 
