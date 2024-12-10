@@ -328,6 +328,7 @@ DEBUG_PRINT(me());
             if (idx_child_end != idx_child_end_from_me) {
 DEBUG_PRINT(me());
                 wait_for_next_ready();
+DEBUG_PRINT(me());
             }
 
             if (idx_node_begin < idx_node_end) {
