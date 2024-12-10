@@ -1095,6 +1095,10 @@ printf(__FILE__ ":%d\n", __LINE__);
                     Free_node(cursor.ptr);
 
                     for (;;) {
+static unsigned loop_count = 0;
+if (loop_count++ >= 1000) {
+    return;
+}
                         if (stack_height == 0) {
                             const uint16_t orig_nr_passed_children_of_root = nr_passed_children_of_root;
                             nr_passed_children_of_root++;
