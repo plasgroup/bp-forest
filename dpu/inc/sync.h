@@ -12,9 +12,11 @@ extern uint8_t __atomic_bit AtomicBits[NR_TASKLETS * 2];
 // AtomicBits[0, NR_TASKLETS - 1)
 __attribute__((unused)) static void notify_next_of_readiness(void)
 {
+printf("th[%02d] notify_next_of_readinees begin\n", me());
     __asm__("acquire id, %[base], t, .+1\n"
             "resume id, 1" ::[base] "i"(&AtomicBits)
             :);
+printf("th[%02d] notify_next_of_readinees end\n", me());
 }
 __attribute__((unused)) static void wait_for_prev_ready(void)
 {
@@ -29,10 +31,12 @@ printf("th[%02d] wait_for_prev_ready end\n", me());
 // AtomicBits[NR_TASKLETS - 1, 2 * NR_TASKLETS - 2)
 __attribute__((unused)) static void notify_prev_of_readiness(void)
 {
+printf("th[%02d] notify_prev_of_readinees begin\n", me());
     __asm__("acquire id, %[base] + %[nr_tasklets] - 2, true, .+1\n"
             "resume id, -1" ::[base] "i"(&AtomicBits),
             [nr_tasklets] "i"(NR_TASKLETS)
             :);
+printf("th[%02d] notify_prev_of_readinees end\n", me());
 }
 __attribute__((unused)) static void wait_for_next_ready(void)
 {
