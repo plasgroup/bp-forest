@@ -52,13 +52,17 @@ printf("th[%02d] wait_for_next_ready end\n", me());
 // AtomicBits[2 * NR_TASKLETS - 2]
 __attribute__((unused)) static void acquire_lock(void)
 {
+printf("th[%02d] acquire_lock begin\n", me());
     __asm__("acquire zero, %[base] + %[nr_tasklets] + %[nr_tasklets] - 2, nz, .\n" ::[base] "i"(&AtomicBits),
             [nr_tasklets] "i"(NR_TASKLETS)
             :);
+printf("th[%02d] acquire_lock end\n", me());
 }
 __attribute__((unused)) static void release_lock(void)
 {
+printf("th[%02d] release_lock begin\n", me());
     __asm__("release zero, %[base] + %[nr_tasklets] + %[nr_tasklets] - 2, nz, .+1\n" ::[base] "i"(&AtomicBits),
             [nr_tasklets] "i"(NR_TASKLETS)
             :);
+printf("th[%02d] release_lock end\n", me());
 }
