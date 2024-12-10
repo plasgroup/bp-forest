@@ -1084,7 +1084,7 @@ for (unsigned i = 0; i < stack_height; i++) {
 }
 
                 for (;;) {
-printf(__FILE__ ":%d\n", __LINE__);
+// printf(__FILE__ ":%d\n", __LINE__);
                     nr_pairs += cursor.numKeys;
                     for (uint8_t i = 0; i < cursor.numKeys; i++, idx_pair++) {
                         wks->kvpair = (KVPair){wks->node_cache.lf.keys[i], wks->node_cache.lf.values[i]};
@@ -1095,7 +1095,7 @@ printf(__FILE__ ":%d\n", __LINE__);
 
                     for (;;) {
 static unsigned loop_count = 0;
-if (loop_count++ >= 1000) {
+if (loop_count++ >= 10000) {
     return;
 }
                         if (stack_height == 0) {
