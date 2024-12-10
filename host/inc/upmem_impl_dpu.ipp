@@ -44,6 +44,7 @@ if (status != DPU_OK) {
     const auto log = read_log(all_dpu);
     std::cout << log->get() << std::flush;
 }
+DPU_ASSERT(status);
         // DPU_ASSERT(dpu_sync(all_dpu_impl));
     }
     for (dpu_id_t i = 0; i < NR_RANKS; i++) {
@@ -53,6 +54,7 @@ if (status != DPU_OK) {
     const auto log = read_log(all_dpu);
     std::cout << log->get() << std::flush;
 }
+DPU_ASSERT(status);
             // DPU_ASSERT(dpu_sync(each_rank_impl[i]));
         }
     }
