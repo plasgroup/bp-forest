@@ -39,11 +39,21 @@ inline struct dpu_symbol_t comm_buffer_handler;
 inline UPMEM_AsyncDuration::~UPMEM_AsyncDuration()
 {
     if (all) {
-        DPU_ASSERT(dpu_sync(all_dpu_impl));
+auto status = dpu_sync(all_dpu_impl);
+if (status != DPU_OK) {
+    const auto log = read_log(all_dpu);
+    std::cout << log->get() << std::flush;
+}
+        // DPU_ASSERT(dpu_sync(all_dpu_impl));
     }
     for (dpu_id_t i = 0; i < NR_RANKS; i++) {
         if (rank[i]) {
-            DPU_ASSERT(dpu_sync(each_rank_impl[i]));
+auto status = dpu_sync(each_rank_impl[i]);
+if (status != DPU_OK) {
+    const auto log = read_log(all_dpu);
+    std::cout << log->get() << std::flush;
+}
+            // DPU_ASSERT(dpu_sync(each_rank_impl[i]));
         }
     }
 }
