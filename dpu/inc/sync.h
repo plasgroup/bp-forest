@@ -14,7 +14,7 @@ __attribute__((unused)) static void notify_next_of_readiness(void)
 {
 printf("th[%02d] notify_next_of_readinees begin\n", me());
     __asm__("acquire id, %[base], t, .+1\n"
-            "resume id, 1" ::[base] "i"(&AtomicBits)
+            "" ::[base] "i"(&AtomicBits)
             :);
 printf("th[%02d] notify_next_of_readinees end\n", me());
 }
@@ -23,7 +23,7 @@ __attribute__((unused)) static void wait_for_prev_ready(void)
 printf("th[%02d] wait_for_prev_ready begin\n", me());
     __asm__("0:\n"
             "release id, %[base] - 1, nz, .+2\n"
-            "stop true, 0b" ::[base] "i"(&AtomicBits)
+            "jump 0b" ::[base] "i"(&AtomicBits)
             :);
 printf("th[%02d] wait_for_prev_ready end\n", me());
 }
@@ -33,7 +33,7 @@ __attribute__((unused)) static void notify_prev_of_readiness(void)
 {
 printf("th[%02d] notify_prev_of_readinees begin\n", me());
     __asm__("acquire id, %[base] + %[nr_tasklets] - 2, true, .+1\n"
-            "resume id, -1" ::[base] "i"(&AtomicBits),
+            "" ::[base] "i"(&AtomicBits),
             [nr_tasklets] "i"(NR_TASKLETS)
             :);
 printf("th[%02d] notify_prev_of_readinees end\n", me());
@@ -43,7 +43,7 @@ __attribute__((unused)) static void wait_for_next_ready(void)
 printf("th[%02d] wait_for_next_ready begin\n", me());
     __asm__("0:\n"
             "release id, %[base] + %[nr_tasklets] - 1, nz, .+2\n"
-            "stop true, 0b" ::[base] "i"(&AtomicBits),
+            "jump 0b" ::[base] "i"(&AtomicBits),
             [nr_tasklets] "i"(NR_TASKLETS)
             :);
 printf("th[%02d] wait_for_next_ready end\n", me());
