@@ -1094,7 +1094,7 @@ for (unsigned i = 0; i < stack_height; i++) {
                     Free_node(cursor.ptr);
 
 static unsigned loop_count = 0;
-if (loop_count++ >= 5000) {
+if (loop_count++ >= 8000) {
     return;
 }
                     for (;;) {
