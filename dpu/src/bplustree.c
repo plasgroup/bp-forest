@@ -262,6 +262,7 @@ static unsigned construct_tree(uint8_t* root_numKeys, Node* root, uint8_t* heigh
                 *height = tmp_height;
                 *root_numKeys = wks->out.lifted[TREE_CONSTRUCT_NR_CACHED_OUTPUT_LIFT - 1].child.numKeys;
             }
+DEBUG_PRINT(me());
             return nr_nodes_in_lower;
         }
 
