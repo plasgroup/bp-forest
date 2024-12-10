@@ -1654,12 +1654,14 @@ inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_ran
     std::condition_variable cond;
     dpu_id_t nr_finished_preparing_for_summary = 0;
 
+{
     UPMEM_AsyncDuration async;
-std::cout << "TASK_SUMMARIZE send: " << task_nos[0].data << std::endl;
     send_to_dpu(all_dpu, 0, EachInArray{&task_nos[0]}, async);
     execute(all_dpu, async);
+}
 std::unique_ptr<LogBuffer> log = read_log(all_dpu);
 std::cout << log->get() << std::flush;
+UPMEM_AsyncDuration async;
     scatter_from_dpu(all_dpu, 0, SummaryHeadReceiver{&summaries[0], &chunk_infos[0], &cold_range_rebalanced[0]}, async);
 
     std::array<std::function<void(uint32_t, UPMEM_AsyncDuration&)>, NR_RANKS> func2;
@@ -1863,21 +1865,18 @@ std::unique_ptr<LogBuffer> log = read_log(all_dpu);
 std::cout << log->get() << std::flush;
 
 #if 0
-        UPMEM_AsyncDuration async;
+{
+UPMEM_AsyncDuration async;
         const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration& async) {
             const std::pair<dpu_id_t, dpu_id_t> dpu_range = upmem_get_dpu_range_in_rank(rank_id);
             for (dpu_id_t idx_hot = cold_to_hot[dpu_range.first]; idx_hot < cold_to_hot[dpu_range.second]; idx_hot++) {
                 hot_kvpairs[idx_hot].reserve(nr_hot_pairs[idx_hot]);
             }
 
-            {
-                std::lock_guard<std::mutex> lock{mutex};
-            }
             scatter_from_dpu(select_rank(rank_id), (MAX_NR_DPUS * sizeof(uint32_t) + 7) / 8 * 8, HotKVPairsExtractedCollecter{this, &nr_hot_pairs[0]}, async);
 
             {
                 std::lock_guard<std::mutex> lock{mutex};
-
                 nr_finished_extraction++;
             }
             cond.notify_one();
