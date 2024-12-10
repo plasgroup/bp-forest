@@ -293,16 +293,20 @@ static unsigned construct_tree(uint8_t* root_numKeys, Node* root, uint8_t* heigh
         is_any_node_sent_from_junior_to_senior = idx_node_end_used_by_me < idx_node_begin;
         idx_lift_cache = 0;  // reset as default
 
-DEBUG_PRINT(me());
         if (is_any_child_sent_from_junior_to_senior) {
+DEBUG_PRINT(me());
             wait_for_prev_ready();
+DEBUG_PRINT(me());
             notify_next_of_readiness();
             wait_for_next_ready();
+DEBUG_PRINT(me());
             notify_prev_of_readiness();
             continue;
 
         } else {
+DEBUG_PRINT(me());
             if (idx_child_end != idx_child_end_from_me) {
+DEBUG_PRINT(me());
                 notify_next_of_readiness();
             }
 
@@ -314,11 +318,14 @@ DEBUG_PRINT(me());
 
             const unsigned nr_children_received = idx_child_begin_from_me - idx_child_begin;
             if (nr_children_received != 0) {
+DEBUG_PRINT(me());
                 wait_for_prev_ready();
+DEBUG_PRINT(me());
                 TREE_CONSTRUCT_receive_lifted_links_from_junior(nr_children_received, &node_cache[0], &key_min_subtree);
                 notify_prev_of_readiness();
             }
             if (idx_child_end != idx_child_end_from_me) {
+DEBUG_PRINT(me());
                 wait_for_next_ready();
             }
 
