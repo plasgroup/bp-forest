@@ -16,10 +16,12 @@ __attribute__((unused)) static void notify_next_of_readiness(void)
 }
 __attribute__((unused)) static void wait_for_prev_ready(void)
 {
+printf("th[%02d] wait_for_prev_ready begin\n", me());
     __asm__("0:\n"
             "release id, %[base] - 1, nz, .+2\n"
             "stop true, 0b" ::[base] "i"(&AtomicBits)
             :);
+printf("th[%02d] wait_for_prev_ready end\n", me());
 }
 
 // AtomicBits[NR_TASKLETS - 1, 2 * NR_TASKLETS - 2)
@@ -32,11 +34,13 @@ __attribute__((unused)) static void notify_prev_of_readiness(void)
 }
 __attribute__((unused)) static void wait_for_next_ready(void)
 {
+printf("th[%02d] wait_for_next_ready begin\n", me());
     __asm__("0:\n"
             "release id, %[base] + %[nr_tasklets] - 1, nz, .+2\n"
             "stop true, 0b" ::[base] "i"(&AtomicBits),
             [nr_tasklets] "i"(NR_TASKLETS)
             :);
+printf("th[%02d] wait_for_next_ready end\n", me());
 }
 
 // AtomicBits[2 * NR_TASKLETS - 2]
