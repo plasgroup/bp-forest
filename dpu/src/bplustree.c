@@ -293,6 +293,7 @@ static unsigned construct_tree(uint8_t* root_numKeys, Node* root, uint8_t* heigh
         is_any_node_sent_from_junior_to_senior = idx_node_end_used_by_me < idx_node_begin;
         idx_lift_cache = 0;  // reset as default
 
+DEBUG_PRINT(me());
         if (is_any_child_sent_from_junior_to_senior) {
             wait_for_prev_ready();
             notify_next_of_readiness();
