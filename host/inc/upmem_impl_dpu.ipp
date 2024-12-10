@@ -25,6 +25,8 @@ extern "C" {
 #include <utility>
 #include <variant>
 
+#include <thread>  // TODO: delete
+
 
 inline dpu_set_t all_dpu_impl;
 inline std::array<dpu_set_t, NR_RANKS> each_rank_impl;
@@ -41,6 +43,7 @@ inline UPMEM_AsyncDuration::~UPMEM_AsyncDuration()
     if (all) {
 auto status = dpu_sync(all_dpu_impl);
 if (status != DPU_OK) {
+    std::this_thread::sleep_for(std::chrono::seconds(1));
     const auto log = read_log(all_dpu);
     std::cout << log->get() << std::flush;
 }
@@ -51,6 +54,7 @@ DPU_ASSERT(status);
         if (rank[i]) {
 auto status = dpu_sync(each_rank_impl[i]);
 if (status != DPU_OK) {
+    std::this_thread::sleep_for(std::chrono::seconds(1));
     const auto log = read_log(all_dpu);
     std::cout << log->get() << std::flush;
 }
