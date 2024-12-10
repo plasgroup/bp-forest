@@ -1076,6 +1076,7 @@ DEBUG_PRINT(stack_height);
                 }
 
                 mram_read(&Deref(cursor.ptr), &wks->node_cache, sizeof(LeafNode));
+return;
 
                 for (;;) {
 printf(__FILE__ ":%d\n", __LINE__);
