@@ -9,7 +9,7 @@ extern uint8_t __atomic_bit AtomicBits[NR_TASKLETS * 2];
 
 __attribute__((unused)) static void initialize_readiness_bits(void)
 {
-    for (unsigned i = 0; i < NR_TASKLETS * 2 - 1; i++) {
+    for (unsigned i = 0; i < NR_TASKLETS * 2 - 2; i++) {
         __asm__("acquire %[index], %[base], t, .+1" ::[index] "r"(i),
                 [base] "i"(&AtomicBits)
                 :);
