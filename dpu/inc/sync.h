@@ -19,7 +19,8 @@ __attribute__((unused)) static void wait_for_prev_ready(void)
 {
     __asm__("0:\n"
             "release id, %[base] - 1, nz, .+2\n"
-            "stop true, 0b" ::[base] "i"(&AtomicBits)
+            // "stop true, 0b" ::[base] "i"(&AtomicBits)
+            "jump 0b" ::[base] "i"(&AtomicBits)
             :);
 }
 
@@ -27,7 +28,8 @@ __attribute__((unused)) static void wait_for_prev_ready(void)
 __attribute__((unused)) static void notify_prev_of_readiness(void)
 {
     __asm__("acquire id, %[base] + %[nr_tasklets] - 2, true, .+1\n"
-            "resume id, -1" ::[base] "i"(&AtomicBits),
+            // "resume id, -1" ::[base] "i"(&AtomicBits),
+            "" ::[base] "i"(&AtomicBits),
             [nr_tasklets] "i"(NR_TASKLETS)
             :);
 }
@@ -35,7 +37,8 @@ __attribute__((unused)) static void wait_for_next_ready(void)
 {
     __asm__("0:\n"
             "release id, %[base] + %[nr_tasklets] - 1, nz, .+2\n"
-            "stop true, 0b" ::[base] "i"(&AtomicBits),
+            // "stop true, 0b" ::[base] "i"(&AtomicBits),
+            "jump 0b" ::[base] "i"(&AtomicBits),
             [nr_tasklets] "i"(NR_TASKLETS)
             :);
 }
