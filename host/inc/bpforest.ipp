@@ -1225,6 +1225,7 @@ std::cout << (nr_lumps[idx_dpu][0]) << " -> " << (nr_lumps[idx_dpu][0] <= MAX_NR
                 const size_t tmp = idx_delim_end - idx_offset;
                 assert(tmp <= std::numeric_limits<uint16_t>::max());
                 lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
+std::cout << tmp << std::endl;
             }
 
             nr_miniranges += idx_delim_end - idx_delim_begin - nr_cold_lumps - if_cold_begins_middle[idx_dpu + 1];
