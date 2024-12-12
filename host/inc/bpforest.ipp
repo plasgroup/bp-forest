@@ -1259,6 +1259,7 @@ void BPForest::execute_rmq_in_dpus(
             assert(nr_cold_lumps <= std::numeric_limits<uint16_t>::max());
             nr_lumps[idx_dpu][0] = static_cast<uint16_t>(nr_cold_lumps);
             assert(nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1] <= MAX_NR_RMQ_LUMPS);
+std::cout << (nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1]) << " -> " << (nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1] <= MAX_NR_RMQ_LUMPS) << std::endl;
             lump_end_indices_size = (nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1] + 2
                                         + 8 / sizeof(uint16_t) - 1)
                                     / (8 / sizeof(uint16_t)) * (8 / sizeof(uint16_t));
