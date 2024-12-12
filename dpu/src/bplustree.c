@@ -421,23 +421,13 @@ void task_init(void)
 {
     _Static_assert(TREE_CONSTRUCT_NR_TASKLETS > 0, "TREE_CONSTRUCT_NR_TASKLETS > 0");
     if (me() < TREE_CONSTRUCT_NR_TASKLETS) {
-if (me() == 0) {
-    printf("cold_height = %u\n", cold_height);
-    printf("input init nr_pairs = %u\n", input_header.init.nr_pairs);
-}
         const unsigned nr_allocated_nodes = construct_tree(&cold_root_numKeys, &cold_root, &cold_height, &cold_min_key, INIT_allocator);
-if (me() == TREE_CONSTRUCT_NR_TASKLETS - 1) {
-    printf("cold_height = %u\n", cold_height);
-}
 
         TREE_CONSTRUCT_barrier();
 
         _Static_assert(TASK_INIT_ALLOC_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS, "TASK_INIT_ALLOC_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS");
         Allocator_init(nr_allocated_nodes);
 
-if (me() == 0) {
-    printf("cold_height = %u\n", cold_height);
-}
 #ifdef TASK_INIT_CHECK
         TREE_CONSTRUCT_barrier();
         if (me() == 0) {
@@ -1010,6 +1000,7 @@ void task_summarize(void)
 }
 
 
+STDOUT_BUFFER_INIT(2097152);
 static void EXTRACT_nodes(void)
 {
     static ExtractWorkspace* const wks = &workspace.tree.extract;
@@ -1026,9 +1017,7 @@ static void EXTRACT_nodes(void)
     const uintptr_t result_pairs = result_nr_pairs + (NR_RANKS * MAX_NR_DPUS_IN_RANK * sizeof(uint32_t) + 7) / 8 * 8;
 
     if (me() == 0) {
-printf(__FILE__ ":%d\n", __LINE__);
         if (cold_height == 0) {
-printf(__FILE__ ":%d\n", __LINE__);
             wks->nr_pairs_cache[0] = cold_root_numKeys;
             mram_write(&wks->nr_pairs_cache[0], (__mram_ptr uint32_t*)result_nr_pairs, 8);
 
@@ -1040,26 +1029,36 @@ printf(__FILE__ ":%d\n", __LINE__);
             cold_root_numKeys = 0;
 
         } else {
-printf(__FILE__ ":%d\n", __LINE__);
             uint32_t idx_hot = 0, idx_pair = 0;
             for (; idx_hot < input_header.extract.nr_ranges; idx_hot++) {
-printf(__FILE__ ":%d\n", __LINE__);
                 const KeyRange range = wks->hot_ranges[idx_hot];
+printf("range = [%016lx, %016lx]\n", range.begin, range.end);
                 uint32_t nr_pairs = 0;
 
+printf("Root: ");
+for (uint8_t i = 0; i < cold_root_numKeys; i++) {
+    printf("%016lx, ", cold_root.inl.keys[i]);
+}
+printf("\n");
                 uint16_t nr_passed_children_of_root = search_for_child_index(&cold_root.inl.keys[0], cold_root_numKeys, range.begin);
                 const uint16_t initial_nr_passed_children_of_root = nr_passed_children_of_root;
+printf("nr_passed_children_of_root = %u\n", nr_passed_children_of_root);
 
                 NodeLink cursor = cold_root.inl.children[nr_passed_children_of_root];
                 __dma_aligned key_uint64_t next_key = UINT64_MAX;
 
                 uint8_t stack_height = 0;
                 for (; stack_height < cold_height - 1; stack_height++) {
-DEBUG_PRINT(stack_height);
                     wks->stack[stack_height].node = cursor;
 
                     mram_read(&Deref(cursor.ptr).inl.keys[0], &wks->node_cache.inl.keys[0], sizeof(key_uint64_t) * cursor.numKeys);
+printf("Node[%u]: ", cursor.ptr);
+for (uint8_t i = 0; i < cursor.numKeys; i++) {
+    printf("%016lx, ", wks->node_cache.inl.keys[i]);
+}
+printf("\n");
                     const uint16_t idx_child = search_for_child_index(&wks->node_cache.inl.keys[0], cursor.numKeys, range.begin);
+printf("idx_child = %u\n", idx_child);
 
                     wks->stack[stack_height].nr_passed_children = idx_child;
                     mram_read(&Deref(cursor.ptr).inl.children[idx_child / 2 * 2], &wks->stack[stack_height].children_cache[0], sizeof(NodeLink) * 2);
@@ -1074,17 +1073,20 @@ DEBUG_PRINT(stack_height);
                         memcpy((void*)copy_dest, &buf, 8);
                     }
                 }
+printf("\n");
+for (unsigned i = 0; i < stack_height; i++) {
+    printf("stack[%u].node = {@%u, %u}\n", i, wks->stack[i].node.ptr, wks->stack[i].node.numKeys);
+    printf("         .nr_passed_children = %u\n", wks->stack[i].nr_passed_children);
+}
+for (unsigned i = 0; i < stack_height; i++) {
+    printf("initial_stack[%u].node = {@%u, %u}\n", i, wks->initial_stack[i].node.ptr, wks->initial_stack[i].node.numKeys);
+    printf("                 .nr_passed_children = %u\n", wks->initial_stack[i].nr_passed_children);
+}
+printf("\n");
 
                 mram_read(&Deref(cursor.ptr), &wks->node_cache, sizeof(LeafNode));
-DEBUG_PRINT(stack_height);
-for (unsigned i = 0; i < stack_height; i++) {
-    DEBUG_PRINT(wks->stack[i].node.ptr);
-    DEBUG_PRINT(wks->stack[i].node.numKeys);
-    DEBUG_PRINT(wks->stack[i].nr_passed_children);
-}
 
                 for (;;) {
-// printf(__FILE__ ":%d\n", __LINE__);
                     nr_pairs += cursor.numKeys;
                     for (uint8_t i = 0; i < cursor.numKeys; i++, idx_pair++) {
                         wks->kvpair = (KVPair){wks->node_cache.lf.keys[i], wks->node_cache.lf.values[i]};
@@ -1093,10 +1095,6 @@ for (unsigned i = 0; i < stack_height; i++) {
 
                     Free_node(cursor.ptr);
 
-static unsigned loop_count = 0;
-if (loop_count++ >= 5500) {
-    return;
-}
                     for (;;) {
                         if (stack_height == 0) {
                             const uint16_t orig_nr_passed_children_of_root = nr_passed_children_of_root;
@@ -1141,6 +1139,13 @@ if (loop_count++ >= 5500) {
                         mram_read(&Deref(cursor.ptr).inl.children[0], &wks->stack[stack_height].children_cache[0], sizeof(NodeLink) * 2);
                         cursor = wks->stack[stack_height].children_cache[0];
                     }
+if (idx_hot + 1 == input_header.extract.nr_ranges) {
+    for (unsigned i = 0; i < stack_height; i++) {
+        printf("[%u] {@%u, %u}\n", i, wks->stack[i].node.ptr, wks->stack[i].node.numKeys);
+        printf("pass %u\n", wks->stack[i].nr_passed_children);
+    }
+    printf("\n");
+}
 
                     mram_read(&Deref(cursor.ptr), &wks->node_cache, offsetof(LeafNode, left));
                 }
@@ -1296,7 +1301,6 @@ printf("hot[%u] = %u nr_pairs\n", idx_hot, nr_pairs);
 
 void task_extract(void)
 {
-printf("task_extract() enter\n");
     EXTRACT_nodes();
 
 #ifdef TASK_EXTRACT_CHECK

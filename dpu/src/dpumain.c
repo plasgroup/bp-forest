@@ -1,6 +1,5 @@
 #include "common.h"
 #include "input_header.h"
-#include "sync.h"
 #include "tree.h"
 
 #include <barrier.h>
@@ -21,7 +20,6 @@ int main()
 {
     if (me() == LAST_TASKLET) {
         mram_read(DPU_MRAM_HEAP_POINTER, &input_header, sizeof(input_header));
-initialize_readiness_bits();
 printf("task_no = %d\n", input_header.task_no);
     }
     barrier_wait(&my_barrier);

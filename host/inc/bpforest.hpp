@@ -39,7 +39,7 @@ struct BPForestParameter {
 struct BPForest {
     using Param = BPForestParameter;
 
-    BPForest(size_t nr_pairs, const KVPair sorted_pairs[], const Param& = {});
+    BPForest(std::vector<KVPair>&& sorted_pairs, const Param& = {});
     ~BPForest();
 
     void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
@@ -90,7 +90,7 @@ private:
     ExtendableBuffer<size_t> query_idxs;
     std::array<ExtendableBuffer<KVPair>, MAX_NR_DPUS> hot_kvpairs;
 
-    void ditribute_initial_data(size_t nr_pairs, const KVPair sorted_pairs[]);
+    void ditribute_initial_data(std::vector<KVPair>&& sorted_pairs);
 
     template <bool HasHotRanges>
     void route_get_queries(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
@@ -152,10 +152,16 @@ private:
     struct SummaryReceiver;
 
     void extract_and_distribute_hot_ranges();
+#ifdef EXTRACT_BY_INITIALIZATION
+    std::vector<KVPair> initial_data;
+    struct RebalancedColdKVPairsSender;
+    struct HotKVPairsSender;
+#else
     struct HotKVPairsExtracter;
     struct NrHotKVPairsCollecter;
     struct HotKVPairsExtractedCollecter;
     struct HotRangeConstructor;
+#endif
 };
 
 

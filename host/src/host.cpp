@@ -183,7 +183,7 @@ void check_range_min_results(const size_t nr_queries, const KeyRange ranges[], c
 #endif /* DEBUG_ON */
     }
 
-    return BPForest{init_pairs.size(), &init_pairs[0], param};
+    return BPForest{std::move(init_pairs), param};
 }
 
 #ifdef HOST_MULTI_THREAD
