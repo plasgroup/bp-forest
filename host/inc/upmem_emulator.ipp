@@ -95,7 +95,7 @@ inline void UPMEMEmulator<NrDPUs>::print_nr_queries_in_last_batch(std::ostream& 
     if (nr_dpus_to_print > 0) {
         for (dpu_id_t idx_dpu = 0; idx_dpu < NrDPUs && idx_dpu < nr_dpus_to_print; idx_dpu++) {
             if (idx_dpu != 0) {
-                ostr << ", ";
+                ostr << ",";
             }
             ostr << (dpus[idx_dpu].get_nr_GET_queries_to_cold_range_in_last_batch() + dpus[idx_dpu].get_nr_GET_queries_to_hot_range_in_last_batch());
         }
@@ -108,7 +108,7 @@ inline void UPMEMEmulator<NrDPUs>::print_nr_cold_queries_in_last_batch(std::ostr
     if (nr_dpus_to_print > 0) {
         for (dpu_id_t idx_dpu = 0; idx_dpu < NrDPUs && idx_dpu < nr_dpus_to_print; idx_dpu++) {
             if (idx_dpu != 0) {
-                ostr << ", ";
+                ostr << ",";
             }
             ostr << dpus[idx_dpu].get_nr_GET_queries_to_cold_range_in_last_batch();
         }
@@ -121,7 +121,7 @@ inline void UPMEMEmulator<NrDPUs>::print_nr_hot_queries_in_last_batch(std::ostre
     if (nr_dpus_to_print > 0) {
         for (dpu_id_t idx_dpu = 0; idx_dpu < NrDPUs && idx_dpu < nr_dpus_to_print; idx_dpu++) {
             if (idx_dpu != 0) {
-                ostr << ", ";
+                ostr << ",";
             }
             ostr << dpus[idx_dpu].get_nr_GET_queries_to_hot_range_in_last_batch();
         }
@@ -134,7 +134,7 @@ inline void UPMEMEmulator<NrDPUs>::print_nr_RMQ_delims_in_last_batch(std::ostrea
     if (nr_dpus_to_print > 0) {
         for (dpu_id_t idx_dpu = 0; idx_dpu < NrDPUs && idx_dpu < nr_dpus_to_print; idx_dpu++) {
             if (idx_dpu != 0) {
-                ostr << ", ";
+                ostr << ",";
             }
             ostr << (dpus[idx_dpu].get_nr_RMQ_delims_to_cold_range_in_last_batch() + dpus[idx_dpu].get_nr_RMQ_delims_to_hot_range_in_last_batch());
         }
@@ -147,7 +147,7 @@ inline void UPMEMEmulator<NrDPUs>::print_nr_cold_RMQ_delims_in_last_batch(std::o
     if (nr_dpus_to_print > 0) {
         for (dpu_id_t idx_dpu = 0; idx_dpu < NrDPUs && idx_dpu < nr_dpus_to_print; idx_dpu++) {
             if (idx_dpu != 0) {
-                ostr << ", ";
+                ostr << ",";
             }
             ostr << dpus[idx_dpu].get_nr_RMQ_delims_to_cold_range_in_last_batch();
         }
@@ -160,7 +160,7 @@ inline void UPMEMEmulator<NrDPUs>::print_nr_hot_RMQ_delims_in_last_batch(std::os
     if (nr_dpus_to_print > 0) {
         for (dpu_id_t idx_dpu = 0; idx_dpu < NrDPUs && idx_dpu < nr_dpus_to_print; idx_dpu++) {
             if (idx_dpu != 0) {
-                ostr << ", ";
+                ostr << ",";
             }
             ostr << dpus[idx_dpu].get_nr_RMQ_delims_to_hot_range_in_last_batch();
         }
@@ -173,7 +173,7 @@ inline void UPMEMEmulator<NrDPUs>::print_nr_pairs(std::ostream& ostr, dpu_id_t n
     if (nr_dpus_to_print > 0) {
         for (dpu_id_t idx_dpu = 0; idx_dpu < NrDPUs && idx_dpu < nr_dpus_to_print; idx_dpu++) {
             if (idx_dpu != 0) {
-                ostr << ", ";
+                ostr << ",";
             }
             ostr << (dpus[idx_dpu].get_nr_pairs_in_cold_range() + dpus[idx_dpu].get_nr_pairs_in_hot_range());
         }
@@ -186,7 +186,7 @@ inline void UPMEMEmulator<NrDPUs>::print_nr_cold_pairs(std::ostream& ostr, dpu_i
     if (nr_dpus_to_print > 0) {
         for (dpu_id_t idx_dpu = 0; idx_dpu < NrDPUs && idx_dpu < nr_dpus_to_print; idx_dpu++) {
             if (idx_dpu != 0) {
-                ostr << ", ";
+                ostr << ",";
             }
             ostr << dpus[idx_dpu].get_nr_pairs_in_cold_range();
         }
@@ -199,7 +199,7 @@ inline void UPMEMEmulator<NrDPUs>::print_nr_hot_pairs(std::ostream& ostr, dpu_id
     if (nr_dpus_to_print > 0) {
         for (dpu_id_t idx_dpu = 0; idx_dpu < NrDPUs && idx_dpu < nr_dpus_to_print; idx_dpu++) {
             if (idx_dpu != 0) {
-                ostr << ", ";
+                ostr << ",";
             }
             ostr << dpus[idx_dpu].get_nr_pairs_in_hot_range();
         }
