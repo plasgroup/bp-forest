@@ -478,7 +478,13 @@ int main(int argc, char* argv[])
 
     /* main routine */
     if (opt.print_perf) {
-        printf("alpha,NR_DPUS,NR_TASKLETS,batch_num,num_keys,rebalancing_time[ns],send_exec_recv_time[ns],batch_time[ns]\n");
+        printf("alpha,NR_DPUS,NR_TASKLETS,batch_num,num_keys,rebalancing_time[ns]"
+#ifdef SYNCHRONOUS_DPU_EXEC
+               ",send_time[ns],exec_time[ns],recv_time[ns]"
+#else /* SYNCHRONOUS_DPU_EXEC */
+               ",send_exec_recv_time[ns]"
+#endif
+               ",batch_time[ns]\n");
     }
     for (int idx_batch = 0; idx_batch < opt.nr_batches; idx_batch++) {
         size_t num_keys = do_one_batch(opt.op_type, idx_batch, workload_buffer, forest);
@@ -499,9 +505,21 @@ int main(int argc, char* argv[])
 #endif
 
         if (opt.print_perf) {
-            printf("%s,%d,%d,%d,%ld,%ld,%ld,%ld\n",
+            printf("%s,%d,%d,%d,%ld,%ld"
+#ifdef SYNCHRONOUS_DPU_EXEC
+                   ",%ld,%ld,%ld"
+#else /* SYNCHRONOUS_DPU_EXEC */
+                   ",%ld"
+#endif
+                   ",%ld\n",
                 opt.alpha.c_str(), upmem_get_nr_dpus(), NR_TASKLETS, idx_batch,
-                num_keys, RebalancingTime.count(), QuerySendExecRecvTime.count(), BatchTotalTime.count());
+                num_keys, RebalancingTime.count(),
+#ifdef SYNCHRONOUS_DPU_EXEC
+                QuerySendTime.count(), QueryExecTime.count(), QueryRecvTime.count(),
+#else /* SYNCHRONOUS_DPU_EXEC */
+                QuerySendExecRecvTime.count(),
+#endif
+                BatchTotalTime.count());
         }
     }
 
