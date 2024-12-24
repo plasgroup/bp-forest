@@ -23,7 +23,7 @@ SparseTable<T>::SparseTable(const std::vector<T>& data)
 {
     int n = data.size();
     int K = std::log2(n) + 1;
-    table.resize(n, std::vector<T>(K));
+    table.resize(K, std::vector<T>(n)); // 次元を入れ替え
     log.resize(n + 1);
 
     // Precompute logs
@@ -33,17 +33,17 @@ SparseTable<T>::SparseTable(const std::vector<T>& data)
 
     // Initialize table for the intervals with length 1
     for (int i = 0; i < n; i++)
-        table[i][0] = data[i];
+        table[0][i] = data[i]; // 次元を入れ替え
 
     // Compute values from smaller to bigger intervals
-    for (int j = 1; j <= K; j++)
+    for (int j = 1; j < K; j++) 
         for (int i = 0; i + (1 << j) <= n; i++)
-            table[i][j] = std::min(table[i][j - 1], table[i + (1 << (j - 1))][j - 1]);
+            table[j][i] = std::min(table[j - 1][i], table[j - 1][i + (1 << (j - 1))]); // 次元を入れ替え
 }
 
 template <typename T>
 T SparseTable<T>::query(int L, int R)
 {
     int j = log[R - L + 1];
-    return std::min(table[L][j], table[R - (1 << j) + 1][j]);
+    return std::min(table[j][L], table[j][R - (1 << j) + 1]); // 次元を入れ替え
 }

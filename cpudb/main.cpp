@@ -54,20 +54,19 @@ struct Option {
     bool print_perf, print_init_time;
 } opt;
 
-PiecewiseConstantWorkload
-load_workload(std::string workload_file, PiecewiseConstantWorkload* workload)
+void load_workload(std::string workload_file,
+                   PiecewiseConstantWorkload* workload)
 {
+    std::cout << "loading workload from " << workload_file << std::endl;
     /* load workload file */
-    {
-        std::ifstream file_input(workload_file, std::ios_base::binary);
-        if (!file_input) {
-            std::cerr << "cannot open file: " << workload_file << std::endl;
-            exit(1);
-        }
-
-        cereal::BinaryInputArchive iarchive(file_input);
-        iarchive(*workload);
+    std::ifstream file_input(workload_file, std::ios_base::binary);
+    if (!file_input) {
+        std::cerr << "cannot open file: " << workload_file << std::endl;
+        exit(1);
     }
+    cereal::BinaryInputArchive iarchive(file_input);
+    iarchive(*workload);
+    std::cout << "done" << std::endl;
 }
 
 class Database {
@@ -80,13 +79,14 @@ public:
              const std::vector<value_uint64_t> values)
         : db_data(values)
     {
+        std::cout << "building index" << std::endl;
         for (size_t i = 0; i < keys.size(); i++)
             index[keys[i]] = i;
     }
 
-    void Database::batch_range_minimum(uint64_t n, 
-                                   ExtendableBuffer<KeyRange>& queries,
-                                   ExtendableBuffer<value_uint64_t>& results);
+    void batch_range_minimum(uint64_t n, 
+                            ExtendableBuffer<KeyRange>& queries,
+                            ExtendableBuffer<value_uint64_t>& results);
 };
 
 void Database::batch_range_minimum(uint64_t n, 
@@ -110,12 +110,21 @@ Database* make_database()
     std::vector<key_uint64_t> keys;
     std::vector<value_uint64_t> values;
 
+    std::cout << "making database with " << NUM_INIT_REQS << " keys" << std::endl;
+
     for (size_t i = 0; i < NUM_INIT_REQS; i++) {
         const size_t k = KEY_MIN + INIT_KEY_INTERVAL * i;
         keys.push_back(k);
         values.push_back(k);
     }
-    return new Database(keys, values);
+
+    std::cout << "add data to database" << std::endl;
+
+    Database *db = new Database(keys, values);
+
+    std::cout << "done" << std::endl;
+
+    return db;
 }
 
 void do_one_batch(const uint64_t task, int batch_num,
@@ -139,19 +148,26 @@ void do_one_batch(const uint64_t task, int batch_num,
             ranges[idx_query].end = ranges[idx_query].begin + INIT_KEY_INTERVAL * 100 - 1;
         }
         result.reserve(num_keys_batch);
+    
+        std::cout << "batch " << batch_num << ": range_minimum" << std::endl;
         db->batch_range_minimum(num_keys_batch, ranges, result);
+        std::cout << "done" << std::endl;
     }
 }
 
 int main(int argc, char* argv[])
 {
     opt.parse(argc, argv);
+
+
     Database* db = make_database();
+
     PiecewiseConstantWorkload workload;
     load_workload(opt.workload_file, &workload);
 
     WorkloadBuffer workload_buffer{std::move(workload.data)};
     for (int idx_batch = 0; idx_batch < opt.nr_batches; idx_batch++) {
-        do_one_batch(opt.op_type, idx_batch, workload_buffer, db);
+        //do_one_batch(opt.op_type, idx_batch, workload_buffer, db);
+        do_one_batch(TASK_RANGE_MIN, idx_batch, workload_buffer, db);
     }
 }
