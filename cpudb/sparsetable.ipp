@@ -21,7 +21,7 @@ public:
     T query(int L, int R);
 };
 
-#ifdef SINGLE_THREAD
+#if 0 // original code
 template <typename T>
 SparseTable<T>::SparseTable(const std::vector<T>& data)
 {
@@ -50,8 +50,10 @@ SparseTable<T>::SparseTable(const std::vector<T>& data)
 {
     int n = data.size();
     int K = std::log2(n) + 1;
-    table.resize(K, std::vector<T>(n)); // 次元を入れ替え
-    log.resize(n + 1);
+    table.resize(K, std::vector<T>());
+    for (int i = 0; i < K; i++)
+        table[i].reserve(n);
+    log.reserve(n + 1);
 
     // Precompute logs
     #pragma omp parallel

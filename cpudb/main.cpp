@@ -4,34 +4,35 @@
 #include <fstream>
 #include "common.h"
 #include "host/inc/host_params.hpp"
-#include "host/inc/workload_buffer.hpp"
 #include "host/inc/extendable_buffer.hpp"
 #include "host/inc/statistics.hpp"
 #include "piecewise_constant_workload.hpp"
 #include "sparsetable.ipp"
+#include "host/inc/workload_buffer.hpp"
 
 std::chrono::nanoseconds QueryProcessTime;
+
+// temporary
+size_t range_length;
 
 struct Option {
     void parse(int argc, char* argv[])
     {
         cmdline::parser a;
         a.add<std::string>("dump-params", 0, "file path to output parameters");
-        a.add<unsigned>("balancing-param", 0, "the tunable parameter for compute/memory load balancing in B+-Forest", false, 1);
         a.add<std::string>("zipfianconst", 'a', "zipfian constant", false, "0.99");
         a.add<std::string>("workload_dir", 'w', "directory containing workload files", false, "workload");
+        a.add<float>("num_mega_keys", 'k', "number of keys in millions", false, 51.2);
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
         a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq", false, "get");
         a.add("single-thread", 's', "run in single thread mode");
-        a.add("print-perf", 'p', "print performance metrics");
-        a.add("print-init-time", 0, "print elapsed time for initialization of BPForest");
         a.parse_check(argc, argv);
 
         dump_param_file = a.get<std::string>("dump-params");
-        balancing_param = a.get<unsigned>("balancing-param");
         alpha = a.get<std::string>("zipfianconst");
         workload_file = a.get<std::string>("workload_dir") + ("/zipf_const_" + alpha + ".bin");
         nr_batches = a.get<int>("num_batches");
+        nr_keys = a.get<float>("num_mega_keys") * 1000 * 1000;
 
         if (a.get<std::string>("ops") == "get")
             op_type = TASK_GET;
@@ -47,18 +48,14 @@ struct Option {
         }
 
         is_single_thread = a.exist("single-thread");
-
-        print_perf = a.exist("print-perf");
-        print_init_time = a.exist("print-init-time");
     }
 
     std::string dump_param_file;
-    unsigned balancing_param;
     std::string alpha;
     std::string workload_file;
     int nr_batches;
+    int nr_keys;
     TaskID op_type;
-    bool print_perf, print_init_time;
     bool is_single_thread;
 } opt;
 
@@ -109,8 +106,8 @@ public:
 };
 
 void Database::batch_range_minimum(uint64_t n, 
-                                                     ExtendableBuffer<KeyRange> &queries,
-                                                     ExtendableBuffer<value_uint64_t> &results)
+                                   ExtendableBuffer<KeyRange> &queries,
+                                   ExtendableBuffer<value_uint64_t> &results)
 {
     if (is_single_thread) {
         for (size_t i = 0; i < n; i++) {
@@ -162,15 +159,18 @@ void Database::batch_get(uint64_t n,
     }
 }
 
-Database* make_database(bool is_single_thread)
+Database* make_database(size_t nr_keys, bool is_single_thread)
 {
     std::vector<key_uint64_t> keys;
     std::vector<value_uint64_t> values;
 
-    std::cout << "making database with " << NUM_INIT_REQS << " keys" << std::endl;
+    std::cout << "making database with " << nr_keys << " keys" << std::endl;
 
-    for (size_t i = 0; i < NUM_INIT_REQS; i++) {
-        const size_t k = KEY_MIN + INIT_KEY_INTERVAL * i;
+    keys.reserve(nr_keys);
+    values.reserve(nr_keys);
+    key_uint64_t key_interval = (KEY_MAX - KEY_MIN) / (nr_keys - 1); 
+    for (size_t i = 0; i < nr_keys; i++) {
+        const size_t k = KEY_MIN + key_interval * i;
         keys.push_back(k);
         values.push_back(k);
     }
@@ -225,18 +225,109 @@ void do_one_batch(const uint64_t task, int batch_num,
         exit(1);
     }
 }
+#if 0
+class Benchmark {
+public:
+    void run(int nr_batches, Database* db)
+    {
+        for (int idx_batch = 0; idx_batch < nr_batches; idx_batch++) {
+            do_one_batch(idx_batch, db);
+        }
+    }
+    virtual void do_one_batch(int idx_batch, Database* db) = 0;
+};
+
+class GetBenchmark : public Benchmark {
+    WorkloadBuffer<key_uint64_t> *workload_buffer;
+
+public:
+    GetBenchmark(const std::string& workload_file)
+    {
+        PiecewiseConstantWorkload workload;
+        load_workload(workload_file, &workload);
+        workload_buffer = new WorkloadBuffer<key_uint64_t>(std::move(workload.data));
+    }
+
+    void do_one_batch(int idx_batch, Database* db) {
+        const auto tmp_input = workload_buffer->take(NUM_REQUESTS_PER_BATCH);
+        const auto batch_keys = tmp_input.first;
+        const auto num_keys_batch = tmp_input.second;
+        if (num_keys_batch != NUM_REQUESTS_PER_BATCH) {
+            std::cerr << "run out of workload in batch " << idx_batch << std::endl;
+            exit(1);
+        }
+
+        static ExtendableBuffer<value_uint64_t> results;
+        static ExtendableBuffer<key_uint64_t> keys;
+        keys.reserve(num_keys_batch);
+        for (size_t idx_query = 0; idx_query < num_keys_batch; idx_query++)
+            keys[idx_query] = batch_keys[idx_query];
+        results.reserve(num_keys_batch);
+        {
+            StopWatch sw(QueryProcessTime);
+            db->batch_get(num_keys_batch, keys, results);
+        }
+    }
+};
+
+class RMQBenchmark : public Benchmark {
+    WorkloadBuffer<KeyRange> *workload_buffer;
+
+public:
+    RMQBenchmark(const std::string& workload_file)
+    {
+        PiecewiseConstantWorkload pworkload;
+        load_workload(workload_file, &pworkload);
+
+        key_uint64_t key_interval = (KEY_MAX - KEY_MIN) / (opt.nr_keys - 1); 
+        size_t range_length = key_interval * 100 - 1;
+        std::vector<KeyRange> workload;
+        workload.reserve(pworkload.data.size());
+        for (const auto& p : pworkload.data)
+            workload.push_back({p, p + range_length});
+        workload_buffer = new WorkloadBuffer<KeyRange>(std::move(workload));
+    }
+
+    void do_one_batch(int idx_batch, Database* db) {
+        const auto tmp_input = workload_buffer->take(NUM_REQUESTS_PER_BATCH);
+        const auto batch_queries = tmp_input.first;
+        const auto num_queries_batch = tmp_input.second;
+        if (num_queries_batch != NUM_REQUESTS_PER_BATCH) {
+            std::cerr << "run out of workload in batch " << idx_batch << std::endl;
+            exit(1);
+        }
+
+        static ExtendableBuffer<value_uint64_t> results;
+        static ExtendableBuffer<KeyRange> ranges;
+        ranges.reserve(num_queries_batch);
+        for (size_t idx_query = 0; idx_query < num_queries_batch; idx_query++)
+            ranges[idx_query] = batch_queries[idx_query];
+        results.reserve(num_queries_batch);
+        {
+            StopWatch sw(QueryProcessTime);
+            db->batch_range_minimum(num_queries_batch, ranges, results);
+        }
+    }
+};
+#endif
+
 
 int main(int argc, char* argv[])
 {
     opt.parse(argc, argv);
 
+    // temporary
+    key_uint64_t key_interval = (KEY_MAX - KEY_MIN) / (opt.nr_keys - 1); 
+    range_length = key_interval * 100 - 1;
 
-    Database* db = make_database(opt.is_single_thread);
+    Database* db = make_database(opt.nr_keys, opt.is_single_thread);
 
     PiecewiseConstantWorkload workload;
     load_workload(opt.workload_file, &workload);
-
     WorkloadBuffer workload_buffer{std::move(workload.data)};
+
+
+
     for (int idx_batch = 0; idx_batch < opt.nr_batches; idx_batch++) {
         do_one_batch(opt.op_type, idx_batch, workload_buffer, db);
 
