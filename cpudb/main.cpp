@@ -1,3 +1,4 @@
+
 #include <cereal/archives/binary.hpp>
 #include <cmdline.h>
 #include <fstream>
@@ -5,8 +6,11 @@
 #include "host/inc/host_params.hpp"
 #include "host/inc/workload_buffer.hpp"
 #include "host/inc/extendable_buffer.hpp"
+#include "host/inc/statistics.hpp"
 #include "piecewise_constant_workload.hpp"
 #include "sparsetable.ipp"
+
+std::chrono::nanoseconds QueryProcessTime;
 
 struct Option {
     void parse(int argc, char* argv[])
@@ -18,6 +22,7 @@ struct Option {
         a.add<std::string>("workload_dir", 'w', "directory containing workload files", false, "workload");
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
         a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq", false, "get");
+        a.add("single-thread", 's', "run in single thread mode");
         a.add("print-perf", 'p', "print performance metrics");
         a.add("print-init-time", 0, "print elapsed time for initialization of BPForest");
         a.parse_check(argc, argv);
@@ -41,6 +46,8 @@ struct Option {
             exit(1);
         }
 
+        is_single_thread = a.exist("single-thread");
+
         print_perf = a.exist("print-perf");
         print_init_time = a.exist("print-init-time");
     }
@@ -52,6 +59,7 @@ struct Option {
     int nr_batches;
     TaskID op_type;
     bool print_perf, print_init_time;
+    bool is_single_thread;
 } opt;
 
 void load_workload(std::string workload_file,
@@ -73,11 +81,13 @@ class Database {
     std::map<key_uint64_t, int> index;
     SparseTable<value_uint64_t> db_data;
     const value_uint64_t NOT_FOUND_VALUE = (value_uint64_t)(-1ll);
+    const bool is_single_thread;
 
 public:
     Database(const std::vector<key_uint64_t> keys,
-             const std::vector<value_uint64_t> values)
-        : db_data(values)
+             const std::vector<value_uint64_t> values,
+             const bool is_single_thread = false)
+        : is_single_thread(is_single_thread), db_data(values)
     {
         std::cout << "building index" << std::endl;
         for (size_t i = 0; i < keys.size(); i++)
@@ -87,25 +97,72 @@ public:
     void batch_range_minimum(uint64_t n, 
                             ExtendableBuffer<KeyRange>& queries,
                             ExtendableBuffer<value_uint64_t>& results);
+
+    void batch_get(uint64_t n, 
+                   ExtendableBuffer<key_uint64_t>& keys,
+                   ExtendableBuffer<value_uint64_t>& results);
+
+    int get_parallelism() const
+    {
+        return is_single_thread ? 1 : omp_get_max_threads();
+    }
 };
 
 void Database::batch_range_minimum(uint64_t n, 
-                                   ExtendableBuffer<KeyRange> &queries,
-                                   ExtendableBuffer<value_uint64_t> &results)
+                                                     ExtendableBuffer<KeyRange> &queries,
+                                                     ExtendableBuffer<value_uint64_t> &results)
 {
-    for (size_t i = 0; i < n; i++) {
-        KeyRange &q = queries[i];
-        auto it = index.lower_bound(q.begin);
-        if (it != index.end() && it->first < q.end) {
-            int left_idx = it->second;
-            int right_idx = index.upper_bound(q.end)->second;
-            results[i] = db_data.query(left_idx, right_idx);
-        } else
-            results[i] = NOT_FOUND_VALUE;
+    if (is_single_thread) {
+        for (size_t i = 0; i < n; i++) {
+            KeyRange &q = queries[i];
+            auto it = index.lower_bound(q.begin);
+            if (it != index.end() && it->first < q.end) {
+                int left_idx = it->second;
+                int right_idx = index.upper_bound(q.end)->second;
+                results[i] = db_data.query(left_idx, right_idx);
+            } else
+                results[i] = NOT_FOUND_VALUE;
+        }
+    } else {
+        #pragma omp parallel for
+        for (size_t i = 0; i < n; i++) {
+            KeyRange &q = queries[i];
+            auto it = index.lower_bound(q.begin);
+            if (it != index.end() && it->first < q.end) {
+                int left_idx = it->second;
+                int right_idx = index.upper_bound(q.end)->second;
+                results[i] = db_data.query(left_idx, right_idx);
+            } else
+                results[i] = NOT_FOUND_VALUE;
+        }
     }
 }
 
-Database* make_database()
+void Database::batch_get(uint64_t n, 
+                         ExtendableBuffer<key_uint64_t> &keys,
+                         ExtendableBuffer<value_uint64_t> &results)
+{
+    if (is_single_thread) {
+        for (size_t i = 0; i < n; i++) {
+            auto it = index.find(keys[i]);
+            if (it != index.end())
+                results[i] = db_data.query(it->second, it->second);
+            else
+                results[i] = NOT_FOUND_VALUE;
+        }
+    } else {
+        #pragma omp parallel for
+        for (size_t i = 0; i < n; i++) {
+            auto it = index.find(keys[i]);
+            if (it != index.end())
+                results[i] = db_data.query(it->second, it->second);
+            else
+                results[i] = NOT_FOUND_VALUE;
+        }
+    }
+}
+
+Database* make_database(bool is_single_thread)
 {
     std::vector<key_uint64_t> keys;
     std::vector<value_uint64_t> values;
@@ -120,7 +177,7 @@ Database* make_database()
 
     std::cout << "add data to database" << std::endl;
 
-    Database *db = new Database(keys, values);
+    Database *db = new Database(keys, values, is_single_thread);
 
     std::cout << "done" << std::endl;
 
@@ -134,24 +191,38 @@ void do_one_batch(const uint64_t task, int batch_num,
     const auto tmp_input = workload_buffer.take(NUM_REQUESTS_PER_BATCH);
     const auto batch_keys = tmp_input.first;
     const auto num_keys_batch = tmp_input.second;
-    if (num_keys_batch == 0) {
+    if (num_keys_batch != NUM_REQUESTS_PER_BATCH) {
         std::cerr << "run out of workload in batch " << batch_num << std::endl;
         exit(1);
     }
 
-    if (task == TASK_RANGE_MIN) {
-        static ExtendableBuffer<value_uint64_t> result;
+    if (task == TASK_GET) {
+        static ExtendableBuffer<value_uint64_t> results;
+        static ExtendableBuffer<key_uint64_t> keys;
+        keys.reserve(num_keys_batch);
+        for (size_t idx_query = 0; idx_query < num_keys_batch; idx_query++)
+            keys[idx_query] = batch_keys[idx_query];
+        results.reserve(num_keys_batch);
+        {
+            StopWatch sw(QueryProcessTime);
+            db->batch_get(num_keys_batch, keys, results);
+        }
+    } else if (task == TASK_RANGE_MIN) {
+        static ExtendableBuffer<value_uint64_t> results;
         static ExtendableBuffer<KeyRange> ranges;
         ranges.reserve(num_keys_batch);
         for (size_t idx_query = 0; idx_query < num_keys_batch; idx_query++) {
             ranges[idx_query].begin = batch_keys[idx_query];
             ranges[idx_query].end = ranges[idx_query].begin + INIT_KEY_INTERVAL * 100 - 1;
         }
-        result.reserve(num_keys_batch);
-    
-        std::cout << "batch " << batch_num << ": range_minimum" << std::endl;
-        db->batch_range_minimum(num_keys_batch, ranges, result);
-        std::cout << "done" << std::endl;
+        results.reserve(num_keys_batch);
+        {
+            StopWatch sw(QueryProcessTime);
+            db->batch_range_minimum(num_keys_batch, ranges, results);
+        }
+    } else {
+        std::cerr << "unsupported task type: " << task << std::endl;
+        exit(1);
     }
 }
 
@@ -160,14 +231,20 @@ int main(int argc, char* argv[])
     opt.parse(argc, argv);
 
 
-    Database* db = make_database();
+    Database* db = make_database(opt.is_single_thread);
 
     PiecewiseConstantWorkload workload;
     load_workload(opt.workload_file, &workload);
 
     WorkloadBuffer workload_buffer{std::move(workload.data)};
     for (int idx_batch = 0; idx_batch < opt.nr_batches; idx_batch++) {
-        //do_one_batch(opt.op_type, idx_batch, workload_buffer, db);
-        do_one_batch(TASK_RANGE_MIN, idx_batch, workload_buffer, db);
+        do_one_batch(opt.op_type, idx_batch, workload_buffer, db);
+
+        printf("%s,%d,%d,%d,%d,%ld\n",
+                opt.alpha.c_str(), 1, db->get_parallelism(), idx_batch,
+                NUM_REQUESTS_PER_BATCH, QueryProcessTime.count());
     }
+
+    return 0;
+
 }

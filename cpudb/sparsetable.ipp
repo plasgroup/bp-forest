@@ -6,6 +6,9 @@
 #include <cmath>
 #include <algorithm>
 
+#include "assert.h"
+#include <omp.h>
+
 template <typename T>
 class SparseTable
 {
@@ -18,6 +21,7 @@ public:
     T query(int L, int R);
 };
 
+#ifdef SINGLE_THREAD
 template <typename T>
 SparseTable<T>::SparseTable(const std::vector<T>& data)
 {
@@ -40,6 +44,47 @@ SparseTable<T>::SparseTable(const std::vector<T>& data)
         for (int i = 0; i + (1 << j) <= n; i++)
             table[j][i] = std::min(table[j - 1][i], table[j - 1][i + (1 << (j - 1))]); // 次元を入れ替え
 }
+#else
+template <typename T>
+SparseTable<T>::SparseTable(const std::vector<T>& data)
+{
+    int n = data.size();
+    int K = std::log2(n) + 1;
+    table.resize(K, std::vector<T>(n)); // 次元を入れ替え
+    log.resize(n + 1);
+
+    // Precompute logs
+    #pragma omp parallel
+    {
+        int num_threads = omp_get_num_threads();
+        int thread_id = omp_get_thread_num();
+        int start = (n / num_threads) * thread_id + 1;
+        int end = ((thread_id == num_threads - 1) ? n : (n / num_threads) * (thread_id + 1)) + 1;
+        int logi = std::log2(start);
+        int next = (1 << (logi + 1)) - 1;
+        for (int i = start; i < end; i++) {
+            log[i] = logi;
+            if (i == next) {
+                logi++;
+                next = 2 * next + 1;
+            }
+        }
+    }
+
+    // Initialize table for the intervals with length 1
+    #pragma omp parallel for
+    for (int i = 0; i < n; i++)
+        table[0][i] = data[i]; // 次元を入れ替え
+
+    // Compute values from smaller to bigger intervals
+    for (int j = 1; j < K; j++) {
+        int end = n - (1 << j) + 1;
+        #pragma omp parallel for
+        for (int i = 0; i < n; i++)
+            table[j][i] = std::min(table[j - 1][i], table[j - 1][i + (1 << (j - 1))]); // 次元を入れ替え
+    }
+}
+#endif
 
 template <typename T>
 T SparseTable<T>::query(int L, int R)
