@@ -4,3 +4,6 @@
 [submodule "cereal"]
 	path = external/cereal
 	url = git@github.com:USCiLab/cereal.git
+[submodule "external/PIM-tree"]
+	path = external/PIM-tree
+	url = git@github.com:cmuparlay/PIM-tree.git
