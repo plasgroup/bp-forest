@@ -74,23 +74,32 @@ void load_workload(std::string workload_file,
 }
 
 class Database {
-    const bool nthreads;
     ParallelManager* parallel;
-    std::map<key_uint64_t, int> index;
+    std::map<key_uint64_t, int> *index;
     SparseTable<value_uint64_t> db_data;
     const value_uint64_t NOT_FOUND_VALUE = (value_uint64_t)(-1ll);
+
+    std::vector<std::pair<key_uint64_t, int>>
+    make_index_data(const std::vector<key_uint64_t>& keys)
+    {
+        std::vector<std::pair<key_uint64_t, int>> res;
+        res.reserve(keys.size());
+        for (size_t i = 0; i < keys.size(); i++)
+            res.push_back(std::make_pair(keys[i], i));
+        return res;
+    }
 
 public:
     Database(const std::vector<key_uint64_t> keys,
              const std::vector<value_uint64_t> values,
              const int nthreads)
-        : nthreads(nthreads),
-          parallel(new ParallelManager(nthreads)),
-          db_data(values, new ParallelManager(5))
+        : parallel(new ParallelManager(nthreads)),
+          db_data(values, new ParallelManager(0))
     {
+        std::cout << "building index data" << std::endl;
+        auto index_data = make_index_data(keys);
         std::cout << "building index" << std::endl;
-        for (size_t i = 0; i < keys.size(); i++)
-            index[keys[i]] = i;
+        index = new std::map<key_uint64_t, int>(index_data.begin(), index_data.end());
     }
 
     ~Database()
@@ -119,10 +128,10 @@ void Database::batch_range_minimum(uint64_t n,
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             KeyRange &q = queries[i];
-            auto it = index.lower_bound(q.begin);
-            if (it != index.end() && it->first < q.end) {
+            auto it = index->lower_bound(q.begin);
+            if (it != index->end() && it->first < q.end) {
                 int left_idx = it->second;
-                int right_idx = index.upper_bound(q.end)->second;
+                int right_idx = index->upper_bound(q.end)->second;
                 results[i] = db_data.query(left_idx, right_idx);
             } else
                 results[i] = NOT_FOUND_VALUE;
@@ -136,8 +145,8 @@ void Database::batch_get(uint64_t n,
 {
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
-            auto it = index.find(keys[i]);
-            if (it != index.end())
+            auto it = index->find(keys[i]);
+            if (it != index->end())
                 results[i] = db_data.query(it->second, it->second);
             else
                 results[i] = NOT_FOUND_VALUE;
