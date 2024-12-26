@@ -7,7 +7,7 @@
 #include <algorithm>
 
 #include "assert.h"
-#include <omp.h>
+#include "parallel.ipp"
 
 template <typename T>
 class SparseTable
@@ -17,7 +17,7 @@ private:
     std::vector<int> log;
 
 public:
-    SparseTable(const std::vector<T>& data);
+    SparseTable(const std::vector<T>& data, ParallelManager* parallel);
     T query(int L, int R);
 };
 
@@ -46,7 +46,7 @@ SparseTable<T>::SparseTable(const std::vector<T>& data)
 }
 #else
 template <typename T>
-SparseTable<T>::SparseTable(const std::vector<T>& data)
+SparseTable<T>::SparseTable(const std::vector<T>& data, ParallelManager* parallel)
 {
     int n = data.size();
     int K = std::log2(n) + 1;
@@ -55,35 +55,31 @@ SparseTable<T>::SparseTable(const std::vector<T>& data)
         table[i].reserve(n);
     log.reserve(n + 1);
 
-    // Precompute logs
-    #pragma omp parallel
-    {
-        int num_threads = omp_get_num_threads();
-        int thread_id = omp_get_thread_num();
-        int start = (n / num_threads) * thread_id + 1;
-        int end = ((thread_id == num_threads - 1) ? n : (n / num_threads) * (thread_id + 1)) + 1;
-        int logi = std::log2(start);
+    parallel->run(1, n + 1, [&](size_t s, size_t e) {
+        int logi = std::log2(s);
         int next = (1 << (logi + 1)) - 1;
-        for (int i = start; i < end; i++) {
+        for (int i = s; i < e; i++) {
             log[i] = logi;
             if (i == next) {
                 logi++;
                 next = 2 * next + 1;
             }
         }
-    }
+    });
 
     // Initialize table for the intervals with length 1
-    #pragma omp parallel for
-    for (int i = 0; i < n; i++)
-        table[0][i] = data[i]; // 次元を入れ替え
+    parallel->run(0, n, [&](size_t s, size_t e) {
+        for (int i = s; i < e; i++)
+            table[0][i] = data[i];
+    });
 
     // Compute values from smaller to bigger intervals
     for (int j = 1; j < K; j++) {
         int end = n - (1 << j) + 1;
-        #pragma omp parallel for
-        for (int i = 0; i < n; i++)
-            table[j][i] = std::min(table[j - 1][i], table[j - 1][i + (1 << (j - 1))]); // 次元を入れ替え
+        parallel->run(0, end, [&](size_t s, size_t e) {
+            for (int i = s; i < e; i++)
+                table[j][i] = std::min(table[j - 1][i], table[j - 1][i + (1 << (j - 1))]); // 次元を入れ替え
+        });
     }
 }
 #endif

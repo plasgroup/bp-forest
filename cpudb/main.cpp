@@ -1,6 +1,7 @@
 
 #include <cereal/archives/binary.hpp>
 #include <cmdline.h>
+#include <thread>
 #include <fstream>
 #include "common.h"
 #include "host/inc/host_params.hpp"
@@ -9,6 +10,7 @@
 #include "piecewise_constant_workload.hpp"
 #include "sparsetable.ipp"
 #include "workload_buffer.hpp"
+#include "parallel.ipp"
 
 std::chrono::nanoseconds QueryProcessTime;
 
@@ -22,7 +24,7 @@ struct Option {
         a.add<float>("num_mega_keys", 'k', "number of keys in millions", false, 51.2);
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
         a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq", false, "get");
-        a.add("single-thread", 's', "run in single thread mode");
+        a.add<int>("num_threads", 't', "number of threads", false, 1);
         a.parse_check(argc, argv);
 
         dump_param_file = a.get<std::string>("dump-params");
@@ -30,6 +32,7 @@ struct Option {
         workload_file = a.get<std::string>("workload_dir") + ("/zipf_const_" + alpha + ".bin");
         nr_batches = a.get<int>("num_batches");
         nr_keys = a.get<float>("num_mega_keys") * 1000 * 1000;
+        nthreads = a.get<int>("num_threads");
 
         if (a.get<std::string>("ops") == "get")
             op_type = TASK_GET;
@@ -43,8 +46,6 @@ struct Option {
             fprintf(stderr, "invalid operation type: %s\n", a.get<std::string>("ops").c_str());
             exit(1);
         }
-
-        is_single_thread = a.exist("single-thread");
     }
 
     std::string dump_param_file;
@@ -52,8 +53,9 @@ struct Option {
     std::string workload_file;
     int nr_batches;
     int nr_keys;
+    int nthreads;
     TaskID op_type;
-    bool is_single_thread;
+    ;
 } opt;
 
 void load_workload(std::string workload_file,
@@ -72,20 +74,28 @@ void load_workload(std::string workload_file,
 }
 
 class Database {
+    const bool nthreads;
+    ParallelManager* parallel;
     std::map<key_uint64_t, int> index;
     SparseTable<value_uint64_t> db_data;
     const value_uint64_t NOT_FOUND_VALUE = (value_uint64_t)(-1ll);
-    const bool is_single_thread;
 
 public:
     Database(const std::vector<key_uint64_t> keys,
              const std::vector<value_uint64_t> values,
-             const bool is_single_thread = false)
-        : is_single_thread(is_single_thread), db_data(values)
+             const int nthreads)
+        : nthreads(nthreads),
+          parallel(new ParallelManager(nthreads)),
+          db_data(values, new ParallelManager(5))
     {
         std::cout << "building index" << std::endl;
         for (size_t i = 0; i < keys.size(); i++)
             index[keys[i]] = i;
+    }
+
+    ~Database()
+    {
+        delete parallel;
     }
 
     void batch_range_minimum(uint64_t n, 
@@ -98,7 +108,7 @@ public:
 
     int get_parallelism() const
     {
-        return is_single_thread ? 1 : omp_get_max_threads();
+        return parallel->get_parallelism();
     }
 };
 
@@ -106,8 +116,8 @@ void Database::batch_range_minimum(uint64_t n,
                                    ExtendableBuffer<KeyRange> &queries,
                                    ExtendableBuffer<value_uint64_t> &results)
 {
-    if (is_single_thread) {
-        for (size_t i = 0; i < n; i++) {
+    parallel->run(0, n, [&](size_t s, size_t e) {
+        for (size_t i = s; i < e; i++) {
             KeyRange &q = queries[i];
             auto it = index.lower_bound(q.begin);
             if (it != index.end() && it->first < q.end) {
@@ -117,46 +127,25 @@ void Database::batch_range_minimum(uint64_t n,
             } else
                 results[i] = NOT_FOUND_VALUE;
         }
-    } else {
-        #pragma omp parallel for
-        for (size_t i = 0; i < n; i++) {
-            KeyRange &q = queries[i];
-            auto it = index.lower_bound(q.begin);
-            if (it != index.end() && it->first < q.end) {
-                int left_idx = it->second;
-                int right_idx = index.upper_bound(q.end)->second;
-                results[i] = db_data.query(left_idx, right_idx);
-            } else
-                results[i] = NOT_FOUND_VALUE;
-        }
-    }
+    });
 }
 
 void Database::batch_get(uint64_t n, 
                          ExtendableBuffer<key_uint64_t> &keys,
                          ExtendableBuffer<value_uint64_t> &results)
 {
-    if (is_single_thread) {
-        for (size_t i = 0; i < n; i++) {
+    parallel->run(0, n, [&](size_t s, size_t e) {
+        for (size_t i = s; i < e; i++) {
             auto it = index.find(keys[i]);
             if (it != index.end())
                 results[i] = db_data.query(it->second, it->second);
             else
                 results[i] = NOT_FOUND_VALUE;
         }
-    } else {
-        #pragma omp parallel for
-        for (size_t i = 0; i < n; i++) {
-            auto it = index.find(keys[i]);
-            if (it != index.end())
-                results[i] = db_data.query(it->second, it->second);
-            else
-                results[i] = NOT_FOUND_VALUE;
-        }
-    }
+    });
 }
 
-Database* make_database(size_t nr_keys, bool is_single_thread)
+Database* make_database(size_t nr_keys, int nthreads)
 {
     std::vector<key_uint64_t> keys;
     std::vector<value_uint64_t> values;
@@ -174,7 +163,7 @@ Database* make_database(size_t nr_keys, bool is_single_thread)
 
     std::cout << "add data to database" << std::endl;
 
-    Database *db = new Database(keys, values, is_single_thread);
+    Database *db = new Database(keys, values, nthreads);
 
     std::cout << "done" << std::endl;
 
@@ -291,7 +280,7 @@ int main(int argc, char* argv[])
     std::chrono::nanoseconds DatabaseInitTime;
     {
         StopWatch sw(DatabaseInitTime);
-        db = make_database(opt.nr_keys, opt.is_single_thread);
+        db = make_database(opt.nr_keys, opt.nthreads);
     }
     std::cout << "database initialized in " << (DatabaseInitTime.count() / 1000 / 1000) << " ms" << std::endl;
 
