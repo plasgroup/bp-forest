@@ -39,7 +39,7 @@ class ParallelManager {
         
         void wait(int id) {
             std::unique_lock<std::mutex> lk(mtx);
-//            std::cout << "Worker:" << id << " waiting" << std::endl;
+        //    std::cout << "Worker:" << id << " waiting" << std::endl;
             counter++;
             if (counter == thread_count) {
                 counter = 0;
@@ -49,7 +49,7 @@ class ParallelManager {
                     return stopping || counter == 0;
                 });
             }
-//            std::cout << "Worker:" << id << " done" << std::endl;
+        //    std::cout << "Worker:" << id << " done" << std::endl;
         }
 
         void stop(int id) {
@@ -81,10 +81,11 @@ class ParallelManager {
     }
 
 public:
-    ParallelManager(int nthreads)
-        : nthreads(nthreads < 1 ? std::thread::hardware_concurrency() : nthreads),
+    ParallelManager(int nt)
+        : nthreads(nt < 1 ? std::thread::hardware_concurrency() : nt),
           start_barrier(nthreads + 1), end_barrier(nthreads + 1)
     {
+        std::cout << "ParallelManager: nthreads=" << nthreads << std::endl;
         for (int i = 0; i < nthreads; i++)
             std::thread(Worker(this, i)).detach();
     }

@@ -96,10 +96,29 @@ public:
         : parallel(new ParallelManager(nthreads)),
           db_data(values, new ParallelManager(0))
     {
-        std::cout << "building index data" << std::endl;
-        auto index_data = make_index_data(keys);
+
         std::cout << "building index" << std::endl;
-        index = new std::map<key_uint64_t, int>(index_data.begin(), index_data.end());
+
+        //auto index_data = make_index_data(keys);
+        //index = new std::map<key_uint64_t, int>(index_data.begin(), index_data.end());
+
+        
+        std::mutex mtx;
+        index = new std::map<key_uint64_t, int>();
+        ParallelManager pm(0);
+        pm.run(0, keys.size(), [&](size_t s, size_t e) {
+            std::vector<std::pair<key_uint64_t, int>> data;
+            data.reserve(e - s);
+            for (size_t i = s; i < e; i++)
+                data.push_back(std::make_pair(keys[i], i));
+            std::map<key_uint64_t, int> part(data.begin(), data.end());
+            std::lock_guard<std::mutex> lk(mtx);
+//            std::cout << "part count = " << part.size() << std::endl;
+            index->merge(part);
+        });
+        
+
+        std::cout << "index count = " << index->size() << std::endl;
     }
 
     ~Database()
