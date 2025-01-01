@@ -9,8 +9,12 @@
 #include "host/inc/statistics.hpp"
 #include "piecewise_constant_workload.hpp"
 #include "sparsetable.ipp"
+#include "segment_tree.ipp"
 #include "workload_buffer.hpp"
 #include "parallel.ipp"
+
+
+#define KEY_INTERVAL(n) ((KEY_MAX - KEY_MIN) / (n))
 
 std::chrono::nanoseconds QueryProcessTime;
 
@@ -18,7 +22,12 @@ struct Option {
     void parse(int argc, char* argv[])
     {
         cmdline::parser a;
+#ifdef DEBUG
+        std::cerr << "DEBUG" << std::endl;
+        a.add<std::string>("dump-params", 0, "file path to output parameters", false, "");
+#else // DEBUG
         a.add<std::string>("dump-params", 0, "file path to output parameters");
+#endif // DEBUG
         a.add<std::string>("zipfianconst", 'a', "zipfian constant", false, "0.99");
         a.add<std::string>("workload_dir", 'w', "directory containing workload files", false, "workload");
         a.add<float>("num_mega_keys", 'k', "number of keys in millions", false, 51.2);
@@ -42,6 +51,8 @@ struct Option {
             op_type = TASK_PRED;
         else if (a.get<std::string>("ops") == "rmq")
             op_type = TASK_RANGE_MIN;
+        else if (a.get<std::string>("ops") == "sum")
+            op_type = TASK_RANGE_SUM;
         else {
             fprintf(stderr, "invalid operation type: %s\n", a.get<std::string>("ops").c_str());
             exit(1);
@@ -76,8 +87,10 @@ void load_workload(std::string workload_file,
 class Database {
     ParallelManager* parallel;
     std::map<key_uint64_t, int> *index;
-    SparseTable<value_uint64_t> db_data;
-    const value_uint64_t NOT_FOUND_VALUE = (value_uint64_t)(-1ll);
+    SparseTable<value_uint64_t> *rmq_data;
+    SegmentTree<value_uint64_t, SumOp<value_uint64_t>> *sum_data;
+    size_t nr_keys;
+    const value_uint64_t NOT_FOUND_VALUE = 12345;
 
     std::vector<std::pair<key_uint64_t, int>>
     make_index_data(const std::vector<key_uint64_t>& keys)
@@ -94,29 +107,26 @@ public:
              const std::vector<value_uint64_t> values,
              const int nthreads)
         : parallel(new ParallelManager(nthreads)),
-          db_data(values, new ParallelManager(0))
+          nr_keys(keys.size())
     {
+        ParallelManager init_parallel(0);
+        
+        rmq_data = new SparseTable<value_uint64_t>(values, &init_parallel);
+        sum_data = new SegmentTree<value_uint64_t, SumOp<value_uint64_t>>(values, 0),
 
         std::cout << "building index" << std::endl;
 
-        //auto index_data = make_index_data(keys);
-        //index = new std::map<key_uint64_t, int>(index_data.begin(), index_data.end());
-
-        
         std::mutex mtx;
         index = new std::map<key_uint64_t, int>();
-        ParallelManager pm(0);
-        pm.run(0, keys.size(), [&](size_t s, size_t e) {
+        init_parallel.run(0, nr_keys, [&](size_t s, size_t e) {
             std::vector<std::pair<key_uint64_t, int>> data;
             data.reserve(e - s);
             for (size_t i = s; i < e; i++)
                 data.push_back(std::make_pair(keys[i], i));
             std::map<key_uint64_t, int> part(data.begin(), data.end());
             std::lock_guard<std::mutex> lk(mtx);
-//            std::cout << "part count = " << part.size() << std::endl;
             index->merge(part);
         });
-        
 
         std::cout << "index count = " << index->size() << std::endl;
     }
@@ -130,9 +140,25 @@ public:
                             ExtendableBuffer<KeyRange>& queries,
                             ExtendableBuffer<value_uint64_t>& results);
 
+    void batch_range_minimum_verify(size_t n,
+                            ExtendableBuffer<KeyRange>& queries,
+                            ExtendableBuffer<value_uint64_t>& results);
+
+    void batch_range_sum(uint64_t n, 
+                        ExtendableBuffer<KeyRange>& queries,
+                        ExtendableBuffer<value_uint64_t>& results);
+
+    void batch_range_sum_verify(size_t n,
+                        ExtendableBuffer<KeyRange>& queries,
+                        ExtendableBuffer<value_uint64_t>& results);
+
     void batch_get(uint64_t n, 
                    ExtendableBuffer<key_uint64_t>& keys,
                    ExtendableBuffer<value_uint64_t>& results);
+
+    void batch_get_verify(size_t n,
+                          ExtendableBuffer<key_uint64_t> &queries,
+                          ExtendableBuffer<value_uint64_t> &results);
 
     int get_parallelism() const
     {
@@ -151,9 +177,81 @@ void Database::batch_range_minimum(uint64_t n,
             if (it != index->end() && it->first < q.end) {
                 int left_idx = it->second;
                 int right_idx = index->upper_bound(q.end)->second;
-                results[i] = db_data.query(left_idx, right_idx);
+                results[i] = rmq_data->query(left_idx, right_idx);
             } else
                 results[i] = NOT_FOUND_VALUE;
+        }
+    });
+}
+
+void Database::batch_range_minimum_verify(uint64_t n,
+                                   ExtendableBuffer<KeyRange> &queries,
+                                   ExtendableBuffer<value_uint64_t> &results)
+{
+    parallel->run(0, n, [&](size_t s, size_t e) {
+        for (size_t i = s; i < e; i++) {
+            KeyRange &q = queries[i];
+            key_uint64_t key_interval = KEY_INTERVAL(nr_keys - 1);
+            int left_idx = ((q.begin - KEY_MIN) + key_interval - 1) / key_interval;
+            int right_idx = (q.end - KEY_MIN) / key_interval;
+            key_uint64_t begin = KEY_MIN + left_idx * key_interval;
+            value_uint64_t expected = 0;
+            if (left_idx > right_idx)
+                expected = NOT_FOUND_VALUE;
+            else
+                expected = begin;
+            if (results[i] != expected) {
+                std::cerr << "range minimum verification failed: expected=" << expected << ", actual=" << results[i] << std::endl;
+                exit(1);
+            }
+        }
+    });
+}
+
+void Database::batch_range_sum(uint64_t n, 
+                               ExtendableBuffer<KeyRange> &queries,
+                               ExtendableBuffer<value_uint64_t> &results)
+{
+    parallel->run(0, n, [&](size_t s, size_t e) {
+        for (size_t i = s; i < e; i++) {
+            KeyRange &q = queries[i];
+            auto it = index->lower_bound(q.begin);
+            if (it != index->end() && it->first < q.end) {
+                int left_idx = it->second;
+                int right_idx = index->upper_bound(q.end)->second - 1;
+                results[i] = sum_data->query(left_idx, right_idx);
+            } else
+                results[i] = NOT_FOUND_VALUE;
+        }
+    });
+}
+
+void Database::batch_range_sum_verify(size_t n, ExtendableBuffer<KeyRange> &queries, ExtendableBuffer<value_uint64_t> &results) 
+{
+    std::mutex mtx;
+    parallel->run(0, n, [&](size_t s, size_t e) {
+        for (size_t i = s; i < e; i++) {
+            KeyRange &q = queries[i];
+            key_uint64_t key_interval = KEY_INTERVAL(nr_keys - 1);
+            int left_idx = ((q.begin - KEY_MIN) + key_interval - 1) / key_interval;
+            int right_idx = (q.end - KEY_MIN) / key_interval;
+            key_uint64_t begin = KEY_MIN + left_idx * key_interval;
+            key_uint64_t end = KEY_MIN + right_idx * key_interval;
+            value_uint64_t expected = 0;
+            if (right_idx >= nr_keys)
+                continue;
+            
+            if (begin > end) {
+                expected = NOT_FOUND_VALUE;
+            } else {
+                SumOp<value_uint64_t> op;
+                for (key_uint64_t k = begin; k <= end; k += key_interval)
+                    expected = op(expected, k);
+            }
+            if (expected != results[i]) {
+                std::cerr << "range sum verification failed: expected=" << expected << ", actual=" << results[i] << std::endl;
+                exit(1);
+            }
         }
     });
 }
@@ -166,9 +264,32 @@ void Database::batch_get(uint64_t n,
         for (size_t i = s; i < e; i++) {
             auto it = index->find(keys[i]);
             if (it != index->end())
-                results[i] = db_data.query(it->second, it->second);
+                results[i] = rmq_data->query(it->second, it->second);
             else
                 results[i] = NOT_FOUND_VALUE;
+        }
+    });
+}
+
+void Database::batch_get_verify(size_t n,
+                                ExtendableBuffer<key_uint64_t> &queries,
+                                ExtendableBuffer<value_uint64_t> &results)
+{
+    parallel->run(0, n, [&](size_t s, size_t e) {
+        for (size_t i = s; i < e; i++) {
+            key_uint64_t q = queries[i];
+            key_uint64_t key_interval = KEY_INTERVAL(nr_keys - 1);
+            value_uint64_t expected = 0;
+            if (q < KEY_MIN || q >= KEY_MAX)
+                expected = NOT_FOUND_VALUE;
+            else if ((q - KEY_MIN) % key_interval != 0)
+                expected = NOT_FOUND_VALUE;
+            else
+                expected = q;
+            if (expected != results[i]) {
+                std::cerr << "get verification failed: expected=" << expected << ", actual=" << results[i] << std::endl;
+                exit(1);
+            }
         }
     });
 }
@@ -182,7 +303,7 @@ Database* make_database(size_t nr_keys, int nthreads)
 
     keys.reserve(nr_keys);
     values.reserve(nr_keys);
-    key_uint64_t key_interval = (KEY_MAX - KEY_MIN) / (nr_keys - 1); 
+    key_uint64_t key_interval = KEY_INTERVAL(nr_keys - 1); 
     for (size_t i = 0; i < nr_keys; i++) {
         const size_t k = KEY_MIN + key_interval * i;
         keys.push_back(k);
@@ -240,12 +361,12 @@ public:
         workload_buffer = new WorkloadBuffer<key_uint64_t>(std::move(workload.data));
     }
 
-    ~GetBenchmark()
+    virtual ~GetBenchmark()
     {
         delete workload_buffer;
     }
 
-    void do_one_batch(int idx_batch, Database* db) {
+    virtual void do_one_batch(int idx_batch, Database* db) {
         static ExtendableBuffer<value_uint64_t> results;
         static ExtendableBuffer<key_uint64_t> keys;
         size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, keys, results);
@@ -253,19 +374,22 @@ public:
             StopWatch sw(QueryProcessTime);
             db->batch_get(num_queries_batch, keys, results);
         }
+        if (idx_batch == 0)
+            db->batch_get_verify(num_queries_batch, keys, results);
     }
 };
 
-class RMQBenchmark : public Benchmark {
+class RangeBenchmark : public Benchmark {
+protected:
     WorkloadBuffer<KeyRange> *workload_buffer;
 
 public:
-    RMQBenchmark(const std::string& workload_file)
+    RangeBenchmark(const std::string& workload_file)
     {
         PiecewiseConstantWorkload pworkload;
         load_workload(workload_file, &pworkload);
 
-        key_uint64_t key_interval = (KEY_MAX - KEY_MIN) / (opt.nr_keys - 1); 
+        key_uint64_t key_interval = KEY_INTERVAL(opt.nr_keys - 1); 
         size_t range_length = key_interval * 100 - 1;
         std::vector<KeyRange> workload;
         workload.reserve(pworkload.data.size());
@@ -274,12 +398,22 @@ public:
         workload_buffer = new WorkloadBuffer<KeyRange>(std::move(workload));
     }
 
-    ~RMQBenchmark()
+    virtual ~RangeBenchmark()
     {
         delete workload_buffer;
     }
 
-    void do_one_batch(int idx_batch, Database* db) {
+};
+
+class RMQBenchmark : public RangeBenchmark {
+public:
+    RMQBenchmark(const std::string& workload_file)
+    : RangeBenchmark(workload_file)
+    {}
+
+    virtual ~RMQBenchmark() {}
+
+    virtual void do_one_batch(int idx_batch, Database* db) {
         static ExtendableBuffer<value_uint64_t> results;
         static ExtendableBuffer<KeyRange> ranges;
         size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, ranges, results);
@@ -287,6 +421,28 @@ public:
             StopWatch sw(QueryProcessTime);
             db->batch_range_minimum(num_queries_batch, ranges, results);
         }
+        if (idx_batch == 0)
+            db->batch_range_minimum_verify(num_queries_batch, ranges, results);
+    }
+};
+
+class RangeSumBenchmark : public RangeBenchmark {
+public:
+    RangeSumBenchmark(const std::string& workload_file)
+    : RangeBenchmark(workload_file) {}
+
+    virtual ~RangeSumBenchmark() {}
+
+    virtual void do_one_batch(int idx_batch, Database* db) {
+        static ExtendableBuffer<value_uint64_t> results;
+        static ExtendableBuffer<KeyRange> ranges;
+        size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, ranges, results);
+        {
+            StopWatch sw(QueryProcessTime);
+            db->batch_range_sum(num_queries_batch, ranges, results);
+        }
+        if (idx_batch == 0)
+            db->batch_range_sum_verify(num_queries_batch, ranges, results);
     }
 };
 
@@ -299,6 +455,8 @@ int main(int argc, char* argv[])
         benchmark = new GetBenchmark(opt.workload_file);
     else if (opt.op_type == TASK_RANGE_MIN)
         benchmark = new RMQBenchmark(opt.workload_file);
+    else if (opt.op_type == TASK_RANGE_SUM)
+        benchmark = new RangeSumBenchmark(opt.workload_file);
     else {
         std::cerr << "unsupported task type: " << opt.op_type << std::endl;
         exit(1);

@@ -84,6 +84,7 @@ SparseTable<T>::SparseTable(const std::vector<T>& data, ParallelManager* paralle
 }
 #endif
 
+// Query for the minimum value in the range [L, R], both inclusive.
 template <typename T>
 T SparseTable<T>::query(int L, int R)
 {

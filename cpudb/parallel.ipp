@@ -64,6 +64,7 @@ class ParallelManager {
     bool stopping = false;
     std::function<void(size_t, size_t)> task = nullptr;
     size_t start, end;
+    std::thread* threads;
 
      // Called by worker
     std::function<void(size_t, size_t)> get_task(size_t id, size_t* s, size_t* e) {
@@ -86,24 +87,32 @@ public:
           start_barrier(nthreads + 1), end_barrier(nthreads + 1)
     {
         std::cout << "ParallelManager: nthreads=" << nthreads << std::endl;
+        threads = new std::thread[nthreads];
         for (int i = 0; i < nthreads; i++)
-            std::thread(Worker(this, i)).detach();
+            threads[i] = std::thread(Worker(this, i));
     }
 
     ~ParallelManager() {
         stopping = true;
         start_barrier.stop(-1);
         end_barrier.stop(-1);
+        for (int i = 0; i < nthreads; i++)
+            threads[i].join();
     }
 
     void run(size_t s, size_t e, std::function<void(size_t, size_t)> t)
     {
-        start = s;
-        end = e;
-        task = t;
-        start_barrier.wait(-1); // start all workers
-        end_barrier.wait(-1); // wait for all workers to complete
-        task = nullptr;
+        if (nthreads == 1) {
+            t(s, e);
+            return;
+        } else {
+            start = s;
+            end = e;
+            task = t;
+            start_barrier.wait(-1); // start all workers
+            end_barrier.wait(-1); // wait for all workers to complete
+            task = nullptr;
+        }
     }
 
     int get_parallelism() const {
