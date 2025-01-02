@@ -478,7 +478,7 @@ int main(int argc, char* argv[])
 
     /* main routine */
     if (opt.print_perf) {
-        printf("alpha,NR_DPUS,NR_TASKLETS,batch_num,num_keys,rebalancing_time[ns]"
+        printf("alpha,NR_DPUS,batch_num,num_keys,rebalancing_time[ns]"
 #ifdef SYNCHRONOUS_DPU_EXEC
                ",send_time[ns],exec_time[ns],recv_time[ns]"
 #else /* SYNCHRONOUS_DPU_EXEC */
@@ -505,14 +505,14 @@ int main(int argc, char* argv[])
 #endif
 
         if (opt.print_perf) {
-            printf("%s,%d,%d,%d,%ld,%ld"
+            printf("%s,%d,%d,%ld,%ld"
 #ifdef SYNCHRONOUS_DPU_EXEC
                    ",%ld,%ld,%ld"
 #else /* SYNCHRONOUS_DPU_EXEC */
                    ",%ld"
 #endif
                    ",%ld\n",
-                opt.alpha.c_str(), upmem_get_nr_dpus(), NR_TASKLETS, idx_batch,
+                opt.alpha.c_str(), upmem_get_nr_dpus(), idx_batch,
                 num_keys, RebalancingTime.count(),
 #ifdef SYNCHRONOUS_DPU_EXEC
                 QuerySendTime.count(), QueryExecTime.count(), QueryRecvTime.count(),
