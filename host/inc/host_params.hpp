@@ -56,3 +56,5 @@ constexpr unsigned InversedRebalancingNoiseMargin = INVERSED_REBALANCING_NOISE_M
 #else
 // #define UPMEM_TRACE
 #endif
+
+// #define SYNCHRONOUS_DPU_EXEC

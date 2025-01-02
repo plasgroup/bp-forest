@@ -107,6 +107,11 @@ struct StopWatch final {
 
 
 inline std::chrono::nanoseconds ForestInitTime;
-inline std::chrono::nanoseconds BatchTotalTime, RebalancingTime, QuerySendExecRecvTime;
+inline std::chrono::nanoseconds BatchTotalTime, RebalancingTime;
+#ifdef SYNCHRONOUS_DPU_EXEC
+inline std::chrono::nanoseconds QuerySendTime, QueryExecTime, QueryRecvTime;
+#else /* SYNCHRONOUS_DPU_EXEC */
+inline std::chrono::nanoseconds QuerySendExecRecvTime;
+#endif
 
 #endif /* __STATISTICS_HPP__ */

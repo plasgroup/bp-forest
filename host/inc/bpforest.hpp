@@ -90,7 +90,7 @@ private:
     ExtendableBuffer<size_t> query_idxs;
     std::array<ExtendableBuffer<KVPair>, MAX_NR_DPUS> hot_kvpairs;
 
-    void ditribute_initial_data(std::vector<KVPair>&& sorted_pairs);
+    void distribute_initial_data(std::vector<KVPair>&& sorted_pairs);
 
     template <bool HasHotRanges>
     void route_get_queries(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);

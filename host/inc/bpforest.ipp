@@ -39,7 +39,7 @@ inline BPForest::BPForest(std::vector<KVPair>&& sorted_pairs, const Param& param
 {
     dpu_to_hot_range.fill(INVALID_DPU_ID);
 
-    ditribute_initial_data(std::move(sorted_pairs));
+    distribute_initial_data(std::move(sorted_pairs));
 }
 inline BPForest::~BPForest()
 {
@@ -72,7 +72,7 @@ struct TaskInitInput {
     }
     size_t bytes_for_dpu(dpu_id_t dpu) const { return sizeof(uint32_t) * 2 + sizeof(KVPair) * nr_pairs_in_each_dpus[dpu]; }
 };
-void BPForest::ditribute_initial_data(std::vector<KVPair>&& sorted_pairs_vec)
+void BPForest::distribute_initial_data(std::vector<KVPair>&& sorted_pairs_vec)
 {
     const size_t nr_pairs = sorted_pairs_vec.size();
 
@@ -1377,6 +1377,23 @@ void BPForest::execute_rmq_in_dpus(
     std::array<value_uint64_t, MAX_NR_DPUS + 1> cold_to_be_agged;
     std::array<std::array<value_uint64_t, 2>, MAX_NR_DPUS> hot_to_be_agged;
 
+#ifdef SYNCHRONOUS_DPU_EXEC
+    {
+        StopWatch timer{QuerySendTime};
+        UPMEM_AsyncDuration async;
+        gather_to_dpu(all_dpu, 0, RMQSender{this, &nr_lumps[0], &lump_end_indices[0], cold_range_to_delim_idx, hot_range_to_delim_idx, if_cold_begins_middle, if_hot_begins_middle, if_hot_ends_middle}, async);
+    }
+    {
+        StopWatch timer{QueryExecTime};
+        UPMEM_AsyncDuration async;
+        execute(all_dpu, async);
+    }
+    {
+        StopWatch timer{QueryRecvTime};
+        UPMEM_AsyncDuration async;
+        scatter_from_dpu(all_dpu, RMQ_RESULT_OFFSET, RMQResultReceiver{this, &cold_ranges_to_minirange_idx[0], &hot_ranges_to_minirange_idx[0], &cold_to_be_agged[0], &hot_to_be_agged[0], &if_cold_begins_middle[0], &if_hot_begins_middle[0], &if_hot_ends_middle[0]}, async);
+    }
+#else /* SYNCHRONOUS_DPU_EXEC */
     {
         StopWatch timer{QuerySendExecRecvTime};
         UPMEM_AsyncDuration async;
@@ -1385,6 +1402,7 @@ void BPForest::execute_rmq_in_dpus(
         execute(all_dpu, async);
         scatter_from_dpu(all_dpu, RMQ_RESULT_OFFSET, RMQResultReceiver{this, &cold_ranges_to_minirange_idx[0], &hot_ranges_to_minirange_idx[0], &cold_to_be_agged[0], &hot_to_be_agged[0], &if_cold_begins_middle[0], &if_hot_begins_middle[0], &if_hot_ends_middle[0]}, async);
     }
+#endif
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
     std::unique_ptr<LogBuffer> log = read_log(all_dpu);
     std::cout << log->get() << std::flush;
@@ -2142,7 +2160,12 @@ inline void BPForest::print_params(std::ostream& ostr) const
             "UPMEM_TRACE: 0\n"
 #endif
 #endif
-         << "param.balancing: " << param.balancing << "\n"
+#ifdef SYNCHRONOUS_DPU_EXEC
+            "SYNCHRONOUS_DPU_EXEC: 1\n"
+#else
+            "SYNCHRONOUS_DPU_EXEC: 0\n"
+#endif
+            "param.balancing: " << param.balancing << "\n"
          << std::flush;
 #undef STRINGIFY
 #undef EXPAND_STRINGIFY
