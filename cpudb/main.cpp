@@ -21,7 +21,7 @@ struct Option {
         a.add<std::string>("dump-params", 0, "file path to output parameters");
         a.add<std::string>("zipfianconst", 'a', "zipfian constant", false, "0.99");
         a.add<std::string>("workload_dir", 'w', "directory containing workload files", false, "workload");
-        a.add<float>("num_mega_keys", 'k', "number of keys in millions", false, 51.2);
+        a.add<double>("num_mega_keys", 'k', "number of keys in millions", false, 51.2);
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
         a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq", false, "get");
         a.add<int>("num_threads", 't', "number of threads", false, 1);
@@ -31,7 +31,7 @@ struct Option {
         alpha = a.get<std::string>("zipfianconst");
         workload_file = a.get<std::string>("workload_dir") + ("/zipf_const_" + alpha + ".bin");
         nr_batches = a.get<int>("num_batches");
-        nr_keys = a.get<float>("num_mega_keys") * 1000 * 1000;
+        nr_keys = static_cast<int>(a.get<double>("num_mega_keys") * 1000 * 1000);
         nthreads = a.get<int>("num_threads");
 
         if (a.get<std::string>("ops") == "get")
@@ -134,7 +134,7 @@ public:
                    ExtendableBuffer<key_uint64_t>& keys,
                    ExtendableBuffer<value_uint64_t>& results);
 
-    int get_parallelism() const
+    size_t get_parallelism() const
     {
         return parallel->get_parallelism();
     }
@@ -204,7 +204,7 @@ public:
     {
         for (int idx_batch = 0; idx_batch < nr_batches; idx_batch++) {
             do_one_batch(idx_batch, db);
-            printf("%s,%d,%d,%d,%d,%ld\n",
+            printf("%s,%d,%lu,%d,%d,%ld\n",
                 opt.alpha.c_str(), 1, db->get_parallelism(), idx_batch,
                 NUM_REQUESTS_PER_BATCH, QueryProcessTime.count());
         }

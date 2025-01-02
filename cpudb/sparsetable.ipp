@@ -48,17 +48,17 @@ SparseTable<T>::SparseTable(const std::vector<T>& data)
 template <typename T>
 SparseTable<T>::SparseTable(const std::vector<T>& data, ParallelManager* parallel)
 {
-    int n = data.size();
-    int K = std::log2(n) + 1;
+    size_t n = data.size();
+    int K = static_cast<int>(std::log2(n) + 1);
     table.resize(K, std::vector<T>());
     for (int i = 0; i < K; i++)
         table[i].reserve(n);
     log.reserve(n + 1);
 
     parallel->run(1, n + 1, [&](size_t s, size_t e) {
-        int logi = std::log2(s);
-        int next = (1 << (logi + 1)) - 1;
-        for (int i = s; i < e; i++) {
+        int logi = static_cast<int>(std::log2(s));
+        size_t next = (size_t{1} << (logi + 1)) - 1;
+        for (size_t i = s; i < e; i++) {
             log[i] = logi;
             if (i == next) {
                 logi++;
@@ -69,15 +69,15 @@ SparseTable<T>::SparseTable(const std::vector<T>& data, ParallelManager* paralle
 
     // Initialize table for the intervals with length 1
     parallel->run(0, n, [&](size_t s, size_t e) {
-        for (int i = s; i < e; i++)
+        for (size_t i = s; i < e; i++)
             table[0][i] = data[i];
     });
 
     // Compute values from smaller to bigger intervals
     for (int j = 1; j < K; j++) {
-        int end = n - (1 << j) + 1;
+        size_t end = n - (1 << j) + 1;
         parallel->run(0, end, [&](size_t s, size_t e) {
-            for (int i = s; i < e; i++)
+            for (size_t i = s; i < e; i++)
                 table[j][i] = std::min(table[j - 1][i], table[j - 1][i + (1 << (j - 1))]); // 次元を入れ替え
         });
     }
