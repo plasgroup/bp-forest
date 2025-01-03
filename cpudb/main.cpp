@@ -34,6 +34,7 @@ struct Option {
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
         a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq", false, "get");
         a.add<int>("num_threads", 't', "number of threads", false, 1);
+        a.add("verify", 'v', "verify the result");
         a.parse_check(argc, argv);
 
         dump_param_file = a.get<std::string>("dump-params");
@@ -42,6 +43,7 @@ struct Option {
         nr_batches = a.get<int>("num_batches");
         nr_keys = a.get<float>("num_mega_keys") * 1000 * 1000;
         nthreads = a.get<int>("num_threads");
+        verify = a.exist("verify");
 
         if (a.get<std::string>("ops") == "get")
             op_type = TASK_GET;
@@ -53,6 +55,8 @@ struct Option {
             op_type = TASK_RANGE_MIN;
         else if (a.get<std::string>("ops") == "sum")
             op_type = TASK_RANGE_SUM;
+        else if (a.get<std::string>("ops") == "count")
+            op_type = TASK_RANGE_COUNT;
         else {
             fprintf(stderr, "invalid operation type: %s\n", a.get<std::string>("ops").c_str());
             exit(1);
@@ -65,8 +69,8 @@ struct Option {
     int nr_batches;
     int nr_keys;
     int nthreads;
+    bool verify;
     TaskID op_type;
-    ;
 } opt;
 
 void load_workload(std::string workload_file,
@@ -87,6 +91,7 @@ void load_workload(std::string workload_file,
 class Database {
     ParallelManager* parallel;
     std::map<key_uint64_t, int> *index;
+    std::vector<value_uint64_t> values;
     SparseTable<value_uint64_t> *rmq_data;
     SegmentTree<value_uint64_t, SumOp<value_uint64_t>> *sum_data;
     size_t nr_keys;
@@ -106,7 +111,8 @@ public:
     Database(const std::vector<key_uint64_t> keys,
              const std::vector<value_uint64_t> values,
              const int nthreads)
-        : parallel(new ParallelManager(nthreads)),
+        : values(std::move(values)),
+          parallel(new ParallelManager(nthreads)),
           nr_keys(keys.size())
     {
         ParallelManager init_parallel(0);
@@ -159,6 +165,10 @@ public:
     void batch_get_verify(size_t n,
                           ExtendableBuffer<key_uint64_t> &queries,
                           ExtendableBuffer<value_uint64_t> &results);
+
+    void batch_range_count(uint64_t n, 
+                           ExtendableBuffer<std::pair<KeyRange, std::array<char, 8>>>& queries,
+                           ExtendableBuffer<value_uint64_t>& results);
 
     int get_parallelism() const
     {
@@ -294,6 +304,33 @@ void Database::batch_get_verify(size_t n,
     });
 }
 
+
+void Database::batch_range_count(uint64_t n, 
+                                 ExtendableBuffer<std::pair<KeyRange, std::array<char, 8>>>& queries,
+                                 ExtendableBuffer<value_uint64_t>& results)
+{
+    parallel->run(0, n, [&](size_t s, size_t e) {
+        for (size_t i = s; i < e; i++) {
+            KeyRange &qr = queries[i].first;
+            char* qs = queries[i].second.data();
+            int count = 0;
+            for (auto it = index->lower_bound(qr.begin);
+                 it != index->end() && it->first < qr.end; it++) {
+                char* vs = (char*) &values[it->second];
+                const size_t qlen = qs[7] != '\0' ? 8 : strlen(qs);
+                for (size_t j = 0; j < 8 - qlen + 1; j++) {
+                    if (strncmp(&vs[j], qs, qlen) == 0) {
+                        count++;
+                        break;
+                    }
+                }
+            }
+            results[i] = count;
+        }
+    });
+
+}
+
 Database* make_database(size_t nr_keys, int nthreads)
 {
     std::vector<key_uint64_t> keys;
@@ -307,7 +344,21 @@ Database* make_database(size_t nr_keys, int nthreads)
     for (size_t i = 0; i < nr_keys; i++) {
         const size_t k = KEY_MIN + key_interval * i;
         keys.push_back(k);
+#ifdef NUMERIC_VALUE
         values.push_back(k);
+#else // NUMERIC_VALUE
+        value_uint64_t v;
+        char* p = (char*) &v;
+        size_t x = k;
+        for (size_t j = 0; j < 8; j++) {
+            if (x == 0)
+                p[j] = 0;
+            else
+                p[j] = '0' + (x % 10);
+            x /= 10;
+        }
+        values.push_back(v);
+#endif // NUMERIC_VALUE
     }
 
     std::cout << "add data to database" << std::endl;
@@ -320,7 +371,12 @@ Database* make_database(size_t nr_keys, int nthreads)
 }
 
 class Benchmark {
+protected:
+    bool verify;
 public:
+    Benchmark(bool verify)
+    : verify(verify) {}
+    
     void run(int nr_batches, Database* db)
     {
         for (int idx_batch = 0; idx_batch < nr_batches; idx_batch++) {
@@ -354,7 +410,8 @@ class GetBenchmark : public Benchmark {
     WorkloadBuffer<key_uint64_t> *workload_buffer;
 
 public:
-    GetBenchmark(const std::string& workload_file)
+    GetBenchmark(const std::string& workload_file, bool verify)
+    : Benchmark(verify)
     {
         PiecewiseConstantWorkload workload;
         load_workload(workload_file, &workload);
@@ -374,7 +431,7 @@ public:
             StopWatch sw(QueryProcessTime);
             db->batch_get(num_queries_batch, keys, results);
         }
-        if (idx_batch == 0)
+        if (verify && idx_batch == 0)
             db->batch_get_verify(num_queries_batch, keys, results);
     }
 };
@@ -384,7 +441,8 @@ protected:
     WorkloadBuffer<KeyRange> *workload_buffer;
 
 public:
-    RangeBenchmark(const std::string& workload_file)
+    RangeBenchmark(const std::string& workload_file, bool verify)
+    : Benchmark(verify)
     {
         PiecewiseConstantWorkload pworkload;
         load_workload(workload_file, &pworkload);
@@ -407,8 +465,8 @@ public:
 
 class RMQBenchmark : public RangeBenchmark {
 public:
-    RMQBenchmark(const std::string& workload_file)
-    : RangeBenchmark(workload_file)
+    RMQBenchmark(const std::string& workload_file, bool verify)
+    : RangeBenchmark(workload_file, verify)
     {}
 
     virtual ~RMQBenchmark() {}
@@ -421,15 +479,15 @@ public:
             StopWatch sw(QueryProcessTime);
             db->batch_range_minimum(num_queries_batch, ranges, results);
         }
-        if (idx_batch == 0)
+        if (verify && idx_batch == 0)
             db->batch_range_minimum_verify(num_queries_batch, ranges, results);
     }
 };
 
 class RangeSumBenchmark : public RangeBenchmark {
 public:
-    RangeSumBenchmark(const std::string& workload_file)
-    : RangeBenchmark(workload_file) {}
+    RangeSumBenchmark(const std::string& workload_file, bool verify)
+    : RangeBenchmark(workload_file, verify) {}
 
     virtual ~RangeSumBenchmark() {}
 
@@ -441,8 +499,50 @@ public:
             StopWatch sw(QueryProcessTime);
             db->batch_range_sum(num_queries_batch, ranges, results);
         }
-        if (idx_batch == 0)
+        if (verify && idx_batch == 0)
             db->batch_range_sum_verify(num_queries_batch, ranges, results);
+    }
+};
+
+class RangeCountBenchmark : public Benchmark {
+    using Query = std::pair<KeyRange, std::array<char, 8>>;
+    WorkloadBuffer<Query> *workload_buffer;
+
+public:
+    RangeCountBenchmark(const std::string& workload_file, bool verify)
+    : Benchmark(verify)
+    {
+        PiecewiseConstantWorkload pworkload;
+        load_workload(workload_file, &pworkload);
+        key_uint64_t key_interval = KEY_INTERVAL(opt.nr_keys - 1); 
+        size_t range_length = key_interval * 100 - 1;
+        std::vector<Query> workload;
+        workload.reserve(pworkload.data.size());
+        for (int i = 0; i < pworkload.data.size(); i++) {
+            const auto& p = pworkload.data[i];
+            KeyRange range = {p, p + range_length};
+            std::array<char, 8> needle;
+            snprintf(needle.data(), 8, "%d", i % 1000);
+            workload.push_back({range, needle});
+        }
+        workload_buffer = new WorkloadBuffer<Query>(std::move(workload));
+    }
+
+    virtual ~RangeCountBenchmark()
+    {
+        delete workload_buffer;
+    }
+
+    virtual void do_one_batch(int idx_batch, Database* db) {
+        static ExtendableBuffer<value_uint64_t> results;
+        static ExtendableBuffer<Query> queries;
+        size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, queries, results);
+        {
+            StopWatch sw(QueryProcessTime);
+            db->batch_range_count(num_queries_batch, queries, results);
+        }
+//        if (idx_batch == 0)
+//            db->batch_range_count_verify(num_queries_batch, ranges, results);
     }
 };
 
@@ -452,11 +552,13 @@ int main(int argc, char* argv[])
 
     Benchmark* benchmark;
     if (opt.op_type == TASK_GET)
-        benchmark = new GetBenchmark(opt.workload_file);
+        benchmark = new GetBenchmark(opt.workload_file, opt.verify);
     else if (opt.op_type == TASK_RANGE_MIN)
-        benchmark = new RMQBenchmark(opt.workload_file);
+        benchmark = new RMQBenchmark(opt.workload_file, opt.verify);
     else if (opt.op_type == TASK_RANGE_SUM)
-        benchmark = new RangeSumBenchmark(opt.workload_file);
+        benchmark = new RangeSumBenchmark(opt.workload_file, opt.verify);
+    else if (opt.op_type == TASK_RANGE_COUNT)
+        benchmark = new RangeCountBenchmark(opt.workload_file, opt.verify);
     else {
         std::cerr << "unsupported task type: " << opt.op_type << std::endl;
         exit(1);
