@@ -1,18 +1,24 @@
-
-#include <cereal/archives/binary.hpp>
-#include <cmdline.h>
-#include <thread>
-#include <fstream>
 #include "common.h"
-#include "host/inc/host_params.hpp"
 #include "host/inc/extendable_buffer.hpp"
+#include "host/inc/host_params.hpp"
 #include "host/inc/statistics.hpp"
+#include "parallel.ipp"
 #include "piecewise_constant_workload.hpp"
 #include "sparsetable.ipp"
 #include "workload_buffer.hpp"
-#include "parallel.ipp"
+#include "workload_types.h"
+
+#include <cereal/archives/binary.hpp>
+
+#include <cmdline.h>
+
+#include <fstream>
+#include <memory>
+#include <mutex>
+#include <thread>
 
 std::chrono::nanoseconds QueryProcessTime;
+std::chrono::nanoseconds DatabaseInitTime;
 
 struct Option {
     void parse(int argc, char* argv[])
@@ -55,11 +61,10 @@ struct Option {
     int nr_keys;
     int nthreads;
     TaskID op_type;
-    ;
 } opt;
 
 void load_workload(std::string workload_file,
-                   PiecewiseConstantWorkload* workload)
+    PiecewiseConstantWorkload* workload)
 {
     std::cout << "loading workload from " << workload_file << std::endl;
     /* load workload file */
@@ -73,84 +78,69 @@ void load_workload(std::string workload_file,
     std::cout << "done" << std::endl;
 }
 
-class Database {
-    ParallelManager* parallel;
-    std::map<key_uint64_t, int> *index;
+class Database
+{
+    ParallelManager parallel;
+    std::map<key_uint64_t, int> index;
     SparseTable<value_uint64_t> db_data;
-    const value_uint64_t NOT_FOUND_VALUE = (value_uint64_t)(-1ll);
-
-    std::vector<std::pair<key_uint64_t, int>>
-    make_index_data(const std::vector<key_uint64_t>& keys)
-    {
-        std::vector<std::pair<key_uint64_t, int>> res;
-        res.reserve(keys.size());
-        for (size_t i = 0; i < keys.size(); i++)
-            res.push_back(std::make_pair(keys[i], i));
-        return res;
-    }
+    static constexpr value_uint64_t NOT_FOUND_VALUE = VALUE_MAX;
 
 public:
-    Database(const std::vector<key_uint64_t> keys,
-             const std::vector<value_uint64_t> values,
-             const int nthreads)
-        : parallel(new ParallelManager(nthreads)),
-          db_data(values, new ParallelManager(0))
+    Database(std::vector<KVPair>&& pairs, const unsigned nthreads)
+        : parallel{nthreads},
+          db_data(pairs, [](const KVPair& pair) { return pair.value; })
     {
-
+#ifdef PRINT_DEBUG
         std::cout << "building index" << std::endl;
+#endif
 
-        //auto index_data = make_index_data(keys);
-        //index = new std::map<key_uint64_t, int>(index_data.begin(), index_data.end());
+        ExtendableBuffer<std::pair<key_uint64_t, int>> data;
+        data.reserve(pairs.size());
 
-        
-        std::mutex mtx;
-        index = new std::map<key_uint64_t, int>();
         ParallelManager pm(0);
-        pm.run(0, keys.size(), [&](size_t s, size_t e) {
-            std::vector<std::pair<key_uint64_t, int>> data;
-            data.reserve(e - s);
+        pm.run(0, pairs.size(), [&](size_t s, size_t e) {
             for (size_t i = s; i < e; i++)
-                data.push_back(std::make_pair(keys[i], i));
-            std::map<key_uint64_t, int> part(data.begin(), data.end());
-            std::lock_guard<std::mutex> lk(mtx);
-//            std::cout << "part count = " << part.size() << std::endl;
-            index->merge(part);
+                data[i] = {pairs[i].key, i};
         });
-        
 
-        std::cout << "index count = " << index->size() << std::endl;
+#ifdef PRINT_DEBUG
+        std::cout << "input is prepared" << std::endl;
+#endif
+
+        std::map<key_uint64_t, int>{&data[0], &data[pairs.size()]}.swap(index);
+
+#ifdef PRINT_DEBUG
+        std::cout << "index count = " << index.size() << std::endl;
+#endif
     }
 
-    ~Database()
-    {
-        delete parallel;
-    }
+    ~Database() = default;
 
-    void batch_range_minimum(uint64_t n, 
-                            ExtendableBuffer<KeyRange>& queries,
-                            ExtendableBuffer<value_uint64_t>& results);
+    void batch_range_minimum(uint64_t n,
+        const KeyRange queries[],
+        value_uint64_t results[]);
 
-    void batch_get(uint64_t n, 
-                   ExtendableBuffer<key_uint64_t>& keys,
-                   ExtendableBuffer<value_uint64_t>& results);
+    void batch_get(uint64_t n,
+        const key_uint64_t keys[],
+        value_uint64_t results[]);
 
     size_t get_parallelism() const
     {
-        return parallel->get_parallelism();
+        return parallel.get_parallelism();
     }
 };
 
-void Database::batch_range_minimum(uint64_t n, 
-                                   ExtendableBuffer<KeyRange> &queries,
-                                   ExtendableBuffer<value_uint64_t> &results)
+void Database::batch_range_minimum(uint64_t n,
+    const KeyRange queries[],
+    value_uint64_t results[])
 {
-    parallel->run(0, n, [&](size_t s, size_t e) {
+    parallel.run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
-            KeyRange &q = queries[i];
-            auto it = index->lower_bound(q.begin);
-            if (it != index->end() && it->first < q.end) {
+            const KeyRange& q = queries[i];
+            auto it = index.lower_bound(q.begin);
+            if (it != index.end() && it->first < q.end) {
                 int left_idx = it->second;
-                int right_idx = index->upper_bound(q.end)->second;
+                int right_idx = index.upper_bound(q.end)->second;
                 results[i] = db_data.query(left_idx, right_idx);
             } else
                 results[i] = NOT_FOUND_VALUE;
@@ -158,14 +148,14 @@ void Database::batch_range_minimum(uint64_t n,
     });
 }
 
-void Database::batch_get(uint64_t n, 
-                         ExtendableBuffer<key_uint64_t> &keys,
-                         ExtendableBuffer<value_uint64_t> &results)
+void Database::batch_get(uint64_t n,
+    const key_uint64_t keys[],
+    value_uint64_t results[])
 {
-    parallel->run(0, n, [&](size_t s, size_t e) {
+    parallel.run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
-            auto it = index->find(keys[i]);
-            if (it != index->end())
+            auto it = index.find(keys[i]);
+            if (it != index.end())
                 results[i] = db_data.query(it->second, it->second);
             else
                 results[i] = NOT_FOUND_VALUE;
@@ -173,91 +163,97 @@ void Database::batch_get(uint64_t n,
     });
 }
 
-Database* make_database(size_t nr_keys, int nthreads)
+Database make_database(size_t nr_keys, unsigned nthreads)
 {
-    std::vector<key_uint64_t> keys;
-    std::vector<value_uint64_t> values;
+    StopWatch timer{DatabaseInitTime};
 
+    std::vector<KVPair> pairs;
+
+#ifdef PRINT_DEBUG
     std::cout << "making database with " << nr_keys << " keys" << std::endl;
+#endif
 
-    keys.reserve(nr_keys);
-    values.reserve(nr_keys);
-    key_uint64_t key_interval = (KEY_MAX - KEY_MIN) / (nr_keys - 1); 
+    pairs.reserve(nr_keys);
+    key_uint64_t key_interval = (KEY_MAX - KEY_MIN) / (nr_keys - 1);
     for (size_t i = 0; i < nr_keys; i++) {
         const size_t k = KEY_MIN + key_interval * i;
-        keys.push_back(k);
-        values.push_back(k);
+        pairs.push_back({k, k});
     }
 
+#ifdef PRINT_DEBUG
     std::cout << "add data to database" << std::endl;
+#endif
 
-    Database *db = new Database(keys, values, nthreads);
-
-    std::cout << "done" << std::endl;
-
-    return db;
+    return Database{std::move(pairs), nthreads};
 }
 
-class Benchmark {
+template <class DataBase>
+class Benchmark
+{
 public:
-    void run(int nr_batches, Database* db)
+    void run(int nr_batches, Database& db)
     {
         for (int idx_batch = 0; idx_batch < nr_batches; idx_batch++) {
             do_one_batch(idx_batch, db);
-            printf("%s,%d,%lu,%d,%d,%ld\n",
-                opt.alpha.c_str(), 1, db->get_parallelism(), idx_batch,
+            printf("%s,%d,%d,%d,%ld\n",
+                opt.alpha.c_str(), 1, idx_batch,
                 NUM_REQUESTS_PER_BATCH, QueryProcessTime.count());
         }
     }
-    virtual ~Benchmark() {}
-    virtual void do_one_batch(int idx_batch, Database* db) = 0;
+    virtual ~Benchmark() = default;
+    virtual void do_one_batch(int idx_batch, Database& db) = 0;
 
     template <typename T>
-    size_t prepare_buffer(int idx_batch, WorkloadBuffer<T>* workload_buffer, ExtendableBuffer<T>& queires, ExtendableBuffer<value_uint64_t>& results) {
-        const auto tmp_input = workload_buffer->take(NUM_REQUESTS_PER_BATCH);
+    static size_t prepare_buffer(int idx_batch, WorkloadBuffer<T>& workload_buffer, T*& queries, ExtendableBuffer<value_uint64_t>& results)
+    {
+        const auto tmp_input = workload_buffer.take(NUM_REQUESTS_PER_BATCH);
         const auto batch_queries = tmp_input.first;
         const auto num_queries_batch = tmp_input.second;
         if (num_queries_batch != NUM_REQUESTS_PER_BATCH) {
             std::cerr << "run out of workload in batch " << idx_batch << std::endl;
             exit(1);
         }
-        queires.reserve(num_queries_batch);
-        for (size_t idx_query = 0; idx_query < num_queries_batch; idx_query++)
-            queires[idx_query] = batch_queries[idx_query];
+        queries = batch_queries;
         results.reserve(num_queries_batch);
         return num_queries_batch;
     }
 };
 
-class GetBenchmark : public Benchmark {
-    WorkloadBuffer<key_uint64_t> *workload_buffer;
+template <class DataBase>
+class GetBenchmark : public Benchmark<DataBase>
+{
+    using Benchmark<DataBase>::prepare_buffer;
+
+    WorkloadBuffer<key_uint64_t> workload_buffer;
 
 public:
-    GetBenchmark(const std::string& workload_file)
+    explicit GetBenchmark(const std::string& workload_file)
     {
         PiecewiseConstantWorkload workload;
         load_workload(workload_file, &workload);
-        workload_buffer = new WorkloadBuffer<key_uint64_t>(std::move(workload.data));
+        workload_buffer = std::move(workload.data);
     }
 
-    ~GetBenchmark()
+    ~GetBenchmark() override = default;
+
+    void do_one_batch(int idx_batch, Database& db) override
     {
-        delete workload_buffer;
-    }
-
-    void do_one_batch(int idx_batch, Database* db) {
         static ExtendableBuffer<value_uint64_t> results;
-        static ExtendableBuffer<key_uint64_t> keys;
+        key_uint64_t* keys;
         size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, keys, results);
         {
             StopWatch sw(QueryProcessTime);
-            db->batch_get(num_queries_batch, keys, results);
+            db.batch_get(num_queries_batch, &keys[0], &results[0]);
         }
     }
 };
 
-class RMQBenchmark : public Benchmark {
-    WorkloadBuffer<KeyRange> *workload_buffer;
+template <class DataBase>
+class RMQBenchmark : public Benchmark<DataBase>
+{
+    using Benchmark<DataBase>::prepare_buffer;
+
+    WorkloadBuffer<KeyRange> workload_buffer;
 
 public:
     RMQBenchmark(const std::string& workload_file)
@@ -265,27 +261,25 @@ public:
         PiecewiseConstantWorkload pworkload;
         load_workload(workload_file, &pworkload);
 
-        key_uint64_t key_interval = (KEY_MAX - KEY_MIN) / (opt.nr_keys - 1); 
-        size_t range_length = key_interval * 100 - 1;
+        const key_uint64_t key_interval = (KEY_MAX - KEY_MIN) / (opt.nr_keys - 1);
+        const size_t range_length = key_interval * 100 - 1;
         std::vector<KeyRange> workload;
         workload.reserve(pworkload.data.size());
         for (const auto& p : pworkload.data)
             workload.push_back({p, p + range_length});
-        workload_buffer = new WorkloadBuffer<KeyRange>(std::move(workload));
+        workload_buffer = std::move(workload);
     }
 
-    ~RMQBenchmark()
+    ~RMQBenchmark() = default;
+
+    void do_one_batch(int idx_batch, Database& db) override
     {
-        delete workload_buffer;
-    }
-
-    void do_one_batch(int idx_batch, Database* db) {
         static ExtendableBuffer<value_uint64_t> results;
-        static ExtendableBuffer<KeyRange> ranges;
+        KeyRange* ranges;
         size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, ranges, results);
         {
             StopWatch sw(QueryProcessTime);
-            db->batch_range_minimum(num_queries_batch, ranges, results);
+            db.batch_range_minimum(num_queries_batch, &ranges[0], &results[0]);
         }
     }
 };
@@ -294,28 +288,20 @@ int main(int argc, char* argv[])
 {
     opt.parse(argc, argv);
 
-    Benchmark* benchmark;
+    std::unique_ptr<Benchmark<Database>> benchmark;
     if (opt.op_type == TASK_GET)
-        benchmark = new GetBenchmark(opt.workload_file);
+        benchmark = std::make_unique<GetBenchmark<Database>>(opt.workload_file);
     else if (opt.op_type == TASK_RANGE_MIN)
-        benchmark = new RMQBenchmark(opt.workload_file);
+        benchmark = std::make_unique<RMQBenchmark<Database>>(opt.workload_file);
     else {
         std::cerr << "unsupported task type: " << opt.op_type << std::endl;
         exit(1);
     }
 
-    Database* db;
-    std::chrono::nanoseconds DatabaseInitTime;
-    {
-        StopWatch sw(DatabaseInitTime);
-        db = make_database(opt.nr_keys, opt.nthreads);
-    }
+    Database db = make_database(opt.nr_keys, opt.nthreads);
     std::cout << "database initialized in " << (DatabaseInitTime.count() / 1000 / 1000) << " ms" << std::endl;
 
     benchmark->run(opt.nr_batches, db);
-
-    delete benchmark;
-    delete db;
 
     return 0;
 }

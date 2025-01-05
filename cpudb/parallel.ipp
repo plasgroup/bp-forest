@@ -2,125 +2,109 @@
 
 #include <cassert>
 #include <condition_variable>
+#include <cstddef>
 #include <functional>
 #include <iostream>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 class ParallelManager
 {
     class Worker
     {
-        ParallelManager* manager;
-        size_t id;
+        ParallelManager* const manager;
+        const unsigned id;
 
     public:
-        Worker(ParallelManager* manager, size_t id)
-            : manager(manager), id(id)
+        Worker(ParallelManager* manager, unsigned id)
+            : manager{manager}, id{id}
         {
         }
         void operator()()
         {
-            std::function<void(size_t, size_t)> task;
-            size_t s = 0, e = 0;
-            while (true) {
-                task = manager->get_task(id, &s, &e);
-                if (task == nullptr)
-                    return;
-                task(s, e);
-                manager->notify_complete();
+            for (;;) {
+                std::function<void(size_t, size_t)> local_task;
+                {
+                    std::unique_lock<std::mutex> lk{manager->mtx};
+                    manager->to_worker.wait(lk, [&] {
+                        return manager->task != nullptr || manager->stopping;
+                    });
+                    if (manager->stopping) {
+                        return;
+                    }
+                    local_task = manager->task;
+
+                    manager->nr_launched_workers++;
+                    if (manager->nr_launched_workers == manager->threads.size()) {
+                        manager->task = nullptr;
+                        manager->nr_launched_workers = 0;
+                    }
+                }
+
+                size_t interval = (manager->end - manager->start) / manager->threads.size();
+                size_t local_start = manager->start + id * interval,
+                       local_end = (id == manager->threads.size() - 1) ? manager->end : manager->start + (id + 1) * interval;
+                local_task(local_start, local_end);
+
+                {
+                    std::unique_lock<std::mutex> lk{manager->mtx};
+                    manager->nr_finished_workers++;
+                    manager->to_manager.notify_one();
+                }
             }
         }
     };
 
-    class Barrier
-    {
-        std::mutex mtx;
-        std::condition_variable cv;
-        size_t thread_count;
-        size_t counter;
-        bool stopping = false;
+    std::vector<std::thread> threads;
 
-    public:
-        Barrier(size_t thread_count)
-            : thread_count(thread_count), counter(0) {}
-
-        void wait()
-        {
-            std::unique_lock<std::mutex> lk(mtx);
-            counter++;
-            if (counter == thread_count) {
-                counter = 0;
-                cv.notify_all();
-            } else {
-                cv.wait(lk, [&] {
-                    return stopping || counter == 0;
-                });
-            }
-        }
-
-        void stop()
-        {
-            std::unique_lock<std::mutex> lk(mtx);
-            stopping = true;
-            cv.notify_all();
-        }
-    };
-
-    size_t nthreads;
-    Barrier start_barrier, end_barrier;
+    std::mutex mtx;
+    std::condition_variable to_worker, to_manager;
+    unsigned nr_launched_workers = 0, nr_finished_workers = 0;
     bool stopping = false;
+
     std::function<void(size_t, size_t)> task = nullptr;
     size_t start, end;
 
-    // Called by worker
-    std::function<void(size_t, size_t)> get_task(size_t id, size_t* s, size_t* e)
-    {
-        start_barrier.wait();
-        if (stopping)
-            return nullptr;
-        assert(task != nullptr);
-        size_t interval = (end - start) / nthreads;
-        *s = start + id * interval;
-        *e = (id == nthreads - 1) ? end : start + (id + 1) * interval;
-        return task;
-    }
-    void notify_complete()
-    {
-        end_barrier.wait();
-    }
-
 public:
-    ParallelManager(size_t nt)
-        : nthreads(nt < 1 ? std::thread::hardware_concurrency() : nt),
-          start_barrier(nthreads + 1), end_barrier(nthreads + 1)
+    ParallelManager(unsigned nt)
+        : threads(nt < 1 ? std::thread::hardware_concurrency() : nt)
     {
-        std::cout << "ParallelManager: nthreads=" << nthreads << std::endl;
-        for (size_t i = 0; i < nthreads; i++)
-            std::thread(Worker(this, i)).detach();
+        std::cout << "ParallelManager: threads.size()=" << threads.size() << std::endl;
+        for (unsigned id = 0; id < threads.size(); id++)
+            threads[id] = std::thread{Worker{this, id}};
     }
+    ParallelManager(const ParallelManager&) = delete;
 
     ~ParallelManager()
     {
-        stopping = true;
-        start_barrier.stop();
-        end_barrier.stop();
+        {
+            std::lock_guard<std::mutex> lk{mtx};
+            stopping = true;
+        }
+        to_worker.notify_all();
+        for (auto& th : threads) {
+            th.join();
+        }
     }
 
     void run(size_t s, size_t e, std::function<void(size_t, size_t)> t)
     {
+        std::unique_lock<std::mutex> lk{mtx};
+        task = t;
         start = s;
         end = e;
-        task = t;
-        start_barrier.wait();  // start all workers
-        end_barrier.wait();    // wait for all workers to complete
-        task = nullptr;
+
+        to_worker.notify_all();
+        to_manager.wait(lk, [&] {
+            return nr_finished_workers == threads.size();
+        });
+
+        nr_finished_workers = 0;
     }
 
     size_t get_parallelism() const
     {
-        return nthreads;
+        return threads.size();
     }
-
-    friend class Worker;
 };

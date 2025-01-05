@@ -379,7 +379,7 @@ PreprocessWorker ppwk[HOST_MULTI_THREAD];
 #ifdef TOUCH_QUERIES_IN_ADVANCE
 key_uint64_t accumulated_key_numbers = 0;
 #endif /* TOUCH_QUERIES_IN_ADVANCE */
-size_t do_one_batch(const uint64_t task, [[maybe_unused]] int batch_num, WorkloadBuffer& workload_buffer, BPForest& forest)
+size_t do_one_batch(const uint64_t task, [[maybe_unused]] int batch_num, WorkloadBuffer<key_uint64_t>& workload_buffer, BPForest& forest)
 {
 #ifdef PRINT_DEBUG
     printf("======= batch %d =======\n", batch_num);
