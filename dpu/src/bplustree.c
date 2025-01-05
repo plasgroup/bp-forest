@@ -34,6 +34,8 @@ static DEFINE_DIV_BY(MAX_NR_CHILDREN, NODE_PTR_WIDTH, _NR_NODES);
 static DEFINE_DIV_BY(TREE_CONSTRUCT_NR_TASKLETS, NODE_PTR_WIDTH, _NR_NODES);
 static DEFINE_DIV_BY(TREE_CONSTRUCT_NR_CACHED_OUTPUT_LIFT, NODE_PTR_WIDTH, _NR_NODES);
 
+static DEFINE_DIV_BY(TASK_GET_NR_TASKLETS, 16, _NR_QRYS);
+
 static DEFINE_DIV_BY(TASK_RANGE_MIN_NR_TASKLETS, 16, _NR_DELIMS);
 
 Node cold_root, hot_root;
@@ -438,6 +440,97 @@ void task_init(void)
 }
 
 
+void GET_prepare_next_qry(key_uint64_t* qrys_cache, unsigned* idx_qry_in_cache, uintptr_t* cursor_on_qrys)
+{
+    if (*idx_qry_in_cache == TASK_GET_NR_CACHED_QRYS) {
+        mram_write(qrys_cache, (__mram_ptr void*)*cursor_on_qrys, sizeof(key_uint64_t) * TASK_GET_NR_CACHED_QRYS);
+        *cursor_on_qrys += sizeof(key_uint64_t) * TASK_GET_NR_CACHED_QRYS;
+        mram_read((__mram_ptr void*)*cursor_on_qrys, qrys_cache, sizeof(key_uint64_t) * TASK_GET_NR_CACHED_QRYS);
+        *idx_qry_in_cache = 0;
+    }
+}
+void GET_execute(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
+    const uint16_t idx_qry_begin, const uint16_t idx_qry_end,
+    const uintptr_t qrys)
+{
+    GetWorkspace* const wks_me = &workspace.tree.get[me()];
+
+    unsigned idx_qry = idx_qry_begin, idx_qry_in_cache = 0;
+    uintptr_t cursor_on_qrys = qrys;
+    mram_read((__mram_ptr void*)(cursor_on_qrys), &wks_me->qrys[0], sizeof(key_uint64_t) * TASK_GET_NR_CACHED_QRYS);
+
+    if (height == 0) {
+        for (; idx_qry < idx_qry_end; idx_qry++) {
+            GET_prepare_next_qry(&wks_me->qrys[0], &idx_qry_in_cache, &cursor_on_qrys);
+            const key_uint64_t key = wks_me->qrys[idx_qry_in_cache];
+
+            const uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, key);
+            if (root->lf.keys[idx_pair] == key) {
+                wks_me->qrys[idx_qry_in_cache] = root->lf.values[idx_pair];
+            } else {
+                wks_me->qrys[idx_qry_in_cache] = 0;  // not found
+            }
+            idx_qry_in_cache++;
+        }
+
+    } else {
+        for (; idx_qry < idx_qry_end; idx_qry++) {
+            GET_prepare_next_qry(&wks_me->qrys[0], &idx_qry_in_cache, &cursor_on_qrys);
+            const key_uint64_t key = wks_me->qrys[idx_qry_in_cache];
+
+            NodeLink link = root->inl.children[search_for_child_index(&root->inl.keys[0], root_numKeys, key)];
+            for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
+                mram_read(&Deref(link.ptr).inl.keys[0], &wks_me->node_cache.inl.keys[0], sizeof(key_uint64_t) * link.numKeys);
+                const uint16_t idx_child = search_for_child_index(&wks_me->node_cache.inl.keys[0], link.numKeys, key);
+                mram_read(&Deref(link.ptr).inl.children[idx_child / 2 * 2], &wks_me->node_cache.inl.children[0], sizeof(NodeLink) * 2);
+                link = wks_me->node_cache.inl.children[idx_child % 2];
+            }
+            mram_read(&Deref(link.ptr).lf.keys[0], &wks_me->node_cache.lf.keys[0], sizeof(key_uint64_t) * link.numKeys);
+            uint16_t idx_pair = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, key);
+
+            if (wks_me->node_cache.lf.keys[idx_pair] == key) {
+                mram_read(&Deref(link.ptr).lf.values[idx_pair], &wks_me->qrys[idx_qry_in_cache], sizeof(value_uint64_t));
+            } else {
+                wks_me->qrys[idx_qry_in_cache] = 0;  // not found
+            }
+            idx_qry_in_cache++;
+        }
+    }
+    if (idx_qry_in_cache != 0) {
+        mram_write(&wks_me->qrys[0], (__mram_ptr void*)cursor_on_qrys, sizeof(value_uint64_t) * idx_qry_in_cache);
+    }
+}
+void task_get(void)
+{
+    if (me() < TASK_GET_NR_TASKLETS) {
+        const uint16_t nr_cold_qrys = input_header.get.nr_cold_qrys, nr_hot_qrys = input_header.get.nr_hot_qrys;
+
+        static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8,
+                               cold_qrys = qrys;
+        const uintptr_t hot_qrys = cold_qrys + sizeof(key_uint64_t) * nr_cold_qrys;
+
+        const uint16_t nr_cold_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_GET_NR_TASKLETS(nr_cold_qrys),
+                       nr_remainder_cold_qrys = nr_cold_qrys - nr_cold_qrys_per_tasklet * TASK_GET_NR_TASKLETS,
+                       nr_cold_qrys_for_me = nr_cold_qrys_per_tasklet + (me() < nr_remainder_cold_qrys);
+        const uint16_t idx_cold_qry_begin = (uint16_t)(nr_cold_qrys_per_tasklet * me() + (me() <= nr_remainder_cold_qrys ? me() : nr_remainder_cold_qrys)),
+                       idx_cold_qry_end = idx_cold_qry_begin + nr_cold_qrys_for_me;
+
+        const uint16_t nr_hot_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_GET_NR_TASKLETS(nr_hot_qrys),
+                       nr_remainder_hot_qrys = nr_hot_qrys - nr_hot_qrys_per_tasklet * TASK_GET_NR_TASKLETS,
+                       nr_hot_qrys_for_me = nr_hot_qrys_per_tasklet + (me() < nr_remainder_hot_qrys);
+        const uint16_t idx_hot_qry_begin = (uint16_t)(nr_hot_qrys_per_tasklet * me() + (me() <= nr_remainder_hot_qrys ? me() : nr_remainder_hot_qrys)),
+                       idx_hot_qry_end = idx_hot_qry_begin + nr_hot_qrys_for_me;
+
+        GET_execute(&cold_root, cold_height, cold_root_numKeys,
+            idx_cold_qry_begin, idx_cold_qry_end,
+            cold_qrys);
+        GET_execute(&hot_root, hot_height, hot_root_numKeys,
+            idx_hot_qry_begin, idx_hot_qry_end,
+            hot_qrys);
+    }
+}
+
+
 static uint16_t search_for_lump_index(const uint16_t* lump_end_indices, uint16_t nr_lumps, uint16_t query)
 {
     // candidate: [left_m1 + 1, right_m1 + 1)
@@ -597,7 +690,7 @@ void task_range_min(void)
                                cold_lump_end_indices = lump_end_indices;
         const uintptr_t hot_lump_end_indices = cold_lump_end_indices + sizeof(uint16_t) * (nr_cold_lumps + 1);
 
-        static RMQWorkSpace* const wks = &workspace.tree.rmq;
+        static RMQWorkspace* const wks = &workspace.tree.rmq;
         if (me() == 0) {
             uint32_t nr_bytes = (sizeof(uint16_t) * (nr_lumps + 2) + 7) / 8 * 8;
             uintptr_t mram_src = lump_end_indices, wram_dst = (uintptr_t)(&wks->lump_end_indices[0]);

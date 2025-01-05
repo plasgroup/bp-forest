@@ -33,7 +33,7 @@ inline void DPUEmulator::execute()
         const unsigned nr_cold_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram[4])),
                        nr_hot_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram[6]));
         const key_uint64_t* const keys = std::launder(reinterpret_cast<key_uint64_t*>(&mram[8]));
-        value_uint64_t* const result = new (&mram_2nd[0]) value_uint64_t[nr_cold_queries + nr_hot_queries];
+        value_uint64_t* const result = new (&mram_2nd[8]) value_uint64_t[nr_cold_queries + nr_hot_queries];
         task_get(cold_tree, nr_cold_queries, keys, result);
         task_get(hot_tree, nr_hot_queries, keys + nr_cold_queries, result + nr_cold_queries);
     } break;
