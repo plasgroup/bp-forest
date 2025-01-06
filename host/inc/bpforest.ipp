@@ -2,6 +2,7 @@
 
 #include "bpforest.hpp"
 
+#include "assert.hpp"
 #include "batch_transfer_buffer.hpp"
 #include "common.h"
 #include "common_params.h"
@@ -15,7 +16,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -293,6 +293,10 @@ inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], va
                     query_idxs.reserve(nr_entries + 1);
                     query_idxs[0] = 0;
                     for (uint32_t idx_summary_entry = 0; idx_summary_entry < nr_entries; idx_summary_entry++) {
+                        if (summary.nr_keys(idx_summary_entry) == 0) {
+                            query_idxs[idx_summary_entry + 1] = idx_query;
+                            continue;
+                        }
                         const key_uint64_t max_key
                             = (idx_summary_entry + 1 == nr_entries ? KEY_MAX
                                                                    : summary.head_key(idx_summary_entry + 1) - 1);
@@ -526,13 +530,16 @@ inline void BPForest::execute_get_in_dpus()
 {
     std::array<std::array<uint16_t, 2>, MAX_NR_DPUS> nr_cold_hot_queries;
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
-        assert(pt_qrys.cold[idx_dpu].size() <= std::numeric_limits<uint16_t>::max());
+        ASSERT(pt_qrys.cold[idx_dpu].size() <= std::numeric_limits<uint16_t>::max());
         nr_cold_hot_queries[idx_dpu][0] = static_cast<uint16_t>(pt_qrys.cold[idx_dpu].size());
 
         const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
-        if (idx_hot != INVALID_DPU_ID)
-            assert(pt_qrys.hot[idx_hot].size() <= std::numeric_limits<uint16_t>::max());
-        nr_cold_hot_queries[idx_dpu][1] = static_cast<uint16_t>(idx_hot != INVALID_DPU_ID ? pt_qrys.hot[idx_hot].size() : 0);
+        if (idx_hot != INVALID_DPU_ID) {
+            ASSERT(pt_qrys.hot[idx_hot].size() <= std::numeric_limits<uint16_t>::max());
+            nr_cold_hot_queries[idx_dpu][1] = static_cast<uint16_t>(pt_qrys.hot[idx_hot].size());
+        } else {
+            nr_cold_hot_queries[idx_dpu][1] = 0;
+        }
     }
 
 #ifdef SYNCHRONOUS_DPU_EXEC
@@ -1217,7 +1224,7 @@ void BPForest::execute_rmq_in_dpus(
                                + (hot_range_to_delim_idx[idx_hot][1] != 0);
 
             const size_t tmp = hot_idx_lump_end - hot_idx_lump_begin;
-            assert(tmp <= std::numeric_limits<uint16_t>::max());
+            ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
             nr_lumps[idx_dpu][1] = static_cast<uint16_t>(tmp);
         }
 
@@ -1233,7 +1240,7 @@ void BPForest::execute_rmq_in_dpus(
                                              + (cold_range_to_delim_idx[idx_dpu + 1] != 0);
 
             const size_t nr_cold_lumps = cold_idx_lump_end - cold_idx_lump_begin;
-            assert(nr_cold_lumps <= std::numeric_limits<uint16_t>::max());
+            ASSERT(nr_cold_lumps <= std::numeric_limits<uint16_t>::max());
             nr_lumps[idx_dpu][0] = static_cast<uint16_t>(nr_cold_lumps);
 
             lump_end_indices_size = (nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1] + 2
@@ -1244,12 +1251,12 @@ void BPForest::execute_rmq_in_dpus(
             lump_end_indices[idx_dpu].push_back(0);
             for (size_t idx_lump = cold_idx_lump_begin; idx_lump + 1 < cold_idx_lump_end; idx_lump++) {
                 const size_t tmp = rg_lump_end_indices[idx_lump] - idx_offset;
-                assert(tmp <= std::numeric_limits<uint16_t>::max());
+                ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                 lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
             }
             if (nr_cold_lumps != 0) {
                 const size_t tmp = idx_delim_end - idx_offset;
-                assert(tmp <= std::numeric_limits<uint16_t>::max());
+                ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                 lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
             }
 
@@ -1283,9 +1290,9 @@ void BPForest::execute_rmq_in_dpus(
                     nr_cold_lumps += cold_idx_lump_end - cold_idx_lump_begin;
                 }
             }
-            assert(nr_cold_lumps <= std::numeric_limits<uint16_t>::max());
+            ASSERT(nr_cold_lumps <= std::numeric_limits<uint16_t>::max());
             nr_lumps[idx_dpu][0] = static_cast<uint16_t>(nr_cold_lumps);
-            assert(nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1] <= MAX_NR_RMQ_LUMPS);
+            ASSERT(nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1] <= MAX_NR_RMQ_LUMPS);
             lump_end_indices_size = (nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1] + 2
                                         + 8 / sizeof(uint16_t) - 1)
                                     / (8 / sizeof(uint16_t)) * (8 / sizeof(uint16_t));
@@ -1304,12 +1311,12 @@ void BPForest::execute_rmq_in_dpus(
                                                      + (hot_range_to_delim_idx[idx_hot][0] != 0);
                     for (size_t idx_lump = cold_idx_lump_begin; idx_lump + 1 < cold_idx_lump_end; idx_lump++) {
                         const size_t tmp = rg_lump_end_indices[idx_lump] - idx_offset;
-                        assert(tmp <= std::numeric_limits<uint16_t>::max());
+                        ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                         lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
                     }
                     if (cold_idx_lump_begin != cold_idx_lump_end) {
                         const size_t tmp = idx_delim_end - idx_offset;
-                        assert(tmp <= std::numeric_limits<uint16_t>::max());
+                        ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                         lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
                     }
 
@@ -1343,12 +1350,12 @@ void BPForest::execute_rmq_in_dpus(
                                                          + (hot_range_to_delim_idx[idx_hot + 1][0] != 0);
                         for (size_t idx_lump = cold_idx_lump_begin; idx_lump + 1 < cold_idx_lump_end; idx_lump++) {
                             const size_t tmp = rg_lump_end_indices[idx_lump] - idx_offset;
-                            assert(tmp <= std::numeric_limits<uint16_t>::max());
+                            ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                             lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
                         }
                         if (cold_idx_lump_begin != cold_idx_lump_end) {
                             const size_t tmp = idx_delim_end - idx_offset;
-                            assert(tmp <= std::numeric_limits<uint16_t>::max());
+                            ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                             lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
                         }
 
@@ -1366,12 +1373,12 @@ void BPForest::execute_rmq_in_dpus(
                                                      + (cold_range_to_delim_idx[idx_dpu + 1] != 0);
                     for (size_t idx_lump = cold_idx_lump_begin; idx_lump + 1 < cold_idx_lump_end; idx_lump++) {
                         const size_t tmp = rg_lump_end_indices[idx_lump] - idx_offset;
-                        assert(tmp <= std::numeric_limits<uint16_t>::max());
+                        ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                         lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
                     }
                     if (cold_idx_lump_begin != cold_idx_lump_end) {
                         const size_t tmp = idx_delim_end - idx_offset;
-                        assert(tmp <= std::numeric_limits<uint16_t>::max());
+                        ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                         lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
                     }
 
@@ -1387,12 +1394,12 @@ void BPForest::execute_rmq_in_dpus(
                          idx_offset = idx_delim_begin;
             for (size_t idx_lump = hot_idx_lump_begin; idx_lump + 1 < hot_idx_lump_end; idx_lump++) {
                 const size_t tmp = rg_lump_end_indices[idx_lump] - idx_offset;
-                assert(tmp <= std::numeric_limits<uint16_t>::max());
+                ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                 lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
             }
             if (hot_idx_lump_begin != hot_idx_lump_end) {
                 const size_t tmp = idx_delim_end - idx_offset;
-                assert(tmp <= std::numeric_limits<uint16_t>::max());
+                ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                 lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
             }
         }
@@ -1922,21 +1929,38 @@ inline void BPForest::extract_and_distribute_hot_ranges()
         cold_task_headers[idx_dpu] = {TASK_INIT, bytes_for_dpu / uint32_t{sizeof(KVPair)}};
     }
 
-    UPMEM_AsyncDuration async;
-    gather_to_dpu(all_dpu, 0, RebalancedColdKVPairsSender{this, &cold_boundaries[0], &hot_boundaries[0], &cold_task_headers[0]}, async);
-    execute(all_dpu, async);
-
-    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
-        const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
-        if (idx_hot == INVALID_DPU_ID) {
-            hot_task_headers[idx_dpu] = {TASK_NONE, 0};
-        } else {
-            hot_task_headers[idx_dpu] = {TASK_CONSTRUCT_HOT, static_cast<uint32_t>(hot_boundaries[idx_hot][1] - hot_boundaries[idx_hot][0])};
-        }
+    {
+        UPMEM_AsyncDuration async;
+        gather_to_dpu(all_dpu, 0, RebalancedColdKVPairsSender{this, &cold_boundaries[0], &hot_boundaries[0], &cold_task_headers[0]}, async);
+        execute(all_dpu, async);
+#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
     }
+    {
+        std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+        std::cout << log->get() << std::flush;
+    }
+    {
+        UPMEM_AsyncDuration async;
+#endif
 
-    gather_to_dpu(all_dpu, 0, HotKVPairsSender{this, &hot_boundaries[0], &hot_task_headers[0]}, async);
-    execute(all_dpu, async);
+        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
+            const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
+            if (idx_hot == INVALID_DPU_ID) {
+                hot_task_headers[idx_dpu] = {TASK_NONE, 0};
+            } else {
+                hot_task_headers[idx_dpu] = {TASK_CONSTRUCT_HOT, static_cast<uint32_t>(hot_boundaries[idx_hot][1] - hot_boundaries[idx_hot][0])};
+            }
+        }
+
+        gather_to_dpu(all_dpu, 0, HotKVPairsSender{this, &hot_boundaries[0], &hot_task_headers[0]}, async);
+        execute(all_dpu, async);
+    }
+#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+    {
+        std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+        std::cout << log->get() << std::flush;
+    }
+#endif
 }
 
 #else /* EXTRACT_BY_INITIALIZATION */
