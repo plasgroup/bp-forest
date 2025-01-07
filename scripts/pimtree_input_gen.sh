@@ -36,13 +36,13 @@ for dpu_num in "${dpu_nums[@]}"; do
             else
                 # 過去のビルド設定を異なる時
                 make clean
-                make NR_DPUS=$dpu_num NR_TASKLETS=$tasklet_num
+                make NR_DPUS=$dpu_num NR_TASKLETS=$tasklet_num -j
             fi
         fi
     else
         # ファイルが見つからない場合
         make clean
-        make NR_DPUS=$dpu_num NR_TASKLETS=$tasklet_num
+        make NR_DPUS=$dpu_num NR_TASKLETS=$tasklet_num -j
     fi
 
 

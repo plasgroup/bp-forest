@@ -7,6 +7,8 @@
 #include "host/inc/host_params.hpp"
 #include "host/inc/extendable_buffer.hpp"
 #include "host/inc/statistics.hpp"
+#include "host/inc/pimtree_query.hpp"
+#include "host/inc/pimtree_query.ipp"
 #include "piecewise_constant_workload.hpp"
 #include "sparsetable.ipp"
 #include "segment_tree.ipp"
@@ -30,8 +32,10 @@ struct Option {
 #endif // DEBUG
         a.add<std::string>("zipfianconst", 'a', "zipfian constant", false, "0.99");
         a.add<std::string>("workload_dir", 'w', "directory containing workload files", false, "workload");
-        a.add<float>("num_mega_keys", 'k', "number of keys in millions", false, 51.2);
+        a.add<std::string>("pimtree_workload_file", 'p', "file path to PIM-Tree workload file", false);
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
+        a.add<float>("num_mega_keys", 'k', "number of keys in millions", false, 51.2);
+        a.add<std::string>("pimtree_init_file", 'i', "file path to PIM-Tree init file", false);
         a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq", false, "get");
         a.add<int>("num_threads", 't', "number of threads", false, 1);
         a.add("verify", 'v', "verify the result");
@@ -39,7 +43,14 @@ struct Option {
 
         dump_param_file = a.get<std::string>("dump-params");
         alpha = a.get<std::string>("zipfianconst");
-        workload_file = a.get<std::string>("workload_dir") + ("/zipf_const_" + alpha + ".bin");
+        if (!a.get<std::string>("pimtree_workload_file").empty()) {
+            workload_file = a.get<std::string>("pimtree_workload_file");
+            is_pimtree_workload = true;
+        } else {
+            workload_file = a.get<std::string>("workload_dir") + ("/zipf_const_" + alpha + ".bin");
+            is_pimtree_workload = false;
+        }
+        pimtree_init_file = a.get<std::string>("pimtree_init_file");
         nr_batches = a.get<int>("num_batches");
         nr_keys = a.get<float>("num_mega_keys") * 1000 * 1000;
         nthreads = a.get<int>("num_threads");
@@ -66,12 +77,24 @@ struct Option {
     std::string dump_param_file;
     std::string alpha;
     std::string workload_file;
+    std::string pimtree_init_file;
+    bool is_pimtree_workload;
     int nr_batches;
     int nr_keys;
     int nthreads;
     bool verify;
     TaskID op_type;
 } opt;
+
+// shift [-2^63, 2^63-1] to [0, 2^64-1]
+inline key_uint64_t key_int64_to_uint64(int64_t key)
+{
+    return ((uint64_t) key) ^ (1LL << 63);
+}
+inline key_uint64_t value_int64_to_uint64(int64_t value)
+{
+    return ((uint64_t) value) ^ (1LL << 63);
+}
 
 void load_workload(std::string workload_file,
                    PiecewiseConstantWorkload* workload)
@@ -328,7 +351,6 @@ void Database::batch_range_count(uint64_t n,
             results[i] = count;
         }
     });
-
 }
 
 Database* make_database(size_t nr_keys, int nthreads)
@@ -370,12 +392,33 @@ Database* make_database(size_t nr_keys, int nthreads)
     return db;
 }
 
+Database* make_database_from_pimtree_init_file(const std::string& init_file, int nthreads)
+{
+    std::cout << "making database from pimtree init file " << init_file << std::endl;
+    std::vector<key_uint64_t> keys;
+    std::vector<value_uint64_t> values;
+    pimtree_queries qs = make_pimtree_queries(init_file);
+    for (int i = 0; i < qs.length; i++) {
+        if (qs.ops[i].type == insert_t) {
+            keys.push_back(key_int64_to_uint64(qs.ops[i].tsk.i.key));
+            values.push_back(value_int64_to_uint64(qs.ops[i].tsk.i.value));
+        } else {
+            std::cerr << "init_file has invalid operation of type: " << qs.ops[i].type << std::endl;
+            exit(1);
+        }
+    }
+    std::cout << "making database with " << keys.size() << " keys" << std::endl;
+    return new Database(keys, values, nthreads);
+}
+
 class Benchmark {
 protected:
     bool verify;
+
 public:
     Benchmark(bool verify)
-    : verify(verify) {}
+    : verify(verify)
+    {}
     
     void run(int nr_batches, Database* db)
     {
@@ -388,6 +431,48 @@ public:
     }
     virtual ~Benchmark() {}
     virtual void do_one_batch(int idx_batch, Database* db) = 0;
+
+    void push_back_query(std::vector<key_uint64_t>& workload, operation& query)
+    {
+        if (query.type == get_t)
+            workload.push_back(key_int64_to_uint64(query.tsk.g.key));
+    }
+    void push_back_query(std::vector<KeyRange>& workload, operation& query)
+    {
+        if (query.type == scan_t) {
+            KeyRange range = {
+                key_int64_to_uint64(query.tsk.s.lkey),
+                key_int64_to_uint64(query.tsk.s.rkey)
+            };
+            workload.push_back(range);
+        }
+    }
+    void push_back_query(std::vector<std::pair<KeyRange, std::array<char, 8>>>& workload, operation& query)
+    {
+        if (query.type == scan_t) {
+            KeyRange range = {
+                key_int64_to_uint64(query.tsk.s.lkey),
+                key_int64_to_uint64(query.tsk.s.rkey)
+            };
+            std::array<char, 8> qs = {};
+            workload.push_back({range, qs});
+        }
+    }
+    template <typename T>
+    WorkloadBuffer<T>* load_pimtree_workload(const std::string& workload_file) {
+        pimtree_queries qs = make_pimtree_queries(workload_file);
+        std::vector<T> workload;
+        for (int i = 0; i < qs.length; i++) {
+            // push_back_query adds the query if the query is of the desired
+            // type for the workload type. The mapping is:
+            //   key_uint64_t -> get_t
+            //   KeyRange -> scan_t
+            //   std::pair<KeyRange, std::array<char, 8>>> -> scan_t
+            push_back_query(workload, qs.ops[i]);
+        }
+        std::cout << "load workload from " << workload_file << ". size = " << workload.size() << std::endl;
+        return new WorkloadBuffer<T>(std::move(workload));
+    }
 
     template <typename T>
     size_t prepare_buffer(int idx_batch, WorkloadBuffer<T>* workload_buffer, ExtendableBuffer<T>& queires, ExtendableBuffer<value_uint64_t>& results) {
@@ -407,15 +492,20 @@ public:
 };
 
 class GetBenchmark : public Benchmark {
-    WorkloadBuffer<key_uint64_t> *workload_buffer;
+    WorkloadBuffer<key_uint64_t> *workload_buffer = nullptr; // only used when not using pimtree workload
 
 public:
-    GetBenchmark(const std::string& workload_file, bool verify)
+    GetBenchmark(const std::string& workload_file,
+                 bool is_pimtree_workload, bool verify)
     : Benchmark(verify)
     {
-        PiecewiseConstantWorkload workload;
-        load_workload(workload_file, &workload);
-        workload_buffer = new WorkloadBuffer<key_uint64_t>(std::move(workload.data));
+        if (is_pimtree_workload)
+            workload_buffer = load_pimtree_workload<key_uint64_t>(workload_file);
+        else {
+            PiecewiseConstantWorkload workload;
+            load_workload(workload_file, &workload);
+            workload_buffer = new WorkloadBuffer<key_uint64_t>(std::move(workload.data));
+        }
     }
 
     virtual ~GetBenchmark()
@@ -438,22 +528,27 @@ public:
 
 class RangeBenchmark : public Benchmark {
 protected:
-    WorkloadBuffer<KeyRange> *workload_buffer;
+    WorkloadBuffer<KeyRange> *workload_buffer = nullptr; // only used when not using pimtree workload
 
 public:
-    RangeBenchmark(const std::string& workload_file, bool verify)
+    RangeBenchmark(const std::string& workload_file,
+                   bool is_pimtree_workload, bool verify)
     : Benchmark(verify)
     {
-        PiecewiseConstantWorkload pworkload;
-        load_workload(workload_file, &pworkload);
+        if (is_pimtree_workload)
+            workload_buffer = load_pimtree_workload<KeyRange>(workload_file);
+        else {
+            PiecewiseConstantWorkload pworkload;
+            load_workload(workload_file, &pworkload);
 
-        key_uint64_t key_interval = KEY_INTERVAL(opt.nr_keys - 1); 
-        size_t range_length = key_interval * 100 - 1;
-        std::vector<KeyRange> workload;
-        workload.reserve(pworkload.data.size());
-        for (const auto& p : pworkload.data)
-            workload.push_back({p, p + range_length});
-        workload_buffer = new WorkloadBuffer<KeyRange>(std::move(workload));
+            key_uint64_t key_interval = KEY_INTERVAL(opt.nr_keys - 1); 
+            size_t range_length = key_interval * 100 - 1;
+            std::vector<KeyRange> workload;
+            workload.reserve(pworkload.data.size());
+            for (const auto& p : pworkload.data)
+                workload.push_back({p, p + range_length});
+            workload_buffer = new WorkloadBuffer<KeyRange>(std::move(workload));
+        }
     }
 
     virtual ~RangeBenchmark()
@@ -465,8 +560,8 @@ public:
 
 class RMQBenchmark : public RangeBenchmark {
 public:
-    RMQBenchmark(const std::string& workload_file, bool verify)
-    : RangeBenchmark(workload_file, verify)
+    RMQBenchmark(const std::string& workload_file, bool is_pimtree_workload, bool verify)
+    : RangeBenchmark(workload_file, is_pimtree_workload, verify)
     {}
 
     virtual ~RMQBenchmark() {}
@@ -486,8 +581,9 @@ public:
 
 class RangeSumBenchmark : public RangeBenchmark {
 public:
-    RangeSumBenchmark(const std::string& workload_file, bool verify)
-    : RangeBenchmark(workload_file, verify) {}
+    RangeSumBenchmark(const std::string& workload_file,
+                      bool is_pimtree_workload, bool verify)
+    : RangeBenchmark(workload_file, is_pimtree_workload, verify) {}
 
     virtual ~RangeSumBenchmark() {}
 
@@ -509,23 +605,28 @@ class RangeCountBenchmark : public Benchmark {
     WorkloadBuffer<Query> *workload_buffer;
 
 public:
-    RangeCountBenchmark(const std::string& workload_file, bool verify)
+    RangeCountBenchmark(const std::string& workload_file,
+                        bool is_pimtree_workload, bool verify)
     : Benchmark(verify)
     {
-        PiecewiseConstantWorkload pworkload;
-        load_workload(workload_file, &pworkload);
-        key_uint64_t key_interval = KEY_INTERVAL(opt.nr_keys - 1); 
-        size_t range_length = key_interval * 100 - 1;
-        std::vector<Query> workload;
-        workload.reserve(pworkload.data.size());
-        for (int i = 0; i < pworkload.data.size(); i++) {
-            const auto& p = pworkload.data[i];
-            KeyRange range = {p, p + range_length};
-            std::array<char, 8> needle;
-            snprintf(needle.data(), 8, "%d", i % 1000);
-            workload.push_back({range, needle});
+        if (is_pimtree_workload)
+            workload_buffer = load_pimtree_workload<Query>(workload_file);
+        else {
+            PiecewiseConstantWorkload pworkload;
+            load_workload(workload_file, &pworkload);
+            key_uint64_t key_interval = KEY_INTERVAL(opt.nr_keys - 1); 
+            size_t range_length = key_interval * 100 - 1;
+            std::vector<Query> workload;
+            workload.reserve(pworkload.data.size());
+            for (int i = 0; i < pworkload.data.size(); i++) {
+                const auto& p = pworkload.data[i];
+                KeyRange range = {p, p + range_length};
+                std::array<char, 8> needle;
+                snprintf(needle.data(), 8, "%d", i % 1000);
+                workload.push_back({range, needle});
+            }
+            workload_buffer = new WorkloadBuffer<Query>(std::move(workload));
         }
-        workload_buffer = new WorkloadBuffer<Query>(std::move(workload));
     }
 
     virtual ~RangeCountBenchmark()
@@ -552,13 +653,13 @@ int main(int argc, char* argv[])
 
     Benchmark* benchmark;
     if (opt.op_type == TASK_GET)
-        benchmark = new GetBenchmark(opt.workload_file, opt.verify);
+        benchmark = new GetBenchmark(opt.workload_file, opt.is_pimtree_workload, opt.verify);
     else if (opt.op_type == TASK_RANGE_MIN)
-        benchmark = new RMQBenchmark(opt.workload_file, opt.verify);
+        benchmark = new RMQBenchmark(opt.workload_file, opt.is_pimtree_workload, opt.verify);
     else if (opt.op_type == TASK_RANGE_SUM)
-        benchmark = new RangeSumBenchmark(opt.workload_file, opt.verify);
+        benchmark = new RangeSumBenchmark(opt.workload_file, opt.is_pimtree_workload, opt.verify);
     else if (opt.op_type == TASK_RANGE_COUNT)
-        benchmark = new RangeCountBenchmark(opt.workload_file, opt.verify);
+        benchmark = new RangeCountBenchmark(opt.workload_file, opt.is_pimtree_workload, opt.verify);
     else {
         std::cerr << "unsupported task type: " << opt.op_type << std::endl;
         exit(1);
@@ -568,7 +669,10 @@ int main(int argc, char* argv[])
     std::chrono::nanoseconds DatabaseInitTime;
     {
         StopWatch sw(DatabaseInitTime);
-        db = make_database(opt.nr_keys, opt.nthreads);
+        if (opt.pimtree_init_file.empty())
+            db = make_database(opt.nr_keys, opt.nthreads);
+        else
+            db = make_database_from_pimtree_init_file(opt.pimtree_init_file, opt.nthreads);
     }
     std::cout << "database initialized in " << (DatabaseInitTime.count() / 1000 / 1000) << " ms" << std::endl;
 
