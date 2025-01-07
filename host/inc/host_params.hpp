@@ -58,3 +58,5 @@ constexpr unsigned InversedRebalancingNoiseMargin = INVERSED_REBALANCING_NOISE_M
 #endif
 
 // #define SYNCHRONOUS_DPU_EXEC
+
+// #define EXTRACT_BY_INITIALIZATION

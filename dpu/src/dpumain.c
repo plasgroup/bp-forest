@@ -28,6 +28,9 @@ printf("task_no = %d\n", input_header.task_no);
     case TASK_INIT:
         task_init();
         break;
+    case TASK_GET:
+        task_get();
+        break;
     case TASK_RANGE_MIN:
         task_range_min();
         break;

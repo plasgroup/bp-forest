@@ -1,3 +1,4 @@
+#include "assert.h"
 #include "bpforest.hpp"
 #include "common.h"
 #include "extendable_buffer.hpp"
@@ -143,16 +144,14 @@ struct EqualByKey {
     }
 };
 
-#define MyAssert(expr) (static_cast<bool>(expr) ? void(0) : ((std::cerr << __FILE__ ":" << __LINE__ << ": Assertion `" #expr "' failed" << std::endl), std::abort()))
-
 void check_get_results(size_t nr_queries, const key_uint64_t keys[], const value_uint64_t values[])
 {
     for (size_t index = 0; index < nr_queries; index++) {
         const auto it = verify_db.find(keys[index]);
-        if (it == verify_db.end())
-            MyAssert(values[index] == 0);
-        else
-            MyAssert(values[index] == it->second);
+        if (it == verify_db.end()) {
+            ASSERT(values[index] == 0);
+        } else
+            ASSERT(values[index] == it->second);
     }
 }
 
@@ -164,7 +163,7 @@ void check_range_min_results(const size_t nr_queries, const KeyRange ranges[], c
         for (auto iter = verify_db.lower_bound(range.begin); iter != verify_db.end() && iter->first <= range.end; iter++) {
             min = std::min(min, iter->second);
         }
-        MyAssert(results[idx_qry] == min);
+        ASSERT(results[idx_qry] == min);
     }
 }
 #endif /* DEBUG_ON */
@@ -379,7 +378,7 @@ PreprocessWorker ppwk[HOST_MULTI_THREAD];
 #ifdef TOUCH_QUERIES_IN_ADVANCE
 key_uint64_t accumulated_key_numbers = 0;
 #endif /* TOUCH_QUERIES_IN_ADVANCE */
-size_t do_one_batch(const uint64_t task, [[maybe_unused]] int batch_num, WorkloadBuffer& workload_buffer, BPForest& forest)
+size_t do_one_batch(const uint64_t task, [[maybe_unused]] int batch_num, WorkloadBuffer<key_uint64_t>& workload_buffer, BPForest& forest)
 {
 #ifdef PRINT_DEBUG
     printf("======= batch %d =======\n", batch_num);
@@ -478,7 +477,7 @@ int main(int argc, char* argv[])
 
     /* main routine */
     if (opt.print_perf) {
-        printf("alpha,NR_DPUS,NR_TASKLETS,batch_num,num_keys,rebalancing_time[ns]"
+        printf("alpha,NR_DPUS,batch_num,num_keys,rebalancing_time[ns]"
 #ifdef SYNCHRONOUS_DPU_EXEC
                ",send_time[ns],exec_time[ns],recv_time[ns]"
 #else /* SYNCHRONOUS_DPU_EXEC */
@@ -505,14 +504,14 @@ int main(int argc, char* argv[])
 #endif
 
         if (opt.print_perf) {
-            printf("%s,%d,%d,%d,%ld,%ld"
+            printf("%s,%d,%d,%ld,%ld"
 #ifdef SYNCHRONOUS_DPU_EXEC
                    ",%ld,%ld,%ld"
 #else /* SYNCHRONOUS_DPU_EXEC */
                    ",%ld"
 #endif
                    ",%ld\n",
-                opt.alpha.c_str(), upmem_get_nr_dpus(), NR_TASKLETS, idx_batch,
+                opt.alpha.c_str(), upmem_get_nr_dpus(), idx_batch,
                 num_keys, RebalancingTime.count(),
 #ifdef SYNCHRONOUS_DPU_EXEC
                 QuerySendTime.count(), QueryExecTime.count(), QueryRecvTime.count(),

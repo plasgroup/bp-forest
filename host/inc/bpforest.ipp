@@ -2,6 +2,7 @@
 
 #include "bpforest.hpp"
 
+#include "assert.hpp"
 #include "batch_transfer_buffer.hpp"
 #include "common.h"
 #include "common_params.h"
@@ -15,7 +16,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -224,6 +224,8 @@ struct iterator_traits<GetQueryWithIndexIterator> {
 }  // namespace std
 inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[])
 {
+    StopWatch timer{BatchTotalTime};
+
     using std::get;
 
     if (nr_hot_ranges == 0) {
@@ -232,147 +234,156 @@ inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], va
         route_get_queries<true>(nr_queries, keys, result);
     }
 
-    if (param.balancing > 0 && !check_if_get_queries_balance(nr_queries)) {
-        if (nr_hot_ranges > 0) {
-            restore_hot_ranges();
+    do {
+        StopWatch timer{RebalancingTime};
+        if (param.balancing > 0 && !check_if_get_queries_balance(nr_queries)) {
+            if (nr_hot_ranges > 0) {
+                // Rebalancing when hot ranges exist has not been implemented.
+                break;
+                restore_hot_ranges();
 
-            for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
-                const dpu_id_t idx_hot_begin = cold_to_hot[idx_cold], idx_hot_end = cold_to_hot[idx_cold + 1];
+                for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
+                    const dpu_id_t idx_hot_begin = cold_to_hot[idx_cold], idx_hot_end = cold_to_hot[idx_cold + 1];
 
-                size_t nr_cold_queries = pt_qrys.cold[idx_cold].size();
-                for (dpu_id_t idx_hot = idx_hot_begin; idx_hot < idx_hot_end; idx_hot++) {
-                    nr_cold_queries += pt_qrys.hot[idx_hot].size();
-                }
-                pt_qrys.cold[idx_cold].reserve(nr_cold_queries);
-                orig_idxs.cold[idx_cold].reserve(nr_cold_queries);
-                for (dpu_id_t idx_hot = idx_hot_begin; idx_hot < idx_hot_end; idx_hot++) {
-                    std::move(pt_qrys.hot[idx_hot].begin(), pt_qrys.hot[idx_hot].end(), std::back_inserter(pt_qrys.cold[idx_cold]));
-                    pt_qrys.hot[idx_hot].clear();
-                    std::move(orig_idxs.hot[idx_hot].begin(), orig_idxs.hot[idx_hot].end(), std::back_inserter(orig_idxs.cold[idx_cold]));
-                    orig_idxs.hot[idx_hot].clear();
+                    size_t nr_cold_queries = pt_qrys.cold[idx_cold].size();
+                    for (dpu_id_t idx_hot = idx_hot_begin; idx_hot < idx_hot_end; idx_hot++) {
+                        nr_cold_queries += pt_qrys.hot[idx_hot].size();
+                    }
+                    pt_qrys.cold[idx_cold].reserve(nr_cold_queries);
+                    orig_idxs.cold[idx_cold].reserve(nr_cold_queries);
+                    for (dpu_id_t idx_hot = idx_hot_begin; idx_hot < idx_hot_end; idx_hot++) {
+                        std::move(pt_qrys.hot[idx_hot].begin(), pt_qrys.hot[idx_hot].end(), std::back_inserter(pt_qrys.cold[idx_cold]));
+                        pt_qrys.hot[idx_hot].clear();
+                        std::move(orig_idxs.hot[idx_hot].begin(), orig_idxs.hot[idx_hot].end(), std::back_inserter(orig_idxs.cold[idx_cold]));
+                        orig_idxs.hot[idx_hot].clear();
+                    }
                 }
             }
-        }
 
-        std::array<bool, MAX_NR_DPUS> cold_range_rebalanced;
-        const size_t cold_range_threshold = nr_queries * param.balancing / nr_cold_ranges;
-        for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
-            cold_range_rebalanced[idx_cold] = (pt_qrys.cold[idx_cold].size() > cold_range_threshold);
-        }
-        take_summary(cold_range_rebalanced);
+            std::array<bool, MAX_NR_DPUS> cold_range_rebalanced;
+            const size_t cold_range_threshold = nr_queries * param.balancing / nr_cold_ranges;
+            for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
+                cold_range_rebalanced[idx_cold] = (pt_qrys.cold[idx_cold].size() > cold_range_threshold);
+            }
+            take_summary(cold_range_rebalanced);
 
-        const size_t min_nr_queries_in_hot = (nr_queries + nr_cold_ranges - 1) / nr_cold_ranges;
-        dpu_id_t idx_new_hot = 0;
-        size_t max_nr_queries_in_hot = 0;
-        for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
-            cold_to_hot[idx_cold] = idx_new_hot;
+            const size_t min_nr_queries_in_hot = (nr_queries + nr_cold_ranges - 1) / nr_cold_ranges;
+            dpu_id_t idx_new_hot = 0;
+            size_t max_nr_queries_in_hot = 0;
+            for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
+                cold_to_hot[idx_cold] = idx_new_hot;
 
-            if (cold_range_rebalanced[idx_cold]) {
-                std::vector<key_uint64_t>& cold_queries = pt_qrys.cold[idx_cold];
-                std::vector<size_t>& cold_orig_idxs = orig_idxs.cold[idx_cold];
-                std::sort(GetQueryWithIndexIterator{{&cold_queries[0], &cold_orig_idxs[0]}},
-                    GetQueryWithIndexIterator{{&cold_queries[cold_queries.size()], &cold_orig_idxs[cold_queries.size()]}});
+                if (cold_range_rebalanced[idx_cold]) {
+                    std::vector<key_uint64_t>& cold_queries = pt_qrys.cold[idx_cold];
+                    std::vector<size_t>& cold_orig_idxs = orig_idxs.cold[idx_cold];
+                    std::sort(GetQueryWithIndexIterator{{&cold_queries[0], &cold_orig_idxs[0]}},
+                        GetQueryWithIndexIterator{{&cold_queries[cold_queries.size()], &cold_orig_idxs[cold_queries.size()]}});
 
-                const Summary& summary = summaries[idx_cold];
-                const uint32_t nr_entries = summary.nr_blocks * 4;
-                const uint32_t max_nr_pairs_in_hot = (summary.nr_pairs + param.balancing - 1) / param.balancing;
+                    const Summary& summary = summaries[idx_cold];
+                    const uint32_t nr_entries = summary.nr_blocks * 4;
+                    const uint32_t max_nr_pairs_in_hot = (summary.nr_pairs + param.balancing - 1) / param.balancing;
 
-                size_t nr_left_queries = cold_queries.size();
-                std::array<std::pair<size_t, size_t>, MAX_NR_DPUS + 1> left_query_idxs;
-                left_query_idxs[0].first = 0;
+                    size_t nr_left_queries = cold_queries.size();
+                    std::array<std::pair<size_t, size_t>, MAX_NR_DPUS + 1> left_query_idxs;
+                    left_query_idxs[0].first = 0;
 
-                uint32_t hot_candidate_begin = 0;
-                uint32_t nr_pairs_in_candidate = 0;
-                size_t idx_query = 0;
-                query_idxs.reserve(nr_entries + 1);
-                query_idxs[0] = 0;
-                for (uint32_t idx_summary_entry = 0; idx_summary_entry < nr_entries; idx_summary_entry++) {
-                    const key_uint64_t max_key
-                        = (idx_summary_entry + 1 == nr_entries ? KEY_MAX
-                                                               : summary.head_key(idx_summary_entry + 1) - 1);
-                    while (idx_query < cold_queries.size() && cold_queries[idx_query] <= max_key) {
-                        idx_query++;
-                    }
-                    query_idxs[idx_summary_entry + 1] = idx_query;
-
-                    nr_pairs_in_candidate += summary.nr_keys(idx_summary_entry);
-                    while (nr_pairs_in_candidate >= max_nr_pairs_in_hot + summary.nr_keys(hot_candidate_begin)) {
-                        nr_pairs_in_candidate -= summary.nr_keys(hot_candidate_begin);
-                        hot_candidate_begin++;
-                    }
-
-                    const size_t idx_query_begin = query_idxs[hot_candidate_begin],
-                                 nr_queries_in_hot = idx_query - idx_query_begin;
-                    if (nr_queries_in_hot >= min_nr_queries_in_hot) {
-                        hot_delims[idx_new_hot] = summary.head_key(hot_candidate_begin);
-                        hot_max_key[idx_new_hot]
-                            = (idx_summary_entry + 1 == nr_entries ? (idx_cold + 1 == nr_cold_ranges ? KEY_MAX
-                                                                                                     : cold_delims[idx_cold + 1] - 1)
+                    uint32_t hot_candidate_begin = 0;
+                    uint32_t nr_pairs_in_candidate = 0;
+                    size_t idx_query = 0;
+                    query_idxs.reserve(nr_entries + 1);
+                    query_idxs[0] = 0;
+                    for (uint32_t idx_summary_entry = 0; idx_summary_entry < nr_entries; idx_summary_entry++) {
+                        if (summary.nr_keys(idx_summary_entry) == 0) {
+                            query_idxs[idx_summary_entry + 1] = idx_query;
+                            continue;
+                        }
+                        const key_uint64_t max_key
+                            = (idx_summary_entry + 1 == nr_entries ? KEY_MAX
                                                                    : summary.head_key(idx_summary_entry + 1) - 1);
+                        while (idx_query < cold_queries.size() && cold_queries[idx_query] <= max_key) {
+                            idx_query++;
+                        }
+                        query_idxs[idx_summary_entry + 1] = idx_query;
 
-                        pt_qrys.hot[idx_new_hot].reserve(nr_queries_in_hot);
-                        std::move(&cold_queries[idx_query_begin], &cold_queries[idx_query], std::back_inserter(pt_qrys.hot[idx_new_hot]));
-                        orig_idxs.hot[idx_new_hot].reserve(nr_queries_in_hot);
-                        std::move(&cold_orig_idxs[idx_query_begin], &cold_orig_idxs[idx_query], std::back_inserter(orig_idxs.hot[idx_new_hot]));
-
-                        left_query_idxs[idx_new_hot - cold_to_hot[idx_cold]].second = idx_query_begin;
-                        left_query_idxs[idx_new_hot - cold_to_hot[idx_cold] + 1].first = idx_query;
-
-                        max_nr_queries_in_hot = std::max(max_nr_queries_in_hot, nr_queries_in_hot);
-                        nr_left_queries -= nr_queries_in_hot;
-
-                        idx_new_hot++;
-
-                        if (nr_left_queries <= cold_range_threshold) {
-                            break;
+                        nr_pairs_in_candidate += summary.nr_keys(idx_summary_entry);
+                        while (nr_pairs_in_candidate >= max_nr_pairs_in_hot + summary.nr_keys(hot_candidate_begin)) {
+                            nr_pairs_in_candidate -= summary.nr_keys(hot_candidate_begin);
+                            hot_candidate_begin++;
                         }
 
-                        hot_candidate_begin = idx_summary_entry + 1;
-                        nr_pairs_in_candidate = 0;
+                        const size_t idx_query_begin = query_idxs[hot_candidate_begin],
+                                     nr_queries_in_hot = idx_query - idx_query_begin;
+                        if (nr_queries_in_hot >= min_nr_queries_in_hot) {
+                            hot_delims[idx_new_hot] = summary.head_key(hot_candidate_begin);
+                            hot_max_key[idx_new_hot]
+                                = (idx_summary_entry + 1 == nr_entries ? (idx_cold + 1 == nr_cold_ranges ? KEY_MAX
+                                                                                                         : cold_delims[idx_cold + 1] - 1)
+                                                                       : summary.head_key(idx_summary_entry + 1) - 1);
+
+                            pt_qrys.hot[idx_new_hot].reserve(nr_queries_in_hot);
+                            std::move(&cold_queries[idx_query_begin], &cold_queries[idx_query], std::back_inserter(pt_qrys.hot[idx_new_hot]));
+                            orig_idxs.hot[idx_new_hot].reserve(nr_queries_in_hot);
+                            std::move(&cold_orig_idxs[idx_query_begin], &cold_orig_idxs[idx_query], std::back_inserter(orig_idxs.hot[idx_new_hot]));
+
+                            left_query_idxs[idx_new_hot - cold_to_hot[idx_cold]].second = idx_query_begin;
+                            left_query_idxs[idx_new_hot - cold_to_hot[idx_cold] + 1].first = idx_query;
+
+                            max_nr_queries_in_hot = std::max(max_nr_queries_in_hot, nr_queries_in_hot);
+                            nr_left_queries -= nr_queries_in_hot;
+
+                            idx_new_hot++;
+
+                            if (nr_left_queries <= cold_range_threshold) {
+                                break;
+                            }
+
+                            hot_candidate_begin = idx_summary_entry + 1;
+                            nr_pairs_in_candidate = 0;
+                        }
                     }
-                }
-                left_query_idxs[idx_new_hot - cold_to_hot[idx_cold]].second = cold_queries.size();
+                    left_query_idxs[idx_new_hot - cold_to_hot[idx_cold]].second = cold_queries.size();
 
-                const dpu_id_t nr_hot_in_this_cold = idx_new_hot - cold_to_hot[idx_cold];
-                size_t idx_written = left_query_idxs[0].second;
-                for (dpu_id_t idx_hot_in_this_cold = 0; idx_hot_in_this_cold < nr_hot_in_this_cold; idx_hot_in_this_cold++) {
-                    idx_written += left_query_idxs[idx_hot_in_this_cold + 1].second - left_query_idxs[idx_hot_in_this_cold + 1].first;
-                    std::move_backward(&cold_queries[left_query_idxs[idx_hot_in_this_cold + 1].first],
-                        &cold_queries[left_query_idxs[idx_hot_in_this_cold + 1].second],
-                        &cold_queries[idx_written]);
-                    std::move_backward(&cold_orig_idxs[left_query_idxs[idx_hot_in_this_cold + 1].first],
-                        &cold_orig_idxs[left_query_idxs[idx_hot_in_this_cold + 1].second],
-                        &cold_orig_idxs[idx_written]);
+                    const dpu_id_t nr_hot_in_this_cold = idx_new_hot - cold_to_hot[idx_cold];
+                    size_t idx_written = left_query_idxs[0].second;
+                    for (dpu_id_t idx_hot_in_this_cold = 0; idx_hot_in_this_cold < nr_hot_in_this_cold; idx_hot_in_this_cold++) {
+                        idx_written += left_query_idxs[idx_hot_in_this_cold + 1].second - left_query_idxs[idx_hot_in_this_cold + 1].first;
+                        std::move_backward(&cold_queries[left_query_idxs[idx_hot_in_this_cold + 1].first],
+                            &cold_queries[left_query_idxs[idx_hot_in_this_cold + 1].second],
+                            &cold_queries[idx_written]);
+                        std::move_backward(&cold_orig_idxs[left_query_idxs[idx_hot_in_this_cold + 1].first],
+                            &cold_orig_idxs[left_query_idxs[idx_hot_in_this_cold + 1].second],
+                            &cold_orig_idxs[idx_written]);
+                    }
+                    cold_queries.resize(idx_written);
+                    cold_orig_idxs.resize(idx_written);
                 }
-                cold_queries.resize(idx_written);
-                cold_orig_idxs.resize(idx_written);
+            }
+            cold_to_hot[nr_cold_ranges] = idx_new_hot;
+            nr_hot_ranges = idx_new_hot;
+
+            threshold_nr_queries_to_hot = static_cast<double>(max_nr_queries_in_hot * (1 + InversedRebalancingNoiseMargin))
+                                          / static_cast<double>(InversedRebalancingNoiseMargin * nr_queries);
+
+            if (nr_hot_ranges > 0) {
+                std::array<std::pair<dpu_id_t, size_t>, MAX_NR_DPUS> nr_cold_queries, nr_hot_queries;
+                for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
+                    nr_cold_queries[idx_cold] = {idx_cold, pt_qrys.cold[idx_cold].size()};
+                }
+                for (dpu_id_t idx_hot = 0; idx_hot < nr_hot_ranges; idx_hot++) {
+                    nr_hot_queries[idx_hot] = {idx_hot, pt_qrys.hot[idx_hot].size()};
+                }
+
+                std::partial_sort(&nr_cold_queries[0], &nr_cold_queries[nr_hot_ranges], &nr_cold_queries[nr_cold_ranges], [](auto& lhs, auto& rhs) { return lhs.second < rhs.second; });
+                std::sort(&nr_hot_queries[0], &nr_hot_queries[nr_hot_ranges], [](auto& lhs, auto& rhs) { return lhs.second < rhs.second; });
+
+                for (dpu_id_t idx_range = 0; idx_range < nr_hot_ranges; idx_range++) {
+                    dpu_to_hot_range[nr_cold_queries[idx_range].first] = nr_hot_queries[nr_hot_ranges - 1 - idx_range].first;
+                }
+
+                extract_and_distribute_hot_ranges();
             }
         }
-        cold_to_hot[nr_cold_ranges] = idx_new_hot;
-        nr_hot_ranges = idx_new_hot;
-
-        threshold_nr_queries_to_hot = static_cast<double>(max_nr_queries_in_hot * (1 + InversedRebalancingNoiseMargin))
-                                      / static_cast<double>(InversedRebalancingNoiseMargin * nr_queries);
-
-        if (nr_hot_ranges > 0) {
-            std::array<std::pair<dpu_id_t, size_t>, MAX_NR_DPUS> nr_cold_queries, nr_hot_queries;
-            for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
-                nr_cold_queries[idx_cold] = {idx_cold, pt_qrys.cold[idx_cold].size()};
-            }
-            for (dpu_id_t idx_hot = 0; idx_hot < nr_hot_ranges; idx_hot++) {
-                nr_hot_queries[idx_hot] = {idx_hot, pt_qrys.hot[idx_hot].size()};
-            }
-
-            std::partial_sort(&nr_cold_queries[0], &nr_cold_queries[nr_hot_ranges], &nr_cold_queries[nr_cold_ranges], [](auto& lhs, auto& rhs) { return lhs.second < rhs.second; });
-            std::sort(&nr_hot_queries[0], &nr_hot_queries[nr_hot_ranges], [](auto& lhs, auto& rhs) { return lhs.second < rhs.second; });
-
-            for (dpu_id_t idx_range = 0; idx_range < nr_hot_ranges; idx_range++) {
-                dpu_to_hot_range[nr_cold_queries[idx_range].first] = nr_hot_queries[nr_hot_ranges - 1 - idx_range].first;
-            }
-
-            extract_and_distribute_hot_ranges();
-        }
-    }
+    } while (false);
 
     execute_get_in_dpus();
 
@@ -517,22 +528,45 @@ struct BPForest::GetResultReceiver {
 };
 inline void BPForest::execute_get_in_dpus()
 {
-    UPMEM_AsyncDuration async;
-
     std::array<std::array<uint16_t, 2>, MAX_NR_DPUS> nr_cold_hot_queries;
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
-        assert(pt_qrys.cold[idx_dpu].size() <= std::numeric_limits<uint16_t>::max());
+        ASSERT(pt_qrys.cold[idx_dpu].size() <= std::numeric_limits<uint16_t>::max());
         nr_cold_hot_queries[idx_dpu][0] = static_cast<uint16_t>(pt_qrys.cold[idx_dpu].size());
 
         const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
-        if (idx_hot != INVALID_DPU_ID)
-            assert(pt_qrys.hot[idx_hot].size() <= std::numeric_limits<uint16_t>::max());
-        nr_cold_hot_queries[idx_dpu][1] = static_cast<uint16_t>(idx_hot != INVALID_DPU_ID ? pt_qrys.hot[idx_hot].size() : 0);
+        if (idx_hot != INVALID_DPU_ID) {
+            ASSERT(pt_qrys.hot[idx_hot].size() <= std::numeric_limits<uint16_t>::max());
+            nr_cold_hot_queries[idx_dpu][1] = static_cast<uint16_t>(pt_qrys.hot[idx_hot].size());
+        } else {
+            nr_cold_hot_queries[idx_dpu][1] = 0;
+        }
     }
 
-    gather_to_dpu(all_dpu, 0, GetQuerySender{this, &nr_cold_hot_queries[0]}, async);
-    execute(all_dpu, async);
-    scatter_from_dpu(all_dpu, 0, GetResultReceiver{this}, async);
+#ifdef SYNCHRONOUS_DPU_EXEC
+    {
+        StopWatch timer{QuerySendTime};
+        UPMEM_AsyncDuration async;
+        gather_to_dpu(all_dpu, 0, GetQuerySender{this, &nr_cold_hot_queries[0]}, async);
+    }
+    {
+        StopWatch timer{QueryExecTime};
+        UPMEM_AsyncDuration async;
+        execute(all_dpu, async);
+    }
+    {
+        StopWatch timer{QueryRecvTime};
+        UPMEM_AsyncDuration async;
+        scatter_from_dpu(all_dpu, 8, GetResultReceiver{this}, async);
+    }
+#else /* SYNCHRONOUS_DPU_EXEC */
+    {
+        UPMEM_AsyncDuration async;
+        StopWatch timer{QuerySendExecRecvTime};
+        gather_to_dpu(all_dpu, 0, GetQuerySender{this, &nr_cold_hot_queries[0]}, async);
+        execute(all_dpu, async);
+        scatter_from_dpu(all_dpu, 8, GetResultReceiver{this}, async);
+    }
+#endif
 
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
     std::unique_ptr<LogBuffer> log = read_log(all_dpu);
@@ -1190,7 +1224,7 @@ void BPForest::execute_rmq_in_dpus(
                                + (hot_range_to_delim_idx[idx_hot][1] != 0);
 
             const size_t tmp = hot_idx_lump_end - hot_idx_lump_begin;
-            assert(tmp <= std::numeric_limits<uint16_t>::max());
+            ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
             nr_lumps[idx_dpu][1] = static_cast<uint16_t>(tmp);
         }
 
@@ -1206,7 +1240,7 @@ void BPForest::execute_rmq_in_dpus(
                                              + (cold_range_to_delim_idx[idx_dpu + 1] != 0);
 
             const size_t nr_cold_lumps = cold_idx_lump_end - cold_idx_lump_begin;
-            assert(nr_cold_lumps <= std::numeric_limits<uint16_t>::max());
+            ASSERT(nr_cold_lumps <= std::numeric_limits<uint16_t>::max());
             nr_lumps[idx_dpu][0] = static_cast<uint16_t>(nr_cold_lumps);
 
             lump_end_indices_size = (nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1] + 2
@@ -1217,12 +1251,12 @@ void BPForest::execute_rmq_in_dpus(
             lump_end_indices[idx_dpu].push_back(0);
             for (size_t idx_lump = cold_idx_lump_begin; idx_lump + 1 < cold_idx_lump_end; idx_lump++) {
                 const size_t tmp = rg_lump_end_indices[idx_lump] - idx_offset;
-                assert(tmp <= std::numeric_limits<uint16_t>::max());
+                ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                 lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
             }
             if (nr_cold_lumps != 0) {
                 const size_t tmp = idx_delim_end - idx_offset;
-                assert(tmp <= std::numeric_limits<uint16_t>::max());
+                ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                 lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
             }
 
@@ -1256,9 +1290,9 @@ void BPForest::execute_rmq_in_dpus(
                     nr_cold_lumps += cold_idx_lump_end - cold_idx_lump_begin;
                 }
             }
-            assert(nr_cold_lumps <= std::numeric_limits<uint16_t>::max());
+            ASSERT(nr_cold_lumps <= std::numeric_limits<uint16_t>::max());
             nr_lumps[idx_dpu][0] = static_cast<uint16_t>(nr_cold_lumps);
-            assert(nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1] <= MAX_NR_RMQ_LUMPS);
+            ASSERT(nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1] <= MAX_NR_RMQ_LUMPS);
             lump_end_indices_size = (nr_lumps[idx_dpu][0] + nr_lumps[idx_dpu][1] + 2
                                         + 8 / sizeof(uint16_t) - 1)
                                     / (8 / sizeof(uint16_t)) * (8 / sizeof(uint16_t));
@@ -1277,12 +1311,12 @@ void BPForest::execute_rmq_in_dpus(
                                                      + (hot_range_to_delim_idx[idx_hot][0] != 0);
                     for (size_t idx_lump = cold_idx_lump_begin; idx_lump + 1 < cold_idx_lump_end; idx_lump++) {
                         const size_t tmp = rg_lump_end_indices[idx_lump] - idx_offset;
-                        assert(tmp <= std::numeric_limits<uint16_t>::max());
+                        ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                         lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
                     }
                     if (cold_idx_lump_begin != cold_idx_lump_end) {
                         const size_t tmp = idx_delim_end - idx_offset;
-                        assert(tmp <= std::numeric_limits<uint16_t>::max());
+                        ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                         lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
                     }
 
@@ -1316,12 +1350,12 @@ void BPForest::execute_rmq_in_dpus(
                                                          + (hot_range_to_delim_idx[idx_hot + 1][0] != 0);
                         for (size_t idx_lump = cold_idx_lump_begin; idx_lump + 1 < cold_idx_lump_end; idx_lump++) {
                             const size_t tmp = rg_lump_end_indices[idx_lump] - idx_offset;
-                            assert(tmp <= std::numeric_limits<uint16_t>::max());
+                            ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                             lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
                         }
                         if (cold_idx_lump_begin != cold_idx_lump_end) {
                             const size_t tmp = idx_delim_end - idx_offset;
-                            assert(tmp <= std::numeric_limits<uint16_t>::max());
+                            ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                             lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
                         }
 
@@ -1339,12 +1373,12 @@ void BPForest::execute_rmq_in_dpus(
                                                      + (cold_range_to_delim_idx[idx_dpu + 1] != 0);
                     for (size_t idx_lump = cold_idx_lump_begin; idx_lump + 1 < cold_idx_lump_end; idx_lump++) {
                         const size_t tmp = rg_lump_end_indices[idx_lump] - idx_offset;
-                        assert(tmp <= std::numeric_limits<uint16_t>::max());
+                        ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                         lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
                     }
                     if (cold_idx_lump_begin != cold_idx_lump_end) {
                         const size_t tmp = idx_delim_end - idx_offset;
-                        assert(tmp <= std::numeric_limits<uint16_t>::max());
+                        ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                         lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
                     }
 
@@ -1360,12 +1394,12 @@ void BPForest::execute_rmq_in_dpus(
                          idx_offset = idx_delim_begin;
             for (size_t idx_lump = hot_idx_lump_begin; idx_lump + 1 < hot_idx_lump_end; idx_lump++) {
                 const size_t tmp = rg_lump_end_indices[idx_lump] - idx_offset;
-                assert(tmp <= std::numeric_limits<uint16_t>::max());
+                ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                 lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
             }
             if (hot_idx_lump_begin != hot_idx_lump_end) {
                 const size_t tmp = idx_delim_end - idx_offset;
-                assert(tmp <= std::numeric_limits<uint16_t>::max());
+                ASSERT(tmp <= std::numeric_limits<uint16_t>::max());
                 lump_end_indices[idx_dpu].push_back(static_cast<uint16_t>(tmp));
             }
         }
@@ -1895,21 +1929,38 @@ inline void BPForest::extract_and_distribute_hot_ranges()
         cold_task_headers[idx_dpu] = {TASK_INIT, bytes_for_dpu / uint32_t{sizeof(KVPair)}};
     }
 
-    UPMEM_AsyncDuration async;
-    gather_to_dpu(all_dpu, 0, RebalancedColdKVPairsSender{this, &cold_boundaries[0], &hot_boundaries[0], &cold_task_headers[0]}, async);
-    execute(all_dpu, async);
-
-    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
-        const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
-        if (idx_hot == INVALID_DPU_ID) {
-            hot_task_headers[idx_dpu] = {TASK_NONE, 0};
-        } else {
-            hot_task_headers[idx_dpu] = {TASK_CONSTRUCT_HOT, static_cast<uint32_t>(hot_boundaries[idx_hot][1] - hot_boundaries[idx_hot][0])};
-        }
+    {
+        UPMEM_AsyncDuration async;
+        gather_to_dpu(all_dpu, 0, RebalancedColdKVPairsSender{this, &cold_boundaries[0], &hot_boundaries[0], &cold_task_headers[0]}, async);
+        execute(all_dpu, async);
+#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
     }
+    {
+        std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+        std::cout << log->get() << std::flush;
+    }
+    {
+        UPMEM_AsyncDuration async;
+#endif
 
-    gather_to_dpu(all_dpu, 0, HotKVPairsSender{this, &hot_boundaries[0], &hot_task_headers[0]}, async);
-    execute(all_dpu, async);
+        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
+            const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
+            if (idx_hot == INVALID_DPU_ID) {
+                hot_task_headers[idx_dpu] = {TASK_NONE, 0};
+            } else {
+                hot_task_headers[idx_dpu] = {TASK_CONSTRUCT_HOT, static_cast<uint32_t>(hot_boundaries[idx_hot][1] - hot_boundaries[idx_hot][0])};
+            }
+        }
+
+        gather_to_dpu(all_dpu, 0, HotKVPairsSender{this, &hot_boundaries[0], &hot_task_headers[0]}, async);
+        execute(all_dpu, async);
+    }
+#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+    {
+        std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+        std::cout << log->get() << std::flush;
+    }
+#endif
 }
 
 #else /* EXTRACT_BY_INITIALIZATION */
@@ -2164,6 +2215,11 @@ inline void BPForest::print_params(std::ostream& ostr) const
             "SYNCHRONOUS_DPU_EXEC: 1\n"
 #else
             "SYNCHRONOUS_DPU_EXEC: 0\n"
+#endif
+#ifdef EXTRACT_BY_INITIALIZATION
+            "EXTRACT_BY_INITIALIZATION: 1\n"
+#else
+            "EXTRACT_BY_INITIALIZATION: 0\n"
 #endif
             "param.balancing: " << param.balancing << "\n"
          << std::flush;

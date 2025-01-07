@@ -1,7 +1,5 @@
 #pragma once
 
-#include "workload_types.h"
-
 #include <cstddef>
 #include <utility>
 #include <vector>
@@ -11,7 +9,13 @@ template <typename T>
 struct WorkloadBuffer {
     std::vector<T> buffer;
 
+    WorkloadBuffer() = default;
     WorkloadBuffer(std::vector<T> b) : buffer{std::move(b)} {}
+    WorkloadBuffer& operator=(std::vector<T>&& b) {
+        buffer = std::move(b);
+        consumed = 0;
+        return *this;
+    }
 
 private:
     size_t consumed = 0;

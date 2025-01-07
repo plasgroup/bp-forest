@@ -72,6 +72,12 @@ typedef struct {
 
 typedef struct {
     __dma_aligned Node node_cache;
+    __dma_aligned key_uint64_t qrys[TASK_GET_NR_CACHED_QRYS];
+} GetWorkspace;
+
+
+typedef struct {
+    __dma_aligned Node node_cache;
     __dma_aligned uint16_t lump_end_indices[TASK_RANGE_MIN_NR_CACHED_LUMP_END_INDICES];
     __dma_aligned key_uint64_t delim_keys[TASK_RANGE_MIN_NR_CACHED_DELIM_KEYS];
     __dma_aligned value_uint64_t results[TASK_RANGE_MIN_NR_CACHED_RESULTS];
@@ -81,7 +87,7 @@ _Static_assert((TASK_RANGE_MIN_NR_CACHED_LUMP_END_INDICES * sizeof(uint16_t)) % 
 typedef union {
     __dma_aligned uint16_t lump_end_indices[MAX_NR_RMQ_LUMPS + 2];
     TaskletLocalRMQWorkspace th[TASK_RANGE_MIN_NR_TASKLETS];
-} RMQWorkSpace;
+} RMQWorkspace;
 
 
 #define MAX_NR_SUMMARY_DATA (MAX_NR_NODES * (MAX_NR_CHILDREN - 1) / ((MAX_NR_CHILDREN - 1) * MIN_NR_CHILDREN + MAX_NR_CHILDREN))
@@ -140,5 +146,6 @@ typedef union {
     InitWorkspace init[TREE_CONSTRUCT_NR_TASKLETS];
     SummarizeWorkspace summarize;
     ExtractWorkspace extract;
-    RMQWorkSpace rmq;
+    GetWorkspace get[TASK_GET_NR_TASKLETS];
+    RMQWorkspace rmq;
 } TreeWorkspace;

@@ -48,6 +48,8 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
 #else
                                      "TASK_CONSTRUCT_HOT_CHECK: 0\n"
 #endif
+                                     "TASK_GET_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_GET_NR_TASKLETS) "\n"
+                                     "TASK_GET_NR_CACHED_QRYS: " EXPAND_STRINGIFY(TASK_GET_NR_CACHED_QRYS) "\n"
                                      "TASK_RANGE_MIN_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_RANGE_MIN_NR_TASKLETS) "\n"
                                      "TASK_RANGE_MIN_NR_CACHED_LUMP_END_INDICES: " EXPAND_STRINGIFY(TASK_RANGE_MIN_NR_CACHED_LUMP_END_INDICES) "\n"
                                      "TASK_RANGE_MIN_NR_CACHED_DELIM_KEYS: " EXPAND_STRINGIFY(TASK_RANGE_MIN_NR_CACHED_DELIM_KEYS) "\n"
