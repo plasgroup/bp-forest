@@ -16,7 +16,7 @@
 #include "parallel.ipp"
 
 
-#define KEY_INTERVAL(n) ((KEY_MAX - KEY_MIN) / (n))
+#define KEY_INTERVAL(n) ((KEY_MAX - KEY_MIN) / ((n) - 1))
 
 std::chrono::nanoseconds QueryProcessTime;
 
@@ -166,32 +166,32 @@ public:
     }
 
     void batch_range_minimum(uint64_t n, 
-                            ExtendableBuffer<KeyRange>& queries,
-                            ExtendableBuffer<value_uint64_t>& results);
+                             const KeyRange queries[],
+                             value_uint64_t results[]);
 
     void batch_range_minimum_verify(size_t n,
-                            ExtendableBuffer<KeyRange>& queries,
-                            ExtendableBuffer<value_uint64_t>& results);
+                                    const KeyRange queries[],
+                                    const value_uint64_t results[]);
 
     void batch_range_sum(uint64_t n, 
-                        ExtendableBuffer<KeyRange>& queries,
-                        ExtendableBuffer<value_uint64_t>& results);
+                         const KeyRange queries[],
+                         value_uint64_t results[]);
 
     void batch_range_sum_verify(size_t n,
-                        ExtendableBuffer<KeyRange>& queries,
-                        ExtendableBuffer<value_uint64_t>& results);
+                                const KeyRange queries[],
+                                const value_uint64_t results[]);
 
     void batch_get(uint64_t n, 
-                   ExtendableBuffer<key_uint64_t>& keys,
-                   ExtendableBuffer<value_uint64_t>& results);
+                   const key_uint64_t keys[],
+                   value_uint64_t results[]);
 
     void batch_get_verify(size_t n,
-                          ExtendableBuffer<key_uint64_t> &queries,
-                          ExtendableBuffer<value_uint64_t> &results);
+                          const key_uint64_t queries[],
+                          const value_uint64_t results[]);
 
     void batch_range_count(uint64_t n, 
-                           ExtendableBuffer<std::pair<KeyRange, std::array<char, 8>>>& queries,
-                           ExtendableBuffer<value_uint64_t>& results);
+                           const std::pair<KeyRange, std::array<char, 8>> queries[],
+                           value_uint64_t results[]);
 
     int get_parallelism() const
     {
@@ -200,12 +200,12 @@ public:
 };
 
 void Database::batch_range_minimum(uint64_t n, 
-                                   ExtendableBuffer<KeyRange> &queries,
-                                   ExtendableBuffer<value_uint64_t> &results)
+                                   const KeyRange queries[],
+                                   value_uint64_t results[])
 {
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
-            KeyRange &q = queries[i];
+            const KeyRange &q = queries[i];
             auto it = index->lower_bound(q.begin);
             if (it != index->end() && it->first < q.end) {
                 int left_idx = it->second;
@@ -218,13 +218,13 @@ void Database::batch_range_minimum(uint64_t n,
 }
 
 void Database::batch_range_minimum_verify(uint64_t n,
-                                   ExtendableBuffer<KeyRange> &queries,
-                                   ExtendableBuffer<value_uint64_t> &results)
+                                          const KeyRange queries[],
+                                          const value_uint64_t results[])
 {
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
-            KeyRange &q = queries[i];
-            key_uint64_t key_interval = KEY_INTERVAL(nr_keys - 1);
+            const KeyRange &q = queries[i];
+            key_uint64_t key_interval = KEY_INTERVAL(nr_keys);
             int left_idx = ((q.begin - KEY_MIN) + key_interval - 1) / key_interval;
             int right_idx = (q.end - KEY_MIN) / key_interval;
             key_uint64_t begin = KEY_MIN + left_idx * key_interval;
@@ -242,12 +242,12 @@ void Database::batch_range_minimum_verify(uint64_t n,
 }
 
 void Database::batch_range_sum(uint64_t n, 
-                               ExtendableBuffer<KeyRange> &queries,
-                               ExtendableBuffer<value_uint64_t> &results)
+                               const KeyRange queries[],
+                               value_uint64_t results[])
 {
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
-            KeyRange &q = queries[i];
+            const KeyRange &q = queries[i];
             auto it = index->lower_bound(q.begin);
             if (it != index->end() && it->first < q.end) {
                 int left_idx = it->second;
@@ -259,13 +259,15 @@ void Database::batch_range_sum(uint64_t n,
     });
 }
 
-void Database::batch_range_sum_verify(size_t n, ExtendableBuffer<KeyRange> &queries, ExtendableBuffer<value_uint64_t> &results) 
+void Database::batch_range_sum_verify(size_t n, 
+                                      const KeyRange queries[],
+                                      const value_uint64_t results[]) 
 {
     std::mutex mtx;
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
-            KeyRange &q = queries[i];
-            key_uint64_t key_interval = KEY_INTERVAL(nr_keys - 1);
+            const KeyRange &q = queries[i];
+            key_uint64_t key_interval = KEY_INTERVAL(nr_keys);
             int left_idx = ((q.begin - KEY_MIN) + key_interval - 1) / key_interval;
             int right_idx = (q.end - KEY_MIN) / key_interval;
             key_uint64_t begin = KEY_MIN + left_idx * key_interval;
@@ -290,8 +292,8 @@ void Database::batch_range_sum_verify(size_t n, ExtendableBuffer<KeyRange> &quer
 }
 
 void Database::batch_get(uint64_t n, 
-                         ExtendableBuffer<key_uint64_t> &keys,
-                         ExtendableBuffer<value_uint64_t> &results)
+                         const key_uint64_t keys[],
+                         value_uint64_t results[])
 {
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
@@ -305,13 +307,13 @@ void Database::batch_get(uint64_t n,
 }
 
 void Database::batch_get_verify(size_t n,
-                                ExtendableBuffer<key_uint64_t> &queries,
-                                ExtendableBuffer<value_uint64_t> &results)
+                                const key_uint64_t queries[],
+                                const value_uint64_t results[])
 {
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             key_uint64_t q = queries[i];
-            key_uint64_t key_interval = KEY_INTERVAL(nr_keys - 1);
+            key_uint64_t key_interval = KEY_INTERVAL(nr_keys);
             value_uint64_t expected = 0;
             if (q < KEY_MIN || q >= KEY_MAX)
                 expected = NOT_FOUND_VALUE;
@@ -329,13 +331,13 @@ void Database::batch_get_verify(size_t n,
 
 
 void Database::batch_range_count(uint64_t n, 
-                                 ExtendableBuffer<std::pair<KeyRange, std::array<char, 8>>>& queries,
-                                 ExtendableBuffer<value_uint64_t>& results)
+                                 const std::pair<KeyRange, std::array<char, 8>> queries[],
+                                 value_uint64_t results[])
 {
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
-            KeyRange &qr = queries[i].first;
-            char* qs = queries[i].second.data();
+            const KeyRange &qr = queries[i].first;
+            const char* qs = queries[i].second.data();
             int count = 0;
             for (auto it = index->lower_bound(qr.begin);
                  it != index->end() && it->first < qr.end; it++) {
@@ -362,7 +364,7 @@ Database* make_database(size_t nr_keys, int nthreads)
 
     keys.reserve(nr_keys);
     values.reserve(nr_keys);
-    key_uint64_t key_interval = KEY_INTERVAL(nr_keys - 1); 
+    key_uint64_t key_interval = KEY_INTERVAL(nr_keys); 
     for (size_t i = 0; i < nr_keys; i++) {
         const size_t k = KEY_MIN + key_interval * i;
         keys.push_back(k);
@@ -424,8 +426,8 @@ public:
     {
         for (int idx_batch = 0; idx_batch < nr_batches; idx_batch++) {
             do_one_batch(idx_batch, db);
-            printf("%s,%d,%d,%d,%d,%ld\n",
-                opt.alpha.c_str(), 1, db->get_parallelism(), idx_batch,
+            printf("%s,%d,%d,%d,%ld\n",
+                opt.alpha.c_str(), db->get_parallelism(), idx_batch,
                 NUM_REQUESTS_PER_BATCH, QueryProcessTime.count());
         }
     }
@@ -519,10 +521,10 @@ public:
         size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, keys, results);
         {
             StopWatch sw(QueryProcessTime);
-            db->batch_get(num_queries_batch, keys, results);
+            db->batch_get(num_queries_batch, &keys[0], &results[0]);
         }
         if (verify && idx_batch == 0)
-            db->batch_get_verify(num_queries_batch, keys, results);
+            db->batch_get_verify(num_queries_batch, &keys[0], &results[0]);
     }
 };
 
@@ -541,7 +543,7 @@ public:
             PiecewiseConstantWorkload pworkload;
             load_workload(workload_file, &pworkload);
 
-            key_uint64_t key_interval = KEY_INTERVAL(opt.nr_keys - 1); 
+            key_uint64_t key_interval = KEY_INTERVAL(opt.nr_keys); 
             size_t range_length = key_interval * 100 - 1;
             std::vector<KeyRange> workload;
             workload.reserve(pworkload.data.size());
@@ -572,10 +574,10 @@ public:
         size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, ranges, results);
         {
             StopWatch sw(QueryProcessTime);
-            db->batch_range_minimum(num_queries_batch, ranges, results);
+            db->batch_range_minimum(num_queries_batch, &ranges[0], &results[0]);
         }
         if (verify && idx_batch == 0)
-            db->batch_range_minimum_verify(num_queries_batch, ranges, results);
+            db->batch_range_minimum_verify(num_queries_batch, &ranges[0], &results[0]);
     }
 };
 
@@ -593,10 +595,10 @@ public:
         size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, ranges, results);
         {
             StopWatch sw(QueryProcessTime);
-            db->batch_range_sum(num_queries_batch, ranges, results);
+            db->batch_range_sum(num_queries_batch, &ranges[0], &results[0]);
         }
         if (verify && idx_batch == 0)
-            db->batch_range_sum_verify(num_queries_batch, ranges, results);
+            db->batch_range_sum_verify(num_queries_batch, &ranges[0], &results[0]);
     }
 };
 
@@ -614,7 +616,7 @@ public:
         else {
             PiecewiseConstantWorkload pworkload;
             load_workload(workload_file, &pworkload);
-            key_uint64_t key_interval = KEY_INTERVAL(opt.nr_keys - 1); 
+            key_uint64_t key_interval = KEY_INTERVAL(opt.nr_keys); 
             size_t range_length = key_interval * 100 - 1;
             std::vector<Query> workload;
             workload.reserve(pworkload.data.size());
@@ -640,7 +642,7 @@ public:
         size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, queries, results);
         {
             StopWatch sw(QueryProcessTime);
-            db->batch_range_count(num_queries_batch, queries, results);
+            db->batch_range_count(num_queries_batch, &queries[0], &results[0]);
         }
 //        if (idx_batch == 0)
 //            db->batch_range_count_verify(num_queries_batch, ranges, results);
