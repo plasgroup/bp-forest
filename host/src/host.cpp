@@ -750,7 +750,7 @@ int main(int argc, char* argv[])
 #endif
                     ",%ld\n",
                 opt.alpha.c_str(), upmem_get_nr_dpus(), idx_batch,
-                NUM_REQUESTS_PER_BATCH, RebalancingTime.count(),
+                long{NUM_REQUESTS_PER_BATCH}, RebalancingTime.count(),
 #ifdef SYNCHRONOUS_DPU_EXEC
                 QuerySendTime.count(), QueryExecTime.count(), QueryRecvTime.count(),
 #else /* SYNCHRONOUS_DPU_EXEC */
