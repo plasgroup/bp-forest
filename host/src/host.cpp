@@ -88,12 +88,21 @@ struct Option {
         a.add<dpu_id_t>("print-hot-memory-load", 0, "print number of KV pairs stored in hot ranges in each dpu", false, 0);
         a.add("print-perf", 'p', "print performance metrics");
         a.add("print-init-time", 0, "print elapsed time for initialization of BPForest");
+        a.add<std::string>("pimtree_workload_file", 0, "file path to PIM-Tree workload file", false);
+        a.add<std::string>("pimtree_init_file", 'i', "file path to PIM-Tree init file", false);
         a.parse_check(argc, argv);
 
         dump_param_file = a.get<std::string>("dump-params");
         balancing_param = a.get<unsigned>("balancing-param");
         alpha = a.get<std::string>("zipfianconst");
-        workload_file = a.get<std::string>("workload_dir") + ("/zipf_const_" + alpha + ".bin");
+        if (!a.get<std::string>("pimtree_workload_file").empty()) {
+            workload_file = a.get<std::string>("pimtree_workload_file");
+            is_pimtree_workload = true;
+        } else {
+            workload_file = a.get<std::string>("workload_dir") + ("/zipf_const_" + alpha + ".bin");
+            is_pimtree_workload = false;
+        }
+        pimtree_init_file = a.get<std::string>("pimtree_init_file");
         nr_batches = a.get<int>("num_batches");
 
         if (a.get<std::string>("ops") == "get")
@@ -123,6 +132,8 @@ struct Option {
     unsigned balancing_param;
     std::string alpha;
     std::string workload_file;
+    std::string pimtree_init_file;
+    bool is_pimtree_workload;
     int nr_batches;
     TaskID op_type;
     dpu_id_t print_compute_load, print_memory_load;
@@ -513,7 +524,25 @@ Database make_database()
         verify_db.emplace(k, k);
 #endif /* DEBUG_ON */
     }
-    return Database(std::move(init_pairs), BPForest::Param{});
+    return Database(std::move(init_pairs), BPForest::Param{opt.balancing_param});
+}
+
+Database make_database_from_pimtree_init_file(const std::string& init_file)
+{
+    std::cout << "making database from pimtree init file " << init_file << std::endl;
+    std::vector<KVPair> pairs;
+    pimtree_queries qs = make_pimtree_queries(init_file);
+    for (int i = 0; i < qs.length; i++) {
+        if (qs.ops[i].type == insert_t) {
+            pairs.push_back({key_int64_to_uint64(qs.ops[i].tsk.i.key),
+                value_int64_to_uint64(qs.ops[i].tsk.i.value)});
+        } else {
+            std::cerr << "init_file has invalid operation of type: " << qs.ops[i].type << std::endl;
+            exit(1);
+        }
+    }
+    std::cout << "making database with " << pairs.size() << " pairs" << std::endl;
+    return Database(std::move(pairs), {opt.balancing_param});
 }
 
 class Benchmark {
@@ -688,15 +717,16 @@ int main(int argc, char* argv[])
 
     Benchmark* benchmark;
     if (opt.op_type == TASK_GET)
-        benchmark = new GetBenchmark(opt.workload_file, false, false);
+        benchmark = new GetBenchmark(opt.workload_file, opt.is_pimtree_workload, false);
     else if (opt.op_type == TASK_RANGE_MIN)
-        benchmark = new RMQBenchmark(opt.workload_file, false, false);
+        benchmark = new RMQBenchmark(opt.workload_file, opt.is_pimtree_workload, false);
     else {
         std::cerr << "unsupported task type: " << opt.op_type << std::endl;
         exit(1);
     }
 
-    Database db = make_database();
+    Database db = (opt.pimtree_init_file.empty() ? make_database()
+                                                 : make_database_from_pimtree_init_file(opt.pimtree_init_file));
 
 #ifdef PRINT_DEBUG
     printf("initialization finished\n");
