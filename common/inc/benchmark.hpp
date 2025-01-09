@@ -1,12 +1,16 @@
+#include "database.hpp"
+#include "host/inc/extendable_buffer.hpp"
+#include "host/inc/pimtree_query.hpp"
+#include "host/inc/statistics.hpp"
+#include "piecewise_constant_workload.hpp"
+#include "workload_buffer.hpp"
+#include "workload_types.h"
+
+#include <cereal/archives/binary.hpp>
+
 #include <functional>
 #include <vector>
-#include "database.hpp"
-#include "workload_types.h"
-#include "host/inc/pimtree_query.hpp"
-#include "host/inc/extendable_buffer.hpp"
-#include "host/inc/statistics.hpp"
-#include "workload_mgmt/inc/workload_buffer.hpp"
-#include "workload_mgmt/inc/piecewise_constant_workload.hpp"
+
 
 extern std::chrono::nanoseconds QueryProcessTime;
 

@@ -23,6 +23,9 @@ foreach(build_version IN LISTS targets)
     add_executable(host_app_${build_version} ${HOST_SOURCE})
     target_include_directories(host_app_${build_version} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/inc)
 
+    # TODO: remove this line
+    target_include_directories(host_app_${build_version} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/..)
+
     target_link_libraries(host_app_${build_version} common_${build_version} workload_mgmt cmdline cereal Threads::Threads)
 
     if(build_version MATCHES "^upmem")
