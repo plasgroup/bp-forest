@@ -1051,7 +1051,7 @@ void task_summarize(void)
             }
             uint16_t nr_committed_blocks = wks->nr_committed_blocks;
 
-            for (uint16_t idx_in_chunk_linked_list = next_idx_in_chunk_linked_list; idx_in_chunk_linked_list != next_idx_in_chunk_linked_list;) {
+            for (uint16_t idx_in_chunk_linked_list = me(); idx_in_chunk_linked_list != next_idx_in_chunk_linked_list;) {
                 idx_in_chunk_linked_list = wks->chunk_linked_list[idx_in_chunk_linked_list];
                 const uint16_t idx_chunk = idx_in_chunk_linked_list - TASK_SUMMARIZE_NR_TASKLETS;
 
