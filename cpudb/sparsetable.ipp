@@ -14,7 +14,7 @@ class SparseTable
 {
 private:
     std::vector<std::vector<T>> table;
-    std::vector<int> log;
+    std::vector<size_t> log;
 
 public:
     SparseTable(const std::vector<T>& data, ParallelManager* parallel);
@@ -48,17 +48,17 @@ SparseTable<T>::SparseTable(const std::vector<T>& data)
 template <typename T>
 SparseTable<T>::SparseTable(const std::vector<T>& data, ParallelManager* parallel)
 {
-    int n = data.size();
-    int K = std::log2(n) + 1;
+    size_t n = data.size();
+    size_t K = ((size_t) std::log2(n)) + 1;
     table.resize(K, std::vector<T>());
-    for (int i = 0; i < K; i++)
+    for (size_t i = 0; i < K; i++)
         table[i].reserve(n);
     log.reserve(n + 1);
 
     parallel->run(1, n + 1, [&](size_t s, size_t e) {
-        int logi = std::log2(s);
-        int next = (1 << (logi + 1)) - 1;
-        for (int i = s; i < e; i++) {
+        size_t logi = (size_t) std::log2(s);
+        size_t next = (1 << (logi + 1)) - 1;
+        for (size_t i = s; i < e; i++) {
             log[i] = logi;
             if (i == next) {
                 logi++;
@@ -69,15 +69,15 @@ SparseTable<T>::SparseTable(const std::vector<T>& data, ParallelManager* paralle
 
     // Initialize table for the intervals with length 1
     parallel->run(0, n, [&](size_t s, size_t e) {
-        for (int i = s; i < e; i++)
+        for (size_t i = s; i < e; i++)
             table[0][i] = data[i];
     });
 
     // Compute values from smaller to bigger intervals
-    for (int j = 1; j < K; j++) {
-        int end = n - (1 << j) + 1;
+    for (size_t j = 1; j < K; j++) {
+        size_t end = n - (1 << j) + 1;
         parallel->run(0, end, [&](size_t s, size_t e) {
-            for (int i = s; i < e; i++)
+            for (size_t i = s; i < e; i++)
                 table[j][i] = std::min(table[j - 1][i], table[j - 1][i + (1 << (j - 1))]); // 次元を入れ替え
         });
     }
@@ -88,6 +88,6 @@ SparseTable<T>::SparseTable(const std::vector<T>& data, ParallelManager* paralle
 template <typename T>
 T SparseTable<T>::query(int L, int R)
 {
-    int j = log[R - L + 1];
+    size_t j = log[R - L + 1];
     return std::min(table[j][L], table[j][R - (1 << j) + 1]); // 次元を入れ替え
 }
