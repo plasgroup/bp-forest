@@ -72,6 +72,9 @@ std::map<key_uint64_t, value_uint64_t> verify_db;
 XferStatistics xfer_statistics;
 #endif /* MEASURE_XFER_BYTES */
 
+#define NEW_MAIN
+
+
 struct Option {
     void parse(int argc, char* argv[])
     {
@@ -397,7 +400,6 @@ public:
 PreprocessWorker ppwk[HOST_MULTI_THREAD];
 #endif /* HOST_MULTI_THREAD */
 
-#define NEW_MAIN
 #ifdef NEW_MAIN
 
 std::chrono::nanoseconds QueryProcessTime;
