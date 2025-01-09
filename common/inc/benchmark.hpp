@@ -12,7 +12,7 @@
 #include <vector>
 
 
-extern std::chrono::nanoseconds QueryProcessTime;
+inline std::chrono::nanoseconds QueryProcessTime;
 
 class Benchmark {
 protected:
