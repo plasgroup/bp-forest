@@ -50,22 +50,23 @@ for dpu_num in "${dpu_nums[@]}"; do
         initial_element_num=${initial_element_num[i]}
         test_query_num=${test_query_num[i]}
         test_query_skew=${test_query_skews[i]}
-        init_file_name="init_dpu${dpu_num}_element${initial_element_num}.data"
-        test_get_file_name="test_get_dpu${dpu_num}_query${test_query_num}_skew${test_query_skew}.data"
-        test_scan_file_name="test_scan_dpu${dpu_num}_query${test_query_num}_skew${test_query_skew}.data"
+        init_get_file_name="${i}_init_get_dpu${dpu_num}_element${initial_element_num}.data"
+        init_scan_file_name="${i}_init_scan_dpu${dpu_num}_element${initial_element_num}.data"
+        test_get_file_name="${i}_test_get_dpu${dpu_num}_query${test_query_num}_skew${test_query_skew}.data"
+        test_scan_file_name="${i}_test_scan_dpu${dpu_num}_query${test_query_num}_skew${test_query_skew}.data"
 
         build/pim_tree_host \
             -l $initial_element_num $test_query_num \
             --get 1.0 \
             --predecessor 0 \
-            --output "${INPUT_DIR}/${init_file_name}" "${INPUT_DIR}/${test_get_file_name}" \
+            --output "${INPUT_DIR}/${init_get_file_name}" "${INPUT_DIR}/${test_get_file_name}" \
             --alpha $test_query_skew
 
         build/pim_tree_host \
             -l $initial_element_num $test_query_num \
             --scan 1.0 \
             --predecessor 0 \
-            --output "${INPUT_DIR}/${init_file_name}" "${INPUT_DIR}/${test_scan_file_name}" \
+            --output "${INPUT_DIR}/${init_scan_file_name}" "${INPUT_DIR}/${test_scan_file_name}" \
             --alpha $test_query_skew
     done
 
