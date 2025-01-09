@@ -17,7 +17,7 @@ class ParallelManager {
         void operator ()() {
             std::function<void(size_t, size_t)> task;
             while (true) {
-                size_t s, e;
+                size_t s = 0, e = 0;
                 task = manager->get_task(id, &s, &e);
                 if (task == nullptr)
                     return;
@@ -59,7 +59,7 @@ class ParallelManager {
         }
     };
 
-    int nthreads;
+    size_t nthreads;
     Barrier start_barrier, end_barrier;
     bool stopping = false;
     std::function<void(size_t, size_t)> task = nullptr;
@@ -88,7 +88,7 @@ public:
     {
         std::cout << "ParallelManager: nthreads=" << nthreads << std::endl;
         threads = new std::thread[nthreads];
-        for (int i = 0; i < nthreads; i++)
+        for (size_t i = 0; i < nthreads; i++)
             threads[i] = std::thread(Worker(this, i));
     }
 
@@ -96,7 +96,7 @@ public:
         stopping = true;
         start_barrier.stop(-1);
         end_barrier.stop(-1);
-        for (int i = 0; i < nthreads; i++)
+        for (size_t i = 0; i < nthreads; i++)
             threads[i].join();
     }
 

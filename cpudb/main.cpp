@@ -89,11 +89,11 @@ struct Option {
 } opt;
 
 class CPUDatabase : public Database {
-    ParallelManager* parallel;
     std::map<key_uint64_t, int> *index;
     std::vector<value_uint64_t> values;
     SparseTable<value_uint64_t> *rmq_data;
     SegmentTree<value_uint64_t, SumOp<value_uint64_t>> *sum_data;
+    ParallelManager* parallel;
     size_t nr_keys;
 
 public:
@@ -239,8 +239,8 @@ void CPUDatabase::batch_range_sum_verify(size_t n,
         for (size_t i = s; i < e; i++) {
             const KeyRange &q = queries[i];
             key_uint64_t key_interval = KEY_INTERVAL(nr_keys);
-            int left_idx = ((q.begin - KEY_MIN) + key_interval - 1) / key_interval;
-            int right_idx = (q.end - KEY_MIN) / key_interval;
+            size_t left_idx = ((q.begin - KEY_MIN) + key_interval - 1) / key_interval;
+            size_t right_idx = (q.end - KEY_MIN) / key_interval;
             key_uint64_t begin = KEY_MIN + left_idx * key_interval;
             key_uint64_t end = KEY_MIN + right_idx * key_interval;
             value_uint64_t expected = 0;
@@ -371,7 +371,7 @@ Database* make_database_from_pimtree_init_file(const std::string& init_file, int
     std::vector<key_uint64_t> keys;
     std::vector<value_uint64_t> values;
     pimtree_queries qs = make_pimtree_queries(init_file);
-    for (int i = 0; i < qs.length; i++) {
+    for (size_t i = 0; i < qs.length; i++) {
         if (qs.ops[i].type == insert_t) {
             keys.push_back(key_int64_to_uint64(qs.ops[i].tsk.i.key));
             values.push_back(value_int64_to_uint64(qs.ops[i].tsk.i.value));

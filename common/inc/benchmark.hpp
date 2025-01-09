@@ -72,7 +72,7 @@ public:
     WorkloadBuffer<T>* load_pimtree_workload(const std::string& workload_file) {
         pimtree_queries qs = make_pimtree_queries(workload_file);
         std::vector<T> workload;
-        for (int i = 0; i < qs.length; i++) {
+        for (size_t i = 0; i < qs.length; i++) {
             // push_back_query adds the query if the query is of the desired
             // type for the workload type. The mapping is:
             //   key_uint64_t -> get_t
@@ -276,11 +276,11 @@ public:
             size_t range_length = key_interval * 100 - 1;
             std::vector<Query> workload;
             workload.reserve(pworkload.data.size());
-            for (int i = 0; i < pworkload.data.size(); i++) {
+            for (size_t i = 0; i < pworkload.data.size(); i++) {
                 const auto& p = pworkload.data[i];
                 KeyRange range = {p, p + range_length};
                 std::array<char, 8> needle;
-                snprintf(needle.data(), 8, "%d", i % 1000);
+                snprintf(needle.data(), 8, "%d", (int) (i % 1000));
                 workload.push_back({range, needle});
             }
             workload_buffer = new WorkloadBuffer<Query>(std::move(workload));

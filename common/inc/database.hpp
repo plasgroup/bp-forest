@@ -102,7 +102,7 @@ public:
     {
         std::cout << "loading database from PIM-Tree init file " << init_file << std::endl;
         pimtree_queries qs = make_pimtree_queries(init_file);
-        for (int i = 0; i < qs.length; i++) {
+        for (size_t i = 0; i < qs.length; i++) {
             if (qs.ops[i].type == insert_t) {
                 data.push_back({
                     key_int64_to_uint64(qs.ops[i].tsk.i.key),
@@ -145,7 +145,7 @@ public:
                    const key_uint64_t keys[],
                    value_uint64_t results[])
     {
-        for (int i = 0; i < n; i++) {
+        for (size_t i = 0; i < n; i++) {
             key_uint64_t key = keys[i];
             auto it = find(key);
             if (it != data.end() && it->key == key)
@@ -159,7 +159,7 @@ public:
                              const KeyRange queries[],
                              value_uint64_t results[])
     {
-        for (int i = 0; i < n; i++)
+        for (size_t i = 0; i < n; i++)
             results[i] = foldl(queries[i], VALUE_MAX,
                                [](value_uint64_t min, const KVPair& kv) {
                                    return kv.value < min ? kv.value : min;
@@ -170,7 +170,7 @@ public:
                          const KeyRange queries[],
                          value_uint64_t results[])
     {
-        for (int i = 0; i < n; i++)
+        for (size_t i = 0; i < n; i++)
             results[i] = foldl(queries[i], 0,
                                [](value_uint64_t sum, const KVPair& kv) {
                                    return sum + kv.value;
@@ -181,7 +181,7 @@ public:
                            const count_query_t queries[],
                            value_uint64_t results[])
     {
-        for (int i = 0; i < n; i++) {
+        for (size_t i = 0; i < n; i++) {
             const KeyRange& range = queries[i].first;
             const std::array<char, 8>& needle = queries[i].second;
             results[i] = foldl(range, 0,

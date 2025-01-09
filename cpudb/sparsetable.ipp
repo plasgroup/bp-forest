@@ -57,8 +57,8 @@ SparseTable<T>::SparseTable(const std::vector<T>& data, ParallelManager* paralle
 
     parallel->run(1, n + 1, [&](size_t s, size_t e) {
         int logi = std::log2(s);
-        int next = (1 << (logi + 1)) - 1;
-        for (int i = s; i < e; i++) {
+        size_t next = (1 << (logi + 1)) - 1;
+        for (size_t i = s; i < e; i++) {
             log[i] = logi;
             if (i == next) {
                 logi++;
@@ -69,7 +69,7 @@ SparseTable<T>::SparseTable(const std::vector<T>& data, ParallelManager* paralle
 
     // Initialize table for the intervals with length 1
     parallel->run(0, n, [&](size_t s, size_t e) {
-        for (int i = s; i < e; i++)
+        for (size_t i = s; i < e; i++)
             table[0][i] = data[i];
     });
 
@@ -77,7 +77,7 @@ SparseTable<T>::SparseTable(const std::vector<T>& data, ParallelManager* paralle
     for (int j = 1; j < K; j++) {
         int end = n - (1 << j) + 1;
         parallel->run(0, end, [&](size_t s, size_t e) {
-            for (int i = s; i < e; i++)
+            for (size_t i = s; i < e; i++)
                 table[j][i] = std::min(table[j - 1][i], table[j - 1][i + (1 << (j - 1))]); // 次元を入れ替え
         });
     }
