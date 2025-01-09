@@ -11,7 +11,7 @@
 class Database {
 public:
     using count_query_t = std::pair<KeyRange, std::array<char, 8>>;
-    const value_uint64_t NOT_FOUND_VALUE = VALUE_MAX;
+    const value_uint64_t NOT_FOUND_VALUE = 0;
     
     Database() {}
     virtual ~Database() {}

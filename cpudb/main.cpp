@@ -18,8 +18,6 @@
 #include "parallel.ipp"
 
 
-std::chrono::nanoseconds QueryProcessTime;
-
 struct Option {
     void parse(int argc, char* argv[])
     {
