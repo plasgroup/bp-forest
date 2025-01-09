@@ -4,6 +4,7 @@
 #include "const_cap_vector.hpp"
 #include "extendable_buffer.hpp"
 #include "host_params.hpp"
+#include "parallel.hpp"
 #include "workload_types.h"
 
 #include <array>
@@ -35,8 +36,9 @@ struct BatchScanResult {
 
 struct BPForestParameter {
     unsigned balancing = 1;
+    unsigned nr_host_threads = 0;
 };
-struct BPForest {
+struct BPForest : ParallelManager<BPForest> {
     using Param = BPForestParameter;
 
     BPForest(std::vector<KVPair>&& sorted_pairs, const Param& = {});
@@ -63,15 +65,19 @@ private:
     const Param param;
     double threshold_nr_queries_to_hot = 0;
 
+    struct PointQueriesPerRange {
+        // qrys[idx_host_thread][idx_qry]
+        std::vector<std::vector<uint64_t>> qrys;
+        // orig_idxs[idx_host_thread][idx_qry]
+        std::vector<std::vector<size_t>> orig_idxs;
+        size_t nr_qrys;
+    };
     struct {
-        std::array<std::vector<uint64_t>, MAX_NR_DPUS> cold, hot;
-    } pt_qrys;
+        std::array<PointQueriesPerRange, MAX_NR_DPUS> cold, hot;
+    } point_qrys;
     ExtendableBuffer<uint64_t> rg_qry_data;
     ExtendableBuffer<std::array<size_t, 2>> rg_qry_to_minirg;
     std::vector<size_t> rg_lump_end_indices;
-    struct {
-        std::array<std::vector<size_t>, MAX_NR_DPUS> cold, hot;
-    } orig_idxs;
 
 public:  // TODO: privatize
     struct Summary {
@@ -96,8 +102,19 @@ private:
     void route_get_queries(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
     bool check_if_get_queries_balance(size_t nr_queries);
     void execute_get_in_dpus();
+    void postprocess_of_get(value_uint64_t result[]);
     struct GetQuerySender;
     struct GetResultReceiver;
+
+    template <bool HasHotRanges>
+    void route_get_queries_impl(unsigned tid);
+    void postprocess_of_get_impl(unsigned tid);
+
+    union {
+        std::tuple<size_t, const key_uint64_t*, value_uint64_t*> route_get_queries{};
+        value_uint64_t* postprocess_of_get;
+    } tmp_data;
+
 
     size_t /* nr_delim_keys */ preprocess_rmq(const size_t nr_queries, const KeyRange ranges[]);
     template <bool HasHotRanges>

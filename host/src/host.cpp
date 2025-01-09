@@ -19,7 +19,6 @@
 #include <cmdline.h>
 
 #include <ios>
-#include <pthread.h>
 #include <sched.h>
 #include <sys/time.h>
 
@@ -75,6 +74,7 @@ struct Option {
         cmdline::parser a;
         a.add<std::string>("dump-params", 0, "file path to output parameters");
         a.add<unsigned>("balancing-param", 0, "the tunable parameter for compute/memory load balancing in B+-Forest", false, 1);
+        a.add<unsigned>("nr-host-threads", 't', "num of threads used in pre/post-processing in B+-Forest", false, 0);
         a.add<std::string>("zipfianconst", 'a', "zipfian constant", false, "0.99");
         a.add<std::string>("workload_dir", 'w', "directory containing workload files", false, "workload");
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
@@ -94,6 +94,7 @@ struct Option {
 
         dump_param_file = a.get<std::string>("dump-params");
         balancing_param = a.get<unsigned>("balancing-param");
+        nr_host_threads = a.get<unsigned>("nr-host-threads");
         alpha = a.get<std::string>("zipfianconst");
         if (!a.get<std::string>("pimtree_workload_file").empty()) {
             workload_file = a.get<std::string>("pimtree_workload_file");
@@ -133,6 +134,7 @@ struct Option {
 
     std::string dump_param_file;
     unsigned balancing_param;
+    unsigned nr_host_threads;
     std::string alpha;
     std::string workload_file;
     std::string pimtree_init_file;
@@ -215,7 +217,7 @@ int main(int argc, char* argv[])
 
     InitData init_data = (opt.pimtree_init_file.empty() ?
                           InitData(NUM_INIT_REQS) : InitData(opt.pimtree_init_file));
-    BPForestDatabase db(init_data, BPForest::Param{opt.balancing_param});
+    BPForestDatabase db(init_data, BPForest::Param{opt.balancing_param, opt.nr_host_threads});
 
 #ifdef PRINT_DEBUG
     printf("initialization finished\n");

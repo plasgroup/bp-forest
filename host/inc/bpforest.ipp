@@ -35,7 +35,8 @@
 
 
 inline BPForest::BPForest(std::vector<KVPair>&& sorted_pairs, const Param& param)
-    : nr_cold_ranges{(upmem_init(), upmem_get_nr_dpus())}, param{param}
+    : ParallelManager<BPForest>{param.nr_host_threads},
+      nr_cold_ranges{(upmem_init(), upmem_get_nr_dpus())}, param{param}
 {
     dpu_to_hot_range.fill(INVALID_DPU_ID);
 
@@ -245,17 +246,22 @@ inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], va
                 for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
                     const dpu_id_t idx_hot_begin = cold_to_hot[idx_cold], idx_hot_end = cold_to_hot[idx_cold + 1];
 
-                    size_t nr_cold_queries = pt_qrys.cold[idx_cold].size();
+                    size_t nr_qrys = point_qrys.cold[idx_cold].qrys[0].size();
                     for (dpu_id_t idx_hot = idx_hot_begin; idx_hot < idx_hot_end; idx_hot++) {
-                        nr_cold_queries += pt_qrys.hot[idx_hot].size();
+std::cout << "point_qrys.hot[" << idx_hot << "].nr_qrys = " << point_qrys.hot[idx_hot].nr_qrys << std::endl;
+                        nr_qrys += point_qrys.hot[idx_hot].nr_qrys;
+                        point_qrys.cold[idx_cold].nr_qrys += point_qrys.hot[idx_hot].nr_qrys;
                     }
-                    pt_qrys.cold[idx_cold].reserve(nr_cold_queries);
-                    orig_idxs.cold[idx_cold].reserve(nr_cold_queries);
+return;
+                    point_qrys.cold[idx_cold].qrys[0].reserve(nr_qrys);
+                    point_qrys.cold[idx_cold].orig_idxs[0].reserve(nr_qrys);
                     for (dpu_id_t idx_hot = idx_hot_begin; idx_hot < idx_hot_end; idx_hot++) {
-                        std::move(pt_qrys.hot[idx_hot].begin(), pt_qrys.hot[idx_hot].end(), std::back_inserter(pt_qrys.cold[idx_cold]));
-                        pt_qrys.hot[idx_hot].clear();
-                        std::move(orig_idxs.hot[idx_hot].begin(), orig_idxs.hot[idx_hot].end(), std::back_inserter(orig_idxs.cold[idx_cold]));
-                        orig_idxs.hot[idx_hot].clear();
+                        for (unsigned i = 0; i < get_parallelism(); i++) {
+                            std::move(point_qrys.hot[idx_hot].qrys[i].begin(), point_qrys.hot[idx_hot].qrys[i].end(), std::back_inserter(point_qrys.cold[idx_cold].qrys[0]));
+                            point_qrys.hot[idx_hot].qrys[i].clear();
+                            std::move(point_qrys.hot[idx_hot].orig_idxs[i].begin(), point_qrys.hot[idx_hot].orig_idxs[i].end(), std::back_inserter(point_qrys.cold[idx_cold].orig_idxs[0]));
+                            point_qrys.hot[idx_hot].orig_idxs[i].clear();
+                        }
                     }
                 }
             }
@@ -263,7 +269,7 @@ inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], va
             std::array<bool, MAX_NR_DPUS> cold_range_rebalanced;
             const size_t cold_range_threshold = nr_queries * param.balancing / nr_cold_ranges;
             for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
-                cold_range_rebalanced[idx_cold] = (pt_qrys.cold[idx_cold].size() > cold_range_threshold);
+                cold_range_rebalanced[idx_cold] = (point_qrys.cold[idx_cold].nr_qrys > cold_range_threshold);
             }
             take_summary(cold_range_rebalanced);
 
@@ -274,8 +280,17 @@ inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], va
                 cold_to_hot[idx_cold] = idx_new_hot;
 
                 if (cold_range_rebalanced[idx_cold]) {
-                    std::vector<key_uint64_t>& cold_queries = pt_qrys.cold[idx_cold];
-                    std::vector<size_t>& cold_orig_idxs = orig_idxs.cold[idx_cold];
+                    point_qrys.cold[idx_cold].qrys[0].reserve(point_qrys.cold[idx_cold].nr_qrys);
+                    point_qrys.cold[idx_cold].orig_idxs[0].reserve(point_qrys.cold[idx_cold].nr_qrys);
+                    for (unsigned i = 1; i < get_parallelism(); i++) {
+                        std::move(point_qrys.cold[idx_cold].qrys[i].begin(), point_qrys.cold[idx_cold].qrys[i].end(), std::back_inserter(point_qrys.cold[idx_cold].qrys[0]));
+                        point_qrys.cold[idx_cold].qrys[i].clear();
+                        std::move(point_qrys.cold[idx_cold].orig_idxs[i].begin(), point_qrys.cold[idx_cold].orig_idxs[i].end(), std::back_inserter(point_qrys.cold[idx_cold].orig_idxs[0]));
+                        point_qrys.cold[idx_cold].orig_idxs[i].clear();
+                    }
+
+                    std::vector<key_uint64_t>& cold_queries = point_qrys.cold[idx_cold].qrys[0];
+                    std::vector<size_t>& cold_orig_idxs = point_qrys.cold[idx_cold].orig_idxs[0];
                     std::sort(GetQueryWithIndexIterator{{&cold_queries[0], &cold_orig_idxs[0]}},
                         GetQueryWithIndexIterator{{&cold_queries[cold_queries.size()], &cold_orig_idxs[cold_queries.size()]}});
 
@@ -320,10 +335,15 @@ inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], va
                                                                                                          : cold_delims[idx_cold + 1] - 1)
                                                                        : summary.head_key(idx_summary_entry + 1) - 1);
 
-                            pt_qrys.hot[idx_new_hot].reserve(nr_queries_in_hot);
-                            std::move(&cold_queries[idx_query_begin], &cold_queries[idx_query], std::back_inserter(pt_qrys.hot[idx_new_hot]));
-                            orig_idxs.hot[idx_new_hot].reserve(nr_queries_in_hot);
-                            std::move(&cold_orig_idxs[idx_query_begin], &cold_orig_idxs[idx_query], std::back_inserter(orig_idxs.hot[idx_new_hot]));
+                            point_qrys.hot[idx_new_hot].qrys.resize(get_parallelism());
+                            point_qrys.hot[idx_new_hot].qrys[0].reserve(nr_queries_in_hot);
+                            std::move(&cold_queries[idx_query_begin], &cold_queries[idx_query], std::back_inserter(point_qrys.hot[idx_new_hot].qrys[0]));
+                            point_qrys.hot[idx_new_hot].orig_idxs.resize(get_parallelism());
+                            point_qrys.hot[idx_new_hot].orig_idxs[0].reserve(nr_queries_in_hot);
+                            std::move(&cold_orig_idxs[idx_query_begin], &cold_orig_idxs[idx_query], std::back_inserter(point_qrys.hot[idx_new_hot].orig_idxs[0]));
+
+                            point_qrys.cold[idx_cold].nr_qrys -= nr_queries_in_hot;
+                            point_qrys.hot[idx_new_hot].nr_qrys = nr_queries_in_hot;
 
                             left_query_idxs[idx_new_hot - cold_to_hot[idx_cold]].second = idx_query_begin;
                             left_query_idxs[idx_new_hot - cold_to_hot[idx_cold] + 1].first = idx_query;
@@ -367,10 +387,10 @@ inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], va
             if (nr_hot_ranges > 0) {
                 std::array<std::pair<dpu_id_t, size_t>, MAX_NR_DPUS> nr_cold_queries, nr_hot_queries;
                 for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
-                    nr_cold_queries[idx_cold] = {idx_cold, pt_qrys.cold[idx_cold].size()};
+                    nr_cold_queries[idx_cold] = {idx_cold, point_qrys.cold[idx_cold].nr_qrys};
                 }
                 for (dpu_id_t idx_hot = 0; idx_hot < nr_hot_ranges; idx_hot++) {
-                    nr_hot_queries[idx_hot] = {idx_hot, pt_qrys.hot[idx_hot].size()};
+                    nr_hot_queries[idx_hot] = {idx_hot, point_qrys.hot[idx_hot].nr_qrys};
                 }
 
                 std::partial_sort(&nr_cold_queries[0], &nr_cold_queries[nr_hot_ranges], &nr_cold_queries[nr_cold_ranges], [](auto& lhs, auto& rhs) { return lhs.second < rhs.second; });
@@ -387,28 +407,48 @@ inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], va
 
     execute_get_in_dpus();
 
-    for (dpu_id_t idx_range = 0; idx_range < nr_cold_ranges; idx_range++) {
-        const size_t nr_queries_in_this_range = pt_qrys.cold[idx_range].size();
-        for (size_t i = 0; i < nr_queries_in_this_range; i++) {
-            result[orig_idxs.cold[idx_range][i]] = pt_qrys.cold[idx_range][i];
-        }
-        pt_qrys.cold[idx_range].clear();
-        orig_idxs.cold[idx_range].clear();
-    }
-    for (dpu_id_t idx_range = 0; idx_range < nr_hot_ranges; idx_range++) {
-        const size_t nr_queries_in_this_range = pt_qrys.hot[idx_range].size();
-        for (size_t i = 0; i < nr_queries_in_this_range; i++) {
-            result[orig_idxs.hot[idx_range][i]] = pt_qrys.hot[idx_range][i];
-        }
-        pt_qrys.hot[idx_range].clear();
-        orig_idxs.hot[idx_range].clear();
-    }
+    postprocess_of_get(result);
 }
 
 template <bool HasHotRanges>
 inline void BPForest::route_get_queries(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[])
 {
-    for (size_t i = 0; i < nr_queries; i++) {
+    for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
+        point_qrys.cold[idx_cold].qrys.resize(get_parallelism());
+        point_qrys.cold[idx_cold].orig_idxs.resize(get_parallelism());
+    }
+    if constexpr (HasHotRanges) {
+        for (dpu_id_t idx_hot = 0; idx_hot < nr_hot_ranges; idx_hot++) {
+            point_qrys.hot[idx_hot].qrys.resize(get_parallelism());
+            point_qrys.hot[idx_hot].orig_idxs.resize(get_parallelism());
+        }
+    }
+
+    tmp_data.route_get_queries = std::make_tuple(nr_queries, keys, result);
+    parallel_run(&BPForest::route_get_queries_impl<HasHotRanges>);
+
+    for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
+        point_qrys.cold[idx_cold].nr_qrys = std::accumulate(point_qrys.cold[idx_cold].qrys.cbegin(), point_qrys.cold[idx_cold].qrys.cend(),
+            size_t{0}, [](size_t tmp, auto& vec) { return tmp + vec.size(); });
+    }
+    if constexpr (HasHotRanges) {
+        for (dpu_id_t idx_hot = 0; idx_hot < nr_hot_ranges; idx_hot++) {
+            point_qrys.hot[idx_hot].nr_qrys = std::accumulate(point_qrys.hot[idx_hot].qrys.cbegin(), point_qrys.hot[idx_hot].qrys.cend(),
+                size_t{0}, [](size_t tmp, auto& vec) { return tmp + vec.size(); });
+        }
+    }
+}
+template <bool HasHotRanges>
+inline void BPForest::route_get_queries_impl(unsigned tid)
+{
+    size_t nr_queries;
+    const key_uint64_t* keys;
+    value_uint64_t* result;
+    std::tie(nr_queries, keys, result) = tmp_data.route_get_queries;
+
+    const size_t idx_qry_begin = nr_queries * tid / get_parallelism(),
+                 idx_qry_end = nr_queries * (tid + 1) / get_parallelism();
+    for (size_t i = idx_qry_begin; i < idx_qry_end; i++) {
         const key_uint64_t key = keys[i];
 
         if constexpr (HasHotRanges) {
@@ -416,8 +456,8 @@ inline void BPForest::route_get_queries(size_t nr_queries, const key_uint64_t ke
             if (one_after_the_target != &hot_delims[0]) {
                 const size_t idx_range = static_cast<size_t>(one_after_the_target - &hot_delims[1]);
                 if (key <= hot_max_key[idx_range]) {
-                    pt_qrys.hot[idx_range].emplace_back(key);
-                    orig_idxs.hot[idx_range].emplace_back(i);
+                    point_qrys.hot[idx_range].qrys[tid].emplace_back(key);
+                    point_qrys.hot[idx_range].orig_idxs[tid].emplace_back(i);
                     continue;
                 }
             }
@@ -428,8 +468,8 @@ inline void BPForest::route_get_queries(size_t nr_queries, const key_uint64_t ke
             result[i] = 0;
         } else {
             const size_t idx_range = static_cast<size_t>(one_after_the_target - &cold_delims[1]);
-            pt_qrys.cold[idx_range].emplace_back(key);
-            orig_idxs.cold[idx_range].emplace_back(i);
+            point_qrys.cold[idx_range].qrys[tid].emplace_back(key);
+            point_qrys.cold[idx_range].orig_idxs[tid].emplace_back(i);
         }
     }
 }
@@ -440,14 +480,14 @@ inline bool BPForest::check_if_get_queries_balance(size_t nr_queries)
                                         * (1 + InversedRebalancingNoiseMargin) / InversedRebalancingNoiseMargin
                                         / nr_cold_ranges;
     for (dpu_id_t idx_range = 0; idx_range < nr_cold_ranges; idx_range++) {
-        if (pt_qrys.cold[idx_range].size() > cold_range_threshold) {
+        if (point_qrys.cold[idx_range].nr_qrys > cold_range_threshold) {
             return false;
         }
     }
 
     const size_t hot_range_threshold = static_cast<size_t>(static_cast<double>(nr_queries) * threshold_nr_queries_to_hot);
     for (dpu_id_t idx_range = 0; idx_range < nr_hot_ranges; idx_range++) {
-        if (pt_qrys.hot[idx_range].size() > hot_range_threshold) {
+        if (point_qrys.hot[idx_range].nr_qrys > hot_range_threshold) {
             return false;
         }
     }
@@ -473,22 +513,23 @@ struct BPForest::GetQuerySender {
             out->addr = static_cast<uint8_t*>(static_cast<void*>(&nr_cold_hot_queries[dpu_index][0]));
             out->length = sizeof(uint16_t) * 2;
             return true;
-        case 2:
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(&forest->pt_qrys.cold[dpu_index][0]));
-            out->length = static_cast<uint32_t>(sizeof(key_uint64_t) * forest->pt_qrys.cold[dpu_index].size());
-            return true;
-        case 3: {
-            const dpu_id_t idx_hot = forest->dpu_to_hot_range[dpu_index];
-            if (idx_hot != INVALID_DPU_ID) {
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(&forest->pt_qrys.hot[idx_hot][0]));
-                out->length = static_cast<uint32_t>(sizeof(key_uint64_t) * forest->pt_qrys.hot[idx_hot].size());
+        default: {
+            block_index -= 2;
+            if (block_index < forest->get_parallelism()) {
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(&forest->point_qrys.cold[dpu_index].qrys[block_index][0]));
+                out->length = static_cast<uint32_t>(sizeof(key_uint64_t) * forest->point_qrys.cold[dpu_index].qrys[block_index].size());
                 return true;
-            } else {
-                return false;
             }
-        }
-        default:
+            block_index -= forest->get_parallelism();
+
+            const dpu_id_t idx_hot = forest->dpu_to_hot_range[dpu_index];
+            if (idx_hot != INVALID_DPU_ID && block_index < forest->get_parallelism()) {
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(&forest->point_qrys.hot[idx_hot].qrys[block_index][0]));
+                out->length = static_cast<uint32_t>(sizeof(key_uint64_t) * forest->point_qrys.hot[idx_hot].qrys[block_index].size());
+                return true;
+            }
             return false;
+        }
         }
     }
     size_t bytes_for_dpu(dpu_id_t dpu) const
@@ -498,45 +539,43 @@ struct BPForest::GetQuerySender {
 };
 struct BPForest::GetResultReceiver {
     BPForest* forest;
+    const std::array<uint16_t, 2>* nr_cold_hot_queries;
+
+    GetResultReceiver(BPForest* forest, const std::array<uint16_t, 2>* nr_cold_hot_queries) : forest{forest}, nr_cold_hot_queries{nr_cold_hot_queries} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
     {
-        switch (block_index) {
-        case 0:
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(&forest->pt_qrys.cold[dpu_index][0]));
-            out->length = static_cast<uint32_t>(sizeof(key_uint64_t) * forest->pt_qrys.cold[dpu_index].size());
+        if (block_index < forest->get_parallelism()) {
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(&forest->point_qrys.cold[dpu_index].qrys[block_index][0]));
+            out->length = static_cast<uint32_t>(sizeof(key_uint64_t) * forest->point_qrys.cold[dpu_index].qrys[block_index].size());
             return true;
-        case 1: {
-            const dpu_id_t idx_hot = forest->dpu_to_hot_range[dpu_index];
-            if (idx_hot != INVALID_DPU_ID) {
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(&forest->pt_qrys.hot[idx_hot][0]));
-                out->length = static_cast<uint32_t>(sizeof(key_uint64_t) * forest->pt_qrys.hot[idx_hot].size());
-                return true;
-            } else {
-                return false;
-            }
         }
-        default:
-            return false;
+        block_index -= forest->get_parallelism();
+
+        const dpu_id_t idx_hot = forest->dpu_to_hot_range[dpu_index];
+        if (idx_hot != INVALID_DPU_ID && block_index < forest->get_parallelism()) {
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(&forest->point_qrys.hot[idx_hot].qrys[block_index][0]));
+            out->length = static_cast<uint32_t>(sizeof(key_uint64_t) * forest->point_qrys.hot[idx_hot].qrys[block_index].size());
+            return true;
         }
+        return false;
     }
     size_t bytes_for_dpu(dpu_id_t dpu) const
     {
-        const dpu_id_t idx_hot = forest->dpu_to_hot_range[dpu];
-        return sizeof(key_uint64_t) * (forest->pt_qrys.cold[dpu].size() + (idx_hot != INVALID_DPU_ID ? forest->pt_qrys.hot[idx_hot].size() : 0));
+        return sizeof(key_uint64_t) * (size_t{nr_cold_hot_queries[dpu][0]} + nr_cold_hot_queries[dpu][1]);
     }
 };
 inline void BPForest::execute_get_in_dpus()
 {
     std::array<std::array<uint16_t, 2>, MAX_NR_DPUS> nr_cold_hot_queries;
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
-        ASSERT(pt_qrys.cold[idx_dpu].size() <= std::numeric_limits<uint16_t>::max());
-        nr_cold_hot_queries[idx_dpu][0] = static_cast<uint16_t>(pt_qrys.cold[idx_dpu].size());
+        ASSERT(point_qrys.cold[idx_dpu].nr_qrys <= std::numeric_limits<uint16_t>::max());
+        nr_cold_hot_queries[idx_dpu][0] = static_cast<uint16_t>(point_qrys.cold[idx_dpu].nr_qrys);
 
         const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
         if (idx_hot != INVALID_DPU_ID) {
-            ASSERT(pt_qrys.hot[idx_hot].size() <= std::numeric_limits<uint16_t>::max());
-            nr_cold_hot_queries[idx_dpu][1] = static_cast<uint16_t>(pt_qrys.hot[idx_hot].size());
+            ASSERT(point_qrys.hot[idx_hot].nr_qrys <= std::numeric_limits<uint16_t>::max());
+            nr_cold_hot_queries[idx_dpu][1] = static_cast<uint16_t>(point_qrys.hot[idx_hot].nr_qrys);
         } else {
             nr_cold_hot_queries[idx_dpu][1] = 0;
         }
@@ -564,7 +603,7 @@ inline void BPForest::execute_get_in_dpus()
         StopWatch timer{QuerySendExecRecvTime};
         gather_to_dpu(all_dpu, 0, GetQuerySender{this, &nr_cold_hot_queries[0]}, async);
         execute(all_dpu, async);
-        scatter_from_dpu(all_dpu, 8, GetResultReceiver{this}, async);
+        scatter_from_dpu(all_dpu, 8, GetResultReceiver{this, &nr_cold_hot_queries[0]}, async);
     }
 #endif
 
@@ -574,6 +613,32 @@ inline void BPForest::execute_get_in_dpus()
 #endif
 }
 
+inline void BPForest::postprocess_of_get(value_uint64_t result[])
+{
+    tmp_data.postprocess_of_get = result;
+    parallel_run(&BPForest::postprocess_of_get_impl);
+}
+inline void BPForest::postprocess_of_get_impl(unsigned tid)
+{
+    value_uint64_t* result = tmp_data.postprocess_of_get;
+
+    for (dpu_id_t idx_range = 0; idx_range < nr_cold_ranges; idx_range++) {
+        const size_t nr_queries_in_this_range = point_qrys.cold[idx_range].qrys[tid].size();
+        for (size_t i = 0; i < nr_queries_in_this_range; i++) {
+            result[point_qrys.cold[idx_range].orig_idxs[tid][i]] = point_qrys.cold[idx_range].qrys[tid][i];
+        }
+        point_qrys.cold[idx_range].qrys[tid].clear();
+        point_qrys.cold[idx_range].orig_idxs[tid].clear();
+    }
+    for (dpu_id_t idx_range = 0; idx_range < nr_hot_ranges; idx_range++) {
+        const size_t nr_queries_in_this_range = point_qrys.hot[idx_range].qrys[tid].size();
+        for (size_t i = 0; i < nr_queries_in_this_range; i++) {
+            result[point_qrys.hot[idx_range].orig_idxs[tid][i]] = point_qrys.hot[idx_range].qrys[tid][i];
+        }
+        point_qrys.hot[idx_range].qrys[tid].clear();
+        point_qrys.hot[idx_range].orig_idxs[tid].clear();
+    }
+}
 
 inline void BPForest::batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t result[])
 {
@@ -1730,6 +1795,11 @@ inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_ran
                     SummaryChunkInfo& chunk_info = chunk_infos[idx_dpu];
                     const uint16_t nr_chunks = chunk_info.nr_chunks;
 
+                    if (nr_chunks == 0) {
+                        summary.nr_blocks = 0;
+                        continue;
+                    }
+
                     std::array<uint16_t, MAX_NR_SUMMARY_CHUNKS> sorted_idx_to_current_idx;
                     std::iota(&sorted_idx_to_current_idx[0], &sorted_idx_to_current_idx[nr_chunks], uint16_t{0});
                     std::sort(&sorted_idx_to_current_idx[0], &sorted_idx_to_current_idx[nr_chunks], [&](uint16_t lhs, uint16_t rhs) {
@@ -2222,6 +2292,7 @@ inline void BPForest::print_params(std::ostream& ostr) const
             "EXTRACT_BY_INITIALIZATION: 0\n"
 #endif
             "param.balancing: " << param.balancing << "\n"
+            "get_parallelism(): " << get_parallelism() << "\n"
          << std::flush;
 #undef STRINGIFY
 #undef EXPAND_STRINGIFY
