@@ -7,7 +7,7 @@ template <typename T, typename Op>
 class SegmentTree {
 public:
     SegmentTree(const std::vector<T>& data, T identity)
-        : n(data.size()), identity(identity) {
+        : n((int) data.size()), identity(identity) {
         tree.resize(2 * n, identity);
         build(data);
     }

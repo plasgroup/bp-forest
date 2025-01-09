@@ -18,8 +18,6 @@
 #include "parallel.ipp"
 
 
-#define KEY_INTERVAL(n) ((KEY_MAX - KEY_MIN) / ((n) - 1))
-
 std::chrono::nanoseconds QueryProcessTime;
 
 struct Option {
@@ -195,9 +193,9 @@ void CPUDatabase::batch_range_minimum_verify(uint64_t n,
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             const KeyRange &q = queries[i];
-            key_uint64_t key_interval = KEY_INTERVAL(nr_keys);
-            int left_idx = ((q.begin - KEY_MIN) + key_interval - 1) / key_interval;
-            int right_idx = (q.end - KEY_MIN) / key_interval;
+            key_uint64_t key_interval = init_key_interval(nr_keys);
+            size_t left_idx = ((q.begin - KEY_MIN) + key_interval - 1) / key_interval;
+            size_t right_idx = (q.end - KEY_MIN) / key_interval;
             key_uint64_t begin = KEY_MIN + left_idx * key_interval;
             value_uint64_t expected = 0;
             if (left_idx > right_idx)
@@ -238,7 +236,7 @@ void CPUDatabase::batch_range_sum_verify(size_t n,
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             const KeyRange &q = queries[i];
-            key_uint64_t key_interval = KEY_INTERVAL(nr_keys);
+            key_uint64_t key_interval = init_key_interval(nr_keys);
             size_t left_idx = ((q.begin - KEY_MIN) + key_interval - 1) / key_interval;
             size_t right_idx = (q.end - KEY_MIN) / key_interval;
             key_uint64_t begin = KEY_MIN + left_idx * key_interval;
@@ -284,7 +282,7 @@ void CPUDatabase::batch_get_verify(size_t n,
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             key_uint64_t q = queries[i];
-            key_uint64_t key_interval = KEY_INTERVAL(nr_keys);
+            key_uint64_t key_interval = init_key_interval(nr_keys);
             value_uint64_t expected = 0;
             if (q < KEY_MIN || q >= KEY_MAX)
                 expected = NOT_FOUND_VALUE;
@@ -335,7 +333,7 @@ Database* make_database(size_t nr_keys, int nthreads)
 
     keys.reserve(nr_keys);
     values.reserve(nr_keys);
-    key_uint64_t key_interval = KEY_INTERVAL(nr_keys); 
+    key_uint64_t key_interval = init_key_interval(nr_keys); 
     for (size_t i = 0; i < nr_keys; i++) {
         const size_t k = KEY_MIN + key_interval * i;
         keys.push_back(k);
@@ -349,7 +347,7 @@ Database* make_database(size_t nr_keys, int nthreads)
             if (x == 0)
                 p[j] = 0;
             else
-                p[j] = '0' + (x % 10);
+                p[j] = (char) ('0' + (x % 10));
             x /= 10;
         }
         values.push_back(v);

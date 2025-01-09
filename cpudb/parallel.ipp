@@ -37,7 +37,7 @@ class ParallelManager {
         Barrier(size_t thread_count)
             : thread_count(thread_count), counter(0) {}
         
-        void wait(int id) {
+        void wait(size_t id) {
             std::unique_lock<std::mutex> lk(mtx);
         //    std::cout << "Worker:" << id << " waiting" << std::endl;
             counter++;

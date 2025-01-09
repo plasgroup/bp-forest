@@ -77,7 +77,7 @@ class InitData : public Database {
             if (x == 0)
                 p[j] = 0;
             else
-                p[j] = '0' + (x % 10);
+                p[j] = (char) ('0' + (x % 10));
             x /= 10;
         }
         return x;
