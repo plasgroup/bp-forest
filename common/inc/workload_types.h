@@ -18,6 +18,16 @@ typedef uint64_t key_uint64_t;
 typedef uint64_t value_uint64_t;
 #define VALUE_MAX (UINT64_MAX)
 
+// shift [-2^63, 2^63-1] to [0, 2^64-1]
+inline key_uint64_t key_int64_to_uint64(int64_t key)
+{
+    return ((uint64_t) key) ^ (1LL << 63);
+}
+
+inline key_uint64_t value_int64_to_uint64(int64_t value)
+{
+    return ((uint64_t) value) ^ (1LL << 63);
+}
 
 #ifdef __cplusplus
 }  // extern "C"

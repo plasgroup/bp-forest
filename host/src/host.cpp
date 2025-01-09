@@ -1,6 +1,8 @@
 #include "assert.h"
 #include "bpforest.hpp"
 #include "common.h"
+#include "database.hpp"
+#include "benchmark.hpp"
 #include "extendable_buffer.hpp"
 #include "host_params.hpp"
 #include "piecewise_constant_workload.hpp"
@@ -88,6 +90,7 @@ struct Option {
         a.add<dpu_id_t>("print-hot-memory-load", 0, "print number of KV pairs stored in hot ranges in each dpu", false, 0);
         a.add("print-perf", 'p', "print performance metrics");
         a.add("print-init-time", 0, "print elapsed time for initialization of BPForest");
+        a.add("verify", 'v', "verify the result");
         a.add<std::string>("pimtree_workload_file", 0, "file path to PIM-Tree workload file", false);
         a.add<std::string>("pimtree_init_file", 'i', "file path to PIM-Tree init file", false);
         a.parse_check(argc, argv);
@@ -126,6 +129,9 @@ struct Option {
         print_hot_memory_load = a.get<dpu_id_t>("print-hot-memory-load");
         print_perf = a.exist("print-perf");
         print_init_time = a.exist("print-init-time");
+
+        if (a.exist("verify"))
+            verify = true;
     }
 
     std::string dump_param_file;
@@ -139,6 +145,7 @@ struct Option {
     dpu_id_t print_compute_load, print_memory_load;
     dpu_id_t print_cold_compute_load, print_cold_memory_load, print_hot_compute_load, print_hot_memory_load;
     bool print_perf, print_init_time;
+    bool verify = false;
 } opt;
 
 #ifdef DEBUG_ON
@@ -181,6 +188,7 @@ void check_range_min_results(const size_t nr_queries, const KeyRange ranges[], c
 }
 #endif /* DEBUG_ON */
 
+#ifndef NEW_MAIN
 [[nodiscard]] BPForest initialize_bpforest([[maybe_unused]] PiecewiseConstantWorkloadMetadata& workload_dist, const BPForest::Param& param = {})
 {
     // the initial keys are: KEY_MIN + INIT_KEY_INTERVAL * {0, 1, 2, ..., NUM_INIT_REQS - 1}
@@ -197,6 +205,7 @@ void check_range_min_results(const size_t nr_queries, const KeyRange ranges[], c
 
     return BPForest{std::move(init_pairs), param};
 }
+#endif /* NEW_MAIN */
 
 #ifdef HOST_MULTI_THREAD
 #include <condition_variable>
@@ -391,10 +400,9 @@ PreprocessWorker ppwk[HOST_MULTI_THREAD];
 #define NEW_MAIN
 #ifdef NEW_MAIN
 
-#define KEY_INTERVAL(n) ((KEY_MAX - KEY_MIN) / ((n) - 1))
 std::chrono::nanoseconds QueryProcessTime;
 
-
+#if 0
 #ifdef TOUCH_QUERIES_IN_ADVANCE
 key_uint64_t accumulated_key_numbers = 0;
 #endif /* TOUCH_QUERIES_IN_ADVANCE */
@@ -458,16 +466,6 @@ size_t do_one_batch(const uint64_t task, [[maybe_unused]] int batch_num, Workloa
     return num_keys_batch;
 }
 
-// shift [-2^63, 2^63-1] to [0, 2^64-1]
-inline key_uint64_t key_int64_to_uint64(int64_t key)
-{
-    return ((uint64_t) key) ^ (1LL << 63);
-}
-inline key_uint64_t value_int64_to_uint64(int64_t value)
-{
-    return ((uint64_t) value) ^ (1LL << 63);
-}
-
 void load_workload(const std::string& workload_file,
                    PiecewiseConstantWorkload* workload)
 {
@@ -481,11 +479,16 @@ void load_workload(const std::string& workload_file,
     iarchive(*workload);
 }
 
-class Database {
+#endif // 0
+
+class BPForestDatabase : public Database {
     BPForest forest;
 
 public:
-    Database(std::vector<KVPair> init_data, const BPForest::Param& param)
+    BPForestDatabase(const InitData& init_data, const BPForest::Param& param)
+    : BPForestDatabase(init_data.get_data(), param) {}
+
+    BPForestDatabase(std::vector<KVPair> init_data, const BPForest::Param& param)
     : forest(std::move(init_data), param) {}
 
     void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t results[])
@@ -504,13 +507,35 @@ public:
 #endif /* DEBUG_ON */
     }
 
+    void batch_range_sum(uint64_t n, 
+                         const KeyRange queries[],
+                         value_uint64_t results[])
+    {
+        std::cerr << "batch_range_sum is not implemented" << std::endl;
+        exit(1);
+    };
+
+    void batch_range_count(uint64_t n, 
+                           const count_query_t queries[],
+                           value_uint64_t results[])
+    {
+        std::cerr << "batch_range_count is not implemented" << std::endl;
+        exit(1);
+    };
+
+    int get_parallelism() const
+    {
+        return upmem_get_nr_dpus();
+    }
+
     void print_params(std::ofstream& dump_param_file)
     {
         forest.print_params(dump_param_file);
     }
 };
 
-Database make_database()
+#if 0
+Database* make_database()
 {
     // Moved from initialize_bpforest()
     // the initial keys are: KEY_MIN + INIT_KEY_INTERVAL * {0, 1, 2, ..., NUM_INIT_REQS - 1}
@@ -524,10 +549,10 @@ Database make_database()
         verify_db.emplace(k, k);
 #endif /* DEBUG_ON */
     }
-    return Database(std::move(init_pairs), BPForest::Param{opt.balancing_param});
+    return new BPForestDatabase(std::move(init_pairs), BPForest::Param{opt.balancing_param});
 }
 
-Database make_database_from_pimtree_init_file(const std::string& init_file)
+Database* make_database_from_pimtree_init_file(const std::string& init_file)
 {
     std::cout << "making database from pimtree init file " << init_file << std::endl;
     std::vector<KVPair> pairs;
@@ -542,174 +567,9 @@ Database make_database_from_pimtree_init_file(const std::string& init_file)
         }
     }
     std::cout << "making database with " << pairs.size() << " pairs" << std::endl;
-    return Database(std::move(pairs), {opt.balancing_param});
+    return new BPForestDatabase(std::move(pairs), {opt.balancing_param});
 }
-
-class Benchmark {
-protected:
-    bool verify;
-
-public:
-    Benchmark(bool verify)
-    : verify(verify)
-    {}
-    
-    void run(int nr_batches, Database* db, std::function<void(int)> after_batch)
-    {
-        for (int idx_batch = 0; idx_batch < nr_batches; idx_batch++) {
-            do_one_batch(idx_batch, db);
-            after_batch(idx_batch);
-        }
-    }
-    virtual ~Benchmark() {}
-    virtual void do_one_batch(int idx_batch, Database* db) = 0;
-
-    void push_back_query(std::vector<key_uint64_t>& workload, operation& query)
-    {
-        if (query.type == get_t)
-            workload.push_back(key_int64_to_uint64(query.tsk.g.key));
-    }
-    void push_back_query(std::vector<KeyRange>& workload, operation& query)
-    {
-        if (query.type == scan_t) {
-            KeyRange range = {
-                key_int64_to_uint64(query.tsk.s.lkey),
-                key_int64_to_uint64(query.tsk.s.rkey)
-            };
-            workload.push_back(range);
-        }
-    }
-    void push_back_query(std::vector<std::pair<KeyRange, std::array<char, 8>>>& workload, operation& query)
-    {
-        if (query.type == scan_t) {
-            KeyRange range = {
-                key_int64_to_uint64(query.tsk.s.lkey),
-                key_int64_to_uint64(query.tsk.s.rkey)
-            };
-            std::array<char, 8> qs = {};
-            workload.push_back({range, qs});
-        }
-    }
-    template <typename T>
-    WorkloadBuffer<T>* load_pimtree_workload(const std::string& workload_file) {
-        pimtree_queries qs = make_pimtree_queries(workload_file);
-        std::vector<T> workload;
-        for (int i = 0; i < qs.length; i++) {
-            // push_back_query adds the query if the query is of the desired
-            // type for the workload type. The mapping is:
-            //   key_uint64_t -> get_t
-            //   KeyRange -> scan_t
-            //   std::pair<KeyRange, std::array<char, 8>>> -> scan_t
-            push_back_query(workload, qs.ops[i]);
-        }
-        std::cout << "load workload from " << workload_file << ". size = " << workload.size() << std::endl;
-        return new WorkloadBuffer<T>(std::move(workload));
-    }
-
-    template <typename T>
-    size_t prepare_buffer(int idx_batch, WorkloadBuffer<T>* workload_buffer, ExtendableBuffer<T>& queires, ExtendableBuffer<value_uint64_t>& results) {
-        const auto tmp_input = workload_buffer->take(NUM_REQUESTS_PER_BATCH);
-        const auto batch_queries = tmp_input.first;
-        const auto num_queries_batch = tmp_input.second;
-        if (num_queries_batch != NUM_REQUESTS_PER_BATCH) {
-            std::cerr << "run out of workload in batch " << idx_batch << std::endl;
-            exit(1);
-        }
-        queires.reserve(num_queries_batch);
-        for (size_t idx_query = 0; idx_query < num_queries_batch; idx_query++)
-            queires[idx_query] = batch_queries[idx_query];
-        results.reserve(num_queries_batch);
-        return num_queries_batch;
-    }
-};
-
-class GetBenchmark : public Benchmark {
-    WorkloadBuffer<key_uint64_t> *workload_buffer = nullptr; // only used when not using pimtree workload
-
-public:
-    GetBenchmark(const std::string& workload_file,
-                 bool is_pimtree_workload, bool verify)
-    : Benchmark(verify)
-    {
-        if (is_pimtree_workload)
-            workload_buffer = load_pimtree_workload<key_uint64_t>(workload_file);
-        else {
-            PiecewiseConstantWorkload workload;
-            load_workload(workload_file, &workload);
-            workload_buffer = new WorkloadBuffer<key_uint64_t>(std::move(workload.data));
-        }
-    }
-
-    virtual ~GetBenchmark()
-    {
-        delete workload_buffer;
-    }
-
-    virtual void do_one_batch(int idx_batch, Database* db) {
-        static ExtendableBuffer<value_uint64_t> results;
-        static ExtendableBuffer<key_uint64_t> keys;
-        size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, keys, results);
-        {
-            StopWatch sw(QueryProcessTime);
-            db->batch_get(num_queries_batch, &keys[0], &results[0]);
-        }
-//        if (verify && idx_batch == 0)
-//            db->batch_get_verify(num_queries_batch, keys, results);
-    }
-};
-
-class RangeBenchmark : public Benchmark {
-protected:
-    WorkloadBuffer<KeyRange> *workload_buffer = nullptr; // only used when not using pimtree workload
-
-public:
-    RangeBenchmark(const std::string& workload_file,
-                   bool is_pimtree_workload, bool verify)
-    : Benchmark(verify)
-    {
-        if (is_pimtree_workload)
-            workload_buffer = load_pimtree_workload<KeyRange>(workload_file);
-        else {
-            PiecewiseConstantWorkload pworkload;
-            load_workload(workload_file, &pworkload);
-
-            key_uint64_t key_interval = KEY_INTERVAL(NUM_INIT_REQS); 
-            size_t range_length = key_interval * 100 - 1;
-            std::vector<KeyRange> workload;
-            workload.reserve(pworkload.data.size());
-            for (const auto& p : pworkload.data)
-                workload.push_back({p, p + range_length});
-            workload_buffer = new WorkloadBuffer<KeyRange>(std::move(workload));
-        }
-    }
-
-    virtual ~RangeBenchmark()
-    {
-        delete workload_buffer;
-    }
-
-};
-
-class RMQBenchmark : public RangeBenchmark {
-public:
-    RMQBenchmark(const std::string& workload_file, bool is_pimtree_workload, bool verify)
-    : RangeBenchmark(workload_file, is_pimtree_workload, verify)
-    {}
-
-    virtual ~RMQBenchmark() {}
-
-    virtual void do_one_batch(int idx_batch, Database* db) {
-        static ExtendableBuffer<value_uint64_t> results;
-        static ExtendableBuffer<KeyRange> ranges;
-        size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, ranges, results);
-        {
-            StopWatch sw(QueryProcessTime);
-            db->batch_range_minimum(num_queries_batch, &ranges[0], &results[0]);
-        }
-        //if (verify && idx_batch == 0)
-        //    db->batch_range_minimum_verify(num_queries_batch, ranges, results);
-    }
-};
+#endif // 0
 
 int main(int argc, char* argv[])
 {
@@ -717,16 +577,20 @@ int main(int argc, char* argv[])
 
     Benchmark* benchmark;
     if (opt.op_type == TASK_GET)
-        benchmark = new GetBenchmark(opt.workload_file, opt.is_pimtree_workload, false);
+        benchmark = new GetBenchmark(opt.workload_file, opt.is_pimtree_workload);
     else if (opt.op_type == TASK_RANGE_MIN)
-        benchmark = new RMQBenchmark(opt.workload_file, opt.is_pimtree_workload, false);
+        benchmark = new RMQBenchmark(opt.workload_file, opt.is_pimtree_workload, NUM_INIT_REQS);
     else {
         std::cerr << "unsupported task type: " << opt.op_type << std::endl;
         exit(1);
     }
 
-    Database db = (opt.pimtree_init_file.empty() ? make_database()
-                                                 : make_database_from_pimtree_init_file(opt.pimtree_init_file));
+    InitData init_data = (opt.pimtree_init_file.empty() ?
+                          InitData(NUM_INIT_REQS) : InitData(opt.pimtree_init_file));
+    BPForestDatabase db(init_data, BPForest::Param{opt.balancing_param});
+
+//    Database db = (opt.pimtree_init_file.empty() ? make_database()
+//                                                 : make_database_from_pimtree_init_file(opt.pimtree_init_file));
 
 #ifdef PRINT_DEBUG
     printf("initialization finished\n");
@@ -755,6 +619,9 @@ int main(int argc, char* argv[])
 #endif
                ",batch_time[ns]\n");
     }
+    if (opt.verify)
+        benchmark->set_verify_db(&init_data);
+    
     benchmark->run(opt.nr_batches, &db, [&](int idx_batch) {
 #ifdef HOST_ONLY
         if (opt.op_type == TASK_RANGE_MIN) {

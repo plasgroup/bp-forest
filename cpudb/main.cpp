@@ -4,6 +4,8 @@
 #include <thread>
 #include <fstream>
 #include "common.h"
+#include "database.hpp"
+#include "benchmark.hpp"
 #include "host/inc/host_params.hpp"
 #include "host/inc/extendable_buffer.hpp"
 #include "host/inc/statistics.hpp"
@@ -86,54 +88,21 @@ struct Option {
     TaskID op_type;
 } opt;
 
-// shift [-2^63, 2^63-1] to [0, 2^64-1]
-inline key_uint64_t key_int64_to_uint64(int64_t key)
-{
-    return ((uint64_t) key) ^ (1LL << 63);
-}
-inline key_uint64_t value_int64_to_uint64(int64_t value)
-{
-    return ((uint64_t) value) ^ (1LL << 63);
-}
-
-void load_workload(std::string workload_file,
-                   PiecewiseConstantWorkload* workload)
-{
-    std::cout << "loading workload from " << workload_file << std::endl;
-    /* load workload file */
-    std::ifstream file_input(workload_file, std::ios_base::binary);
-    if (!file_input) {
-        std::cerr << "cannot open file: " << workload_file << std::endl;
-        exit(1);
-    }
-    cereal::BinaryInputArchive iarchive(file_input);
-    iarchive(*workload);
-    std::cout << "done" << std::endl;
-}
-
-class Database {
+class CPUDatabase : public Database {
     ParallelManager* parallel;
     std::map<key_uint64_t, int> *index;
     std::vector<value_uint64_t> values;
     SparseTable<value_uint64_t> *rmq_data;
     SegmentTree<value_uint64_t, SumOp<value_uint64_t>> *sum_data;
     size_t nr_keys;
-    const value_uint64_t NOT_FOUND_VALUE = 12345;
-
-    std::vector<std::pair<key_uint64_t, int>>
-    make_index_data(const std::vector<key_uint64_t>& keys)
-    {
-        std::vector<std::pair<key_uint64_t, int>> res;
-        res.reserve(keys.size());
-        for (size_t i = 0; i < keys.size(); i++)
-            res.push_back(std::make_pair(keys[i], i));
-        return res;
-    }
 
 public:
-    Database(const std::vector<key_uint64_t> keys,
-             const std::vector<value_uint64_t> values,
-             const int nthreads)
+    CPUDatabase(const InitData& init_data, const int nthreads)
+        : CPUDatabase(init_data.get_keys(), init_data.get_values(), nthreads) {}
+
+    CPUDatabase(const std::vector<key_uint64_t> keys,
+                const std::vector<value_uint64_t> values,
+                const int nthreads)
         : values(std::move(values)),
           parallel(new ParallelManager(nthreads)),
           nr_keys(keys.size())
@@ -160,7 +129,7 @@ public:
         std::cout << "index count = " << index->size() << std::endl;
     }
 
-    ~Database()
+    ~CPUDatabase()
     {
         delete parallel;
     }
@@ -190,18 +159,20 @@ public:
                           const value_uint64_t results[]);
 
     void batch_range_count(uint64_t n, 
-                           const std::pair<KeyRange, std::array<char, 8>> queries[],
+                           const count_query_t queries[],
                            value_uint64_t results[]);
 
     int get_parallelism() const
     {
         return parallel->get_parallelism();
     }
+
+    void print_params(std::ofstream& dump_param_file) {}
 };
 
-void Database::batch_range_minimum(uint64_t n, 
-                                   const KeyRange queries[],
-                                   value_uint64_t results[])
+void CPUDatabase::batch_range_minimum(uint64_t n, 
+                                      const KeyRange queries[],
+                                      value_uint64_t results[])
 {
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
@@ -217,7 +188,7 @@ void Database::batch_range_minimum(uint64_t n,
     });
 }
 
-void Database::batch_range_minimum_verify(uint64_t n,
+void CPUDatabase::batch_range_minimum_verify(uint64_t n,
                                           const KeyRange queries[],
                                           const value_uint64_t results[])
 {
@@ -241,9 +212,9 @@ void Database::batch_range_minimum_verify(uint64_t n,
     });
 }
 
-void Database::batch_range_sum(uint64_t n, 
-                               const KeyRange queries[],
-                               value_uint64_t results[])
+void CPUDatabase::batch_range_sum(uint64_t n, 
+                                  const KeyRange queries[],
+                                  value_uint64_t results[])
 {
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
@@ -259,7 +230,7 @@ void Database::batch_range_sum(uint64_t n,
     });
 }
 
-void Database::batch_range_sum_verify(size_t n, 
+void CPUDatabase::batch_range_sum_verify(size_t n, 
                                       const KeyRange queries[],
                                       const value_uint64_t results[]) 
 {
@@ -291,9 +262,9 @@ void Database::batch_range_sum_verify(size_t n,
     });
 }
 
-void Database::batch_get(uint64_t n, 
-                         const key_uint64_t keys[],
-                         value_uint64_t results[])
+void CPUDatabase::batch_get(uint64_t n, 
+                            const key_uint64_t keys[],
+                            value_uint64_t results[])
 {
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
@@ -306,7 +277,7 @@ void Database::batch_get(uint64_t n,
     });
 }
 
-void Database::batch_get_verify(size_t n,
+void CPUDatabase::batch_get_verify(size_t n,
                                 const key_uint64_t queries[],
                                 const value_uint64_t results[])
 {
@@ -330,9 +301,9 @@ void Database::batch_get_verify(size_t n,
 }
 
 
-void Database::batch_range_count(uint64_t n, 
-                                 const std::pair<KeyRange, std::array<char, 8>> queries[],
-                                 value_uint64_t results[])
+void CPUDatabase::batch_range_count(uint64_t n, 
+                                    const count_query_t queries[],
+                                    value_uint64_t results[])
 {
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
@@ -387,7 +358,7 @@ Database* make_database(size_t nr_keys, int nthreads)
 
     std::cout << "add data to database" << std::endl;
 
-    Database *db = new Database(keys, values, nthreads);
+    Database *db = new CPUDatabase(keys, values, nthreads);
 
     std::cout << "done" << std::endl;
 
@@ -410,244 +381,8 @@ Database* make_database_from_pimtree_init_file(const std::string& init_file, int
         }
     }
     std::cout << "making database with " << keys.size() << " keys" << std::endl;
-    return new Database(keys, values, nthreads);
+    return new CPUDatabase(keys, values, nthreads);
 }
-
-class Benchmark {
-protected:
-    bool verify;
-
-public:
-    Benchmark(bool verify)
-    : verify(verify)
-    {}
-    
-    void run(int nr_batches, Database* db)
-    {
-        for (int idx_batch = 0; idx_batch < nr_batches; idx_batch++) {
-            do_one_batch(idx_batch, db);
-            printf("%s,%d,%d,%d,%ld\n",
-                opt.alpha.c_str(), db->get_parallelism(), idx_batch,
-                NUM_REQUESTS_PER_BATCH, QueryProcessTime.count());
-        }
-    }
-    virtual ~Benchmark() {}
-    virtual void do_one_batch(int idx_batch, Database* db) = 0;
-
-    void push_back_query(std::vector<key_uint64_t>& workload, operation& query)
-    {
-        if (query.type == get_t)
-            workload.push_back(key_int64_to_uint64(query.tsk.g.key));
-    }
-    void push_back_query(std::vector<KeyRange>& workload, operation& query)
-    {
-        if (query.type == scan_t) {
-            KeyRange range = {
-                key_int64_to_uint64(query.tsk.s.lkey),
-                key_int64_to_uint64(query.tsk.s.rkey)
-            };
-            workload.push_back(range);
-        }
-    }
-    void push_back_query(std::vector<std::pair<KeyRange, std::array<char, 8>>>& workload, operation& query)
-    {
-        if (query.type == scan_t) {
-            KeyRange range = {
-                key_int64_to_uint64(query.tsk.s.lkey),
-                key_int64_to_uint64(query.tsk.s.rkey)
-            };
-            std::array<char, 8> qs = {};
-            workload.push_back({range, qs});
-        }
-    }
-    template <typename T>
-    WorkloadBuffer<T>* load_pimtree_workload(const std::string& workload_file) {
-        pimtree_queries qs = make_pimtree_queries(workload_file);
-        std::vector<T> workload;
-        for (int i = 0; i < qs.length; i++) {
-            // push_back_query adds the query if the query is of the desired
-            // type for the workload type. The mapping is:
-            //   key_uint64_t -> get_t
-            //   KeyRange -> scan_t
-            //   std::pair<KeyRange, std::array<char, 8>>> -> scan_t
-            push_back_query(workload, qs.ops[i]);
-        }
-        std::cout << "load workload from " << workload_file << ". size = " << workload.size() << std::endl;
-        return new WorkloadBuffer<T>(std::move(workload));
-    }
-
-    template <typename T>
-    size_t prepare_buffer(int idx_batch, WorkloadBuffer<T>* workload_buffer, ExtendableBuffer<T>& queires, ExtendableBuffer<value_uint64_t>& results) {
-        const auto tmp_input = workload_buffer->take(NUM_REQUESTS_PER_BATCH);
-        const auto batch_queries = tmp_input.first;
-        const auto num_queries_batch = tmp_input.second;
-        if (num_queries_batch != NUM_REQUESTS_PER_BATCH) {
-            std::cerr << "run out of workload in batch " << idx_batch << std::endl;
-            exit(1);
-        }
-        queires.reserve(num_queries_batch);
-        for (size_t idx_query = 0; idx_query < num_queries_batch; idx_query++)
-            queires[idx_query] = batch_queries[idx_query];
-        results.reserve(num_queries_batch);
-        return num_queries_batch;
-    }
-};
-
-class GetBenchmark : public Benchmark {
-    WorkloadBuffer<key_uint64_t> *workload_buffer = nullptr; // only used when not using pimtree workload
-
-public:
-    GetBenchmark(const std::string& workload_file,
-                 bool is_pimtree_workload, bool verify)
-    : Benchmark(verify)
-    {
-        if (is_pimtree_workload)
-            workload_buffer = load_pimtree_workload<key_uint64_t>(workload_file);
-        else {
-            PiecewiseConstantWorkload workload;
-            load_workload(workload_file, &workload);
-            workload_buffer = new WorkloadBuffer<key_uint64_t>(std::move(workload.data));
-        }
-    }
-
-    virtual ~GetBenchmark()
-    {
-        delete workload_buffer;
-    }
-
-    virtual void do_one_batch(int idx_batch, Database* db) {
-        static ExtendableBuffer<value_uint64_t> results;
-        static ExtendableBuffer<key_uint64_t> keys;
-        size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, keys, results);
-        {
-            StopWatch sw(QueryProcessTime);
-            db->batch_get(num_queries_batch, &keys[0], &results[0]);
-        }
-        if (verify && idx_batch == 0)
-            db->batch_get_verify(num_queries_batch, &keys[0], &results[0]);
-    }
-};
-
-class RangeBenchmark : public Benchmark {
-protected:
-    WorkloadBuffer<KeyRange> *workload_buffer = nullptr; // only used when not using pimtree workload
-
-public:
-    RangeBenchmark(const std::string& workload_file,
-                   bool is_pimtree_workload, bool verify)
-    : Benchmark(verify)
-    {
-        if (is_pimtree_workload)
-            workload_buffer = load_pimtree_workload<KeyRange>(workload_file);
-        else {
-            PiecewiseConstantWorkload pworkload;
-            load_workload(workload_file, &pworkload);
-
-            key_uint64_t key_interval = KEY_INTERVAL(opt.nr_keys); 
-            size_t range_length = key_interval * 100 - 1;
-            std::vector<KeyRange> workload;
-            workload.reserve(pworkload.data.size());
-            for (const auto& p : pworkload.data)
-                workload.push_back({p, p + range_length});
-            workload_buffer = new WorkloadBuffer<KeyRange>(std::move(workload));
-        }
-    }
-
-    virtual ~RangeBenchmark()
-    {
-        delete workload_buffer;
-    }
-
-};
-
-class RMQBenchmark : public RangeBenchmark {
-public:
-    RMQBenchmark(const std::string& workload_file, bool is_pimtree_workload, bool verify)
-    : RangeBenchmark(workload_file, is_pimtree_workload, verify)
-    {}
-
-    virtual ~RMQBenchmark() {}
-
-    virtual void do_one_batch(int idx_batch, Database* db) {
-        static ExtendableBuffer<value_uint64_t> results;
-        static ExtendableBuffer<KeyRange> ranges;
-        size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, ranges, results);
-        {
-            StopWatch sw(QueryProcessTime);
-            db->batch_range_minimum(num_queries_batch, &ranges[0], &results[0]);
-        }
-        if (verify && idx_batch == 0)
-            db->batch_range_minimum_verify(num_queries_batch, &ranges[0], &results[0]);
-    }
-};
-
-class RangeSumBenchmark : public RangeBenchmark {
-public:
-    RangeSumBenchmark(const std::string& workload_file,
-                      bool is_pimtree_workload, bool verify)
-    : RangeBenchmark(workload_file, is_pimtree_workload, verify) {}
-
-    virtual ~RangeSumBenchmark() {}
-
-    virtual void do_one_batch(int idx_batch, Database* db) {
-        static ExtendableBuffer<value_uint64_t> results;
-        static ExtendableBuffer<KeyRange> ranges;
-        size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, ranges, results);
-        {
-            StopWatch sw(QueryProcessTime);
-            db->batch_range_sum(num_queries_batch, &ranges[0], &results[0]);
-        }
-        if (verify && idx_batch == 0)
-            db->batch_range_sum_verify(num_queries_batch, &ranges[0], &results[0]);
-    }
-};
-
-class RangeCountBenchmark : public Benchmark {
-    using Query = std::pair<KeyRange, std::array<char, 8>>;
-    WorkloadBuffer<Query> *workload_buffer;
-
-public:
-    RangeCountBenchmark(const std::string& workload_file,
-                        bool is_pimtree_workload, bool verify)
-    : Benchmark(verify)
-    {
-        if (is_pimtree_workload)
-            workload_buffer = load_pimtree_workload<Query>(workload_file);
-        else {
-            PiecewiseConstantWorkload pworkload;
-            load_workload(workload_file, &pworkload);
-            key_uint64_t key_interval = KEY_INTERVAL(opt.nr_keys); 
-            size_t range_length = key_interval * 100 - 1;
-            std::vector<Query> workload;
-            workload.reserve(pworkload.data.size());
-            for (int i = 0; i < pworkload.data.size(); i++) {
-                const auto& p = pworkload.data[i];
-                KeyRange range = {p, p + range_length};
-                std::array<char, 8> needle;
-                snprintf(needle.data(), 8, "%d", i % 1000);
-                workload.push_back({range, needle});
-            }
-            workload_buffer = new WorkloadBuffer<Query>(std::move(workload));
-        }
-    }
-
-    virtual ~RangeCountBenchmark()
-    {
-        delete workload_buffer;
-    }
-
-    virtual void do_one_batch(int idx_batch, Database* db) {
-        static ExtendableBuffer<value_uint64_t> results;
-        static ExtendableBuffer<Query> queries;
-        size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, queries, results);
-        {
-            StopWatch sw(QueryProcessTime);
-            db->batch_range_count(num_queries_batch, &queries[0], &results[0]);
-        }
-//        if (idx_batch == 0)
-//            db->batch_range_count_verify(num_queries_batch, ranges, results);
-    }
-};
 
 int main(int argc, char* argv[])
 {
@@ -655,30 +390,36 @@ int main(int argc, char* argv[])
 
     Benchmark* benchmark;
     if (opt.op_type == TASK_GET)
-        benchmark = new GetBenchmark(opt.workload_file, opt.is_pimtree_workload, opt.verify);
+        benchmark = new GetBenchmark(opt.workload_file, opt.is_pimtree_workload);
     else if (opt.op_type == TASK_RANGE_MIN)
-        benchmark = new RMQBenchmark(opt.workload_file, opt.is_pimtree_workload, opt.verify);
+        benchmark = new RMQBenchmark(opt.workload_file, opt.is_pimtree_workload, opt.nr_keys);
     else if (opt.op_type == TASK_RANGE_SUM)
-        benchmark = new RangeSumBenchmark(opt.workload_file, opt.is_pimtree_workload, opt.verify);
+        benchmark = new RangeSumBenchmark(opt.workload_file, opt.is_pimtree_workload, opt.nr_keys);
     else if (opt.op_type == TASK_RANGE_COUNT)
-        benchmark = new RangeCountBenchmark(opt.workload_file, opt.is_pimtree_workload, opt.verify);
+        benchmark = new RangeCountBenchmark(opt.workload_file, opt.is_pimtree_workload, opt.nr_keys);
     else {
         std::cerr << "unsupported task type: " << opt.op_type << std::endl;
         exit(1);
     }
 
-    Database* db;
+    InitData init_data = (opt.pimtree_init_file.empty() ?
+                          InitData(opt.nr_keys) : InitData(opt.pimtree_init_file));
+    CPUDatabase* db;
     std::chrono::nanoseconds DatabaseInitTime;
     {
         StopWatch sw(DatabaseInitTime);
-        if (opt.pimtree_init_file.empty())
-            db = make_database(opt.nr_keys, opt.nthreads);
-        else
-            db = make_database_from_pimtree_init_file(opt.pimtree_init_file, opt.nthreads);
+        db = new CPUDatabase(init_data, opt.nthreads);
     }
     std::cout << "database initialized in " << (DatabaseInitTime.count() / 1000 / 1000) << " ms" << std::endl;
 
-    benchmark->run(opt.nr_batches, db);
+    if (opt.verify)
+        benchmark->set_verify_db(&init_data);
+
+    benchmark->run(opt.nr_batches, db, [&](int idx_batch) {
+        printf("%s,%d,%d,%d,%ld\n",
+               opt.alpha.c_str(), db->get_parallelism(), idx_batch,
+               NUM_REQUESTS_PER_BATCH, QueryProcessTime.count());
+    });
 
     delete benchmark;
     delete db;
