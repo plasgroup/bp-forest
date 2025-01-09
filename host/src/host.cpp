@@ -76,6 +76,7 @@ struct Option {
         cmdline::parser a;
         a.add<std::string>("dump-params", 0, "file path to output parameters");
         a.add<unsigned>("balancing-param", 0, "the tunable parameter for compute/memory load balancing in B+-Forest", false, 1);
+        a.add<unsigned>("nr-host-threads", 't', "num of threads used in pre/post-processing in B+-Forest", false, 0);
         a.add<std::string>("zipfianconst", 'a', "zipfian constant", false, "0.99");
         a.add<std::string>("workload_dir", 'w', "directory containing workload files", false, "workload");
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
@@ -94,6 +95,7 @@ struct Option {
 
         dump_param_file = a.get<std::string>("dump-params");
         balancing_param = a.get<unsigned>("balancing-param");
+        nr_host_threads = a.get<unsigned>("nr-host-threads");
         alpha = a.get<std::string>("zipfianconst");
         if (!a.get<std::string>("pimtree_workload_file").empty()) {
             workload_file = a.get<std::string>("pimtree_workload_file");
@@ -130,6 +132,7 @@ struct Option {
 
     std::string dump_param_file;
     unsigned balancing_param;
+    unsigned nr_host_threads;
     std::string alpha;
     std::string workload_file;
     std::string pimtree_init_file;
@@ -461,11 +464,11 @@ size_t do_one_batch(const uint64_t task, [[maybe_unused]] int batch_num, Workloa
 // shift [-2^63, 2^63-1] to [0, 2^64-1]
 inline key_uint64_t key_int64_to_uint64(int64_t key)
 {
-    return ((uint64_t) key) ^ (1LL << 63);
+    return ((uint64_t) key) ^ (1ULL << 63);
 }
 inline key_uint64_t value_int64_to_uint64(int64_t value)
 {
-    return ((uint64_t) value) ^ (1LL << 63);
+    return ((uint64_t) value) ^ (1ULL << 63);
 }
 
 void load_workload(const std::string& workload_file,
@@ -524,7 +527,7 @@ Database make_database()
         verify_db.emplace(k, k);
 #endif /* DEBUG_ON */
     }
-    return Database(std::move(init_pairs), BPForest::Param{opt.balancing_param});
+    return Database(std::move(init_pairs), BPForest::Param{opt.balancing_param, opt.nr_host_threads});
 }
 
 Database make_database_from_pimtree_init_file(const std::string& init_file)
@@ -532,7 +535,7 @@ Database make_database_from_pimtree_init_file(const std::string& init_file)
     std::cout << "making database from pimtree init file " << init_file << std::endl;
     std::vector<KVPair> pairs;
     pimtree_queries qs = make_pimtree_queries(init_file);
-    for (int i = 0; i < qs.length; i++) {
+    for (size_t i = 0; i < qs.length; i++) {
         if (qs.ops[i].type == insert_t) {
             pairs.push_back({key_int64_to_uint64(qs.ops[i].tsk.i.key),
                 value_int64_to_uint64(qs.ops[i].tsk.i.value)});
@@ -542,7 +545,7 @@ Database make_database_from_pimtree_init_file(const std::string& init_file)
         }
     }
     std::cout << "making database with " << pairs.size() << " pairs" << std::endl;
-    return Database(std::move(pairs), {opt.balancing_param});
+    return Database(std::move(pairs), {opt.balancing_param, opt.nr_host_threads});
 }
 
 class Benchmark {
@@ -594,7 +597,7 @@ public:
     WorkloadBuffer<T>* load_pimtree_workload(const std::string& workload_file) {
         pimtree_queries qs = make_pimtree_queries(workload_file);
         std::vector<T> workload;
-        for (int i = 0; i < qs.length; i++) {
+        for (size_t i = 0; i < qs.length; i++) {
             // push_back_query adds the query if the query is of the desired
             // type for the workload type. The mapping is:
             //   key_uint64_t -> get_t

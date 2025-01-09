@@ -31,7 +31,8 @@ inline pimtree_queries make_pimtree_queries(std::string filepath) {
 
     printf("File size is %ji\n", (intmax_t)fileInfo.st_size);
 
-    void* map = mmap(0, fileInfo.st_size, PROT_READ, MAP_SHARED, fd, 0);
+    const size_t st_size = static_cast<size_t>(fileInfo.st_size);
+    void* map = mmap(0, st_size, PROT_READ, MAP_SHARED, fd, 0);
 
     if (map == MAP_FAILED) {
         close(fd);
@@ -39,9 +40,9 @@ inline pimtree_queries make_pimtree_queries(std::string filepath) {
         exit(EXIT_FAILURE);
     }
 
-    assert(fileInfo.st_size % sizeof(operation) == 0);
+    assert(st_size % sizeof(operation) == 0);
 
-    size_t n = fileInfo.st_size / sizeof(operation);
+    size_t n = st_size / sizeof(operation);
 
     return {(operation*)map, n};
 }
