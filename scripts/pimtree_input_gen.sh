@@ -9,9 +9,9 @@ cd $PIM_TREE_DIR
 
 # パラメータは以下の通り
 dpu_nums=(64) #DPUの数(range queryの幅に相当？)
-initial_element_num=(100000 100000) # 初期状態の要素の数
-test_query_num=(10000 100000) # テスト時のqueryの数
-test_query_skews=(0.9 0.99) # the skew of testing queries(=alpha)
+initial_element_num=(100000 100000 500000000) # 初期状態の要素の数
+test_query_num=(10000 100000 100000) # テスト時のqueryの数
+test_query_skews=(0.9 0.99 0.6) # the skew of testing queries(=alpha)
 
 # 初期状態の数, テスト時queryの数, skew配列の長さは揃える必要がある
 parameter_length=${#initial_element_num[@]}
