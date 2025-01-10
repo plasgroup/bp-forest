@@ -53,9 +53,12 @@ struct operation {
 struct pimtree_queries {
     operation* ops;
     size_t length;
+
+    int fd;
 };
 
 inline pimtree_queries make_pimtree_queries(std::string filepath);
+inline void free_pimtree_queries(pimtree_queries queries);
 inline void show_pimtree_queries(pimtree_queries queries);
 
 #include "pimtree_query.ipp"

@@ -44,7 +44,18 @@ inline pimtree_queries make_pimtree_queries(std::string filepath) {
 
     size_t n = st_size / sizeof(operation);
 
-    return {(operation*)map, n};
+    return {(operation*)map, n, fd};
+}
+
+inline void free_pimtree_queries(pimtree_queries queries) {
+    if (munmap(queries.ops, queries.length * sizeof(operation)) == -1) {
+        close(queries.fd);
+        perror("Error un-mmapping the file");
+        exit(EXIT_FAILURE);
+    }
+
+    // Un-mmaping doesn't close the file, so we still need to do that.
+    close(queries.fd);
 }
 
 inline void show_pimtree_queries(pimtree_queries queries) {
