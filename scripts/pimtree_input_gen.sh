@@ -57,17 +57,21 @@ for dpu_num in "${dpu_nums[@]}"; do
 
         build/pim_tree_host \
             -l $initial_element_num $test_query_num \
+            --output_batch_size $test_query_num \
             --get 1.0 \
             --predecessor 0 \
             --output "${INPUT_DIR}/${init_get_file_name}" "${INPUT_DIR}/${test_get_file_name}" \
             --alpha $test_query_skew
+        rm "${INPUT_DIR}/${init_get_file_name}"
 
         build/pim_tree_host \
             -l $initial_element_num $test_query_num \
+            --output_batch_size $test_query_num \
             --scan 1.0 \
             --predecessor 0 \
             --output "${INPUT_DIR}/${init_scan_file_name}" "${INPUT_DIR}/${test_scan_file_name}" \
             --alpha $test_query_skew
+        rm "${INPUT_DIR}/${init_scan_file_name}"
     done
 
 
