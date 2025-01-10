@@ -10,7 +10,7 @@
 
 class Database {
 public:
-    using count_query_t = std::pair<KeyRange, std::array<char, 8>>;
+    using count_query_t = std::pair<KeyRange, value_uint64_t>;
     const value_uint64_t NOT_FOUND_VALUE = 0;
     
     Database() {}
@@ -67,21 +67,7 @@ class InitData : public Database {
 
     value_uint64_t init_value_for_key(key_uint64_t key)
     {
-#ifdef NUMERIC_VALUE
-        return key;
-#else // NUMERIC_VALUE
-        value_uint64_t v;
-        char* p = (char*) &v;
-        value_uint64_t x = key;
-        for (size_t j = 0; j < 8; j++) {
-            if (x == 0)
-                p[j] = 0;
-            else
-                p[j] = (char) ('0' + (x % 10));
-            x /= 10;
-        }
-        return x;
-#endif // NUMERIC_VALUE
+        return (key & 0xff) ^ ((key >> 2) & 0xff) ^ ((key >> 4) & 0xff) ^ ((key >> 8) & 0xff);
     }
 
 public:
@@ -183,18 +169,12 @@ public:
     {
         for (size_t i = 0; i < n; i++) {
             const KeyRange& range = queries[i].first;
-            const std::array<char, 8>& needle = queries[i].second;
+            const value_uint64_t& needle = queries[i].second;
             results[i] = foldl(range, 0,
                                [&needle](value_uint64_t count, const KVPair& kv) {
-                                   char vs[9];
-                                   memcpy(vs, &kv.value, 8);
-                                   vs[8] = '\0';
-                                   char qs[9];
-                                   memcpy(qs, needle.data(), 8);
-                                   qs[8] = '\0';
-                                   if (strstr(vs, qs) != NULL)
-                                       count++;
-                                   return count;
+                                    if (kv.value == needle)
+                                        count++;
+                                    return count;
                                });
         }
     }   

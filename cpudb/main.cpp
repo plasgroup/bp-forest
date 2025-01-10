@@ -304,80 +304,16 @@ void CPUDatabase::batch_range_count(uint64_t n,
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             const KeyRange &qr = queries[i].first;
-            const char* qs = queries[i].second.data();
+            const value_uint64_t needle = queries[i].second;
             int count = 0;
             for (auto it = index->lower_bound(qr.begin);
                  it != index->end() && it->first < qr.end; it++) {
-                char* vs = (char*) &values[it->second];
-                const size_t qlen = qs[7] != '\0' ? 8 : strlen(qs);
-                for (size_t j = 0; j < 8 - qlen + 1; j++) {
-                    if (strncmp(&vs[j], qs, qlen) == 0) {
-                        count++;
-                        break;
-                    }
-                }
+                if (values[it->second] == needle)
+                    count++;
             }
             results[i] = count;
         }
     });
-}
-
-Database* make_database(size_t nr_keys, int nthreads)
-{
-    std::vector<key_uint64_t> keys;
-    std::vector<value_uint64_t> values;
-
-    std::cout << "making database with " << nr_keys << " keys" << std::endl;
-
-    keys.reserve(nr_keys);
-    values.reserve(nr_keys);
-    key_uint64_t key_interval = init_key_interval(nr_keys); 
-    for (size_t i = 0; i < nr_keys; i++) {
-        const size_t k = KEY_MIN + key_interval * i;
-        keys.push_back(k);
-#ifdef NUMERIC_VALUE
-        values.push_back(k);
-#else // NUMERIC_VALUE
-        value_uint64_t v;
-        char* p = (char*) &v;
-        size_t x = k;
-        for (size_t j = 0; j < 8; j++) {
-            if (x == 0)
-                p[j] = 0;
-            else
-                p[j] = (char) ('0' + (x % 10));
-            x /= 10;
-        }
-        values.push_back(v);
-#endif // NUMERIC_VALUE
-    }
-
-    std::cout << "add data to database" << std::endl;
-
-    Database *db = new CPUDatabase(keys, values, nthreads);
-
-    std::cout << "done" << std::endl;
-
-    return db;
-}
-
-Database* make_database_from_pimtree_init_file(const std::string& init_file, int nthreads)
-{
-    std::cout << "making database from pimtree init file " << init_file << std::endl;
-    std::vector<key_uint64_t> keys;
-    std::vector<value_uint64_t> values;
-    pimtree_queries qs = make_pimtree_queries(init_file);
-    for (size_t i = 0; i < qs.length; i++) {
-        if (qs.ops[i].type == insert_t) {
-            keys.push_back(key_int64_to_uint64(qs.ops[i].tsk.i.key));
-            values.push_back(value_int64_to_uint64(qs.ops[i].tsk.i.value));
-        } else {
-            std::cerr << "init_file has invalid operation of type: " << qs.ops[i].type << std::endl;
-            exit(1);
-        }
-    }
-    std::cout << "making database with " << keys.size() << " keys" << std::endl;
-    return new CPUDatabase(keys, values, nthreads);
 }
 
 int main(int argc, char* argv[])
