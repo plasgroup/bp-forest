@@ -304,18 +304,12 @@ void CPUDatabase::batch_range_count(uint64_t n,
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             const KeyRange &qr = queries[i].first;
-            const char* qs = queries[i].second.data();
+            const value_uint64_t needle = queries[i].second;
             int count = 0;
             for (auto it = index->lower_bound(qr.begin);
                  it != index->end() && it->first < qr.end; it++) {
-                char* vs = (char*) &values[it->second];
-                const size_t qlen = qs[7] != '\0' ? 8 : strlen(qs);
-                for (size_t j = 0; j < 8 - qlen + 1; j++) {
-                    if (strncmp(&vs[j], qs, qlen) == 0) {
-                        count++;
-                        break;
-                    }
-                }
+                if (values[it->second] == needle)
+                    count++;
             }
             results[i] = count;
         }

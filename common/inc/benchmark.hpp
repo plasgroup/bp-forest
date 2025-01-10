@@ -61,15 +61,15 @@ public:
             workload.push_back(range);
         }
     }
-    void push_back_query(std::vector<std::pair<KeyRange, std::array<char, 8>>>& workload, operation& query)
+    void push_back_query(std::vector<Database::count_query_t>& workload, operation& query)
     {
         if (query.type == scan_t) {
             KeyRange range = {
                 key_int64_to_uint64(query.tsk.s.lkey),
                 key_int64_to_uint64(query.tsk.s.rkey)
             };
-            std::array<char, 8> qs = {};
-            workload.push_back({range, qs});
+            value_uint64_t needle = range.begin & 0xff;
+            workload.push_back({range, needle});
         }
     }
     template <typename T>
@@ -261,7 +261,7 @@ public:
 };
 
 class RangeCountBenchmark : public Benchmark {
-    using Query = std::pair<KeyRange, std::array<char, 8>>;
+    using Query = Database::count_query_t;
     WorkloadBuffer<Query> *workload_buffer;
     ExtendableBuffer<value_uint64_t> results;
     ExtendableBuffer<Query> queries;
@@ -283,8 +283,7 @@ public:
             for (size_t i = 0; i < pworkload.data.size(); i++) {
                 const auto& p = pworkload.data[i];
                 KeyRange range = {p, p + range_length};
-                std::array<char, 8> needle;
-                snprintf(needle.data(), 8, "%d", (int) (i % 1000));
+                value_uint64_t needle = p & 0xff;
                 workload.push_back({range, needle});
             }
             workload_buffer = new WorkloadBuffer<Query>(std::move(workload));
