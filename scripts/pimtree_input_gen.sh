@@ -8,10 +8,10 @@ cd $PIM_TREE_DIR
 
 
 # パラメータは以下の通り
-dpu_nums=(64) #DPUの数(range queryの幅に相当？)
-initial_element_num=(100000 100000) # 初期状態の要素の数
-test_query_num=(10000 100000) # テスト時のqueryの数
-test_query_skews=(0.9 0.99) # the skew of testing queries(=alpha)
+dpu_nums=(500) #DPUの数(range queryの幅に相当？)
+initial_element_num=(100000000) # 初期状態の要素の数
+test_query_num=(20000000) # テスト時のqueryの数
+test_query_skews=(0.99 1.2) # the skew of testing queries(=alpha)
 
 # 初期状態の数, テスト時queryの数, skew配列の長さは揃える必要がある
 parameter_length=${#initial_element_num[@]}
@@ -50,15 +50,28 @@ for dpu_num in "${dpu_nums[@]}"; do
         initial_element_num=${initial_element_num[i]}
         test_query_num=${test_query_num[i]}
         test_query_skew=${test_query_skews[i]}
-        init_file_name="init_dpu${dpu_num}_element${initial_element_num}.data"
-        test_file_name="test_dpu${dpu_num}_query${test_query_num}_skew${test_query_skew}.data"
+        init_get_file_name="${i}_init_get_dpu${dpu_num}_element${initial_element_num}.data"
+        init_scan_file_name="${i}_init_scan_dpu${dpu_num}_element${initial_element_num}.data"
+        test_get_file_name="${i}_test_get_dpu${dpu_num}_query${test_query_num}_skew${test_query_skew}.data"
+        test_scan_file_name="${i}_test_scan_dpu${dpu_num}_query${test_query_num}_skew${test_query_skew}.data"
 
         build/pim_tree_host \
             -l $initial_element_num $test_query_num \
+            --output_batch_size $test_query_num \
+            --get 1.0 \
+            --predecessor 0 \
+            --output "${INPUT_DIR}/${init_get_file_name}" "${INPUT_DIR}/${test_get_file_name}" \
+            --alpha $test_query_skew
+        rm "${INPUT_DIR}/${init_get_file_name}"
+
+        build/pim_tree_host \
+            -l $initial_element_num $test_query_num \
+            --output_batch_size $test_query_num \
             --scan 1.0 \
             --predecessor 0 \
-            --output "${INPUT_DIR}/${init_file_name}" "${INPUT_DIR}/${test_file_name}" \
+            --output "${INPUT_DIR}/${init_scan_file_name}" "${INPUT_DIR}/${test_scan_file_name}" \
             --alpha $test_query_skew
+        rm "${INPUT_DIR}/${init_scan_file_name}"
     done
 
 
