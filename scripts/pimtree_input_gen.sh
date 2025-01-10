@@ -5,6 +5,7 @@ PIM_TREE_DIR="$SCRIPT_DIR/../external/PIM-tree"
 PIM_TREE_BUILD_DIR="$PIM_TREE_DIR/build"
 mkdir -p $INPUT_DIR
 cd $PIM_TREE_DIR
+export PARLAY_NUM_THREADS=1
 
 
 # パラメータは以下の通り
