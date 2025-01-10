@@ -595,7 +595,7 @@ inline void BPForest::execute_get_in_dpus()
     {
         StopWatch timer{QueryRecvTime};
         UPMEM_AsyncDuration async;
-        scatter_from_dpu(all_dpu, 8, GetResultReceiver{this}, async);
+        scatter_from_dpu(all_dpu, 8, GetResultReceiver{this, &nr_cold_hot_queries[0]}, async);
     }
 #else /* SYNCHRONOUS_DPU_EXEC */
     {
