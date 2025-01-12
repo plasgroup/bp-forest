@@ -1934,6 +1934,7 @@ inline void BPForest::execute_rcq_in_dpus(size_t nr_queries, uint64_t result[])
 
         const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
         if (idx_hot != INVALID_DPU_ID) {
+std::cout << idx_hot << ": " << rcqs.hot[idx_hot].nr_qrys << std::endl;
             ASSERT(rcqs.hot[idx_hot].nr_qrys <= std::numeric_limits<uint16_t>::max());
             nr_cold_hot_queries[idx_dpu][1] = static_cast<uint16_t>(rcqs.hot[idx_hot].nr_qrys);
         } else {
