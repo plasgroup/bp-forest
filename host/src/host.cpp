@@ -78,7 +78,7 @@ struct Option {
         a.add<std::string>("zipfianconst", 'a', "zipfian constant", false, "0.99");
         a.add<std::string>("workload_dir", 'w', "directory containing workload files", false, "workload");
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
-        a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq", false, "get");
+        a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq, count", false, "get");
         a.add<dpu_id_t>("print-compute-load", 'c', "print number of queries sent for each dpu", false, 0);
         a.add<dpu_id_t>("print-cold-compute-load", 0, "print number of queries sent for cold ranges in each dpu", false, 0);
         a.add<dpu_id_t>("print-hot-compute-load", 0, "print number of queries sent for hot ranges in each dpu", false, 0);
@@ -114,6 +114,8 @@ struct Option {
             op_type = TASK_PRED;
         else if (a.get<std::string>("ops") == "rmq")
             op_type = TASK_RANGE_MIN;
+        else if (a.get<std::string>("ops") == "count")
+            op_type = TASK_RANGE_COUNT;
         else {
             fprintf(stderr, "invalid operation type: %s\n", a.get<std::string>("ops").c_str());
             exit(1);
@@ -174,25 +176,24 @@ public:
 #endif /* DEBUG_ON */
     }
 
-    void batch_range_sum(uint64_t n, 
-                         const KeyRange queries[],
-                         value_uint64_t results[])
+    void batch_range_sum(uint64_t /* n */, 
+                         const KeyRange /*queries */[],
+                         value_uint64_t /* results */[])
     {
         std::cerr << "batch_range_sum is not implemented" << std::endl;
         exit(1);
     };
 
     void batch_range_count(uint64_t n, 
-                           const count_query_t queries[],
+                           const RangeCountQuery queries[],
                            value_uint64_t results[])
     {
-        std::cerr << "batch_range_count is not implemented" << std::endl;
-        exit(1);
+        forest.batch_range_count(n, queries, results);
     };
 
     int get_parallelism() const
     {
-        return upmem_get_nr_dpus();
+        return static_cast<int>(upmem_get_nr_dpus());
     }
 
     void print_params(std::ofstream& dump_param_file)
@@ -210,6 +211,8 @@ int main(int argc, char* argv[])
         benchmark = new GetBenchmark(opt.workload_file, opt.is_pimtree_workload);
     else if (opt.op_type == TASK_RANGE_MIN)
         benchmark = new RMQBenchmark(opt.workload_file, opt.is_pimtree_workload, NUM_INIT_REQS);
+    else if (opt.op_type == TASK_RANGE_COUNT)
+        benchmark = new RangeCountBenchmark(opt.workload_file, opt.is_pimtree_workload, NUM_INIT_REQS);
     else {
         std::cerr << "unsupported task type: " << opt.op_type << std::endl;
         exit(1);

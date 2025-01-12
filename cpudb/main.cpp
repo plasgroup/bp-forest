@@ -155,7 +155,7 @@ public:
                           const value_uint64_t results[]);
 
     void batch_range_count(uint64_t n, 
-                           const count_query_t queries[],
+                           const RangeCountQuery queries[],
                            value_uint64_t results[]);
 
     int get_parallelism() const
@@ -163,7 +163,7 @@ public:
         return parallel->get_parallelism();
     }
 
-    void print_params(std::ofstream& dump_param_file) {}
+    void print_params(std::ofstream&) {}
 };
 
 void CPUDatabase::batch_range_minimum(uint64_t n, 
@@ -230,7 +230,6 @@ void CPUDatabase::batch_range_sum_verify(size_t n,
                                       const KeyRange queries[],
                                       const value_uint64_t results[]) 
 {
-    std::mutex mtx;
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             const KeyRange &q = queries[i];
@@ -298,13 +297,13 @@ void CPUDatabase::batch_get_verify(size_t n,
 
 
 void CPUDatabase::batch_range_count(uint64_t n, 
-                                    const count_query_t queries[],
+                                    const RangeCountQuery queries[],
                                     value_uint64_t results[])
 {
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
-            const KeyRange &qr = queries[i].first;
-            const value_uint64_t needle = queries[i].second;
+            const KeyRange &qr = queries[i].range;
+            const value_uint64_t needle = queries[i].needle;
             int count = 0;
             for (auto it = index->lower_bound(qr.begin);
                  it != index->end() && it->first < qr.end; it++) {

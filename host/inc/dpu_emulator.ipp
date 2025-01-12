@@ -71,6 +71,14 @@ inline void DPUEmulator::execute()
         task_range_min(cold_tree, nr_cold_lumps, end_indices, delim_keys, result);
         task_range_min(hot_tree, nr_hot_lumps, end_indices + nr_cold_lumps + 1, delim_keys + nr_cold_delims, result + nr_cold_results);
     } break;
+    case TASK_RANGE_COUNT: {
+        const unsigned nr_cold_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram[4])),
+                       nr_hot_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram[6]));
+        const RangeCountQuery* const queries = std::launder(reinterpret_cast<RangeCountQuery*>(&mram[8]));
+        uint64_t* const result = new (&mram_2nd[RCQ_RESULT_OFFSET]) uint64_t[nr_cold_queries + nr_hot_queries];
+        task_range_count(cold_tree, nr_cold_queries, queries, result);
+        task_range_count(hot_tree, nr_hot_queries, queries + nr_cold_queries, result + nr_cold_queries);
+    } break;
     case TASK_INSERT: {
         const unsigned nr_cold_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram[4])),
                        nr_hot_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram[6]));
@@ -216,6 +224,21 @@ inline void DPUEmulator::task_range_min(const Tree& tree, unsigned nr_lumps, con
             result[idx_result] = min;
             idx_result++;
         }
+    }
+}
+inline void DPUEmulator::task_range_count(const Tree& tree, unsigned nr_queries, const RangeCountQuery queries[], uint64_t result[])
+{
+    for (unsigned i = 0; i < nr_queries; i++) {
+        uint64_t count = 0;
+        for (auto iter = tree.lower_bound(queries[i].range.begin);
+             iter != tree.end() && iter->first <= queries[i].range.end;
+             iter++) {
+
+            if (iter->second == queries[i].needle) {
+                count++;
+            }
+        }
+        result[i] = count;
     }
 }
 inline uint32_t /* nr_values */ DPUEmulator::task_scan_cold(const unsigned nr_queries, const KeyRange ranges[],

@@ -46,6 +46,7 @@ struct BPForest : ParallelManager<BPForest> {
 
     void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
     void batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t result[]);
+    void batch_range_count(size_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
     void batch_scan(size_t nr_queries, const KeyRange ranges[], BatchScanResult& result);
 
     void print_params(std::ostream&) const;
@@ -79,6 +80,19 @@ private:
     ExtendableBuffer<std::array<size_t, 2>> rg_qry_to_minirg;
     std::vector<size_t> rg_lump_end_indices;
 
+    struct RCQPerRange {
+        // qrys[idx_host_thread][idx_qry]
+        std::vector<std::vector<RangeCountQuery>> qrys;
+        // orig_idxs[idx_host_thread][idx_qry]
+        std::vector<std::vector<size_t>> orig_idxs;
+        // results[idx_host_thread][idx_qry]
+        std::vector<ExtendableBuffer<uint64_t>> results;
+        size_t nr_qrys;
+    };
+    struct {
+        std::array<RCQPerRange, MAX_NR_DPUS> cold, hot;
+    } rcqs;
+
 public:  // TODO: privatize
     struct Summary {
         uint32_t nr_pairs;
@@ -93,7 +107,7 @@ private:
     std::array<Summary, MAX_NR_DPUS> summaries;
 
     // used in rebalancing
-    ExtendableBuffer<size_t> query_idxs;
+    ExtendableBuffer<size_t> load_idxs;
     std::array<ExtendableBuffer<KVPair>, MAX_NR_DPUS> hot_kvpairs;
 
     void distribute_initial_data(std::vector<KVPair>&& sorted_pairs);
@@ -110,9 +124,50 @@ private:
     void route_get_queries_impl(unsigned tid);
     void postprocess_of_get_impl(unsigned tid);
 
-    union {
-        std::tuple<size_t, const key_uint64_t*, value_uint64_t*> route_get_queries{};
+    template <bool HasHotRanges>
+    void route_rcq(size_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
+    template <bool HasHotRanges>
+    void route_rcq_impl(unsigned tid);
+    template <bool HasHotRanges>
+    void route_single_rcq(size_t idx_qry, const RangeCountQuery& qry, value_uint64_t& result, unsigned tid);
+    bool check_if_rcq_balance(size_t nr_queries);
+    void execute_rcq_in_dpus(size_t nr_queries, uint64_t result[]);
+    void postprocess_of_rcq(uint64_t result[]);
+    void postprocess_of_rcq_impl(unsigned tid);
+    struct RCQSender;
+    struct RCQResultReceiver;
+    void merge_hot_rcq();
+    void merge_hot_rcq_impl(unsigned tid);
+    void re_route_rcq(const std::array<bool, MAX_NR_DPUS>& cold_range_rebalanced);
+    void re_route_rcq_impl(unsigned tid);
+    bool re_route_single_rcq(size_t orig_idx, const RangeCountQuery& qry, dpu_id_t idx_cold, unsigned tid);
+    struct ReRoutedQrysPerColdRange {
+        std::vector<std::vector<RangeCountQuery>> qrys;
+        std::vector<std::vector<size_t>> orig_idxs;
+    };
+
+    union TmpData {
+        TmpData() {}
+        ~TmpData() {}
+
+        template <typename T, typename F>
+        void with(T TmpData::*member, const T& value, F&& func)
+        {
+            T* place = &(this->*member);
+            new (place) T{value};
+            std::forward<F>(func)();
+            place->~T();
+        }
+
+        std::tuple<size_t, const key_uint64_t*, value_uint64_t*> route_get_queries;
         value_uint64_t* postprocess_of_get;
+
+        std::tuple<size_t, const RangeCountQuery*, uint64_t*> route_rcq;
+        uint64_t* postprocess_of_rcq;
+
+        std::tuple<std::reference_wrapper<const std::array<bool, MAX_NR_DPUS>>,
+            std::array<ReRoutedQrysPerColdRange, MAX_NR_DPUS>>
+            re_route_rcq;
     } tmp_data;
 
 

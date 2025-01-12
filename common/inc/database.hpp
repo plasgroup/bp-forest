@@ -10,7 +10,6 @@
 
 class Database {
 public:
-    using count_query_t = std::pair<KeyRange, value_uint64_t>;
     const value_uint64_t NOT_FOUND_VALUE = 0;
     
     Database() {}
@@ -29,7 +28,7 @@ public:
                                  value_uint64_t results[]) = 0;
 
     virtual void batch_range_count(uint64_t n, 
-                                   const count_query_t queries[],
+                                   const RangeCountQuery queries[],
                                    value_uint64_t results[]) = 0;
 
     virtual int get_parallelism() const = 0;
@@ -164,12 +163,12 @@ public:
     }
 
     void batch_range_count(uint64_t n, 
-                           const count_query_t queries[],
+                           const RangeCountQuery queries[],
                            value_uint64_t results[])
     {
         for (size_t i = 0; i < n; i++) {
-            const KeyRange& range = queries[i].first;
-            const value_uint64_t& needle = queries[i].second;
+            const KeyRange& range = queries[i].range;
+            const value_uint64_t& needle = queries[i].needle;
             results[i] = foldl(range, 0,
                                [&needle](value_uint64_t count, const KVPair& kv) {
                                     if (kv.value == needle)
@@ -184,5 +183,5 @@ public:
         return 1;
     }
 
-    void print_params(std::ofstream& param_dump_file) {}
+    void print_params(std::ofstream&) {}
 };

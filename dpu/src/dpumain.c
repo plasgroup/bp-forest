@@ -34,6 +34,9 @@ printf("task_no = %d\n", input_header.task_no);
     case TASK_RANGE_MIN:
         task_range_min();
         break;
+    case TASK_RANGE_COUNT:
+        task_range_count();
+        break;
     case TASK_SUMMARIZE:
         task_summarize();
         break;

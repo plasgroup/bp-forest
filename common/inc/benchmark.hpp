@@ -61,7 +61,7 @@ public:
             workload.push_back(range);
         }
     }
-    void push_back_query(std::vector<Database::count_query_t>& workload, operation& query)
+    void push_back_query(std::vector<RangeCountQuery>& workload, operation& query)
     {
         if (query.type == scan_t) {
             KeyRange range = {
@@ -261,10 +261,9 @@ public:
 };
 
 class RangeCountBenchmark : public Benchmark {
-    using Query = Database::count_query_t;
-    WorkloadBuffer<Query> *workload_buffer;
+    WorkloadBuffer<RangeCountQuery> *workload_buffer;
     ExtendableBuffer<value_uint64_t> results;
-    ExtendableBuffer<Query> queries;
+    ExtendableBuffer<RangeCountQuery> queries;
     size_t num_queries_in_last_batch = 0;
 
 public:
@@ -272,13 +271,13 @@ public:
                         bool is_pimtree_workload, size_t nr_keys)
     {
         if (is_pimtree_workload)
-            workload_buffer = load_pimtree_workload<Query>(workload_file);
+            workload_buffer = load_pimtree_workload<RangeCountQuery>(workload_file);
         else {
             PiecewiseConstantWorkload pworkload;
             load_workload(workload_file, &pworkload);
             key_uint64_t key_interval = init_key_interval(nr_keys); 
             size_t range_length = key_interval * 100 - 1;
-            std::vector<Query> workload;
+            std::vector<RangeCountQuery> workload;
             workload.reserve(pworkload.data.size());
             for (size_t i = 0; i < pworkload.data.size(); i++) {
                 const auto& p = pworkload.data[i];
@@ -286,7 +285,7 @@ public:
                 value_uint64_t needle = p & 0xff;
                 workload.push_back({range, needle});
             }
-            workload_buffer = new WorkloadBuffer<Query>(std::move(workload));
+            workload_buffer = new WorkloadBuffer<RangeCountQuery>(std::move(workload));
         }
     }
 

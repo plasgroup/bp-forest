@@ -16,6 +16,7 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
                                      "MAX_NR_SUMMARY_CHUNKS: " EXPAND_STRINGIFY(MAX_NR_SUMMARY_CHUNKS) "\n"
                                      "RMQ_RESULT_OFFSET: " EXPAND_STRINGIFY(RMQ_RESULT_OFFSET) "\n"
                                      "MAX_NR_RMQ_LUMPS: " EXPAND_STRINGIFY(MAX_NR_RMQ_LUMPS) "\n"
+                                     "RCQ_RESULT_OFFSET: " EXPAND_STRINGIFY(RCQ_RESULT_OFFSET) "\n"
                                      "NR_TASKLETS: " EXPAND_STRINGIFY(NR_TASKLETS) "\n"
                                      "MRAM_FOR_TREE: " EXPAND_STRINGIFY(MRAM_FOR_TREE) "\n"
 #ifdef BITMAP_IN_MRAM
@@ -54,6 +55,9 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
                                      "TASK_RANGE_MIN_NR_CACHED_LUMP_END_INDICES: " EXPAND_STRINGIFY(TASK_RANGE_MIN_NR_CACHED_LUMP_END_INDICES) "\n"
                                      "TASK_RANGE_MIN_NR_CACHED_DELIM_KEYS: " EXPAND_STRINGIFY(TASK_RANGE_MIN_NR_CACHED_DELIM_KEYS) "\n"
                                      "TASK_RANGE_MIN_NR_CACHED_RESULTS: " EXPAND_STRINGIFY(TASK_RANGE_MIN_NR_CACHED_RESULTS) "\n"
+                                     "TASK_RANGE_COUNT_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_RANGE_COUNT_NR_TASKLETS) "\n"
+                                     "TASK_RANGE_COUNT_NR_CACHED_QRYS: " EXPAND_STRINGIFY(TASK_RANGE_COUNT_NR_CACHED_QRYS) "\n"
+                                     "TASK_RANGE_COUNT_NR_CACHED_RESULTS: " EXPAND_STRINGIFY(TASK_RANGE_COUNT_NR_CACHED_RESULTS) "\n"
 #endif /* USE_RBTREE */
                                      "TASK_INIT_BITMAP_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_INIT_BITMAP_NR_TASKLETS) "\n"
                                      "TASK_INIT_NR_CACHED_WORDS: " EXPAND_STRINGIFY(TASK_INIT_NR_CACHED_WORDS) "\n"
