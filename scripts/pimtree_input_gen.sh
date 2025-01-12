@@ -9,7 +9,7 @@ cd $PIM_TREE_DIR
 
 # パラメータは以下の通り
 dpu_nums=(500) #DPUの数(range queryの幅に相当？)
-initial_element_num=(500000000) # 初期状態の要素の数
+initial_element_num=(100000000) # 初期状態の要素の数
 test_query_num=(20000000) # テスト時のqueryの数
 test_query_skews=(0.99) # the skew of testing queries(=alpha)
 
