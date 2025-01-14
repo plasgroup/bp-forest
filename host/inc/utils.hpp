@@ -24,8 +24,7 @@ private:
 
 static inline float time_diff(struct timeval* start, struct timeval* end)
 {
-    float timediff =
-      static_cast<float>(end->tv_sec - start->tv_sec) + 1e-6f * static_cast<float>(end->tv_usec - start->tv_usec);
+    float timediff = static_cast<float>(end->tv_sec - start->tv_sec) + 1e-6f * static_cast<float>(end->tv_usec - start->tv_usec);
     return timediff;
 }
 

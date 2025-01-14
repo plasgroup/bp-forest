@@ -1,18 +1,18 @@
 #include "assert.h"
+#include "benchmark.hpp"
 #include "bpforest.hpp"
 #include "common.h"
 #include "database.hpp"
-#include "benchmark.hpp"
 #include "extendable_buffer.hpp"
 #include "host_params.hpp"
 #include "piecewise_constant_workload.hpp"
+#include "pimtree_query.hpp"
+#include "pimtree_query.ipp"
 #include "statistics.hpp"
 #include "upmem.hpp"
 #include "utils.hpp"
 #include "workload_buffer.hpp"
 #include "workload_types.h"
-#include "pimtree_query.hpp"
-#include "pimtree_query.ipp"
 
 #include <cereal/archives/binary.hpp>
 
@@ -150,22 +150,23 @@ struct Option {
 } opt;
 
 
-class BPForestDatabase : public Database {
+class BPForestDatabase : public Database
+{
     BPForest forest;
 
 public:
     BPForestDatabase(const InitData& init_data, const BPForest::Param& param)
-    : BPForestDatabase(init_data.get_data(), param) {}
+        : BPForestDatabase(init_data.get_data(), param) {}
 
     BPForestDatabase(std::vector<KVPair> init_data, const BPForest::Param& param)
-    : forest(std::move(init_data), param) {}
+        : forest(std::move(init_data), param) {}
 
     void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t results[])
     {
         forest.batch_get(nr_queries, keys, results);
 #ifdef DEBUG_ON
         check_get_results(nr_queries, keys, results);
-#endif /* DEBUG_ON */        
+#endif /* DEBUG_ON */
     }
 
     void batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t results[])
@@ -176,17 +177,17 @@ public:
 #endif /* DEBUG_ON */
     }
 
-    void batch_range_sum(uint64_t /* n */, 
-                         const KeyRange /*queries */[],
-                         value_uint64_t /* results */[])
+    void batch_range_sum(uint64_t /* n */,
+        const KeyRange /*queries */[],
+        value_uint64_t /* results */[])
     {
         std::cerr << "batch_range_sum is not implemented" << std::endl;
         exit(1);
     };
 
-    void batch_range_count(uint64_t n, 
-                           const RangeCountQuery queries[],
-                           value_uint64_t results[])
+    void batch_range_count(uint64_t n,
+        const RangeCountQuery queries[],
+        value_uint64_t results[])
     {
         forest.batch_range_count(n, queries, results);
     };
@@ -218,8 +219,7 @@ int main(int argc, char* argv[])
         exit(1);
     }
 
-    InitData init_data = (opt.pimtree_init_file.empty() ?
-                          InitData(NUM_INIT_REQS) : InitData(opt.pimtree_init_file));
+    InitData init_data = (opt.pimtree_init_file.empty() ? InitData(NUM_INIT_REQS) : InitData(opt.pimtree_init_file));
     BPForestDatabase db(init_data, BPForest::Param{opt.balancing_param, opt.nr_host_threads});
 
 #ifdef PRINT_DEBUG
@@ -251,7 +251,7 @@ int main(int argc, char* argv[])
     }
     if (opt.verify)
         benchmark->set_verify_db(&init_data);
-    
+
     benchmark->run(opt.nr_batches, &db, [&](int idx_batch) {
 #ifdef HOST_ONLY
         if (opt.op_type == TASK_RANGE_MIN) {
@@ -271,11 +271,11 @@ int main(int argc, char* argv[])
         if (opt.print_perf) {
             printf("%s,%d,%d,%ld,%ld"
 #ifdef SYNCHRONOUS_DPU_EXEC
-                    ",%ld,%ld,%ld"
+                   ",%ld,%ld,%ld"
 #else /* SYNCHRONOUS_DPU_EXEC */
                     ",%ld"
 #endif
-                    ",%ld\n",
+                   ",%ld\n",
                 opt.alpha.c_str(), upmem_get_nr_dpus(), idx_batch,
                 long{NUM_REQUESTS_PER_BATCH}, RebalancingTime.count(),
 #ifdef SYNCHRONOUS_DPU_EXEC
