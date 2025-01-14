@@ -2,7 +2,7 @@
 
 #include "common.h"
 #include "host/inc/host_params.hpp"
-#include "host/inc/pimtree_query.hpp"
+#include "pimtree_query.hpp"
 
 #include <array>
 #include <cstddef>
