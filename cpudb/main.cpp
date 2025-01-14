@@ -281,12 +281,15 @@ void CPUDatabase::batch_get_verify(size_t n,
             key_uint64_t q = queries[i];
             key_uint64_t key_interval = init_key_interval(nr_keys);
             value_uint64_t expected = 0;
+#pragma GCC diagnostic push 
+#pragma GCC diagnostic ignored "-Wtype-limits"
             if (q < KEY_MIN || q >= KEY_MAX)
                 expected = NOT_FOUND_VALUE;
             else if ((q - KEY_MIN) % key_interval != 0)
                 expected = NOT_FOUND_VALUE;
             else
                 expected = q;
+#pragma GCC diagnostic pop
             if (expected != results[i]) {
                 std::cerr << "get verification failed: expected=" << expected << ", actual=" << results[i] << std::endl;
                 exit(1);
