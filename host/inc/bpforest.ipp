@@ -91,6 +91,7 @@ void BPForest::distribute_initial_data(std::vector<KVPair>&& sorted_pairs_vec)
         cursor += nr_pairs_in_each_dpus[idx_dpu];
     }
 
+std::cout << __FILE__ ":" << __LINE__ << std::endl;
     {
         StopWatch t{ForestInitTime};
 
@@ -98,6 +99,7 @@ void BPForest::distribute_initial_data(std::vector<KVPair>&& sorted_pairs_vec)
         gather_to_dpu(all_dpu, 0, TaskInitInput{&nr_pairs_in_each_dpus[0], &pairs_for_each_dpus[0]}, async);
         execute(all_dpu, async);
     }
+std::cout << __FILE__ ":" << __LINE__ << std::endl;
 
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
     std::unique_ptr<LogBuffer> log = read_log(all_dpu);
@@ -227,6 +229,7 @@ inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], va
 {
     StopWatch timer{BatchTotalTime};
 
+std::cout << __FILE__ ":" << __LINE__ << std::endl;
     using std::get;
 
     if (nr_hot_ranges == 0) {
@@ -271,6 +274,7 @@ inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], va
                 cold_range_rebalanced[idx_cold] = (point_qrys.cold[idx_cold].nr_qrys > cold_range_threshold);
             }
             take_summary(cold_range_rebalanced);
+std::cout << __FILE__ ":" << __LINE__ << std::endl;
 
             const size_t min_nr_queries_in_hot = (nr_queries + nr_cold_ranges - 1) / nr_cold_ranges;
             dpu_id_t idx_new_hot = 0;
@@ -306,6 +310,9 @@ inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], va
                     size_t idx_query = 0;
                     load_idxs.reserve(nr_entries + 1);
                     load_idxs[0] = 0;
+for (uint32_t idx_summary_entry = 0; idx_summary_entry < nr_entries; idx_summary_entry++) {
+    std::cout << "DPU[" << idx_cold << "].chunk[" << idx_summary_entry << "] = " << summary.nr_keys(idx_summary_entry) << " keys @ " << summary.head_key(idx_summary_entry) << std::endl;
+}
                     for (uint32_t idx_summary_entry = 0; idx_summary_entry < nr_entries; idx_summary_entry++) {
                         if (summary.nr_keys(idx_summary_entry) == 0) {
                             load_idxs[idx_summary_entry + 1] = idx_query;
@@ -605,6 +612,7 @@ inline void BPForest::execute_get_in_dpus()
         execute(all_dpu, async);
         scatter_from_dpu(all_dpu, 8, GetResultReceiver{this, &nr_cold_hot_queries[0]}, async);
     }
+std::cout << __FILE__ ":" << __LINE__ << std::endl;
 #endif
 
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
@@ -2386,6 +2394,7 @@ struct BPForest::SummaryReceiver {
 };
 inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_range_rebalanced)
 {
+std::cout << __FILE__ ":" << __LINE__ << std::endl;
     std::array<UInt32Packet, MAX_NR_DPUS> task_nos;
     std::array<SummaryChunkInfo, MAX_NR_DPUS> chunk_infos;
 
@@ -2421,6 +2430,11 @@ inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_ran
                         summary.nr_blocks = 0;
                         continue;
                     }
+for (uint16_t i = 0; i < nr_chunks; i++) {
+    static std::mutex cout_mtx;
+    std::lock_guard<std::mutex> lock{cout_mtx};
+    std::cout << "DPU[" << idx_dpu << "].chunk_info.end_indices[" << i << "] = " << chunk_info.end_indices[i] << std::endl;
+}
 
                     std::array<uint16_t, MAX_NR_SUMMARY_CHUNKS> sorted_idx_to_current_idx;
                     std::iota(&sorted_idx_to_current_idx[0], &sorted_idx_to_current_idx[nr_chunks], uint16_t{0});
