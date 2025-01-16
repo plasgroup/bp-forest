@@ -167,16 +167,18 @@ int main(int argc, char* argv[])
     std::vector<int64_t> init_keys;
     init_keys.reserve(npairs);
     for (size_t idx_key = 0; idx_key < npairs; idx_key++) {
-        const auto now = Clock::now();
-        if (now - timer_start > std::chrono::seconds{3}) {
-            std::cout << '[' << pairs_file_str << "] " << (idx_key * 100 / npairs) << "% keys genarated" << std::endl;
-            timer_start = now;
+        if (idx_key % 0x10000 == 0) {
+            const auto now = Clock::now();
+            if (now - timer_start > std::chrono::seconds{3}) {
+                std::cout << '[' << pairs_file_str << "] " << (idx_key * 100 / npairs) << "% keys generated" << std::endl;
+                timer_start = now;
+            }
         }
 
         init_keys.push_back(key_value_dist(rand_gen));
     }
 
-    std::cout << '[' << pairs_file_str << "] 100% keys genarated" << std::endl;
+    std::cout << '[' << pairs_file_str << "] 100% keys generated" << std::endl;
     std::cout << '[' << pairs_file_str << "] keys being sorted" << std::endl;
 
     std::sort(init_keys.begin(), init_keys.end());
@@ -210,10 +212,12 @@ int main(int argc, char* argv[])
         size_t idx_tmp_key = 0, idx_dup = 0;
         for (const int64_t next_appended : appended_keys) {
             for (; idx_tmp_key < npairs; idx_tmp_key++) {
-                const auto now = Clock::now();
-                if (now - timer_start > std::chrono::seconds{3}) {
-                    std::cout << '[' << pairs_file_str << "] " << (idx_tmp_key * 100 / npairs) << "% duplication resolved" << std::endl;
-                    timer_start = now;
+                if (idx_tmp_key % 0x10000 == 0) {
+                    const auto now = Clock::now();
+                    if (now - timer_start > std::chrono::seconds{3}) {
+                        std::cout << '[' << pairs_file_str << "] " << (idx_tmp_key * 100 / npairs) << "% duplication resolved" << std::endl;
+                        timer_start = now;
+                    }
                 }
 
                 if (idx_dup < dup_idxs.size() && idx_tmp_key == dup_idxs[idx_dup]) {
@@ -242,10 +246,12 @@ int main(int argc, char* argv[])
     std::vector<operation> init_ops;
     init_ops.reserve(npairs);
     for (size_t idx_pair = 0; idx_pair < npairs; idx_pair++) {
-        const auto now = Clock::now();
-        if (now - timer_start > std::chrono::seconds{3}) {
-            std::cout << '[' << pairs_file_str << "] " << (idx_pair * 100 / npairs) << "% values genarated" << std::endl;
-            timer_start = now;
+        if (idx_pair % 0x10000 == 0) {
+            const auto now = Clock::now();
+            if (now - timer_start > std::chrono::seconds{3}) {
+                std::cout << '[' << pairs_file_str << "] " << (idx_pair * 100 / npairs) << "% values generated" << std::endl;
+                timer_start = now;
+            }
         }
 
         operation op;
@@ -286,10 +292,12 @@ int main(int argc, char* argv[])
     std::vector<operation> query_ops;
     query_ops.reserve(nqueries);
     for (size_t idx_query = 0; idx_query < nqueries; idx_query++) {
-        const auto now = Clock::now();
-        if (now - timer_start > std::chrono::seconds{3}) {
-            std::cout << '[' << queries_file_str << "] " << (idx_query * 100 / nqueries) << "% queries genarated" << std::endl;
-            timer_start = now;
+        if (idx_query % 0x10000 == 0) {
+            const auto now = Clock::now();
+            if (now - timer_start > std::chrono::seconds{3}) {
+                std::cout << '[' << queries_file_str << "] " << (idx_query * 100 / nqueries) << "% queries generated" << std::endl;
+                timer_start = now;
+            }
         }
 
         int64_t key;
