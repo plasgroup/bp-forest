@@ -2450,8 +2450,8 @@ std::cout << __FILE__ ":" << __LINE__ << std::endl;
                     }
                     summary.nr_blocks = chunk_info.end_indices[sorted_idx_to_current_idx[nr_chunks - 1]];
                     summary.blocks.reserve(summary.nr_blocks);
+std::lock_guard<std::mutex> lock{cout_mtx};
 for (uint16_t i = 0; i < nr_chunks; i++) {
-    std::lock_guard<std::mutex> lock{cout_mtx};
     std::cout << "DPU[" << idx_dpu << "].chunk_info.end_indices[" << i << "] = " << chunk_info.end_indices[i] << std::endl;
 }
 std::cout << "DPU[" << idx_dpu << "].summary @ " << &summary.blocks[0] << std::endl;
