@@ -1100,7 +1100,6 @@ void task_summarize(void)
                             }
                             nr_pairs_from_me += nr_keys;
                             wks_me->summary[idx_summary_in_cache / 4].nr_keys[idx_summary_in_cache % 4] = nr_keys;
-printf("%u:%u keys@ %lu\n", me(), nr_keys, min_key);
                         }
                         wks_me->summary[idx_summary_in_cache / 4].head_keys[idx_summary_in_cache % 4] = min_key;
                         idx_summary_in_cache++;
@@ -1112,7 +1111,6 @@ printf("%u:%u keys@ %lu\n", me(), nr_keys, min_key);
                             wks->nr_allocated_bytes = orig_nr_allocated_bytes + written_bytes;
                             const uint16_t orig_nr_chunks = wks->result_header.nr_chunks;
                             wks->result_header.nr_chunks = orig_nr_chunks + 1;
-printf("%u:->chunk[%u]: %u, .+%u\n", me(), orig_nr_chunks, orig_nr_allocated_bytes, written_bytes);
                             release_lock();
 
                             mram_write(&wks_me->summary[0], (__mram_ptr SummaryBlock*)(result_blocks + orig_nr_allocated_bytes), written_bytes);
@@ -1197,7 +1195,6 @@ printf("%u:->chunk[%u]: %u, .+%u\n", me(), orig_nr_chunks, orig_nr_allocated_byt
                 wks->nr_allocated_bytes = orig_nr_allocated_bytes + written_bytes;
                 const uint16_t orig_nr_chunks = wks->result_header.nr_chunks;
                 wks->result_header.nr_chunks = orig_nr_chunks + 1;
-printf("%u:->chunk[%u]: %u, .+%u\n", me(), orig_nr_chunks, orig_nr_allocated_bytes, written_bytes);
                 release_lock();
 
                 mram_write(&wks_me->summary[0], (__mram_ptr SummaryBlock*)(result_blocks + orig_nr_allocated_bytes), written_bytes);
@@ -1219,6 +1216,18 @@ printf("%u:->chunk[%u]: %u, .+%u\n", me(), orig_nr_chunks, orig_nr_allocated_byt
                 if (result_header_size != 0) {
                     mram_write((const void*)result_header_src, (__mram_ptr void*)result_header_dest, result_header_size);
                 }
+printf("%u chunks:", wks->result_header.nr_chunks);
+for (uint16_t idx_chunk = 0; idx_chunk < wks->result_header.nr_chunks; idx_chunk++) {
+    printf(" %u", wks->result_header.chunk_end_indices[idx_chunk]);
+}
+printf("\n");
+for (uint16_t idx_block = 0; idx_block < nr_committed_blocks; idx_block++) {
+    __dma_aligned SummaryBlock block;
+    mram_read((__mram_ptr void*)(result_blocks + sizeof(SummaryBlock) * idx_block), &block, sizeof(SummaryBlock));
+    for (unsigned i = 0; i < 4; i++) {
+        printf("%u %lu\n", block.nr_keys[i], block.head_keys[i]);
+    }
+}
             }
         }
     }
