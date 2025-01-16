@@ -2436,10 +2436,6 @@ std::cout << __FILE__ ":" << __LINE__ << std::endl;
                         summary.nr_blocks = 0;
                         continue;
                     }
-for (uint16_t i = 0; i < nr_chunks; i++) {
-    std::lock_guard<std::mutex> lock{cout_mtx};
-    std::cout << "DPU[" << idx_dpu << "].chunk_info.end_indices[" << i << "] = " << chunk_info.end_indices[i] << std::endl;
-}
 
                     std::array<uint16_t, MAX_NR_SUMMARY_CHUNKS> sorted_idx_to_current_idx;
                     std::iota(&sorted_idx_to_current_idx[0], &sorted_idx_to_current_idx[nr_chunks], uint16_t{0});
@@ -2454,6 +2450,11 @@ for (uint16_t i = 0; i < nr_chunks; i++) {
                     }
                     summary.nr_blocks = chunk_info.end_indices[sorted_idx_to_current_idx[nr_chunks - 1]];
                     summary.blocks.reserve(summary.nr_blocks);
+for (uint16_t i = 0; i < nr_chunks; i++) {
+    std::lock_guard<std::mutex> lock{cout_mtx};
+    std::cout << "DPU[" << idx_dpu << "].chunk_info.end_indices[" << i << "] = " << chunk_info.end_indices[i] << std::endl;
+}
+std::cout << "DPU[" << idx_dpu << "].summary @ " << &summary.blocks[0] << std::endl;
                 } else {
                     summary.nr_blocks = 0;
                 }
