@@ -2382,6 +2382,10 @@ struct BPForest::SummaryReceiver {
                            chunk_end_idx = chunk_infos[dpu_index].end_indices[block_index];
             out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<SummaryBlock*>(&summary[dpu_index].blocks[chunk_begin_idx])));
             out->length = uint32_t{sizeof(SummaryBlock)} * (chunk_end_idx - chunk_begin_idx);
+{static std::mutex cout_mtx;
+std::lock_guard<std::mutex> lock{cout_mtx};
+std::cout << "SummaryReceiver[" << dpu_index << "][" << block_index << "]: summary[" << dpu_index << "].blocks[" << chunk_begin_idx << "] (" << out->addr << "), .+" << out->length << " bytes" << std::endl;
+}
             return true;
         } else {
             return false;
