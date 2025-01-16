@@ -34,6 +34,8 @@
 #include <utility>
 
 
+static std::mutex cout_mtx;  // TODO: delete
+
 inline BPForest::BPForest(std::vector<KVPair>&& sorted_pairs, const Param& param)
     : ParallelManager<BPForest>{param.nr_host_threads},
       nr_cold_ranges{(upmem_init(), upmem_get_nr_dpus())}, param{param}
@@ -2382,9 +2384,9 @@ struct BPForest::SummaryReceiver {
                            chunk_end_idx = chunk_infos[dpu_index].end_indices[block_index];
             out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<SummaryBlock*>(&summary[dpu_index].blocks[chunk_begin_idx])));
             out->length = uint32_t{sizeof(SummaryBlock)} * (chunk_end_idx - chunk_begin_idx);
-{static std::mutex cout_mtx;
+{
 std::lock_guard<std::mutex> lock{cout_mtx};
-std::cout << "SummaryReceiver[" << dpu_index << "][" << block_index << "]: summary[" << dpu_index << "].blocks[" << chunk_begin_idx << "] (" << out->addr << "), .+" << out->length << " bytes" << std::endl;
+std::cout << "SummaryReceiver[" << dpu_index << "][" << block_index << "]: summary[" << dpu_index << "].blocks[" << chunk_begin_idx << "] (" << (void*)out->addr << "), .+" << out->length << " bytes" << std::endl;
 }
             return true;
         } else {
@@ -2435,7 +2437,6 @@ std::cout << __FILE__ ":" << __LINE__ << std::endl;
                         continue;
                     }
 for (uint16_t i = 0; i < nr_chunks; i++) {
-    static std::mutex cout_mtx;
     std::lock_guard<std::mutex> lock{cout_mtx};
     std::cout << "DPU[" << idx_dpu << "].chunk_info.end_indices[" << i << "] = " << chunk_info.end_indices[i] << std::endl;
 }
