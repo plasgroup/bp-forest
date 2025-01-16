@@ -150,14 +150,14 @@ int main(int argc, char* argv[])
     const std::string pairs_file_str = (std::ostringstream{} << file_prefix
                                                              << "init" << npairs
                                                              << ".datasorted")
-                                           .str();
+                                           .rdbuf()->str();
     const std::string queries_file_str = (std::ostringstream{} << file_prefix
                                                                << ops << nqueries
                                                                << "_slice" << zipf_nr_cands
                                                                << (scramble ? "_scramble" : "_ordered")
                                                                << "_skew" << zipf_skewness_str
                                                                << ".data")
-                                             .str();
+                                             .rdbuf()->str();
     ZipfDistribution<uint64_t> zipf_dist{zipf_nr_cands, std::stod(zipf_skewness_str)};
     std::mt19937_64 rand_gen{rand_seed};
 
