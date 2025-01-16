@@ -1,8 +1,3 @@
-#include "generator.h"
-#include "scrambled_zipfian_generator.h"
-#include "utils.h"
-#include "zipfian_generator.h"
-
 #include "piecewise_constant_workload.hpp"
 #include "pimtree_query.hpp"
 #include "workload_types.h"
@@ -147,17 +142,19 @@ int main(int argc, char* argv[])
     const auto rand_seed = a.get<RandSeedType>("rand_seed");
     const bool showinfo = a.exist("showinfo");
 
-    const std::string pairs_file_str = (std::ostringstream{} << file_prefix
-                                                             << "init" << npairs
-                                                             << ".datasorted")
-                                           .rdbuf()->str();
-    const std::string queries_file_str = (std::ostringstream{} << file_prefix
-                                                               << ops << nqueries
-                                                               << "_slice" << zipf_nr_cands
-                                                               << (scramble ? "_scramble" : "_ordered")
-                                                               << "_skew" << zipf_skewness_str
-                                                               << ".data")
-                                             .rdbuf()->str();
+    std::ostringstream ostr_pairs;
+    ostr_pairs << file_prefix
+               << "init" << npairs
+               << ".datasorted";
+    const std::string pairs_file_str = ostr_pairs.str();
+    std::ostringstream ostr_queries;
+    ostr_queries << file_prefix
+                 << ops << nqueries
+                 << "_slice" << zipf_nr_cands
+                 << (scramble ? "_scramble" : "_ordered")
+                 << "_skew" << zipf_skewness_str
+                 << ".data";
+    const std::string queries_file_str = ostr_queries.str();
     ZipfDistribution<uint64_t> zipf_dist{zipf_nr_cands, std::stod(zipf_skewness_str)};
     std::mt19937_64 rand_gen{rand_seed};
 
