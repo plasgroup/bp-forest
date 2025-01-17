@@ -8,5 +8,5 @@ add_executable(oracle_partition
     oracle_partition.cpp
 )
 target_include_directories(oracle_partition PRIVATE ${CMAKE_SOURCE_DIR})
-target_link_libraries(oracle_partition cmdline)
+target_link_libraries(oracle_partition common_base cmdline)
 
