@@ -2360,6 +2360,45 @@ struct SummaryChunkInfo {
     std::array<uint16_t, MAX_NR_SUMMARY_CHUNKS> end_indices;
     std::array<uint16_t, MAX_NR_SUMMARY_CHUNKS> begin_indices;
 };
+struct BPForest::SummaryHeadReceiver {
+    Summary* const summary;
+    SummaryChunkInfo* const chunk_infos;
+    const bool* const cold_range_rebalanced;
+
+    SummaryHeadReceiver(Summary* summary, SummaryChunkInfo* chunk_infos, const bool* cold_range_rebalanced)
+        : summary{summary}, chunk_infos{chunk_infos}, cold_range_rebalanced{cold_range_rebalanced} {}
+
+    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
+    {
+        if (cold_range_rebalanced[dpu_index]) {
+            switch (block_index) {
+            case 0:
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<uint32_t*>(&summary[dpu_index].nr_pairs)));
+                out->length = sizeof(uint32_t);
+                return true;
+            case 1:
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<uint16_t*>(&chunk_infos[dpu_index].nr_chunks)));
+                out->length = sizeof(uint16_t) * 2;
+                return true;
+            default:
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+    size_t bytes_for_dpu(dpu_id_t dpu) const
+    {
+        return cold_range_rebalanced[dpu] * (sizeof(uint32_t) + sizeof(uint16_t) * 2);
+    }
+};
+struct BPForest::SummaryChunkInfoReceiver {
+    static constexpr bool IsSizeVarying = true;
+    SummaryChunkInfo* const chunk_infos;
+
+    uint16_t* for_dpu(dpu_id_t dpu) const { return &chunk_infos[dpu].end_indices[1]; }
+    size_t bytes_for_dpu(dpu_id_t dpu) const { return sizeof(uint16_t) * ((chunk_infos[dpu].nr_chunks + 2) / 4 * 4); }
+};
 struct BPForest::SummaryReceiver {
     Summary* const summary;
     const SummaryChunkInfo* const chunk_infos;
@@ -2420,33 +2459,15 @@ std::cout << __FILE__ ":" << __LINE__ << std::endl;
 #endif
 
     {
-        constexpr auto summary_head_receiver = [](sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index, void* args) {
-            Summary* summary;
-            SummaryChunkInfo* chunk_infos;
-            const bool* cold_range_rebalanced;
-            std::tie(summary, chunk_infos, cold_range_rebalanced) = *reinterpret_cast<std::tuple<Summary*, SummaryChunkInfo*, const bool*>*>(args);
-
-            if (cold_range_rebalanced[dpu_index]) {
-                switch (block_index) {
-                case 0:
-                    out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<uint32_t*>(&summary[dpu_index].nr_pairs)));
-                    out->length = sizeof(uint32_t);
-                    return true;
-                case 1:
-                    out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<uint16_t*>(&chunk_infos[dpu_index].nr_chunks)));
-                    out->length = sizeof(uint16_t) * (MAX_NR_SUMMARY_CHUNKS + 1);
-                    return true;
-                default:
-                    return false;
-                }
-            } else {
-                return false;
-            }
-        };
-        auto summary_head_receiver_args = std::make_tuple(&summaries[0], &chunk_infos[0], &cold_range_rebalanced[0]);
-        get_block_t get_block{summary_head_receiver, &summary_head_receiver_args, sizeof(summary_head_receiver_args)};
-        DPU_ASSERT(dpu_push_sg_xfer_symbol(all_dpu_impl, DPU_XFER_FROM_DPU, comm_buffer_handler, 0, (6 + sizeof(uint16_t) * MAX_NR_SUMMARY_CHUNKS + 7) / 8 * 8, &get_block,
-            DPU_SG_XFER_DISABLE_LENGTH_CHECK));
+        UPMEM_AsyncDuration async;
+        scatter_from_dpu(all_dpu, 0, SummaryHeadReceiver{&summaries[0], &chunk_infos[0], &cold_range_rebalanced[0]}, async);
+    }
+    {
+        UPMEM_AsyncDuration async;
+        for (dpu_id_t rank_id = 0; rank_id < NR_RANKS; rank_id++) {
+        const DPUSet rank = select_rank(rank_id);
+        recv_from_dpu(rank, 8, SummaryChunkInfoReceiver{&chunk_infos[0]}, async);
+        }
     }
 
 
@@ -2492,45 +2513,6 @@ std::cout << "DPU[" << idx_dpu << "].summary @ " << &summary.blocks[0] << std::e
     }
 }
 #if 0
-struct BPForest::SummaryHeadReceiver {
-    Summary* const summary;
-    SummaryChunkInfo* const chunk_infos;
-    const bool* const cold_range_rebalanced;
-
-    SummaryHeadReceiver(Summary* summary, SummaryChunkInfo* chunk_infos, const bool* cold_range_rebalanced)
-        : summary{summary}, chunk_infos{chunk_infos}, cold_range_rebalanced{cold_range_rebalanced} {}
-
-    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
-    {
-        if (cold_range_rebalanced[dpu_index]) {
-            switch (block_index) {
-            case 0:
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<uint32_t*>(&summary[dpu_index].nr_pairs)));
-                out->length = sizeof(uint32_t);
-                return true;
-            case 1:
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<uint16_t*>(&chunk_infos[dpu_index].nr_chunks)));
-                out->length = sizeof(uint16_t) * 2;
-                return true;
-            default:
-                return false;
-            }
-        } else {
-            return false;
-        }
-    }
-    size_t bytes_for_dpu(dpu_id_t dpu) const
-    {
-        return cold_range_rebalanced[dpu] * (sizeof(uint32_t) + sizeof(uint16_t) * 2);
-    }
-};
-struct BPForest::SummaryChunkInfoReceiver {
-    static constexpr bool IsSizeVarying = true;
-    SummaryChunkInfo* const chunk_infos;
-
-    uint16_t* for_dpu(dpu_id_t dpu) const { return &chunk_infos[dpu].end_indices[1]; }
-    size_t bytes_for_dpu(dpu_id_t dpu) const { return sizeof(uint16_t) * ((chunk_infos[dpu].nr_chunks + 2) / 4 * 4); }
-};
 inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_range_rebalanced)
 {
 std::cout << __FILE__ ":" << __LINE__ << std::endl;
