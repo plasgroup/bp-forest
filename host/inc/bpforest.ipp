@@ -2456,7 +2456,6 @@ std::cout << __FILE__ ":" << __LINE__ << std::endl;
 #endif
     {
         UPMEM_AsyncDuration async;
-        for (dpu_id_t rank_id = 0; rank_id < NR_RANKS; rank_id++) {
     const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration& async) {
         const DPUSet rank = select_rank(rank_id);
         recv_from_dpu(rank, 8, SummaryChunkInfoReceiver{&chunk_infos[0]}, async);
@@ -2464,13 +2463,8 @@ std::cout << __FILE__ ":" << __LINE__ << std::endl;
         then_call(rank, func2[rank_id], async);
 */
     };
-    func(rank_id, async);
-        }
-    }
-
-/*
     then_call(all_dpu, func, async);
-*/
+    }
 
     for (dpu_id_t rank_id = 0; rank_id < NR_RANKS; rank_id++) {
         func2[rank_id] = [&, rank_id](uint32_t, UPMEM_AsyncDuration& async) {
