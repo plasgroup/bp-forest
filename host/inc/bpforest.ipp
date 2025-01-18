@@ -2442,26 +2442,17 @@ std::cout << __FILE__ ":" << __LINE__ << std::endl;
     }
 
     {
-        dpu_set_t dpu; dpu_id_t idx_dpu;
-        DPU_FOREACH(all_dpu_impl, dpu, idx_dpu)
-        {
-            DPU_ASSERT(dpu_prepare_xfer(dpu, &task_nos[idx_dpu]));
-        }
-        DPU_ASSERT(dpu_push_xfer_symbol(all_dpu_impl, DPU_XFER_TO_DPU, comm_buffer_handler, 0, 8, DPU_XFER_DEFAULT));
+        UPMEM_AsyncDuration async;
+    send_to_dpu(all_dpu, 0, EachInArray{&task_nos[0]}, async);
+    execute(all_dpu, async);
+    scatter_from_dpu(all_dpu, 0, SummaryHeadReceiver{&summaries[0], &chunk_infos[0], &cold_range_rebalanced[0]}, async);
     }
-
-    DPU_ASSERT(dpu_launch(all_dpu_impl, DPU_SYNCHRONOUS));
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
     {
         std::unique_ptr<LogBuffer> log = read_log(all_dpu);
         std::cout << log->get() << std::flush;
     }
 #endif
-
-    {
-        UPMEM_AsyncDuration async;
-        scatter_from_dpu(all_dpu, 0, SummaryHeadReceiver{&summaries[0], &chunk_infos[0], &cold_range_rebalanced[0]}, async);
-    }
     {
         UPMEM_AsyncDuration async;
         for (dpu_id_t rank_id = 0; rank_id < NR_RANKS; rank_id++) {
