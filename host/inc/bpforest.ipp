@@ -2441,6 +2441,7 @@ std::cout << __FILE__ ":" << __LINE__ << std::endl;
         }
     }
 
+    std::array<std::function<void(uint32_t, UPMEM_AsyncDuration&)>, NR_RANKS> func2;
     {
         UPMEM_AsyncDuration async;
     send_to_dpu(all_dpu, 0, EachInArray{&task_nos[0]}, async);
@@ -2456,13 +2457,23 @@ std::cout << __FILE__ ":" << __LINE__ << std::endl;
     {
         UPMEM_AsyncDuration async;
         for (dpu_id_t rank_id = 0; rank_id < NR_RANKS; rank_id++) {
+    const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration& async) {
         const DPUSet rank = select_rank(rank_id);
         recv_from_dpu(rank, 8, SummaryChunkInfoReceiver{&chunk_infos[0]}, async);
+/*
+        then_call(rank, func2[rank_id], async);
+*/
+    };
+    func(rank_id, async);
         }
     }
 
+/*
+    then_call(all_dpu, func, async);
+*/
 
     for (dpu_id_t rank_id = 0; rank_id < NR_RANKS; rank_id++) {
+        func2[rank_id] = [&, rank_id](uint32_t, UPMEM_AsyncDuration& async) {
         const std::pair<dpu_id_t, dpu_id_t> dpu_range = upmem_get_dpu_range_in_rank(rank_id);
         for (dpu_id_t idx_dpu = dpu_range.first; idx_dpu < dpu_range.second; idx_dpu++) {
             Summary& summary = summaries[idx_dpu];
@@ -2498,10 +2509,16 @@ std::cout << "DPU[" << idx_dpu << "].summary @ " << &summary.blocks[0] << std::e
             }
         }
 
-        UPMEM_AsyncDuration async;
         scatter_from_dpu(select_rank(rank_id), (6 + sizeof(uint16_t) * MAX_NR_SUMMARY_CHUNKS + 7) / 8 * 8,
             SummaryReceiver{&summaries[0], &chunk_infos[0]}, async);
+        };
     }
+
+{UPMEM_AsyncDuration async;
+for (uint32_t rank_id = 0; rank_id < NR_RANKS; rank_id++) {
+    func2[rank_id](0, async);
+}
+}
 }
 #if 0
 inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_range_rebalanced)
