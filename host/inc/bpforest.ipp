@@ -2418,7 +2418,7 @@ std::cout << __FILE__ ":" << __LINE__ << std::endl;
         };
         auto summary_head_receiver_args = std::make_tuple(&summaries[0], &chunk_infos[0], &cold_range_rebalanced[0]);
         get_block_t get_block{summary_head_receiver, &summary_head_receiver_args, sizeof(summary_head_receiver_args)};
-        DPU_ASSERT(dpu_push_sg_xfer_symbol(all_dpu_impl, DPU_XFER_TO_DPU, comm_buffer_handler, 0, (6 + sizeof(uint16_t) * MAX_NR_SUMMARY_CHUNKS + 7) / 8 * 8, &get_block,
+        DPU_ASSERT(dpu_push_sg_xfer_symbol(all_dpu_impl, DPU_XFER_FROM_DPU, comm_buffer_handler, 0, (6 + sizeof(uint16_t) * MAX_NR_SUMMARY_CHUNKS + 7) / 8 * 8, &get_block,
             DPU_SG_XFER_DISABLE_LENGTH_CHECK));
     }
 
