@@ -2416,13 +2416,13 @@ std::cout << __FILE__ ":" << __LINE__ << std::endl;
     std::mutex mutex;
     std::condition_variable cond;
     dpu_id_t nr_finished_preparing_for_summary = 0;
+    std::array<std::function<void(uint32_t, UPMEM_AsyncDuration&)>, NR_RANKS> func2;
 
     UPMEM_AsyncDuration async;
     send_to_dpu(all_dpu, 0, EachInArray{&task_nos[0]}, async);
     execute(all_dpu, async);
     scatter_from_dpu(all_dpu, 0, SummaryHeadReceiver{&summaries[0], &chunk_infos[0], &cold_range_rebalanced[0]}, async);
 
-    std::array<std::function<void(uint32_t, UPMEM_AsyncDuration&)>, NR_RANKS> func2;
     for (dpu_id_t rank_id = 0; rank_id < NR_RANKS; rank_id++) {
         func2[rank_id] = [&, rank_id](uint32_t, UPMEM_AsyncDuration& async) {
             const std::pair<dpu_id_t, dpu_id_t> dpu_range = upmem_get_dpu_range_in_rank(rank_id);
