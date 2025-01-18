@@ -292,7 +292,7 @@ for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
             std::cout << ' ' << header.chunk_end_indices[i];
         }
         std::cout << std::endl;
-        const uint16_t nr_blocks = *std::max(&header.chunk_end_indices[0], &header.chunk_end_indices[header.nr_chunks]);
+        const uint16_t nr_blocks = *std::max_element(&header.chunk_end_indices[0], &header.chunk_end_indices[header.nr_chunks]);
         std::vector<SummaryBlock> blocks(nr_blocks);
         {
             UPMEM_AsyncDuration async;
