@@ -298,7 +298,7 @@ struct VisitorOf_scatter_gather_with_dpu {
                 max_xfer_bytes_in_rank = std::max(max_xfer_bytes_in_rank, buf.bytes_for_dpu(idx_dpu));
             }
 {std::lock_guard<std::mutex> lock{cout_mtx};
-std::cout << typeid(buf).name() << ": " << max_xfer_bytes_in_rank << " bytes" << std::endl;
+std::cout << typeid(buf).name() << ": " << max_xfer_bytes_in_rank << " bytes " << (ToDPU ? "to" : "from") << " rank[" << idx_rank << "]" << std::endl;
 }
             get_block_t get_block{&get_block_func_wrapper, &buf, sizeof(buf)};
             DPU_ASSERT(dpu_push_sg_xfer_symbol(each_rank_impl[idx_rank], Direction, comm_buffer_handler, offset, (max_xfer_bytes_in_rank + 7) / 8 * 8, &get_block,

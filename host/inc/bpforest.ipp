@@ -2446,6 +2446,7 @@ std::cout << __FILE__ ":" << __LINE__ << std::endl;
     dpu_id_t nr_finished_preparing_for_summary = 0;
     std::array<std::function<void(uint32_t, UPMEM_AsyncDuration&)>, NR_RANKS> func2;
 
+{
     UPMEM_AsyncDuration async;
     send_to_dpu(all_dpu, 0, EachInArray{&task_nos[0]}, async);
     execute(all_dpu, async);
@@ -2499,12 +2500,27 @@ std::cout << "DPU[" << idx_dpu << "].summary @ " << &summary.blocks[0] << std::e
         };
     }
 
+}
     const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration& async) {
         const DPUSet rank = select_rank(rank_id);
         recv_from_dpu(rank, 8, SummaryChunkInfoReceiver{&chunk_infos[0]}, async);
+/*
         then_call(rank, func2[rank_id], async);
+*/
     };
+{UPMEM_AsyncDuration async;
+for (uint32_t rank_id = 0; rank_id < NR_RANKS; rank_id++) {
+    func(rank_id, async);
+}
+}
+/*
     then_call(all_dpu, func, async);
+*/
+{UPMEM_AsyncDuration async;
+for (uint32_t rank_id = 0; rank_id < NR_RANKS; rank_id++) {
+    func2[rank_id](0, async);
+}
+}
 
     std::unique_lock<std::mutex> lock{mutex};
     /*
