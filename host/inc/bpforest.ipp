@@ -34,8 +34,6 @@
 #include <utility>
 
 
-static std::mutex cout_mtx;  // TODO: delete
-
 inline BPForest::BPForest(std::vector<KVPair>&& sorted_pairs, const Param& param)
     : ParallelManager<BPForest>{param.nr_host_threads},
       nr_cold_ranges{(upmem_init(), upmem_get_nr_dpus())}, param{param}
@@ -277,6 +275,36 @@ std::cout << __FILE__ ":" << __LINE__ << std::endl;
             }
             take_summary(cold_range_rebalanced);
 std::cout << __FILE__ ":" << __LINE__ << std::endl;
+for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
+    if (cold_range_rebalanced[idx_cold]) {
+        std::cout << "*** DPU#" << idx_cold << " ***" << std::endl;
+        struct alignas(8) {
+            uint32_t nr_pairs;
+            uint16_t nr_chunks;
+            uint16_t chunk_end_indices[MAX_NR_SUMMARY_CHUNKS];
+        } header;
+        {
+            UPMEM_AsyncDuration async;
+            recv_from_dpu(select_dpu(idx_cold), 0, Single{header}, async);
+        }
+        std::cout << header.nr_chunks << " chunks:";
+        for (unsigned i = 0; i < header.nr_chunks; i++) {
+            std::cout << ' ' << header.chunk_end_indices[i];
+        }
+        std::cout << std::endl;
+        const uint16_t nr_blocks = *std::max(&header.chunk_end_indices[0], &header.chunk_end_indices[header.nr_chunks]);
+        std::vector<SummaryBlock> blocks(nr_blocks);
+        {
+            UPMEM_AsyncDuration async;
+            recv_from_dpu(select_dpu(idx_cold), sizeof(header), Single{blocks[0], blocks.size()}, async);
+        }
+        for (const auto& block : blocks) {
+            for (unsigned i = 0; i < 4; i++) {
+                std::cout << block.nr_keys[i] << ' ' << block.head_keys[i] << std::endl;
+            }
+        }
+    }
+}
 
             const size_t min_nr_queries_in_hot = (nr_queries + nr_cold_ranges - 1) / nr_cold_ranges;
             dpu_id_t idx_new_hot = 0;
