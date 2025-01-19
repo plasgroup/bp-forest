@@ -2428,96 +2428,6 @@ std::cout << "SummaryReceiver[" << dpu_index << "][" << block_index << "]: summa
 };
 inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_range_rebalanced)
 {
-std::cout << __FILE__ ":" << __LINE__ << std::endl;
-    std::array<UInt32Packet, MAX_NR_DPUS> task_nos;
-    std::array<SummaryChunkInfo, MAX_NR_DPUS> chunk_infos;
-
-    for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
-        if (cold_range_rebalanced[idx_cold]) {
-            task_nos[idx_cold].data = TASK_SUMMARIZE;
-        } else {
-            task_nos[idx_cold].data = TASK_NONE;
-            chunk_infos[idx_cold].nr_chunks = 0;
-        }
-    }
-
-    std::array<std::function<void(uint32_t, UPMEM_AsyncDuration&)>, NR_RANKS> func2;
-    {
-        UPMEM_AsyncDuration async;
-    send_to_dpu(all_dpu, 0, EachInArray{&task_nos[0]}, async);
-    execute(all_dpu, async);
-    scatter_from_dpu(all_dpu, 0, SummaryHeadReceiver{&summaries[0], &chunk_infos[0], &cold_range_rebalanced[0]}, async);
-    }
-#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
-    {
-        std::unique_ptr<LogBuffer> log = read_log(all_dpu);
-        std::cout << log->get() << std::flush;
-    }
-#endif
-    {
-        UPMEM_AsyncDuration async;
-    const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration& async) {
-        const DPUSet rank = select_rank(rank_id);
-        recv_from_dpu(rank, 8, SummaryChunkInfoReceiver{&chunk_infos[0]}, async);
-/*
-        then_call(rank, func2[rank_id], async);
-*/
-    };
-    then_call(all_dpu, func, async);
-    }
-
-    for (dpu_id_t rank_id = 0; rank_id < NR_RANKS; rank_id++) {
-        func2[rank_id] = [&, rank_id](uint32_t, UPMEM_AsyncDuration& async) {
-        const std::pair<dpu_id_t, dpu_id_t> dpu_range = upmem_get_dpu_range_in_rank(rank_id);
-        for (dpu_id_t idx_dpu = dpu_range.first; idx_dpu < dpu_range.second; idx_dpu++) {
-            Summary& summary = summaries[idx_dpu];
-            if (cold_range_rebalanced[idx_dpu]) {
-                SummaryChunkInfo& chunk_info = chunk_infos[idx_dpu];
-                const uint16_t nr_chunks = chunk_info.nr_chunks;
-
-                if (nr_chunks == 0) {
-                    summary.nr_blocks = 0;
-                    continue;
-                }
-
-                std::array<uint16_t, MAX_NR_SUMMARY_CHUNKS> sorted_idx_to_current_idx;
-                std::iota(&sorted_idx_to_current_idx[0], &sorted_idx_to_current_idx[nr_chunks], uint16_t{0});
-                std::sort(&sorted_idx_to_current_idx[0], &sorted_idx_to_current_idx[nr_chunks], [&](uint16_t lhs, uint16_t rhs) {
-                    return chunk_info.end_indices[lhs] < chunk_info.end_indices[rhs];
-                });
-
-                chunk_info.begin_indices[sorted_idx_to_current_idx[0]] = 0;
-                for (uint16_t sorted_chunk_idx = 1; sorted_chunk_idx < nr_chunks; sorted_chunk_idx++) {
-                    chunk_info.begin_indices[sorted_idx_to_current_idx[sorted_chunk_idx]]
-                        = chunk_info.end_indices[sorted_idx_to_current_idx[sorted_chunk_idx - 1]];
-                }
-                summary.nr_blocks = chunk_info.end_indices[sorted_idx_to_current_idx[nr_chunks - 1]];
-                summary.blocks.reserve(summary.nr_blocks);
-std::lock_guard<std::mutex> lock{cout_mtx};
-for (uint16_t i = 0; i < nr_chunks; i++) {
-    std::cout << "DPU[" << idx_dpu << "].chunk_info.end_indices[" << i << "] = " << chunk_info.end_indices[i] << std::endl;
-}
-std::cout << "DPU[" << idx_dpu << "].summary @ " << &summary.blocks[0] << std::endl;
-            } else {
-                summary.nr_blocks = 0;
-            }
-        }
-
-        scatter_from_dpu(select_rank(rank_id), (6 + sizeof(uint16_t) * MAX_NR_SUMMARY_CHUNKS + 7) / 8 * 8,
-            SummaryReceiver{&summaries[0], &chunk_infos[0]}, async);
-        };
-    }
-
-{UPMEM_AsyncDuration async;
-for (uint32_t rank_id = 0; rank_id < NR_RANKS; rank_id++) {
-    func2[rank_id](0, async);
-}
-}
-}
-#if 0
-inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_range_rebalanced)
-{
-std::cout << __FILE__ ":" << __LINE__ << std::endl;
     std::array<UInt32Packet, MAX_NR_DPUS> task_nos;
     std::array<SummaryChunkInfo, MAX_NR_DPUS> chunk_infos;
 
@@ -2535,7 +2445,6 @@ std::cout << __FILE__ ":" << __LINE__ << std::endl;
     dpu_id_t nr_finished_preparing_for_summary = 0;
     std::array<std::function<void(uint32_t, UPMEM_AsyncDuration&)>, NR_RANKS> func2;
 
-{
     UPMEM_AsyncDuration async;
     send_to_dpu(all_dpu, 0, EachInArray{&task_nos[0]}, async);
     execute(all_dpu, async);
@@ -2568,48 +2477,30 @@ std::cout << __FILE__ ":" << __LINE__ << std::endl;
                     }
                     summary.nr_blocks = chunk_info.end_indices[sorted_idx_to_current_idx[nr_chunks - 1]];
                     summary.blocks.reserve(summary.nr_blocks);
-std::lock_guard<std::mutex> lock{cout_mtx};
-for (uint16_t i = 0; i < nr_chunks; i++) {
-    std::cout << "DPU[" << idx_dpu << "].chunk_info.end_indices[" << i << "] = " << chunk_info.end_indices[i] << std::endl;
-}
-std::cout << "DPU[" << idx_dpu << "].summary @ " << &summary.blocks[0] << std::endl;
                 } else {
                     summary.nr_blocks = 0;
                 }
             }
 
-            scatter_from_dpu(select_rank(rank_id), (6 + sizeof(uint16_t) * MAX_NR_SUMMARY_CHUNKS + 7) / 8 * 8,
-                SummaryReceiver{&summaries[0], &chunk_infos[0]}, async);
-
             {
                 std::lock_guard<std::mutex> lock{mutex};
+
+                scatter_from_dpu(select_rank(rank_id), (6 + sizeof(uint16_t) * MAX_NR_SUMMARY_CHUNKS + 7) / 8 * 8,
+                    SummaryReceiver{&summaries[0], &chunk_infos[0]}, async);
+
                 nr_finished_preparing_for_summary++;
             }
             cond.notify_one();
         };
     }
 
-}
     const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration& async) {
         const DPUSet rank = select_rank(rank_id);
+        std::lock_guard<std::mutex> lock{mutex};
         recv_from_dpu(rank, 8, SummaryChunkInfoReceiver{&chunk_infos[0]}, async);
-/*
         then_call(rank, func2[rank_id], async);
-*/
     };
-{UPMEM_AsyncDuration async;
-for (uint32_t rank_id = 0; rank_id < NR_RANKS; rank_id++) {
-    func(rank_id, async);
-}
-}
-/*
     then_call(all_dpu, func, async);
-*/
-{UPMEM_AsyncDuration async;
-for (uint32_t rank_id = 0; rank_id < NR_RANKS; rank_id++) {
-    func2[rank_id](0, async);
-}
-}
 
     std::unique_lock<std::mutex> lock{mutex};
     /*
@@ -2634,7 +2525,6 @@ for (uint32_t rank_id = 0; rank_id < NR_RANKS; rank_id++) {
         scatter_from_dpu(SummaryReceiver)
     */
 }
-#endif
 
 #ifdef EXTRACT_BY_INITIALIZATION
 struct BPForest::RebalancedColdKVPairsSender {
