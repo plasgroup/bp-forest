@@ -1,5 +1,5 @@
 #include "database.hpp"
-#include "host/inc/extendable_buffer.hpp"
+#include "extendable_buffer.hpp"
 #include "host/inc/statistics.hpp"
 #include "piecewise_constant_workload.hpp"
 #include "pimtree_query.hpp"

@@ -28,4 +28,19 @@ public:
             buffer.reset(new T[capacity]);
         }
     }
+
+    void reclaim()
+    {
+        if (capacity != 0) {
+            buffer.reset();
+            capacity = 0;
+        }
+    }
+
+    void swap(ExtendableBuffer& other)
+    {
+        using std::swap;
+        swap(buffer, other.buffer);
+        swap(capacity, other.capacity);
+    }
 };

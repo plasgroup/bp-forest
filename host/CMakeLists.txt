@@ -26,7 +26,15 @@ foreach(build_version IN LISTS targets)
     # TODO: remove this line
     target_include_directories(host_app_${build_version} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/..)
 
-    target_link_libraries(host_app_${build_version} common_${build_version} workload_mgmt cmdline cereal Threads::Threads)
+    target_link_libraries(host_app_${build_version}
+        common_${build_version}
+        workload_mgmt
+        parallel_manager
+        extendable_buffer
+        cmdline
+        cereal
+        Threads::Threads
+    )
 
     if(build_version MATCHES "^upmem")
         target_link_libraries(host_app_${build_version} PkgConfig::DPU_CONFIG)

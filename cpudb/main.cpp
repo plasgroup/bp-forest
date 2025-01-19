@@ -7,7 +7,7 @@
 #include "database.hpp"
 #include "benchmark.hpp"
 #include "host/inc/host_params.hpp"
-#include "host/inc/extendable_buffer.hpp"
+#include "extendable_buffer.hpp"
 #include "host/inc/statistics.hpp"
 #include "pimtree_query.hpp"
 #include "piecewise_constant_workload.hpp"
