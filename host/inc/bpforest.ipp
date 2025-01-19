@@ -2442,7 +2442,10 @@ inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_ran
 
     std::mutex mutex;
     std::condition_variable cond;
-    dpu_id_t nr_finished_preparing_for_summary = 0;
+    std::array<dpu_id_t, NR_RANKS> idxs_rank_ready_for_chunk_info;
+    dpu_id_t nr_ranks_ready_for_chunk_info = 0;
+    std::array<dpu_id_t, NR_RANKS> idxs_rank_ready_for_summary;
+    dpu_id_t nr_ranks_ready_for_summary = 0;
     std::array<std::function<void(uint32_t, UPMEM_AsyncDuration&)>, NR_RANKS> func2;
 
     UPMEM_AsyncDuration async;
@@ -2451,7 +2454,7 @@ inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_ran
     scatter_from_dpu(all_dpu, 0, SummaryHeadReceiver{&summaries[0], &chunk_infos[0], &cold_range_rebalanced[0]}, async);
 
     for (dpu_id_t rank_id = 0; rank_id < NR_RANKS; rank_id++) {
-        func2[rank_id] = [&, rank_id](uint32_t, UPMEM_AsyncDuration& async) {
+        func2[rank_id] = [&, rank_id](uint32_t, UPMEM_AsyncDuration&) {
             const std::pair<dpu_id_t, dpu_id_t> dpu_range = upmem_get_dpu_range_in_rank(rank_id);
             for (dpu_id_t idx_dpu = dpu_range.first; idx_dpu < dpu_range.second; idx_dpu++) {
                 Summary& summary = summaries[idx_dpu];
@@ -2484,40 +2487,71 @@ inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_ran
 
             {
                 std::lock_guard<std::mutex> lock{mutex};
-
-                scatter_from_dpu(select_rank(rank_id), (6 + sizeof(uint16_t) * MAX_NR_SUMMARY_CHUNKS + 7) / 8 * 8,
-                    SummaryReceiver{&summaries[0], &chunk_infos[0]}, async);
-
-                nr_finished_preparing_for_summary++;
+                idxs_rank_ready_for_summary[nr_ranks_ready_for_summary] = rank_id;
+                nr_ranks_ready_for_summary++;
             }
             cond.notify_one();
         };
     }
 
-    const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration& async) {
-        const DPUSet rank = select_rank(rank_id);
-        std::lock_guard<std::mutex> lock{mutex};
-        recv_from_dpu(rank, 8, SummaryChunkInfoReceiver{&chunk_infos[0]}, async);
-        then_call(rank, func2[rank_id], async);
+    const auto func = [&](uint32_t rank_id, UPMEM_AsyncDuration&) {
+        {
+            std::lock_guard<std::mutex> lock{mutex};
+            idxs_rank_ready_for_chunk_info[nr_ranks_ready_for_chunk_info] = rank_id;
+            nr_ranks_ready_for_chunk_info++;
+        }
+        cond.notify_one();
     };
     then_call(all_dpu, func, async);
 
-    std::unique_lock<std::mutex> lock{mutex};
-    /*
-      when cond.wait() returns, the following completed:
-        send_to_dpu(task_nos)
-        execute(TASK_SUMMARIZE)
-        scatter_from_dpu(SummaryHeadReceiver)
-        then_call(func)
-        recv_from_dpu(SummaryChunkInfoReceiver)
-    */
-    cond.wait(lock, [&] { return nr_finished_preparing_for_summary == NR_RANKS; });
-#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
     {
-        std::unique_ptr<LogBuffer> log = read_log(all_dpu);
-        std::cout << log->get() << std::flush;
-    }
+        dpu_id_t nr_ranks_recving_chunk_info = 0, nr_ranks_recving_summary = 0;
+        std::unique_lock<std::mutex> lock{mutex};
+        for (;;) {
+            cond.wait(lock, [&] {
+                return nr_ranks_ready_for_chunk_info > nr_ranks_recving_chunk_info
+                       || nr_ranks_ready_for_summary > nr_ranks_recving_summary;
+            });
+            if (nr_ranks_ready_for_chunk_info > nr_ranks_recving_chunk_info) {
+                do {
+                    /*
+                  as for (rank_id)-th rank, the following completed:
+                    send_to_dpu(task_nos)
+                    execute(TASK_SUMMARIZE)
+                    scatter_from_dpu(SummaryHeadReceiver)
+                */
+                    const dpu_id_t rank_id = idxs_rank_ready_for_chunk_info[nr_ranks_recving_chunk_info];
+                    const DPUSet rank = select_rank(rank_id);
+#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+                    {
+                        std::unique_ptr<LogBuffer> log = read_log(rank);
+                        std::cout << log->get() << std::flush;
+                    }
 #endif
+                    recv_from_dpu(rank, 8, SummaryChunkInfoReceiver{&chunk_infos[0]}, async);
+                    nr_ranks_recving_chunk_info++;
+                    then_call(rank, func2[rank_id], async);
+                } while (nr_ranks_ready_for_chunk_info > nr_ranks_recving_chunk_info);
+            }
+            if (nr_ranks_ready_for_summary > nr_ranks_recving_summary) {
+                do {
+                    /*
+                  as for (rank_id)-th rank, the following completed:
+                    then_call(func)
+                    recv_from_dpu(SummaryChunkInfoReceiver)
+                */
+                    const dpu_id_t rank_id = idxs_rank_ready_for_summary[nr_ranks_recving_summary];
+                    scatter_from_dpu(select_rank(rank_id), (6 + sizeof(uint16_t) * MAX_NR_SUMMARY_CHUNKS + 7) / 8 * 8,
+                        SummaryReceiver{&summaries[0], &chunk_infos[0]}, async);
+                    nr_ranks_recving_summary++;
+                } while (nr_ranks_ready_for_summary > nr_ranks_recving_summary);
+
+                if (nr_ranks_recving_summary == NR_RANKS) {
+                    break;
+                }
+            }
+        }
+    }
 
     /*
       when `async` object is destroyed, the following completed:
