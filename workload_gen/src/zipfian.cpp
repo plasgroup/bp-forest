@@ -192,10 +192,11 @@ struct WorkloadGen : ParallelManager<WorkloadGen> {
         parser.add<size_t>("nqueries", 'q', "num of generated operations", false, 20000000);
         parser.add<std::string>("ops", 'o', "kind of generated operations; either of get, insert, pred, scan", true);
         parser.add<uint64_t>("scan_width", 'w', "expected num of key-value pairs in each scan", false, 100);
-        parser.add<std::string>("zipf_skewness", 't', "zipfian skewness parameter (often called theta)", false, "0.99");
+        parser.add<std::string>("zipf_skewness", 'z', "zipfian skewness parameter (often called theta)", false, "0.99");
         parser.add<uint64_t>("zipf_nr_cands", 'c', "size of candidates of the zipfian dist.", false, 2500);
         parser.add("scramble", 's', "whether scramble or not");
         parser.add<RandSeedType>("rand_seed", 'r', "seed for random number generator (the default value on the right is chosen randomly each time)", false, std::random_device{}());
+        parser.add<unsigned>("num_threads", 't', "num of threads", false, std::numeric_limits<unsigned>::max());
         parser.add("showinfo", 'v', "show debug info if true");
         parser.parse_check(argc, argv);
 
@@ -214,6 +215,7 @@ private:
         const uint64_t zipf_nr_cands = parser.get<uint64_t>("zipf_nr_cands");
         const bool scramble = parser.exist("scramble");
         const auto rand_seed = parser.get<RandSeedType>("rand_seed");
+        const unsigned num_threads = parser.get<unsigned>("num_threads");
         const bool showinfo = parser.exist("showinfo");
 
         std::ostringstream ostr_pairs;
@@ -244,7 +246,10 @@ private:
             exit(1);
         }
 
-        unsigned nthreads = std::thread::hardware_concurrency();
+        unsigned nthreads = num_threads;
+        if (nthreads == std::numeric_limits<unsigned>::max()) {
+            nthreads = std::thread::hardware_concurrency() + 1;
+        }
         if (nthreads == 0) {
             nthreads = 4;
         }
