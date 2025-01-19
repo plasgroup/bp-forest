@@ -325,174 +325,8 @@ public:
     void generate_values_impl(unsigned tid);
     template <operation_t op_tag>
     void generate_queries_impl(unsigned tid);
-    template <>
-    void generate_queries_impl<get_t>(unsigned tid);
 
-    void operator()()
-    {
-        init_keys.reserve(npairs);
-        parallel_run(&WorkloadGen::generate_init_keys_impl);
-        std::cout << '[' << pairs_file_str << "] 100% keys generated" << std::endl;
-
-
-        std::cout << '[' << pairs_file_str << "] keys being sorted" << std::endl;
-        parallel_run(&WorkloadGen::sort_init_keys_partially);
-        for (merge_step = 0; (1u << merge_step) < get_parallelism(); merge_step++) {
-            parallel_run(&WorkloadGen::merge_init_keys);
-        }
-        std::cout << '[' << pairs_file_str << "] 100% keys sorted" << std::endl;
-
-
-        std::cout << '[' << pairs_file_str << "] resolving duplication" << std::endl;
-        {
-            std::vector<size_t> dup_idxs;
-            std::vector<int64_t> appended_keys;
-            for (size_t idx_key = 0; idx_key < npairs - 1; idx_key++) {
-                if (init_keys[idx_key] == init_keys[idx_key + 1]) {
-                    dup_idxs.push_back(idx_key);
-
-                    int64_t key = key_value_dist(rand_gens[0]);
-                    while (std::binary_search(&init_keys[0], &init_keys[npairs], key)
-                           || std::any_of(appended_keys.cbegin(), appended_keys.cend(), [&](int64_t init_key) { return key == init_key; })) {
-                        key = key_value_dist(rand_gens[0]);
-                    }
-                    appended_keys.push_back(key);
-                }
-            }
-
-            if (!dup_idxs.empty()) {
-                ExtendableBuffer<int64_t> tmp_keys;
-                tmp_keys.swap(init_keys);
-                init_keys.reserve(npairs);
-
-                std::sort(appended_keys.begin(), appended_keys.end());
-
-                size_t idx_init_key = 0, idx_tmp_key = 0, idx_dup = 0;
-                for (const int64_t next_appended : appended_keys) {
-                    for (; idx_tmp_key < npairs; idx_tmp_key++) {
-                        if (idx_dup < dup_idxs.size() && idx_tmp_key == dup_idxs[idx_dup]) {
-                            idx_dup++;
-                            continue;
-                        }
-                        if (tmp_keys[idx_tmp_key] > next_appended) {
-                            break;
-                        }
-                        init_keys[idx_init_key] = tmp_keys[idx_tmp_key];
-                        idx_init_key++;
-                    }
-                    init_keys[idx_init_key] = next_appended;
-                    idx_init_key++;
-                }
-                for (; idx_tmp_key < npairs; idx_tmp_key++) {
-                    if (idx_dup < dup_idxs.size() && idx_tmp_key == dup_idxs[idx_dup]) {
-                        idx_dup++;
-                        continue;
-                    }
-                    init_keys[idx_init_key] = tmp_keys[idx_tmp_key];
-                    idx_init_key++;
-                }
-            }
-        }
-        std::cout << '[' << pairs_file_str << "] 100% duplication resolved" << std::endl;
-
-
-        std::cout << '[' << pairs_file_str << "] generating values" << std::endl;
-        init_ops.reserve(npairs);
-        parallel_run(&WorkloadGen::generate_values_impl);
-        std::cout << '[' << pairs_file_str << "] 100% values generated" << std::endl;
-
-
-        std::cout << '[' << pairs_file_str << "] file being written" << std::endl;
-        {
-            std::ofstream pairs_file{pairs_file_str, std::ios_base::binary};
-            if (!pairs_file) {
-                std::cerr << "cannot open file " << pairs_file_str << std::endl;
-                std::exit(1);
-            }
-            pairs_file.write(reinterpret_cast<std::ofstream::char_type*>(&init_ops[0]), static_cast<std::streamsize>(sizeof(operation) * npairs));
-        }
-        std::cout << '[' << pairs_file_str << "] 100% written" << std::endl;
-        init_ops.reclaim();
-
-
-        if (showinfo) {
-            counts_per_slice.resize(get_parallelism());
-            for (unsigned tid = 0; tid < get_parallelism(); tid++) {
-                counts_per_slice[tid].clear();
-                counts_per_slice[tid].resize(zipf_nr_cands);
-            }
-        }
-
-        query_ops.reserve(nqueries);
-        if (pimtree_op_tag == get_t) {
-            query_item_dists.clear();
-            query_item_dists.reserve(zipf_nr_cands);
-            for (size_t idx_slice = 0; idx_slice < zipf_nr_cands; idx_slice++) {
-                query_item_dists.emplace_back(
-                    /* min */ idx_slice * npairs / zipf_nr_cands,
-                    /* max */ (idx_slice + 1) * npairs / zipf_nr_cands - 1);
-            }
-            parallel_run(&WorkloadGen::generate_queries_impl<get_t>);
-
-        } else {
-            query_key_dists.clear();
-            query_key_dists.reserve(zipf_nr_cands);
-            const uint64_t avg_slice_width = std::numeric_limits<uint64_t>::max() / zipf_nr_cands,
-                           remainder_width = std::numeric_limits<uint64_t>::max() - avg_slice_width * zipf_nr_cands + 1;
-            int64_t range_begin = std::numeric_limits<int64_t>::min();
-            for (size_t idx_slice = 0; idx_slice < zipf_nr_cands; idx_slice++) {
-                if (idx_slice + 1 != zipf_nr_cands) {
-                    const int64_t range_end = std::numeric_limits<int64_t>::min()
-                                              + static_cast<int64_t>(avg_slice_width * (idx_slice + 1)
-                                                                     - 1
-                                                                     + std::min(idx_slice + 1, remainder_width));
-                    query_key_dists.emplace_back(range_begin, range_end);
-                    range_begin = range_end + 1;
-                } else {
-                    const int64_t range_end = std::numeric_limits<int64_t>::max();
-                    query_key_dists.emplace_back(range_begin, range_end);
-                }
-            }
-            switch (pimtree_op_tag) {
-            case predecessor_t:
-                parallel_run(&WorkloadGen::generate_queries_impl<predecessor_t>);
-                break;
-            case scan_t:
-                parallel_run(&WorkloadGen::generate_queries_impl<scan_t>);
-                break;
-            case insert_t:
-                parallel_run(&WorkloadGen::generate_queries_impl<insert_t>);
-                break;
-            default:
-                // unreachable
-                std::exit(1);
-            }
-        }
-        std::cout << '[' << queries_file_str << "] 100% queries generated" << std::endl;
-
-
-        std::cout << '[' << queries_file_str << "] file being written" << std::endl;
-        {
-            std::ofstream queries_file{queries_file_str, std::ios_base::binary};
-            if (!queries_file) {
-                std::cerr << "cannot open file " << queries_file_str << std::endl;
-                std::exit(1);
-            }
-            queries_file.write(reinterpret_cast<std::ofstream::char_type*>(&query_ops[0]), static_cast<std::streamsize>(sizeof(operation) * nqueries));
-        }
-        std::cout << '[' << queries_file_str << "] 100% written" << std::endl;
-        init_keys.reclaim();
-        query_ops.reclaim();
-
-
-        if (showinfo) {
-            for (uint64_t i = 0; i < zipf_nr_cands; i++) {
-                const size_t count = std::accumulate(counts_per_slice.cbegin(), counts_per_slice.cend(), size_t{0},
-                    [i](size_t tmp, auto& vec) { return tmp + vec[i]; });
-                std::cout << "num keys in " << i << "th range: " << count << ", " << 100 * static_cast<double>(count) / (double)nqueries << "%" << std::endl;
-            }
-        }
-    }
+    void operator()();
 };
 void WorkloadGen::generate_init_keys_impl(unsigned tid)
 {
@@ -619,6 +453,171 @@ void WorkloadGen::generate_queries_impl<get_t>(const unsigned tid)
             std::cout << "tmp = " << tmp << ", npairs = " << npairs << std::endl;
         op.tsk.g.key = init_keys[tmp];
         op.type = get_t;
+    }
+}
+void WorkloadGen::operator()()
+{
+    init_keys.reserve(npairs);
+    parallel_run(&WorkloadGen::generate_init_keys_impl);
+    std::cout << '[' << pairs_file_str << "] 100% keys generated" << std::endl;
+
+
+    std::cout << '[' << pairs_file_str << "] keys being sorted" << std::endl;
+    parallel_run(&WorkloadGen::sort_init_keys_partially);
+    for (merge_step = 0; (1u << merge_step) < get_parallelism(); merge_step++) {
+        parallel_run(&WorkloadGen::merge_init_keys);
+    }
+    std::cout << '[' << pairs_file_str << "] 100% keys sorted" << std::endl;
+
+
+    std::cout << '[' << pairs_file_str << "] resolving duplication" << std::endl;
+    {
+        std::vector<size_t> dup_idxs;
+        std::vector<int64_t> appended_keys;
+        for (size_t idx_key = 0; idx_key < npairs - 1; idx_key++) {
+            if (init_keys[idx_key] == init_keys[idx_key + 1]) {
+                dup_idxs.push_back(idx_key);
+
+                int64_t key = key_value_dist(rand_gens[0]);
+                while (std::binary_search(&init_keys[0], &init_keys[npairs], key)
+                       || std::any_of(appended_keys.cbegin(), appended_keys.cend(), [&](int64_t init_key) { return key == init_key; })) {
+                    key = key_value_dist(rand_gens[0]);
+                }
+                appended_keys.push_back(key);
+            }
+        }
+
+        if (!dup_idxs.empty()) {
+            ExtendableBuffer<int64_t> tmp_keys;
+            tmp_keys.swap(init_keys);
+            init_keys.reserve(npairs);
+
+            std::sort(appended_keys.begin(), appended_keys.end());
+
+            size_t idx_init_key = 0, idx_tmp_key = 0, idx_dup = 0;
+            for (const int64_t next_appended : appended_keys) {
+                for (; idx_tmp_key < npairs; idx_tmp_key++) {
+                    if (idx_dup < dup_idxs.size() && idx_tmp_key == dup_idxs[idx_dup]) {
+                        idx_dup++;
+                        continue;
+                    }
+                    if (tmp_keys[idx_tmp_key] > next_appended) {
+                        break;
+                    }
+                    init_keys[idx_init_key] = tmp_keys[idx_tmp_key];
+                    idx_init_key++;
+                }
+                init_keys[idx_init_key] = next_appended;
+                idx_init_key++;
+            }
+            for (; idx_tmp_key < npairs; idx_tmp_key++) {
+                if (idx_dup < dup_idxs.size() && idx_tmp_key == dup_idxs[idx_dup]) {
+                    idx_dup++;
+                    continue;
+                }
+                init_keys[idx_init_key] = tmp_keys[idx_tmp_key];
+                idx_init_key++;
+            }
+        }
+    }
+    std::cout << '[' << pairs_file_str << "] 100% duplication resolved" << std::endl;
+
+
+    std::cout << '[' << pairs_file_str << "] generating values" << std::endl;
+    init_ops.reserve(npairs);
+    parallel_run(&WorkloadGen::generate_values_impl);
+    std::cout << '[' << pairs_file_str << "] 100% values generated" << std::endl;
+
+
+    std::cout << '[' << pairs_file_str << "] file being written" << std::endl;
+    {
+        std::ofstream pairs_file{pairs_file_str, std::ios_base::binary};
+        if (!pairs_file) {
+            std::cerr << "cannot open file " << pairs_file_str << std::endl;
+            std::exit(1);
+        }
+        pairs_file.write(reinterpret_cast<std::ofstream::char_type*>(&init_ops[0]), static_cast<std::streamsize>(sizeof(operation) * npairs));
+    }
+    std::cout << '[' << pairs_file_str << "] 100% written" << std::endl;
+    init_ops.reclaim();
+
+
+    if (showinfo) {
+        counts_per_slice.resize(get_parallelism());
+        for (unsigned tid = 0; tid < get_parallelism(); tid++) {
+            counts_per_slice[tid].clear();
+            counts_per_slice[tid].resize(zipf_nr_cands);
+        }
+    }
+
+    query_ops.reserve(nqueries);
+    if (pimtree_op_tag == get_t) {
+        query_item_dists.clear();
+        query_item_dists.reserve(zipf_nr_cands);
+        for (size_t idx_slice = 0; idx_slice < zipf_nr_cands; idx_slice++) {
+            query_item_dists.emplace_back(
+                /* min */ idx_slice * npairs / zipf_nr_cands,
+                /* max */ (idx_slice + 1) * npairs / zipf_nr_cands - 1);
+        }
+        parallel_run(&WorkloadGen::generate_queries_impl<get_t>);
+
+    } else {
+        query_key_dists.clear();
+        query_key_dists.reserve(zipf_nr_cands);
+        const uint64_t avg_slice_width = std::numeric_limits<uint64_t>::max() / zipf_nr_cands,
+                       remainder_width = std::numeric_limits<uint64_t>::max() - avg_slice_width * zipf_nr_cands + 1;
+        int64_t range_begin = std::numeric_limits<int64_t>::min();
+        for (size_t idx_slice = 0; idx_slice < zipf_nr_cands; idx_slice++) {
+            if (idx_slice + 1 != zipf_nr_cands) {
+                const int64_t range_end = std::numeric_limits<int64_t>::min()
+                                          + static_cast<int64_t>(avg_slice_width * (idx_slice + 1)
+                                                                 - 1
+                                                                 + std::min(idx_slice + 1, remainder_width));
+                query_key_dists.emplace_back(range_begin, range_end);
+                range_begin = range_end + 1;
+            } else {
+                const int64_t range_end = std::numeric_limits<int64_t>::max();
+                query_key_dists.emplace_back(range_begin, range_end);
+            }
+        }
+        switch (pimtree_op_tag) {
+        case predecessor_t:
+            parallel_run(&WorkloadGen::generate_queries_impl<predecessor_t>);
+            break;
+        case scan_t:
+            parallel_run(&WorkloadGen::generate_queries_impl<scan_t>);
+            break;
+        case insert_t:
+            parallel_run(&WorkloadGen::generate_queries_impl<insert_t>);
+            break;
+        default:
+            // unreachable
+            std::exit(1);
+        }
+    }
+    std::cout << '[' << queries_file_str << "] 100% queries generated" << std::endl;
+
+
+    std::cout << '[' << queries_file_str << "] file being written" << std::endl;
+    {
+        std::ofstream queries_file{queries_file_str, std::ios_base::binary};
+        if (!queries_file) {
+            std::cerr << "cannot open file " << queries_file_str << std::endl;
+            std::exit(1);
+        }
+        queries_file.write(reinterpret_cast<std::ofstream::char_type*>(&query_ops[0]), static_cast<std::streamsize>(sizeof(operation) * nqueries));
+    }
+    std::cout << '[' << queries_file_str << "] 100% written" << std::endl;
+    init_keys.reclaim();
+    query_ops.reclaim();
+
+
+    if (showinfo) {
+        for (uint64_t i = 0; i < zipf_nr_cands; i++) {
+            const size_t count = std::accumulate(counts_per_slice.cbegin(), counts_per_slice.cend(), size_t{0},
+                [i](size_t tmp, auto& vec) { return tmp + vec[i]; });
+            std::cout << "num keys in " << i << "th range: " << count << ", " << 100 * static_cast<double>(count) / (double)nqueries << "%" << std::endl;
+        }
     }
 }
 
