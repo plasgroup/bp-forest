@@ -11,9 +11,6 @@
 #include <utility>
 
 
-#include <mutex>
-inline std::mutex cout_mtx;  // TODO: delete
-
 inline void upmem_init(void);
 inline void upmem_release(void);
 inline dpu_id_t nr_dpus_in_set(const DPUSet& set);

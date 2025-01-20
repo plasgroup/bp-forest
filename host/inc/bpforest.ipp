@@ -92,7 +92,6 @@ void BPForest::distribute_initial_data(std::vector<KVPair>&& sorted_pairs_vec)
         cursor += nr_pairs_in_each_dpus[idx_dpu];
     }
 
-std::cout << __FILE__ ":" << __LINE__ << std::endl;
     {
         StopWatch t{ForestInitTime};
 
@@ -100,7 +99,6 @@ std::cout << __FILE__ ":" << __LINE__ << std::endl;
         gather_to_dpu(all_dpu, 0, TaskInitInput{&nr_pairs_in_each_dpus[0], &pairs_for_each_dpus[0]}, async);
         execute(all_dpu, async);
     }
-std::cout << __FILE__ ":" << __LINE__ << std::endl;
 
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
     std::unique_ptr<LogBuffer> log = read_log(all_dpu);
@@ -230,7 +228,6 @@ inline void BPForest::batch_get(size_t nr_queries, const key_uint64_t keys[], va
 {
     StopWatch timer{BatchTotalTime};
 
-std::cout << __FILE__ ":" << __LINE__ << std::endl;
     using std::get;
 
     if (nr_hot_ranges == 0) {
@@ -275,37 +272,6 @@ std::cout << __FILE__ ":" << __LINE__ << std::endl;
                 cold_range_rebalanced[idx_cold] = (point_qrys.cold[idx_cold].nr_qrys > cold_range_threshold);
             }
             take_summary(cold_range_rebalanced);
-std::cout << __FILE__ ":" << __LINE__ << std::endl;
-for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
-    if (cold_range_rebalanced[idx_cold]) {
-        std::cout << "*** DPU#" << idx_cold << " ***" << std::endl;
-        struct alignas(8) {
-            uint32_t nr_pairs;
-            uint16_t nr_chunks;
-            uint16_t chunk_end_indices[MAX_NR_SUMMARY_CHUNKS];
-        } header;
-        {
-            UPMEM_AsyncDuration async;
-            recv_from_dpu(select_dpu(idx_cold), 0, Single{header}, async);
-        }
-        std::cout << header.nr_chunks << " chunks:";
-        for (unsigned i = 0; i < header.nr_chunks; i++) {
-            std::cout << ' ' << header.chunk_end_indices[i];
-        }
-        std::cout << std::endl;
-        const uint16_t nr_blocks = *std::max_element(&header.chunk_end_indices[0], &header.chunk_end_indices[header.nr_chunks]);
-        std::vector<SummaryBlock> blocks(nr_blocks);
-        {
-            UPMEM_AsyncDuration async;
-            recv_from_dpu(select_dpu(idx_cold), sizeof(header), Single{blocks[0], blocks.size()}, async);
-        }
-        for (const auto& block : blocks) {
-            for (unsigned i = 0; i < 4; i++) {
-                std::cout << block.nr_keys[i] << ' ' << block.head_keys[i] << std::endl;
-            }
-        }
-    }
-}
 
             const size_t min_nr_queries_in_hot = (nr_queries + nr_cold_ranges - 1) / nr_cold_ranges;
             dpu_id_t idx_new_hot = 0;
@@ -341,9 +307,6 @@ for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
                     size_t idx_query = 0;
                     load_idxs.reserve(nr_entries + 1);
                     load_idxs[0] = 0;
-for (uint32_t idx_summary_entry = 0; idx_summary_entry < nr_entries; idx_summary_entry++) {
-    std::cout << "DPU[" << idx_cold << "].chunk[" << idx_summary_entry << "] = " << summary.nr_keys(idx_summary_entry) << " keys @ " << summary.head_key(idx_summary_entry) << std::endl;
-}
                     for (uint32_t idx_summary_entry = 0; idx_summary_entry < nr_entries; idx_summary_entry++) {
                         if (summary.nr_keys(idx_summary_entry) == 0) {
                             load_idxs[idx_summary_entry + 1] = idx_query;
@@ -643,7 +606,6 @@ inline void BPForest::execute_get_in_dpus()
         execute(all_dpu, async);
         scatter_from_dpu(all_dpu, 8, GetResultReceiver{this, &nr_cold_hot_queries[0]}, async);
     }
-std::cout << __FILE__ ":" << __LINE__ << std::endl;
 #endif
 
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
@@ -2400,35 +2362,6 @@ struct BPForest::SummaryChunkInfoReceiver {
     uint16_t* for_dpu(dpu_id_t dpu) const { return &chunk_infos[dpu].end_indices[1]; }
     size_t bytes_for_dpu(dpu_id_t dpu) const { return sizeof(uint16_t) * ((chunk_infos[dpu].nr_chunks + 2) / 4 * 4); }
 };
-#if 0
-struct BPForest::SummaryReceiver {
-    Summary* const summary;
-    const SummaryChunkInfo* const chunk_infos;
-
-    SummaryReceiver(Summary* summary, const SummaryChunkInfo* chunk_infos) : summary{summary}, chunk_infos{chunk_infos} {}
-
-    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
-    {
-        if (block_index < chunk_infos[dpu_index].nr_chunks) {
-            const uint16_t chunk_begin_idx = chunk_infos[dpu_index].begin_indices[block_index],
-                           chunk_end_idx = chunk_infos[dpu_index].end_indices[block_index];
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(static_cast<SummaryBlock*>(&summary[dpu_index].blocks[chunk_begin_idx])));
-            out->length = uint32_t{sizeof(SummaryBlock)} * (chunk_end_idx - chunk_begin_idx);
-{
-std::lock_guard<std::mutex> lock{cout_mtx};
-std::cout << "SummaryReceiver[" << dpu_index << "][" << block_index << "]: summary[" << dpu_index << "].blocks[" << chunk_begin_idx << "] (" << (void*)out->addr << "), .+" << out->length << " bytes" << std::endl;
-}
-            return true;
-        } else {
-            return false;
-        }
-    }
-    size_t bytes_for_dpu(dpu_id_t dpu) const
-    {
-        return sizeof(SummaryBlock) * summary[dpu].nr_blocks;
-    }
-};
-#endif
 struct BPForest::SummaryReceiver {
     static constexpr bool IsSizeVarying = true;
     Summary* const summary;
@@ -2512,11 +2445,6 @@ inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_ran
                         }
                         summary.nr_blocks = chunk_info.end_indices[sorted_idx_to_current_idx[nr_chunks - 1]];
                         max_nr_blocks = std::max(max_nr_blocks, summary.nr_blocks);
-std::lock_guard<std::mutex> lock{cout_mtx};
-for (uint16_t i = 0; i < nr_chunks; i++) {
-    std::cout << "DPU[" << idx_dpu << "].chunk_info.end_indices[" << i << "] = " << chunk_info.end_indices[i] << std::endl;
-}
-std::cout << "DPU[" << idx_dpu << "].summary @ " << &summary.blocks[0] << std::endl;
                     } else {
                         summary.nr_blocks = 0;
                     }
