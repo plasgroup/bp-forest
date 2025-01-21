@@ -389,7 +389,7 @@ void WorkloadGen::generate_queries_impl(const unsigned tid)
 {
     auto timer_start = Clock::now();
 
-    const uint64_t scan_range_width = std::numeric_limits<uint64_t>::max() / scan_width;
+    const uint64_t scan_range_width = std::numeric_limits<uint64_t>::max() / npairs * scan_width;
     const size_t idx_query_begin = nqueries * tid / get_parallelism(),
                  idx_query_end = nqueries * (tid + 1) / get_parallelism();
     for (size_t idx_query = idx_query_begin; idx_query < idx_query_end; idx_query++) {
