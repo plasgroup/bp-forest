@@ -1660,9 +1660,7 @@ inline void BPForest::batch_range_count(size_t nr_queries, const RangeCountQuery
             cold_to_hot[nr_cold_ranges] = idx_new_hot;
             nr_hot_ranges = idx_new_hot;
 
-/*
             re_route_rcq(cold_range_rebalanced);
-*/
 
             size_t max_nr_queries_in_hot = 0;
             for (dpu_id_t idx_hot = 0; idx_hot < nr_hot_ranges; idx_hot++) {
@@ -1690,27 +1688,6 @@ inline void BPForest::batch_range_count(size_t nr_queries, const RangeCountQuery
                 extract_and_distribute_hot_ranges();
             }
         }
-for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
-    for (auto& vec : rcqs.cold[idx_cold].qrys) {
-        vec.clear();
-    }
-    for (auto& vec : rcqs.cold[idx_cold].orig_idxs) {
-        vec.clear();
-    }
-}
-for (dpu_id_t idx_hot = 0; idx_hot < nr_hot_ranges; idx_hot++) {
-    for (auto& vec : rcqs.hot[idx_hot].qrys) {
-        vec.clear();
-    }
-    for (auto& vec : rcqs.hot[idx_hot].orig_idxs) {
-        vec.clear();
-    }
-}
-if (nr_hot_ranges == 0) {
-    route_rcq<false>(nr_queries, queries, result);
-} else /* nr_hot_ranges >= 1 */ {
-    route_rcq<true>(nr_queries, queries, result);
-}
     } while (false);
 
     execute_rcq_in_dpus(nr_queries, result);
@@ -1953,11 +1930,13 @@ inline void BPForest::execute_rcq_in_dpus(size_t nr_queries, uint64_t result[])
 
     std::array<std::array<uint16_t, 2>, MAX_NR_DPUS> nr_cold_hot_queries;
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
+std::cout << "rcqs.cold[" << idx_dpu << "].nr_qrys = " << rcqs.cold[idx_dpu].nr_qrys << std::endl;
         ASSERT(rcqs.cold[idx_dpu].nr_qrys <= std::numeric_limits<uint16_t>::max());
         nr_cold_hot_queries[idx_dpu][0] = static_cast<uint16_t>(rcqs.cold[idx_dpu].nr_qrys);
 
         const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
         if (idx_hot != INVALID_DPU_ID) {
+std::cout << "rcqs.hot[" << idx_hot << "].nr_qrys = " << rcqs.hot[idx_hot].nr_qrys << std::endl;
             ASSERT(rcqs.hot[idx_hot].nr_qrys <= std::numeric_limits<uint16_t>::max());
             nr_cold_hot_queries[idx_dpu][1] = static_cast<uint16_t>(rcqs.hot[idx_hot].nr_qrys);
         } else {
