@@ -600,8 +600,8 @@ inline void BPForest::execute_get_in_dpus()
     }
 #else /* SYNCHRONOUS_DPU_EXEC */
     {
-        UPMEM_AsyncDuration async;
         StopWatch timer{QuerySendExecRecvTime};
+        UPMEM_AsyncDuration async;
         gather_to_dpu(all_dpu, 0, GetQuerySender{this, &nr_cold_hot_queries[0]}, async);
         execute(all_dpu, async);
         scatter_from_dpu(all_dpu, 8, GetResultReceiver{this, &nr_cold_hot_queries[0]}, async);
@@ -1963,8 +1963,8 @@ inline void BPForest::execute_rcq_in_dpus(size_t nr_queries, uint64_t result[])
     }
 #else /* SYNCHRONOUS_DPU_EXEC */
     {
-        UPMEM_AsyncDuration async;
         StopWatch timer{QuerySendExecRecvTime};
+        UPMEM_AsyncDuration async;
         gather_to_dpu(all_dpu, 0, RCQSender{this, &nr_cold_hot_queries[0]}, async);
         execute(all_dpu, async);
         scatter_from_dpu(all_dpu, RCQ_RESULT_OFFSET, RCQResultReceiver{this, &nr_cold_hot_queries[0]}, async);
