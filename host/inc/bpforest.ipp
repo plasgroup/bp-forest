@@ -1953,13 +1953,11 @@ inline void BPForest::execute_rcq_in_dpus(size_t nr_queries, uint64_t result[])
 
     std::array<std::array<uint16_t, 2>, MAX_NR_DPUS> nr_cold_hot_queries;
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
-std::cout << "rcqs.cold[" << idx_dpu << "].nr_qrys = " << rcqs.cold[idx_dpu].nr_qrys << std::endl;
         ASSERT(rcqs.cold[idx_dpu].nr_qrys <= std::numeric_limits<uint16_t>::max());
         nr_cold_hot_queries[idx_dpu][0] = static_cast<uint16_t>(rcqs.cold[idx_dpu].nr_qrys);
 
         const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
         if (idx_hot != INVALID_DPU_ID) {
-std::cout << "rcqs.hot[" << idx_hot << "].nr_qrys = " << rcqs.hot[idx_hot].nr_qrys << std::endl;
             ASSERT(rcqs.hot[idx_hot].nr_qrys <= std::numeric_limits<uint16_t>::max());
             nr_cold_hot_queries[idx_dpu][1] = static_cast<uint16_t>(rcqs.hot[idx_hot].nr_qrys);
         } else {
