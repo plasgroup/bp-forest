@@ -28,29 +28,6 @@ public:
     virtual std::vector<partition_t> partition_range(std::vector<int64_t>& keys, std::vector<std::pair<int64_t, int64_t>>& workload, size_t nr_dpus) = 0;
 };
 
-class ChunkBuilder;
-
-/*
-class ChunkedPartitioner : public Partitioner {
-    ChunkBuilder* chunk_builder;
-
-public:
-
-    ChunkedPartitioner(ChunkBuilder* chunk_builder)
-        : chunk_builder(chunk_builder)
-    {}
-    virtual ~ChunkedPartitioner() {}
-
-protected:
-    virtual std::vector<partition_t> partition_point_on_chunks(std::vector<chunk>& chunks, std::vector<int64_t>& workload, size_t nr_dpus) = 0;
-    virtual std::vector<partition_t> partition_range_on_chunks(std::vector<chunk>& chunks, std::vector<std::pair<int64_t, int64_t>>& workload, size_t nr_dpus) = 0;
-
-public:
-    std::vector<partition_t> partition_point(std::vector<int64_t>& keys, std::vector<int64_t>& workload, size_t nr_dpus);
-    std::vector<partition_t> partition_range(std::vector<int64_t>& keys, std::vector<std::pair<int64_t, int64_t>>& workload, size_t nr_dpus);
-};
-*/
-
 class ChunkBuilder {
 public:
     struct chunk {
@@ -477,8 +454,6 @@ public:
 class ChunkedBPForestPartitioner : public Partitioner {
     int alpha;
     ChunkBuilder* chunk_builder;
-    std::vector<partition_t> base_range;
-    std::vector<partition_t> hot_range;
 
 private:
     void build_base_ranges(std::vector<partition_t>& base_range, std::vector<int64_t>& keys, size_t nr_dpus)
@@ -490,95 +465,81 @@ private:
     
     using key_it_t = std::vector<int64_t>::iterator;
     using chunk_it_t = std::vector<ChunkBuilder::chunk>::iterator;
-    partition_t find_hot_range_one(key_it_t key_begin,
-                                   key_it_t& left, key_it_t key_end,
-                                   key_it_t& query_it, key_it_t query_end,
-                                   size_t max_items, size_t min_queries)
+    // "left" and query_it are updated to the next position.
+    partition_t find_hot_range_one(chunk_it_t& left, const chunk_it_t& chunk_end, key_it_t& query_it, const key_it_t& query_end, size_t left_key_idx, size_t max_items, size_t min_queries)
     {
-        key_it_t right = left;
+        chunk_it_t right = left;
         std::queue<size_t> nqueries;
-        size_t total_nqueries = 0;
-        while (right < key_end) {
-            if ((size_t)(right - left) >= max_items) {
-                size_t nq = nqueries.front();
+        size_t total_queries = 0;
+        size_t total_items = 0;
+        while (right < chunk_end) {
+            // check size limit
+            assert(right->count <= max_items);
+            while (total_items + right->count > max_items) {
+                total_queries -= nqueries.front();
                 nqueries.pop();
-                total_nqueries -= nq;
+                total_items -= left->count;
+                left_key_idx += left->count;
                 left++;
             }
-            int64_t right_key = *right;
-            while (query_it != query_end && *query_it < right_key)
-                query_it++;
-            int nq = 0;
-            while (query_it != query_end && *query_it == right_key) {
+
+            // add "right"
+            int64_t right_key = right->left_key;
+            size_t nq = 0;
+            while (query_it != query_end && *query_it < right_key) {
                 nq++;
                 query_it++;
             }
-            right++;
             nqueries.push(nq);
-            total_nqueries += nq;
-            if (total_nqueries >= min_queries)
-                return {left - key_begin, right - key_begin};
+            total_queries += nq;
+            total_items += right->count;
+            right++;
+
+            // check workload limit
+            if (total_queries >= min_queries) {
+                partition_t hot_range = {left_key_idx, left_key_idx + total_items};
+                left = right; // output next left chunk
+                return hot_range;
+            }
         }
         return INVALID_PARTITION;
     }
 
+    // Find all hot partitions in the given base partition.
+    //   First hot partition is not returned, because it should be handled by the same DPU.
+    //   If there is any hot partition, return true, to indicate that this DPU cannot accept any more hot partitions.
+    //   Second or more hot partitions are stored in "more_hot_ranges".
     bool find_hot_range_from_base(std::vector<int64_t>& keys,
-                                  std::vector<ChunkBuilder::chunk>& chunks, // chunks in this base range
+                                  std::vector<ChunkBuilder::chunk>& chunks, // chunks in this base partition
                                   std::vector<int64_t>& workload,
-                                  partition_t& base,
-                                  std::vector<partition_t>& more_hot_ranges,
+                                  size_t key_idx, // key index of the first key in the base partition
+                                  std::vector<partition_t>& more_hot_ranges, // second or more hot partitions in this base partition.
                                   size_t max_items, size_t min_queries)
     {
-
-        // TODO: 
-    //        use chunk
-        
         key_it_t query_it = std::lower_bound(workload.begin(), workload.end(),
-                                             keys[base.first]);
+                                             keys[key_idx]);
         bool has_hot_range = false;
 
-        key_it_t key_it = keys.begin() + base.first;
-        key_it_t key_end = keys.begin() + base.second;
         chunk_it_t chunk_it = chunks.begin();
-        while (key_it < key_end) {
-            partition_t hot_range =
-                find_hot_range_one(chunks, chunk_it
-                    
-                    keys.begin(), left, key_end,
-                                   query_it, workload.end(),
-                                   max_items, min_queries);
+        while (chunk_it < chunks.end()) {
+            partition_t hot_range = find_hot_range_one(chunk_it, chunks.end(), query_it, workload.end(), key_idx, max_items, min_queries);
             if (hot_range == INVALID_PARTITION)
                 break;
             if (!has_hot_range)
                 has_hot_range = true;
             else
                 more_hot_ranges.push_back(hot_range);
-            left = keys.begin() + hot_range.second;
+            
+            key_idx = hot_range.second;
         }
 
         return has_hot_range;
     }
 
-    void distribute_hot_ranges(std::vector<bool>& has_hot_range, std::vector<partition_t>& more_hot_ranges, size_t nr_dpus)
-    {
-        hot_range.resize(nr_dpus, INVALID_PARTITION);
-
-        // distribute hot ranges from the left.
-        auto it = has_hot_range.begin();
-        printf("more_hot_ranges.size() = %ld\n", more_hot_ranges.size());
-        std::cout << "more_hot_ranges.size() = " << more_hot_ranges.size() << std::endl;
-        for (const auto& range: more_hot_ranges) {
-            it = std::find(it, has_hot_range.end(), false);
-            assert(it != has_hot_range.end());
-            hot_range[it - has_hot_range.begin()] = range;
-            it++;
-        }
-    }
-
     std::pair<std::vector<bool>, std::vector<partition_t>>
-    build_hot_ranges(std::vector<int64_t>& keys, std::vector<int64_t>& workload, size_t nr_dpus)
+    build_hot_ranges(std::vector<int64_t>& keys, std::vector<int64_t>& workload, std::vector<partition_t> base_partitions, size_t nr_dpus)
     {
-        size_t min_hot_queries = workload.size() / nr_dpus;
+        size_t min_hot_queries = workload.size() * alpha / nr_dpus;  // HA: * alpha is missing in the paper
         if (workload.size() % nr_dpus > 0)
             min_hot_queries++;
 
@@ -593,16 +554,39 @@ private:
         std::vector<bool> has_hot_range(nr_dpus, false);
         std::vector<partition_t> more_hot_ranges;
         for (size_t i = 0; i < nr_dpus; i++) {
-            partition_t& base = base_range[i];
-            size_t total_items = base.second - base.first;
+            partition_t& base = base_partitions[i];
+            size_t total_items = base.second - base.first;  // HA: max_hot_items differs from DPU to DPU.
             size_t max_hot_items = total_items / alpha;
             if (total_items % alpha == 0)
                 max_hot_items--;
-            bool has = find_hot_range_from_base(keys, chunks, sorted_workload, base, more_hot_ranges, max_hot_items, min_hot_queries);
+            bool has = find_hot_range_from_base(keys, chunks, sorted_workload, base.first, more_hot_ranges, max_hot_items, min_hot_queries);
+            std::cout << "base[ " << i << "] = [" << base.first << "," << base.second << ") " << (base.second - base.first) << " has = " << has << " nr_more = " << more_hot_ranges.size() << " max_hot_items = " << max_hot_items << ", min_hot_queries = " << min_hot_queries << std::endl;
             has_hot_range[i] = has;
         }
 
         return {has_hot_range, more_hot_ranges};
+    }
+
+    std::vector<partition_t> distribute_hot_ranges(std::vector<bool>& has_hot, std::vector<partition_t>& more_hot, size_t nr_dpus)
+    {
+        std::vector<partition_t> hot_partition(nr_dpus);
+
+        std::cout << "more_hot.size() = " << more_hot.size() << std::endl;
+
+        // HA: distribute hot ranges from the left.
+        auto it = more_hot.begin();
+        for (size_t i = 0; i < nr_dpus; i++) {
+            if (has_hot[i])
+                hot_partition[i] = INVALID_PARTITION;
+            else if (it != more_hot.end())
+                hot_partition[i] = *it++;
+            else
+                break;
+        }
+        assert(it == more_hot.end());
+        assert(hot_partition.size() == nr_dpus);
+
+        return hot_partition;
     }
 
 public:
@@ -613,35 +597,19 @@ public:
     ~ChunkedBPForestPartitioner()
     {}
 
-protected:
-    std::vector<partition_t> partition_point_on_chunks(std::vector<ChunkBuilder::chunk>& chunks, std::vector<int64_t>& workload, size_t nr_dpus)
-    {
-        // build base range
-        std::vector<partition_t> base_range;
-        size_t chunk_idx = 0;
-        size_t key_idx = 0;
-        for_each_bpforest_baserange(chunks, nr_dpus, [&](size_t begin_idx, size_t end_idx) {
-            partition_t base;
-            base.first = key_idx;
-            while (chunk_idx < end_idx)
-                key_idx += chunks[chunk_idx++].count;
-            base.second = key_idx;
-            base_range.push_back(base);            
-        });
-
-    }
-    
     std::vector<partition_t> partition_point(std::vector<int64_t>& keys, std::vector<int64_t>& workload, size_t nr_dpus)
     {
-        build_base_ranges(base_range, keys, nr_dpus);
-        auto [has_hot_range, more_hot_ranges] = build_hot_ranges(keys, workload, nr_dpus);
-        distribute_hot_ranges(has_hot_range, more_hot_ranges, nr_dpus);
+        std::vector<partition_t> base_partition;
+        build_base_ranges(base_partition, keys, nr_dpus);
+        auto [has_hot_range, more_hot_ranges] = build_hot_ranges(keys, workload, base_partition, nr_dpus);
+        std::vector<partition_t> hot_partition = distribute_hot_ranges(has_hot_range, more_hot_ranges, nr_dpus);
 
-        return hot_range;
+        return hot_partition;
     }
 
     std::vector<partition_t> partition_range(std::vector<int64_t>& keys, std::vector<std::pair<int64_t, int64_t>>& workload, size_t nr_dpus)
     {
+        std::vector<partition_t> base_range;
         build_base_ranges(base_range, keys, nr_dpus);
         return base_range;
     }

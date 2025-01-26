@@ -221,6 +221,13 @@ int main(int argc, char* argv[])
     }
 */
 
+    ChunkedBPForestPartitioner partitioner(new BPForestChunkBuilder(15, 20), 4);
+    auto part = partitioner.partition_point(keys, workload, opt.nr_dpus());
+    for (size_t i = 0; i < part.size(); i++) {
+        if (part[i] != Partitioner::INVALID_PARTITION)
+            printf("part[%ld] = (%ld, %ld) %ld\n", i, part[i].first, part[i].second, part[i].second - part[i].first);
+    }
+/*
     //OraclePartitioner partitioner(opt.max_items_per_dpu());
     OraclePartitioner op(opt.max_items_per_dpu());
     auto par1 = op.partition_point(keys, workload, opt.nr_dpus());
@@ -229,7 +236,7 @@ int main(int argc, char* argv[])
     BPForestChunkBuilder chunk_builder(15, 20);
     ChunkedOraclePartitioner cop(&chunk_builder, opt.max_items_per_dpu());
     auto par2 = cop.partition_point(keys, workload, opt.nr_dpus());
-    std::vector<ChunkedPartitioner::chunk> chunks;
+    std::vector<ChunkBuilder::chunk> chunks;
     for_each_bpforest_baserange(keys, opt.nr_dpus(), [&](size_t begin_idx, size_t end_idx) {
         chunk_builder.build_chunks(chunks, keys, {begin_idx, end_idx});
     });
@@ -252,6 +259,7 @@ int main(int argc, char* argv[])
         prev = chunks_it;
         nkeys = 0;
     }
+*/
 /*
     if (par1.size() != par2.size()) {
         printf("par1.size() = %ld, par2.size() = %ld\n", par1.size(), par2.size());
