@@ -4,15 +4,16 @@
 #include "host/inc/pimtree_query.ipp"
 #include "partitioner.hpp"
 
-constexpr Partitioner::partition_t Partitioner::INVALID_PARTITION;
-
-void BPForestChunkBuilder::build_chunks(std::vector<ChunkBuilder::chunk>& chunks, std::vector<int64_t>& keys, Partitioner::partition_t base_range)
+void BPForestChunkBuilder::build_chunks(
+    std::vector<ChunkBuilder::chunk>& chunks,
+    std::vector<int64_t>& keys,
+    unsigned int begin_idx, unsigned int end_idx) // range of the base partition, left-inclusive
 {
-    size_t nkeys = base_range.second - base_range.first;
+    size_t nkeys = begin_idx - end_idx;
     size_t rem_leaves = (nkeys + nr_keys_in_leaf - 1) / nr_keys_in_leaf;
     size_t rem_nodes = (rem_leaves + nr_children_in_node - 1) / nr_children_in_node;
 
-    size_t key_idx = base_range.first;
+    size_t key_idx = begin_idx;
     while (rem_nodes > 2) {
         ChunkBuilder::chunk c;
         c.left_key = keys[key_idx];
@@ -36,13 +37,16 @@ void BPForestChunkBuilder::build_chunks(std::vector<ChunkBuilder::chunk>& chunks
     assert(rem_nodes == 1);
     ChunkBuilder::chunk c;
     c.left_key = keys[key_idx];
-    c.count = base_range.second - key_idx;
+    c.count = end_idx - key_idx;
     chunks.push_back(c);
 }
 
-void SingletonChunkBuilder::build_chunks(std::vector<ChunkBuilder::chunk>& chunks, std::vector<int64_t>& keys, Partitioner::partition_t base_range)
+void SingletonChunkBuilder::build_chunks(
+    std::vector<ChunkBuilder::chunk>& chunks,
+    std::vector<int64_t>& keys,
+    unsigned int begin_idx, unsigned int end_idx)
 {
-    for (size_t key_idx = base_range.first; key_idx < base_range.second; key_idx++) {
+    for (size_t key_idx = begin_idx; key_idx < end_idx; key_idx++) {
         ChunkBuilder::chunk c;
         c.left_key = keys[key_idx];
         c.count = 1;
@@ -50,23 +54,23 @@ void SingletonChunkBuilder::build_chunks(std::vector<ChunkBuilder::chunk>& chunk
     }
 }
 
-std::vector<Partitioner::partition_t>
+std::vector<partition_t>
 ChunkedOraclePartitioner::partition_point(std::vector<int64_t>& keys, std::vector<int64_t>& workload)
 {
     std::vector<ChunkBuilder::chunk> chunks;
-    for_each_bpforest_baserange(keys, num_dpus, [&](size_t begin_idx, size_t end_idx) {
-        chunk_builder->build_chunks(chunks, keys, {begin_idx, end_idx});
+    for_each_bpforest_baserange(keys, num_dpus, [&](unsigned int begin_idx, unsigned int end_idx) {
+        chunk_builder->build_chunks(chunks, keys, begin_idx, end_idx);
     });
 
     return partition_point_on_chunks(chunks, workload);
 }
 
-std::vector<Partitioner::partition_t>
+std::vector<partition_t>
 ChunkedOraclePartitioner::partition_range(std::vector<int64_t>& keys, std::vector<std::pair<int64_t, int64_t>>& workload)
 {
     std::vector<ChunkBuilder::chunk> chunks;
-    for_each_bpforest_baserange(keys, num_dpus, [&](size_t begin_idx, size_t end_idx) {
-        chunk_builder->build_chunks(chunks, keys, {begin_idx, end_idx});
+    for_each_bpforest_baserange(keys, num_dpus, [&](unsigned int begin_idx, unsigned int end_idx) {
+        chunk_builder->build_chunks(chunks, keys, begin_idx, end_idx);
     });
 
     return partition_range_on_chunks(chunks, workload);
