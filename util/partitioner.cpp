@@ -51,23 +51,23 @@ void SingletonChunkBuilder::build_chunks(std::vector<ChunkBuilder::chunk>& chunk
 }
 
 std::vector<Partitioner::partition_t>
-ChunkedOraclePartitioner::partition_point(std::vector<int64_t>& keys, std::vector<int64_t>& workload, size_t nr_dpus)
+ChunkedOraclePartitioner::partition_point(std::vector<int64_t>& keys, std::vector<int64_t>& workload)
 {
     std::vector<ChunkBuilder::chunk> chunks;
-    for_each_bpforest_baserange(keys, nr_dpus, [&](size_t begin_idx, size_t end_idx) {
+    for_each_bpforest_baserange(keys, num_dpus, [&](size_t begin_idx, size_t end_idx) {
         chunk_builder->build_chunks(chunks, keys, {begin_idx, end_idx});
     });
 
-    return partition_point_on_chunks(chunks, workload, nr_dpus);
+    return partition_point_on_chunks(chunks, workload);
 }
 
 std::vector<Partitioner::partition_t>
-ChunkedOraclePartitioner::partition_range(std::vector<int64_t>& keys, std::vector<std::pair<int64_t, int64_t>>& workload, size_t nr_dpus)
+ChunkedOraclePartitioner::partition_range(std::vector<int64_t>& keys, std::vector<std::pair<int64_t, int64_t>>& workload)
 {
     std::vector<ChunkBuilder::chunk> chunks;
-    for_each_bpforest_baserange(keys, nr_dpus, [&](size_t begin_idx, size_t end_idx) {
+    for_each_bpforest_baserange(keys, num_dpus, [&](size_t begin_idx, size_t end_idx) {
         chunk_builder->build_chunks(chunks, keys, {begin_idx, end_idx});
     });
 
-    return partition_range_on_chunks(chunks, workload, nr_dpus);
+    return partition_range_on_chunks(chunks, workload);
 }
