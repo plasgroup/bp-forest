@@ -193,6 +193,8 @@ class OraclePartitioner : public Partitioner {
                 partition_t p(keys.size() - nkeys, keys.size(), false, nkeys, sea_level + nqueries);
                 p.dpu_id = (unsigned int) ndpus;
                 partitions.push_back(p);
+                while (partitions.size() < num_dpus)
+                    partitions.push_back(INVALID_PARTITION);
             }
             ndpus++;
         }
@@ -318,6 +320,7 @@ class ChunkedOraclePartitioner : public Partitioner {
         assert(nkeys > 0);
         if (!count_only) {
             partition_t p(partition_left, idx_key, false, nkeys, sea_level + nqueries);
+            p.dpu_id = (unsigned int) ndpus;
             partitions.push_back(p);
         }
         ndpus++;
@@ -325,8 +328,6 @@ class ChunkedOraclePartitioner : public Partitioner {
         return {ndpus, partitions};
     }
 
-
-protected:
     std::vector<partition_t> partition_point_on_chunks(std::vector<ChunkBuilder::chunk>& chunks, std::vector<int64_t>& workload)
     {
         std::vector<int64_t> sorted_workload = workload;
