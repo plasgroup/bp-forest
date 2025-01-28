@@ -241,13 +241,13 @@ int main(int argc, char* argv[])
 
     /* main routine */
     if (opt.print_perf) {
-        printf("alpha,NR_DPUS,batch_num,num_keys,rebalancing_time[ns]"
+        printf("alpha,NR_DPUS,batch_num,num_keys,rebalancing_time[ns],routing_time[ns]"
 #ifdef SYNCHRONOUS_DPU_EXEC
                ",send_time[ns],exec_time[ns],recv_time[ns]"
 #else /* SYNCHRONOUS_DPU_EXEC */
                ",send_exec_recv_time[ns]"
 #endif
-               ",batch_time[ns]\n");
+               ",postprocess_time[ns],batch_time[ns]\n");
     }
     if (opt.verify)
         benchmark->set_verify_db(&init_data);
@@ -269,21 +269,21 @@ int main(int argc, char* argv[])
 #endif
 
         if (opt.print_perf) {
-            printf("%s,%d,%d,%ld,%ld"
+            printf("%s,%d,%d,%ld,%ld,%ld"
 #ifdef SYNCHRONOUS_DPU_EXEC
                    ",%ld,%ld,%ld"
 #else /* SYNCHRONOUS_DPU_EXEC */
                     ",%ld"
 #endif
-                   ",%ld\n",
+                   ",%ld,%ld\n",
                 opt.alpha.c_str(), upmem_get_nr_dpus(), idx_batch,
-                long{NUM_REQUESTS_PER_BATCH}, RebalancingTime.count(),
+                long{NUM_REQUESTS_PER_BATCH}, RebalancingTime.count(), QueryRoutingTime.count(),
 #ifdef SYNCHRONOUS_DPU_EXEC
                 QuerySendTime.count(), QueryExecTime.count(), QueryRecvTime.count(),
 #else /* SYNCHRONOUS_DPU_EXEC */
                 QuerySendExecRecvTime.count(),
 #endif
-                BatchTotalTime.count());
+                PostProcessTime.count(), BatchTotalTime.count());
         }
     });
 
