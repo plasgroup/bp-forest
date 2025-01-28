@@ -1698,6 +1698,8 @@ inline void BPForest::batch_range_count(size_t nr_queries, const RangeCountQuery
 template <bool HasHotRanges>
 inline void BPForest::route_rcq(size_t nr_queries, const RangeCountQuery queries[], uint64_t result[])
 {
+    StopWatch timer{QueryRoutingTime};
+
     for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
         rcqs.cold[idx_cold].qrys.resize(get_parallelism());
         rcqs.cold[idx_cold].orig_idxs.resize(get_parallelism());
@@ -1835,7 +1837,7 @@ inline bool BPForest::check_if_rcq_balance(size_t nr_queries)
 
     const size_t hot_range_threshold = static_cast<size_t>(static_cast<double>(nr_queries) * threshold_nr_queries_to_hot);
     for (dpu_id_t idx_range = 0; idx_range < nr_hot_ranges; idx_range++) {
-        if (point_qrys.hot[idx_range].nr_qrys > hot_range_threshold) {
+        if (rcqs.hot[idx_range].nr_qrys > hot_range_threshold) {
             return false;
         }
     }
@@ -1983,6 +1985,8 @@ inline void BPForest::execute_rcq_in_dpus(size_t nr_queries, uint64_t result[])
 
 inline void BPForest::postprocess_of_rcq(uint64_t result[])
 {
+    StopWatch timer{PostprocessTime};
+
     tmp_data.with(&TmpData::postprocess_of_rcq, result, [this] {
         parallel_run(&BPForest::postprocess_of_rcq_impl);
     });
