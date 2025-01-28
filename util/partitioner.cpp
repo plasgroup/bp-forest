@@ -76,3 +76,66 @@ ChunkedOraclePartitioner::partition_range(std::vector<int64_t>& keys, std::vecto
 
     return partition_range_on_chunks(chunks, workload);
 }
+
+static int next_begin_index(std::vector<partition_t> partitions)
+{
+    if (partitions.size() == 0)
+        return 0;
+    return partitions.back().end_idx;
+}
+
+std::vector<partition_t>
+combine_partitions(
+    std::vector<int64_t>& keys,
+    std::vector<partition_t>& pardpu_base,
+    std::vector<partition_t>& pardpu_hot)
+{
+    std::vector<partition_t> base;
+    for (size_t i = 0; i < pardpu_base.size(); i++)
+        if (pardpu_base[i] != INVALID_PARTITION)
+            base.push_back(pardpu_base[i]);
+//  TODO: debug
+//    std::sort(base.begin(), base.end(), [&](const partition_t& p1, const partition_t& p2) {
+//        return p1.begin_idx < p2.last_key(keys, INT64_MAX);
+//    });
+
+    std::vector<partition_t> hot;
+    for (size_t i = 0; i < pardpu_hot.size(); i++)
+        if (pardpu_hot[i] != INVALID_PARTITION)
+            hot.push_back(pardpu_hot[i]);
+    std::sort(hot.begin(), hot.end(), [](const partition_t& p1, const partition_t& p2) {
+        return p1.begin_idx < p2.begin_idx;
+    });
+
+    std::vector<partition_t> partitions;
+
+    auto base_it = base.begin();
+    auto hot_it = hot.begin();
+    while (base_it != base.end()) {
+        assert(hot_it == hot.end() || hot_it->begin_idx >= base_it->begin_idx);
+        while (hot_it != hot.end() && hot_it->begin_idx < base_it->end_idx) {
+            int begin_idx = next_begin_index(partitions);
+            if (begin_idx < hot_it->begin_idx) {
+                // gap between hot partitions
+                int end_idx = hot_it->begin_idx;
+                partition_t p = base_it->subpartition(begin_idx, end_idx);
+                partitions.push_back(p);
+            } else {
+                if (begin_idx != hot_it->begin_idx) {
+                    printf("begin_idx = %d, hot_it->begin_idx = %d\n", begin_idx, hot_it->begin_idx);
+                    exit(1);
+                }
+                assert(begin_idx == hot_it->begin_idx);
+            }
+            partitions.push_back(*hot_it);
+            hot_it++;
+        }
+        if (next_begin_index(partitions) < base_it->end_idx) {
+            // remaining base partition
+            partition_t p = base_it->subpartition(next_begin_index(partitions), base_it->end_idx);
+            partitions.push_back(p);
+        }
+        base_it++;
+    }
+    return partitions;
+}

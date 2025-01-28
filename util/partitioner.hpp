@@ -776,3 +776,9 @@ public:
         }
     }
 };
+
+std::vector<partition_t>
+combine_partitions(
+    std::vector<int64_t>& keys,
+    std::vector<partition_t>& pardpu_base,
+    std::vector<partition_t>& pardpu_hot);
