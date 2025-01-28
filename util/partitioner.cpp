@@ -9,13 +9,14 @@ void BPForestChunkBuilder::build_chunks(
     std::vector<int64_t>& keys,
     unsigned int begin_idx, unsigned int end_idx) // range of the base partition, left-inclusive
 {
-    size_t nkeys = begin_idx - end_idx;
+    size_t nkeys = end_idx - begin_idx;
     size_t rem_leaves = (nkeys + nr_keys_in_leaf - 1) / nr_keys_in_leaf;
     size_t rem_nodes = (rem_leaves + nr_children_in_node - 1) / nr_children_in_node;
 
     size_t key_idx = begin_idx;
     while (rem_nodes > 2) {
         ChunkBuilder::chunk c;
+        assert(key_idx < keys.size());
         c.left_key = keys[key_idx];
         c.count = nr_children_in_node * nr_keys_in_leaf;
         chunks.push_back(c);

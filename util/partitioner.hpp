@@ -49,6 +49,40 @@ struct partition_t {
     {
         return !(*this == p);
     }
+
+    partition_t& operator=(const partition_t& p)
+    {
+        begin_idx = p.begin_idx;
+        end_idx = p.end_idx;
+        is_hot = p.is_hot;
+        dpu_id = p.dpu_id;
+        src_dpu = p.src_dpu;
+        items = p.items;
+        load = p.load;
+        return *this;
+    }
+
+    int64_t last_key(const std::vector<int64_t>& keys, int64_t max) const
+    {
+        if (end_idx == (int) keys.size())
+            return max;
+        else
+            return keys[end_idx] - 1;
+    }
+
+    partition_t subpartition(int begin_idx, int end_idx) const
+    {
+        assert(this->begin_idx <= begin_idx);
+        assert(this->begin_idx <= end_idx);
+        assert(begin_idx <= this->end_idx);
+        assert(end_idx <= this->end_idx);
+        partition_t p = *this;
+        p.begin_idx = begin_idx;
+        p.end_idx = end_idx;
+        p.items = end_idx - begin_idx;
+        p.load = -1;
+        return p;
+    }
 };
 const struct partition_t INVALID_PARTITION(-1, -1, false, -1, -1);
 
@@ -647,8 +681,7 @@ class ChunkedBPForestPartitioner : public Partitioner {
             std::vector<ChunkBuilder::chunk> chunks;
             chunk_builder->build_chunks(chunks, keys, base.begin_idx, base.end_idx);
 
-#define MAX_KEY INT64_MAX
-            int64_t last_key = i == num_dpus - 1 ? MAX_KEY : keys[base.end_idx] - 1;
+            int64_t last_key = i == num_dpus - 1 ? INT64_MAX : keys[base.end_idx] - 1;
             bool has = find_hot_from_base(keys, chunks, sorted_workload, base.begin_idx, last_key, more_hot_partitions, i, max_hot_items, min_hot_queries);
             //std::cout << "base[ " << i << "] = [" << base.first << "," << base.second << ") " << (base.second - base.first) << " #chunks = " << chunks.size() << " has = " << has << " nr_more = " << more_hot_partitions.size() << " max_hot_items = " << max_hot_items << ", min_hot_queries = " << min_hot_queries << std::endl;
             has_hot_partition[i] = has;
@@ -728,7 +761,7 @@ public:
         return hot_partition;
     }
 
-    std::vector<partition_t>& get_partition(int i) { return partitions[i]; }
+    std::vector<partition_t>& ref_partition(int i) { return partitions[i]; }
 
     void print_hot_partitions()
     {

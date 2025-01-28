@@ -70,326 +70,167 @@ struct Option {
     }
 } opt;
 
-#if 0
-#ifdef PIM_TREE
-std::vector<int64_t> load_keys(const std::string &init_file)
+
+// create map {last possible key -> partition}
+std::map<int64_t, partition_t>
+create_hot_to_dpu_map(std::vector<int64_t>& keys, std::vector<partition_t>& hot)
 {
-    std::vector<int64_t> keys;
-    pimtree_queries init_data = make_pimtree_queries(opt.init_file());
-    for (size_t i = 0; i < init_data.length; i++) {
-        if (init_data.ops[i].type != insert_t) {
-            fprintf(stderr, "invalid operation type in init file\n");
-            exit(1);
-        }
-        keys.push_back(init_data.ops[i].tsk.i.key);
-    }
-    return keys;
-}
-
-std::vector<int64_t> load_queries(const std::string &workload_file)
-{
-    std::vector<int64_t> workload;
-    pimtree_queries queries = make_pimtree_queries(opt.workload_file());
-    for (size_t i = 0; i < queries.length; i++) {
-        if (queries.ops[i].type != get_t) {
-            fprintf(stderr, "invalid operation type in workload file\n");
-            exit(1);
-        }
-        workload.push_back(queries.ops[i].tsk.g.key);
-    }
-    std::sort(workload.begin(), workload.end());
-    return workload;
-}
-#else // PIM_TREE
-
-#define KEY_MIN INT64_MIN
-#define KEY_MAX INT64_MAX
-
-std::vector<int64_t> keys_to_generate_queries;
-std::vector<int64_t> load_keys(const std::string &init_file)
-{
-    size_t key_interval = KEY_MAX / (opt.items() - 1);
-    std::vector<int64_t> keys;
-    keys.reserve(opt.items());
-    for (size_t i = 0; i < opt.items(); i++) {
-        keys.push_back(KEY_MIN + i * key_interval);
-    }
-    keys_to_generate_queries = keys;
-    return keys;
-}
-
-std::vector<double> init_zipf_pos(size_t P, double alpha) {
-    double sum = 0;
-    std::vector<double> zipf_pos(P, 1.0);
-    for (size_t i = 0; i < P; i++) {
-        zipf_pos[i] /= pow((double) (i + 1), alpha);
-        sum += zipf_pos[i];
-    }
-    for (size_t i = 0; i < P; i++) {
-        zipf_pos[i] /= sum;
-        if (i > 0) {
-            zipf_pos[i] += zipf_pos[i - 1];
-        }
-    }
-    return zipf_pos;
-}
-
-std::vector<size_t> zipf_over_items(size_t P, size_t ds_size, double alpha, size_t n) {
-    std::random_device rnd;
-    std::mt19937_64 mt(rnd());
-    std::uniform_real_distribution<double> dist(0.0, 1.0);
-
-    std::vector<double> zipf_pos = init_zipf_pos(P, alpha);
-
-    std::vector<size_t> order(P); // rank -> slice-id
-    for (size_t i = 0; i < P; i++)
-        order[i] = i;
-#if 0
-    for (size_t i = 0; i < P; i++) {
-        size_t r = std::uniform_int_distribution<uint64_t>(0, P)(mt) % (P - i);
-        std::swap(order[i], order[i + r]);
-    }
-#endif // 0
-//    auto order = tabulate(P, [&](size_t i) { return i; });
-//    for (int i = 0; i < P; i++) {
-//        int r = abs(rn_gen::parallel_rand()) % (P - i);
-//        swap(order[i], order[i + r]);
-//    }
-
-    std::vector<size_t> slice_id(n);  // query-index -> slice-id
-    for (size_t i = 0; i < n; i++) {
-        double rd = dist(mt);
-        int l = -1, r = ((int) P) - 1;  // (]
-        while (r - l > 1) {
-            int mid = (l + r) >> 1;
-            if (zipf_pos[mid] < rd) {
-                l = mid;
-            } else {
-                r = mid;
-            }
-        }
-        slice_id[i] = order[r];        
-    }
-
-    std::vector<size_t> ids(n);  // query-index -> item-id
-    for (size_t i = 0; i < n; i++) {
-        uint64_t rd = std::uniform_int_distribution<uint64_t>(0, ds_size)(mt);
-        size_t left = (ds_size / P) * slice_id[i];
-        size_t item_id = left + rd / P + 1;  // why +1?
-        if (item_id >= ds_size)
-            item_id = ds_size - 1;
-        ids[i] = item_id;
-    }
-
-    return ids;
-}
-
-std::vector<int64_t> load_point_queries(const std::string &workload_file)
-{
-    std::vector<size_t> ids = zipf_over_items(opt.num_slices(), opt.items(), opt.alpha(), opt.queries());
-    std::vector<int64_t> queries;
-    for (size_t i: ids)
-        queries.push_back(keys_to_generate_queries[i]);
-    std::sort(queries.begin(), queries.end());
-    return queries;
-}
-
-std::vector<std::pair<int64_t, int64_t>> load_range_queries(const std::string &workload_file)
-{
-    std::vector<size_t> ids = zipf_over_items(opt.num_slices(), opt.items(), opt.alpha(), opt.queries());
-    std::vector<std::pair<int64_t, int64_t>> queries;
-    for (size_t i: ids) {
-        size_t left = keys_to_generate_queries[i];
-        size_t right = left + (KEY_MAX / (opt.items() - 1) * 100);
-        queries.push_back(std::make_pair(left, right));
-    }
-    return queries;
-}
-#endif // PIM_TRE
-#endif // 0
-
-#if 0
-// create map {last possible key -> (dpu_id, partition)}
-std::map<int64_t, std::pair<size_t, partition_t>> create_hot_to_dpu_map(
-    std::vector<int64_t>& keys,
-    std::vector<Partitioner::partition_t>& hot)
-{
-    std::map<int64_t, std::pair<size_t, Partitioner::partition_t>> hot_to_dpu;
+    std::map<int64_t, partition_t> hot_to_dpu;
     for (size_t i = 0; i < hot.size(); i++)
-        if (hot[i] != Partitioner::INVALID_PARTITION) {
-            int64_t last_key = hot[i].second == keys.size() ? KEY_MAX : keys[hot[i].second] - 1;
-            hot_to_dpu[last_key] = std::make_pair(i, hot[i]);
-            //printf("hot[%ld] = (%ld, %ld) %ld\n", i, hot[i].first, hot[i].second, hot[i].second - hot[i].first);
+        if (hot[i] != INVALID_PARTITION) {
+            int64_t last_key = hot[i].last_key(keys, INT64_MAX);
+            hot_to_dpu.insert(std::make_pair(last_key, hot[i]));
         }
     return hot_to_dpu;
 }
 
-std::pair<std::vector<size_t>, std::vector<size_t>> simulate_load_for_point_query(
+std::pair<std::vector<size_t>, std::vector<size_t>>
+simulate_load_for_point_query(
     std::vector<int64_t>& keys,
-    std::vector<Partitioner::partition_t>& base,
-    std::vector<Partitioner::partition_t>& hot,
+    std::vector<partition_t>& base,
+    std::vector<partition_t>& hot,
     std::vector<int64_t>& workload)
 {
-    std::map<int64_t, std::pair<size_t, Partitioner::partition_t>> hot_to_dpu = create_hot_to_dpu_map(keys, hot);
+    std::map<int64_t, partition_t> hot_to_dpu = create_hot_to_dpu_map(keys, hot);
     
     std::vector<size_t> base_load(base.size(), 0);
     std::vector<size_t> hot_load(base.size(), 0);
     for (size_t i = 0; i < workload.size(); i++) {
         int64_t key = workload[i];
-        auto it = hot_to_dpu.lower_bound(key);
-        if (it != hot_to_dpu.end()) {
-            size_t dpu_id = it->second.first;
-            Partitioner::partition_t& p = it->second.second;
-            if (key >= keys[p.first]) {
+        auto hot_it = hot_to_dpu.lower_bound(key);
+        partition_t& p = hot_it->second;
+        if (hot_it != hot_to_dpu.end()) {
+            size_t dpu_id = p.dpu_id;
+            if (key >= keys[p.begin_idx]) {
                 hot_load[dpu_id]++;
-                //printf("key = %ld, keys[%ld] = %ld, hot[%ld] = (%ld, %ld) %ld\n", key, p.first, keys[p.first], dpu_id, p.first, p.second, p.second - p.first);
                 continue;
             }
         }
-        auto it2 = std::lower_bound(base.begin(), base.end(), key,
-            [&](const Partitioner::partition_t& p, const int64_t& key) {
-                return keys[p.second - 1] < key;
+        auto base_it = std::lower_bound(base.begin(), base.end(), key,
+            [&](const partition_t& p, const int64_t& key) {
+                return p.last_key(keys, INT64_MAX) < key;
             });
-        if (it2 == base.end()) {
-            printf("key = %ld last = %ld\n", key, keys[base.back().first]);
-            exit(1);
-        }
-        assert(it2 != base.end());
-        size_t dpu_id = it2 - base.begin();
-        base_load[dpu_id]++;
+        assert(base_it != base.end());
+        base_load[base_it->dpu_id]++;
     }
 
     return {base_load, hot_load};
 }
 
-
-std::pair<std::vector<size_t>, std::vector<size_t>> simulate_load_for_range_query(
-    std::vector<int64_t>& keys,
-    std::vector<Partitioner::partition_t>& base,
-    std::vector<Partitioner::partition_t>& hot,
-    std::vector<std::pair<int64_t, int64_t>>& workload)
+int next_begin_index(std::vector<partition_t> partitions)
 {
-    struct partition_info {
-        Partitioner::partition_t partition;
-        unsigned int dpu_id;
-        bool is_hot;
-    };
+    if (partitions.size() == 0)
+        return 0;
+    return partitions.back().end_idx;
+}
 
-    std::vector<partition_info> partitions;
+std::vector<partition_t>
+combine_partitions(
+    std::vector<int64_t>& keys,
+    std::vector<partition_t>& base,
+    std::vector<partition_t>& pardpu_hot)
+{
+    std::vector<partition_t> hot;
+    for (size_t i = 0; i < pardpu_hot.size(); i++)
+        if (pardpu_hot[i] != INVALID_PARTITION)
+            hot.push_back(pardpu_hot[i]);
+    std::sort(hot.begin(), hot.end(), [&](const partition_t& p1, const partition_t& p2) {
+        return p1.begin_idx < p2.begin_idx;
+    });
+
+    std::vector<partition_t> partitions;
+
     auto base_it = base.begin();
     auto hot_it = hot.begin();
     while (base_it != base.end()) {
-        while (hot_it->first <= base_it->first) {
-            struct partition_info pi;
-            pi.partition = *hot_it;
-            pi.dpu_id = hot_it - hot.begin();
-            pi.is_hot = true;
-            partitions.push_back(pi);
+        assert(hot_it == hot.end() || hot_it->begin_idx >= base_it->begin_idx);
+        while (hot_it != hot.end() && hot_it->begin_idx < base_it->end_idx) {
+            int begin_idx = next_begin_index(partitions);
+            if (begin_idx < hot_it->begin_idx) {
+                // gap between hot partitions
+                int end_idx = hot_it->begin_idx;
+                partition_t p = base_it->subpartition(begin_idx, end_idx);
+                partitions.push_back(p);
+            } else {
+                if (begin_idx != hot_it->begin_idx) {
+                    printf("begin_idx = %d, hot_it->begin_idx = %d\n", begin_idx, hot_it->begin_idx);
+                    exit(1);
+                }
+                assert(begin_idx == hot_it->begin_idx);
+            }
+            partitions.push_back(*hot_it);
             hot_it++;
         }
-        while (hot_it->second <= base_it->)
-
-
-        if (base_it->first < hot_it->first) {
-            if (base_it->second <)
-
-            partition_info p = {
-
-            partitions.push_back({*base_it, partitions.size(), false, base_it - base.begin()});
-            base_it++;
-        } else {
-            partitions.push_back({*hot_it, partitions.size(), true, hot_it - hot.begin()});
-            hot_it++;
-
+        if (next_begin_index(partitions) < base_it->end_idx) {
+            // remaining base partition
+            partition_t p = base_it->subpartition(next_begin_index(partitions), base_it->end_idx);
+            partitions.push_back(p);
         }
-
+        base_it++;
     }
+    return partitions;
+}
 
-
-
-
-
-    std::map<int64_t, std::pair<size_t, Partitioner::partition_t>> hot_to_dpu = create_hot_to_dpu_map(keys, hot);
+std::pair<std::vector<size_t>, std::vector<size_t>>
+simulate_load_for_range_query(
+    std::vector<int64_t>& keys,
+    std::vector<partition_t>& base,
+    std::vector<partition_t>& hot,
+    std::vector<std::pair<int64_t, int64_t>>& workload)
+{
+    std::vector<partition_t> partitions = combine_partitions(keys, base, hot);
 
     std::vector<size_t> base_load(base.size(), 0);
     std::vector<size_t> hot_load(base.size(), 0);
+
     for (size_t i = 0; i < workload.size(); i++) {
-        std::pair<int64_t, int64_t> range = workload[i];
-        auto it = hot_to_dpu.lower_bound(range.first);
-        while (it != hot_to_dpu.end()) {
-            size_t dpu_id = it->second.first;
-            Partitioner::partition_t& p = it->second.second;
-            if (range.second < keys[p.first])
-                break;
-            hot_load[dpu_id]++;
-
-            int64_t last_key = it->first;
-            it++;
-            if (range.second > last_key) {
-                // range is longer than this hot partition
-                Partitioner::partition_t& q = it->second.second;
-                if (it == hot_to_dpu.end() || p.second + 1 < q.first) {
-                    // there is a gap between this hot partition and the next hot partition
-
-                }
-                    
-                    
-                    it == hot_to_dpu.end() ||
-                    p.second + 1 < (it + 1)->second.first)
-                    break;
-            }
-
-            if (range.second > it->first) {
-                // range is longer than this hot partition
-                if (it + 1 == hot_to_dpu.end() ||
-                    p->second + 1 < (it + 1)->second.first)
-
-                
-                )
-            }
-
-            it++; 
-        }
-        
-
-        if (it != hot_to_dpu.end()) {
-            size_t dpu_id = it->second.first;
-            Partitioner::partition_t& p = it->second.second;
-            if (key >= keys[p.first]) {
-                hot_load[dpu_id]++;
-                //printf("key = %ld, keys[%ld] = %ld, hot[%ld] = (%ld, %ld) %ld\n", key, p.first, keys[p.first], dpu_id, p.first, p.second, p.second - p.first);
-                continue;
-            }
-        }
-        auto it2 = std::lower_bound(base.begin(), base.end(), key,
-            [&](const Partitioner::partition_t& p, const int64_t& key) {
-                return keys[p.second - 1] < key;
+        std::pair<int64_t, int64_t>& range = workload[i];
+        //printf("workload range = (%ld, %ld)\n", range.first, range.second);
+        auto it = std::lower_bound(partitions.begin(), partitions.end(), range.first,
+            [&](const partition_t& p, const int64_t& key) {
+                return p.last_key(keys, INT64_MAX) < key;
             });
-        if (it2 == base.end()) {
-            printf("key = %ld last = %ld\n", key, keys[base.back().first]);
-            exit(1);
+        assert(it != partitions.end());
+        //printf("partition = (%ld, %ld) %d %d\n", keys[it->begin_idx], keys[it->end_idx], it->begin_idx, it->end_idx);
+        while (it != partitions.end() && keys[it->begin_idx] <= range.second) {
+            //printf("range = (%ld, %ld), partition = (%ld, %ld)\n", range.first, range.second, keys[it->begin_idx], keys[it->end_idx]);
+            if (it->is_hot)
+                hot_load[it->dpu_id]++;
+            else
+                base_load[it->dpu_id]++;
+            it++;
         }
-        assert(it2 != base.end());
-        size_t dpu_id = it2 - base.begin();
-        base_load[dpu_id]++;
     }
 
     return {base_load, hot_load};
-
 }
 
-void show_load(std::vector<int64_t>& keys)
+
+void show_load_point(std::vector<int64_t>& keys)
 {
     std::vector<int64_t> workload = SlicedZipfOverKeyGenerator<int64_t>(keys, opt.alpha(), opt.num_slices(), true /* scramble */, 0 /* seed */).generate(opt.num_queries());
     BPForestChunkBuilder builder(15, 20);
     ChunkedBPForestPartitioner partitioner(opt.num_dpus(), &builder, 5);
     partitioner.partition_point(keys, workload);
-    auto [base_load, hot_load] = simulate_load_for_point_query(keys, partitioner.get_partition(0), partitioner.get_partition(1), workload);
+    auto [base_load, hot_load] = simulate_load_for_point_query(keys, partitioner.ref_partition(0), partitioner.ref_partition(1), workload);
     for (size_t i = 0; i < base_load.size(); i++) {
         printf("load[%ld] = %ld / %ld\n", i, base_load[i], hot_load[i]);
     }
 }
-#endif
+
+void show_load_range(std::vector<int64_t>& keys)
+{
+    SlicedZipfOverKeyGenerator<int64_t> pgen(keys, opt.alpha(), opt.num_slices(), true /* scramble */, 0 /* seed */);
+    std::vector<std::pair<int64_t, int64_t>> workload = ConstLengthRangeGenerator<int64_t>(&pgen, keys, 100 /* items_in_range */).generate(opt.num_queries());
+    BPForestChunkBuilder builder(15, 20);
+    ChunkedBPForestPartitioner partitioner(opt.num_dpus(), &builder, 5);
+    partitioner.partition_range(keys, workload);
+    auto [base_load, hot_load] = simulate_load_for_range_query(keys, partitioner.ref_partition(0), partitioner.ref_partition(1), workload);
+    for (size_t i = 0; i < base_load.size(); i++) {
+        printf("load[%ld] = %ld / %ld\n", i, base_load[i], hot_load[i]);
+    }
+}
+
 
 void sanity_check_compair_BPForestPartitioner_and_ChunkedBPForestPartitioner(std::vector<int64_t> &keys)
 {
@@ -430,9 +271,10 @@ int main(int argc, char* argv[])
         if (part[i] != Partitioner::INVALID_PARTITION)
             printf("part[%ld] = (%ld, %ld) %ld\n", i, part[i].first, part[i].second, part[i].second - part[i].first);
     }
-
-#elif 0
-    show_load(keys);
+#elif 1
+    show_load_range(keys);
+#elif 1
+    show_load_point(keys);
 #else
     // sanity check
     // compair BPForestPartitioner and ChunkedBPForestPartitioner
