@@ -283,7 +283,7 @@ int main(int argc, char* argv[])
 #else /* SYNCHRONOUS_DPU_EXEC */
                 QuerySendExecRecvTime.count(),
 #endif
-                PostProcessTime.count(), BatchTotalTime.count());
+                PostprocessTime.count(), BatchTotalTime.count());
         }
     });
 
