@@ -27,7 +27,9 @@ struct Option {
         // workload
         a.add<double>("zconst", 'z', "zipf constant", false, 0.99);
         a.add<int>("slices", 's', "number of slices", false, 1024 * 10);
+        a.add<bool>("zipf-scramble", 0, "scramble zipf", false, true);
         a.add<int>("queries", 'q', "number of queries", false, 1024 * 1024);
+        a.add<int>("items-in-range", 'r', "range width of queries (#of items)", false, 100);
         //a.add<std::string>("pimtree-workload-file", 'w', "file path to PIM-Tree workload file", false);
         //a.add<std::string>("pimtree-init-file", 'i', "file path to PIM-Tree init file", false);
 
@@ -94,8 +96,16 @@ struct Option {
         return a.get<int>("slices");
     }
 
+    bool zipf_scramble() {
+        return a.get<bool>("zipf-scramble");
+    }
+
     size_t items() {
         return (size_t)(a.get<double>("items") * 1000 * 1000);
+    }
+
+    int items_in_range() {
+        return a.get<int>("items-in-range");
     }
 
     int num_queries() {
@@ -217,14 +227,14 @@ void show_load(std::vector<int64_t>& keys)
 
     std::pair<std::vector<size_t>, std::vector<size_t>> load;
     if (opt.op_type() == get_t) {
-        SlicedZipfOverKeyGenerator<int64_t> pgen(keys, opt.zconst(), opt.num_slices(), true /* scramble */, 0 /* seed */); 
+        SlicedZipfOverKeyGenerator<int64_t> pgen(keys, opt.zconst(), opt.num_slices(), opt.zipf_scramble(), 0 /* seed */); 
         std::vector<int64_t> workload = pgen.generate(opt.num_queries());
 
         partitioner->partition_point(keys, workload);
         load = simulate_load_for_point_query(keys, partitioner->ref_partition(0), partitioner->ref_partition(1), workload);
     } else {
-        SlicedZipfOverKeyGenerator<int64_t> pgen(keys, opt.zconst(), opt.num_slices(), true /* scramble */, 0 /* seed */); 
-        std::vector<std::pair<int64_t, int64_t>> workload = ConstLengthRangeGenerator<int64_t>(&pgen, keys, 100 /* items_in_range */).generate(opt.num_queries());
+        SlicedZipfOverKeyGenerator<int64_t> pgen(keys, opt.zconst(), opt.num_slices(), opt.zipf_scramble(), 0 /* seed */); 
+        std::vector<std::pair<int64_t, int64_t>> workload = ConstLengthRangeGenerator<int64_t>(&pgen, keys, opt.items_in_range()).generate(opt.num_queries());
 
         partitioner->partition_range(keys, workload);
         load = simulate_load_for_range_query(keys, partitioner->ref_partition(0), partitioner->ref_partition(1), workload);
