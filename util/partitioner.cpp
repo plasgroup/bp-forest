@@ -63,7 +63,8 @@ ChunkedOraclePartitioner::partition_point(std::vector<int64_t>& keys, std::vecto
         chunk_builder->build_chunks(chunks, keys, begin_idx, end_idx);
     });
 
-    return partition_point_on_chunks(chunks, workload);
+    partitions = partition_point_on_chunks(chunks, workload);
+    return partitions;
 }
 
 std::vector<partition_t>
@@ -74,7 +75,8 @@ ChunkedOraclePartitioner::partition_range(std::vector<int64_t>& keys, std::vecto
         chunk_builder->build_chunks(chunks, keys, begin_idx, end_idx);
     });
 
-    return partition_range_on_chunks(chunks, workload);
+    partitions = partition_range_on_chunks(chunks, workload);
+    return partitions;
 }
 
 static int next_begin_index(std::vector<partition_t> partitions)
@@ -94,10 +96,9 @@ combine_partitions(
     for (size_t i = 0; i < pardpu_base.size(); i++)
         if (pardpu_base[i] != INVALID_PARTITION)
             base.push_back(pardpu_base[i]);
-//  TODO: debug
-//    std::sort(base.begin(), base.end(), [&](const partition_t& p1, const partition_t& p2) {
-//        return p1.begin_idx < p2.last_key(keys, INT64_MAX);
-//    });
+    std::sort(base.begin(), base.end(), [&](const partition_t& p1, const partition_t& p2) {
+        return p1.begin_idx < p2.begin_idx;
+    });
 
     std::vector<partition_t> hot;
     for (size_t i = 0; i < pardpu_hot.size(); i++)

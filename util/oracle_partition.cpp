@@ -6,23 +6,43 @@
 #include "host/inc/statistics.hpp"
 #include "partitioner.hpp"
 #include "workload.hpp"
+#include "load_simulator.hpp"
 #include <queue>
 
 struct Option {
     cmdline::parser a;
     void parse(int argc, char* argv[])
-    {
-        a.add<std::string>("pimtree-workload-file", 'w', "file path to PIM-Tree workload file", false);
-        a.add<std::string>("pimtree-init-file", 'i', "file path to PIM-Tree init file", false);
-       
-        a.add<double>("zconst", 'z', "zipf constant", false, 0.99);
-        a.add<double>("items", 'n', "number of items in millions", false, 500.0);
-        a.add<int>("queries", 'q', "number of queries", false, 1024 * 1024);
-        a.add<int>("slices", 's', "number of slices", false, 1024 * 10);
+    {       
+        // partitioner
+        a.add<std::string>("partitioner", 'P', "partitioner type (bpforest, oracle)", false, "bpforest");
+        a.add<int>("bpforest-alpha", 'a', "[bpforest] alpha parameter", false, 5);
+        a.add<int>("oracle-max-items-per-dpu", 'm', "[oracle] maximum number of items per DPU", false, 40 * 1000);
 
-        a.add<int>("max-items-per-dpu", 'm', "maximum number of items per DPU", false, 40 * 1000);
-        a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq", false, "get");
+        // chunk builder
+        a.add<std::string>("chunker", 'C', "chunk builder type (bpforest, fixsize, singleton)", false, "bpforest");
+        a.add<int>("bpforest-leaf-size", 'L', "[bpforest]number of keys in a leaf node", false, 15);
+        a.add<int>("bpforest-node-size", 'N', "[bpforest]number of children in a node", false, 20);
+        a.add<int>("fixsize-chunk-size", 'S', "[fixsize]chunk size", false, 16);
+
+        // workload
+        a.add<double>("zconst", 'z', "zipf constant", false, 0.99);
+        a.add<int>("slices", 's', "number of slices", false, 1024 * 10);
+        a.add<int>("queries", 'q', "number of queries", false, 1024 * 1024);
+        //a.add<std::string>("pimtree-workload-file", 'w', "file path to PIM-Tree workload file", false);
+        //a.add<std::string>("pimtree-init-file", 'i', "file path to PIM-Tree init file", false);
+
+        // init data
+        a.add<double>("items", 'n', "number of items in millions", false, 500.0);
+
+        a.add<std::string>("ops", 'o', "kind of operation (get, range)", false, "get");
         a.add<int>("dpus", 'p', "number of DPUs", false, 2500);
+
+        a.add<std::string>("load-output", 0, "output file for load (CSV)", false, "");
+        a.add<std::string>("partition-output", 0, "output file for partition (binary)", false, "");
+
+        // debug
+        a.add("verify-partitoner", 0, "verify-pertitioner");
+
         a.parse_check(argc, argv);
     }
 
@@ -34,10 +54,34 @@ struct Option {
         return a.get<std::string>("pimtree-init-file");
     }
 
-    int max_items_per_dpu() {
-        return a.get<int>("max-items-per-dpu");
+    const std::string& partitioner() {
+        return a.get<std::string>("partitioner");
     }
-    
+
+    int bpforest_alpha() {
+        return a.get<int>("bpforest-alpha");
+    }
+
+    int oracle_max_items_per_dpu() {
+        return a.get<int>("oracle-max-items-per-dpu");
+    }
+
+    const std::string& chunker() {
+        return a.get<std::string>("chunker");
+    }
+
+    int bpforest_leaf_size() {
+        return a.get<int>("bpforest-leaf-size");
+    }
+
+    int bpforest_node_size() {
+        return a.get<int>("bpforest-node-size");
+    }
+
+    int fixsize_chunk_size() {
+        return a.get<int>("fixsize-chunk-size");
+    }
+
     int num_dpus() {
         return a.get<int>("dpus");
     }
@@ -69,167 +113,167 @@ struct Option {
             return empty_t;
         }
     }
+
+    const std::string& load_output() {
+        return a.get<std::string>("load-output");
+    }
+
+    const std::string& partition_output() {
+        return a.get<std::string>("partition-output");
+    }
+
+    bool verify_partitioner() {
+        return a.exist("verify-partitoner");
+    }
 } opt;
 
-
-// create map {last possible key -> partition}
-std::map<int64_t, partition_t>
-create_hot_to_dpu_map(std::vector<int64_t>& keys, std::vector<partition_t>& hot)
+void save_load(
+    Partitioner* partitioner,
+    std::vector<size_t>& base_load,
+    std::vector<size_t>& hot_load,
+    const char* file_name)
 {
-    std::map<int64_t, partition_t> hot_to_dpu;
-    for (size_t i = 0; i < hot.size(); i++)
-        if (hot[i] != INVALID_PARTITION) {
-            int64_t last_key = hot[i].last_key(keys, INT64_MAX);
-            hot_to_dpu.insert(std::make_pair(last_key, hot[i]));
-        }
-    return hot_to_dpu;
-}
-
-std::pair<std::vector<size_t>, std::vector<size_t>>
-simulate_load_for_point_query(
-    std::vector<int64_t>& keys,
-    std::vector<partition_t>& pardpu_base,
-    std::vector<partition_t>& hot,
-    std::vector<int64_t>& workload)
-{
-    std::vector<partition_t> base;
-    for (size_t i = 0; i < pardpu_base.size(); i++)
-        if (pardpu_base[i] != INVALID_PARTITION)
-            base.push_back(pardpu_base[i]);
-    // TODO: debug
-    //std::sort(base.begin(), base.end(), [&](const partition_t& p1, const partition_t& p2) {
-    //    return p1.begin_idx < p2.last_key(keys, INT64_MAX);
-    //});
-
-    std::map<int64_t, partition_t> hot_to_dpu = create_hot_to_dpu_map(keys, hot);
-    
-    std::vector<size_t> base_load(base.size(), 0);
-    std::vector<size_t> hot_load(base.size(), 0);
-    for (size_t i = 0; i < workload.size(); i++) {
-        int64_t key = workload[i];
-        auto hot_it = hot_to_dpu.lower_bound(key);
-        partition_t& p = hot_it->second;
-        if (hot_it != hot_to_dpu.end()) {
-            size_t dpu_id = p.dpu_id;
-            if (key >= keys[p.begin_idx]) {
-                hot_load[dpu_id]++;
-                continue;
-            }
-        }
-        auto base_it = std::lower_bound(base.begin(), base.end(), key,
-            [&](const partition_t& p, const int64_t& key) {
-                return p.last_key(keys, INT64_MAX) < key;
-            });
-        if (base_it == base.end()) {
-            printf("key = %ld, last_base = [%d, %d] (%ld, %ld), %ld\n", key, base.back().begin_idx, base.back().end_idx, keys[base.back().begin_idx], keys[base.back().end_idx], base.back().last_key(keys, INT64_MAX));
-            exit(1);
-        }
-        assert(base_it != base.end());
-        base_load[base_it->dpu_id]++;
+    FILE* fp = fopen(file_name, "w");
+    if (!fp) {
+        perror("fopen");
+        exit(1);
     }
+    printf("output load to %s\n", file_name);
 
-    return {base_load, hot_load};
+    std::vector<partition_t>& base = partitioner->ref_partition(0);
+    std::vector<partition_t>& hot = partitioner->ref_partition(1);
+
+    fprintf(fp, "# dpu_id, base_load, hot_load, ");
+    fprintf(fp, "base_begin_idx, base_end_idx, hot_begin_idx, hot_end_idx\n");
+    for (size_t i = 0; i < base_load.size(); i++)
+        fprintf(fp, "%ld, %ld, %ld, %d, %d, %d, %d\n",
+                i, base_load[i], hot_load[i],
+                base[i].begin_idx, base[i].end_idx, hot[i].begin_idx, hot[i].end_idx);
+    fclose(fp);
 }
 
-std::pair<std::vector<size_t>, std::vector<size_t>>
-simulate_load_for_range_query(
-    std::vector<int64_t>& keys,
-    std::vector<partition_t>& base,
-    std::vector<partition_t>& hot,
-    std::vector<std::pair<int64_t, int64_t>>& workload)
+static void append_partitions(
+    std::vector<partition>& external,
+    std::vector<partition_t>& internal,
+    std::vector<int64_t>& keys)
 {
-    std::vector<partition_t> partitions = combine_partitions(keys, base, hot);
-
-    std::vector<size_t> base_load(base.size(), 0);
-    std::vector<size_t> hot_load(base.size(), 0);
-
-    for (size_t i = 0; i < workload.size(); i++) {
-        std::pair<int64_t, int64_t>& range = workload[i];
-        //printf("workload range = (%ld, %ld)\n", range.first, range.second);
-        auto it = std::lower_bound(partitions.begin(), partitions.end(), range.first,
-            [&](const partition_t& p, const int64_t& key) {
-                return p.last_key(keys, INT64_MAX) < key;
-            });
-        assert(it != partitions.end());
-        //printf("partition = (%ld, %ld) %d %d\n", keys[it->begin_idx], keys[it->end_idx], it->begin_idx, it->end_idx);
-        while (it != partitions.end() && keys[it->begin_idx] <= range.second) {
-            //printf("range = (%ld, %ld), partition = (%ld, %ld)\n", range.first, range.second, keys[it->begin_idx], keys[it->end_idx]);
-            if (it->is_hot)
-                hot_load[it->dpu_id]++;
-            else
-                base_load[it->dpu_id]++;
-            it++;
+    for (int i = 0; i < opt.num_dpus(); i++) {
+        partition p;
+        if (internal[i] == INVALID_PARTITION) {
+            p.left_key = 0;
+            p.length = 0;
+        } else {
+            p.left_key = internal[i].first_key(keys, INT64_MIN);
+            p.length = internal[i].last_key(keys, INT64_MAX) - p.left_key + 1;
         }
+        external.push_back(p);
     }
-
-    return {base_load, hot_load};
 }
 
-void save_oracle_partition(std::vector<int64_t>& keys, const char* file_name)
+void save_partition(std::vector<int64_t>& keys, Partitioner* partitioner, const char* file_name)
 {
-    std::vector<int64_t> workload = SlicedZipfOverKeyGenerator<int64_t>(keys, opt.zconst(), opt.num_slices(), true /* scramble */, 0 /* seed */).generate(opt.num_queries());
-    BPForestChunkBuilder builder(15, 20);
-    ChunkedOraclePartitioner partitioner(opt.num_dpus(), &builder, opt.max_items_per_dpu());
-    auto par = partitioner.partition_point(keys, workload);
+    printf("output partitions to %s\n", file_name);
 
     std::vector<partition> partitions;
-    for (partition_t p: par)
-        partitions.push_back({keys[p.begin_idx], p.last_key(keys, INT64_MAX)});
+    // base partition
+    std::vector<partition_t>& base = partitioner->ref_partition(0);
+    append_partitions(partitions, base, keys);
+    // hot partition
+    std::vector<partition_t>& hot = partitioner->ref_partition(1);
+    append_partitions(partitions, hot, keys);
     store_partition(file_name, partitions);
 }
 
-void show_oracle_load_point(std::vector<int64_t>& keys)
+void show_load(std::vector<int64_t>& keys)
 {
-    std::vector<int64_t> workload = SlicedZipfOverKeyGenerator<int64_t>(keys, opt.zconst(), opt.num_slices(), true /* scramble */, 0 /* seed */).generate(opt.num_queries());
-    BPForestChunkBuilder builder(15, 20);
-    ChunkedOraclePartitioner partitioner(opt.num_dpus(), &builder, opt.max_items_per_dpu());
-    auto par = partitioner.partition_point(keys, workload);
-    std::vector<partition_t> hot;
-    auto [base_load, hot_load] = simulate_load_for_point_query(keys, par, hot, workload);
-    for (size_t i = 0; i < base_load.size(); i++) {
-        printf("load[%ld] = %ld / %ld\n", i, base_load[i], hot_load[i]);
+    ChunkBuilder* builder = nullptr;
+    if (opt.chunker() == "bpforest") {
+        printf("chunker: bpforest(%d, %d)\n", opt.bpforest_leaf_size(), opt.bpforest_node_size());
+        builder = new BPForestChunkBuilder(opt.bpforest_leaf_size(), opt.bpforest_node_size());
+    } else if (opt.chunker() == "fixsize") {
+        //builder = new FixSizeChunkBuilder(opt.fixsize_chunk_size());
+        printf("chunker: fixsize\n");
+        printf("not implemented\n");
+        abort();
+    } else if (opt.chunker() == "singleton") {
+        printf("chunker: singleton\n");
+        builder = new SingletonChunkBuilder();
+    } else {
+        fprintf(stderr, "invalid chunker type: %s\n", opt.chunker().c_str());
+        exit(1);
     }
+
+    Partitioner* partitioner = nullptr;
+    if (opt.partitioner() == "bpforest") {
+        printf("partitioner: bpforest(%d)\n", opt.bpforest_alpha());
+        partitioner = new ChunkedBPForestPartitioner(opt.num_dpus(), builder, opt.bpforest_alpha());
+    } else if (opt.partitioner() == "oracle") {
+        printf("partitioner: oracle(%d)\n", opt.oracle_max_items_per_dpu());
+        partitioner = new ChunkedOraclePartitioner(opt.num_dpus(), builder, opt.oracle_max_items_per_dpu());
+    } else {
+        fprintf(stderr, "invalid partitioner type: %s\n", opt.partitioner().c_str());
+        exit(1);
+    }
+
+    std::pair<std::vector<size_t>, std::vector<size_t>> load;
+    if (opt.op_type() == get_t) {
+        SlicedZipfOverKeyGenerator<int64_t> pgen(keys, opt.zconst(), opt.num_slices(), true /* scramble */, 0 /* seed */); 
+        std::vector<int64_t> workload = pgen.generate(opt.num_queries());
+
+        partitioner->partition_point(keys, workload);
+        load = simulate_load_for_point_query(keys, partitioner->ref_partition(0), partitioner->ref_partition(1), workload);
+    } else {
+        SlicedZipfOverKeyGenerator<int64_t> pgen(keys, opt.zconst(), opt.num_slices(), true /* scramble */, 0 /* seed */); 
+        std::vector<std::pair<int64_t, int64_t>> workload = ConstLengthRangeGenerator<int64_t>(&pgen, keys, 100 /* items_in_range */).generate(opt.num_queries());
+
+        partitioner->partition_range(keys, workload);
+        load = simulate_load_for_range_query(keys, partitioner->ref_partition(0), partitioner->ref_partition(1), workload);
+    }
+
+    auto [base_load, hot_load] = load;
+    for (size_t i = 0; i < base_load.size(); i++)
+        printf("load[%ld] = %ld / %ld\n", i, base_load[i], hot_load[i]);
+
+    if (!opt.load_output().empty())
+        save_load(partitioner, base_load, hot_load, opt.load_output().c_str());
+
+    if (!opt.partition_output().empty())
+        save_partition(keys, partitioner, opt.partition_output().c_str());
+
+    delete partitioner;
+    delete builder;
 }
 
 
-void show_load_point(std::vector<int64_t>& keys)
-{
-    std::vector<int64_t> workload = SlicedZipfOverKeyGenerator<int64_t>(keys, opt.zconst(), opt.num_slices(), true /* scramble */, 0 /* seed */).generate(opt.num_queries());
-    BPForestChunkBuilder builder(15, 20);
-    //SingletonChunkBuilder builder;
-    ChunkedBPForestPartitioner partitioner(opt.num_dpus(), &builder, 5);
-    partitioner.partition_point(keys, workload);
-    auto [base_load, hot_load] = simulate_load_for_point_query(keys, partitioner.ref_partition(0), partitioner.ref_partition(1), workload);
-    for (size_t i = 0; i < base_load.size(); i++) {
-        printf("load[%ld] = %ld / %ld\n", i, base_load[i], hot_load[i]);
-    }
-    for (size_t i = 0; i < partitioner.ref_partition(1).size(); i++) {
-        printf("hot[%ld] = (%d, %d) %d\n", i, partitioner.ref_partition(1)[i].begin_idx, partitioner.ref_partition(1)[i].end_idx,
-        partitioner.ref_partition(1)[i].end_idx -  partitioner.ref_partition(1)[i].begin_idx);
-    }
-}
+static void sanity_check_compair_BPForestPartitioner_and_ChunkedBPForestPartitioner(std::vector<int64_t> &keys);
+static void sanity_check_compair_OraclePartitioner_and_ChunkedOraclePartitioner(std::vector<int64_t>& keys);
 
-void show_load_range(std::vector<int64_t>& keys)
+int main(int argc, char* argv[])
 {
-    SlicedZipfOverKeyGenerator<int64_t> pgen(keys, opt.zconst(), opt.num_slices(), true /* scramble */, 0 /* seed */);
-    std::vector<std::pair<int64_t, int64_t>> workload = ConstLengthRangeGenerator<int64_t>(&pgen, keys, 100 /* items_in_range */).generate(opt.num_queries());
-    BPForestChunkBuilder builder(15, 20);
-    //SingletonChunkBuilder builder;
-    ChunkedBPForestPartitioner partitioner(opt.num_dpus(), &builder, 5);
-    partitioner.partition_range(keys, workload);
-    auto [base_load, hot_load] = simulate_load_for_range_query(keys, partitioner.ref_partition(0), partitioner.ref_partition(1), workload);
-    for (size_t i = 0; i < base_load.size(); i++) {
-        printf("load[%ld] = %ld / %ld\n", i, base_load[i], hot_load[i]);
+    opt.parse(argc, argv);
+
+    EvenGenerator<int64_t> init_gen(INT64_MIN, INT64_MAX);
+    std::vector<int64_t> keys = init_gen.generate(opt.items());
+
+    if (opt.verify_partitioner()) {
+        sanity_check_compair_BPForestPartitioner_and_ChunkedBPForestPartitioner(keys);
+        sanity_check_compair_OraclePartitioner_and_ChunkedOraclePartitioner(keys);
     }
+
+    show_load(keys);
+
+    printf("OK\n");
+
+    return 0;
 }
 
 
-void sanity_check_compair_BPForestPartitioner_and_ChunkedBPForestPartitioner(std::vector<int64_t> &keys)
+static void sanity_check_compair_BPForestPartitioner_and_ChunkedBPForestPartitioner(std::vector<int64_t> &keys)
 {
     std::vector<int64_t> workload = SlicedZipfOverKeyGenerator<int64_t>(keys, opt.zconst(), opt.num_slices(), true /* scramble */, 0 /* seed */).generate(opt.num_queries());
-    BPForestPartitioner partitioner(opt.num_dpus(), 5);
+    BPForestPartitioner partitioner(opt.num_dpus(), opt.bpforest_alpha());
     SingletonChunkBuilder builder;
-    ChunkedBPForestPartitioner chunked_partitioner(opt.num_dpus(), &builder, 5);
+    ChunkedBPForestPartitioner chunked_partitioner(opt.num_dpus(), &builder, opt.bpforest_alpha());
     auto par1 = partitioner.partition_point(keys, workload);
     auto par2 = chunked_partitioner.partition_point(keys, workload);
     if (par1.size() != par2.size()) {
@@ -245,12 +289,12 @@ void sanity_check_compair_BPForestPartitioner_and_ChunkedBPForestPartitioner(std
     chunked_partitioner.print_hot_partitions();
 }
 
-void sanity_check_compair_OraclePartitioner_and_ChunkedOraclePartitioner(std::vector<int64_t>& keys)
+static void sanity_check_compair_OraclePartitioner_and_ChunkedOraclePartitioner(std::vector<int64_t>& keys)
 {
     std::vector<int64_t> workload = SlicedZipfOverKeyGenerator<int64_t>(keys, opt.zconst(), opt.num_slices(), true /* scramble */, 0 /* seed */).generate(opt.num_queries());
-    OraclePartitioner partitioner(opt.num_dpus(), opt.max_items_per_dpu());
+    OraclePartitioner partitioner(opt.num_dpus(), opt.oracle_max_items_per_dpu());
     SingletonChunkBuilder builder;
-    ChunkedOraclePartitioner chunked_partitioner(opt.num_dpus(), &builder, opt.max_items_per_dpu());
+    ChunkedOraclePartitioner chunked_partitioner(opt.num_dpus(), &builder, opt.oracle_max_items_per_dpu());
     auto par1 = partitioner.partition_point(keys, workload);
     auto par2 = chunked_partitioner.partition_point(keys, workload);
     if (par1.size() != par2.size()) {
@@ -276,32 +320,3 @@ void sanity_check_compair_OraclePartitioner_and_ChunkedOraclePartitioner(std::ve
         printf("par2[%ld] = (%d, %d)\n", i, par2[i].begin_idx, par2[i].end_idx);
     }
 }
-
-int main(int argc, char* argv[])
-{
-    opt.parse(argc, argv);
-
-    EvenGenerator<int64_t> init_gen(INT64_MIN, INT64_MAX);
-    std::vector<int64_t> keys = init_gen.generate(opt.items());
-
-#if 0
-    save_oracle_partition(keys, "oracle.bin");
-#elif 0
-    sanity_check_compair_OraclePartitioner_and_ChunkedOraclePartitioner(keys);
-#elif 0
-    show_oracle_load_point(keys);
-#elif 1
-    show_load_range(keys);
-#elif 1
-    show_load_point(keys);
-#else
-    // sanity check
-    // compair BPForestPartitioner and ChunkedBPForestPartitioner
-    sanity_check_compair_BPForestPartitioner_and_ChunkedBPForestPartitioner(keys);
-#endif
-
-    printf("OK\n");
-
-    return 0;
-}
-

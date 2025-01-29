@@ -62,6 +62,14 @@ struct partition_t {
         return *this;
     }
 
+    int64_t first_key(const std::vector<int64_t>& keys, int64_t min) const
+    {
+        if (begin_idx == 0)
+            return min;
+        else
+            return keys[begin_idx];
+    }
+
     int64_t last_key(const std::vector<int64_t>& keys, int64_t max) const
     {
         if (end_idx == (int) keys.size())
@@ -101,6 +109,8 @@ public:
 
     virtual std::vector<partition_t>
     partition_range(std::vector<int64_t>& keys, std::vector<std::pair<int64_t, int64_t>>& workload) = 0;
+
+    virtual std::vector<partition_t>& ref_partition(int i) = 0;
 };
 
 class ChunkBuilder {
@@ -253,12 +263,19 @@ public:
         std::vector<partition_t> partitions = trial_pertition(keys, &ls, &rs, max_items_per_dpu, l, false).second;
         return partitions;
     }
+
+    std::vector<partition_t> empty;
+    std::vector<partition_t>& ref_partition(int i)
+    {
+        return empty;
+    }
 };
 
 class ChunkedOraclePartitioner : public Partitioner {
 
     size_t max_items_per_dpu;
     ChunkBuilder* chunk_builder;
+    std::vector<partition_t> partitions;
 
     // ls and rs are lists of left and right ends of ranges.  They must be sorted.
     // Ranges are both inclusive.
@@ -386,6 +403,15 @@ public:
 
     std::vector<partition_t> partition_point(std::vector<int64_t>& keys, std::vector<int64_t>& workload);
     std::vector<partition_t> partition_range(std::vector<int64_t>& keys, std::vector<std::pair<int64_t, int64_t>>& workload);
+
+    std::vector<partition_t> empty;
+    std::vector<partition_t>& ref_partition(int i)
+    {
+        if (i == 0)
+            return partitions;
+        else
+            return empty;
+    }
 };
 
 class BPForestPartitioner : public Partitioner {
@@ -539,6 +565,18 @@ public:
     {
         build_base_partitions(base_range, keys);
         return base_range;
+    }
+
+    std::vector<partition_t>& ref_partition(int i)
+    {
+        if (i == 0)
+            return base_range;
+        else if (i == 1)
+            return hot_range;
+        else {
+            abort();
+            return base_range;
+        }
     }
 };
 
