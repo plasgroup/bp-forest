@@ -119,6 +119,8 @@ private:
     void distribute_initial_data(std::vector<KVPair>&& sorted_pairs);
     void apply_partitioning_of_initial_data(std::vector<KVPair>&& sorted_pairs, const std::vector<Partition>& partitioning);
 
+    void combine_delims();
+
     template <bool HasHotRanges>
     void route_get_queries(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
     bool check_if_get_queries_balance(size_t nr_queries);
@@ -137,7 +139,7 @@ private:
     void route_rcq_impl(unsigned tid);
     template <bool HasHotRanges>
     void route_single_rcq(size_t idx_qry, const RangeCountQuery& qry, value_uint64_t& result, unsigned tid);
-    bool check_if_rcq_balance(size_t nr_queries);
+    bool check_if_rcq_balance();
     void execute_rcq_in_dpus(size_t nr_queries, uint64_t result[]);
     void postprocess_of_rcq(uint64_t result[]);
     void postprocess_of_rcq_impl(unsigned tid);

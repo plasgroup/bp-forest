@@ -41,7 +41,7 @@ public:
         for (int idx_batch = 0; idx_batch < nr_batches; idx_batch++) {
             do_one_batch(idx_batch, db);
             after_batch(idx_batch);
-            if (verify_db != nullptr && idx_batch == 0)
+            if (verify_db != nullptr && idx_batch <= 0)
                 verify();
         }
     }
