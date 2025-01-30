@@ -14,7 +14,7 @@ struct Option {
         // partitioner
         a.add<std::string>("partitioner", 'P', "partitioner type (bpforest, oracle)", false, "bpforest");
         a.add<int>("bpforest-alpha", 'a', "[bpforest] alpha parameter", false, 5);
-        a.add<int>("oracle-max-items-per-dpu", 'm', "[oracle] maximum number of items per DPU", false, 40 * 1000);
+        a.add<int>("oracle-max-items-per-dpu", 'm', "[oracle] maximum number of items per DPU", false, 400 * 1000);
 
         // chunk builder
         a.add<std::string>("chunker", 'C', "chunk builder type (bpforest, random, singleton)", false, "bpforest");
@@ -119,6 +119,10 @@ struct Option {
         if (a.get<std::string>("ops") == "get")
             return get_t;
         else if (a.get<std::string>("ops") == "rmq")
+            return scan_t;
+        else if (a.get<std::string>("ops") == "count")
+            return scan_t;
+        else if (a.get<std::string>("ops") == "scan")
             return scan_t;
         else {
             fprintf(stderr, "invalid operation type: %s\n", a.get<std::string>("ops").c_str());
@@ -228,15 +232,27 @@ void show_load(std::vector<int64_t>& keys)
 
     std::pair<std::vector<size_t>, std::vector<size_t>> load;
     if (opt.op_type() == get_t) {
-        SlicedZipfOverKeyGenerator<int64_t> pgen(keys, opt.zconst(), opt.num_slices(), opt.zipf_scramble(), 0 /* seed */); 
-        std::vector<int64_t> workload = pgen.generate(opt.num_queries());
-
+        std::vector<int64_t> workload;
+        if (!opt.workload_file().empty()) {
+            printf("load workload from %s\n", opt.workload_file().c_str());
+            workload = load_point_workload<int64_t>(opt.workload_file());
+        } else {
+            printf("generate workload point(n=%d, a=%f, #slice=%d, %s)\n", opt.num_queries(), opt.zconst(), opt.num_slices(), opt.zipf_scramble() ? "scramble" : "no-scramble");
+            SlicedZipfOverKeyGenerator<int64_t> pgen(keys, opt.zconst(), opt.num_slices(), opt.zipf_scramble(), 0 /* seed */); 
+            workload = pgen.generate(opt.num_queries());
+        }
         partitioner->partition_point(keys, workload);
         load = simulate_load_for_point_query(keys, partitioner->ref_partition(0), partitioner->ref_partition(1), workload);
     } else {
-        SlicedZipfOverKeyGenerator<int64_t> pgen(keys, opt.zconst(), opt.num_slices(), opt.zipf_scramble(), 0 /* seed */); 
-        std::vector<std::pair<int64_t, int64_t>> workload = ConstLengthRangeGenerator<int64_t>(&pgen, keys, opt.items_in_range()).generate(opt.num_queries());
-
+        std::vector<std::pair<int64_t, int64_t>> workload;
+        if (!opt.workload_file().empty()) {
+            printf("load workload from %s\n", opt.workload_file().c_str());
+            workload = load_range_workload<int64_t>(opt.workload_file());
+        } else {
+            printf("generate workload range(n=%d, a=%f, #slice=%d, %s, len=%d)\n", opt.num_queries(), opt.zconst(), opt.num_slices(), opt.zipf_scramble() ? "scramble" : "no-scramble", opt.items_in_range());
+            SlicedZipfOverKeyGenerator<int64_t> pgen(keys, opt.zconst(), opt.num_slices(), opt.zipf_scramble(), 0 /* seed */); 
+            workload = ConstLengthRangeGenerator<int64_t>(&pgen, keys, opt.items_in_range()).generate(opt.num_queries());
+        }
         partitioner->partition_range(keys, workload);
         load = simulate_load_for_range_query(keys, partitioner->ref_partition(0), partitioner->ref_partition(1), workload);
     }
