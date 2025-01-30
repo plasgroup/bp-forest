@@ -243,7 +243,7 @@ void show_load(std::vector<int64_t>& keys)
         load = simulate_load_for_range_query(keys, partitioner->ref_partition(0), partitioner->ref_partition(1), workload);
     }
 
-    auto [base_load, hot_load] = load;
+    auto& [base_load, hot_load] = load;
     for (size_t i = 0; i < base_load.size(); i++)
         printf("load[%ld] = %ld / %ld\n", i, base_load[i], hot_load[i]);
 
