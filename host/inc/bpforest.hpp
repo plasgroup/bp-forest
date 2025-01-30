@@ -5,6 +5,7 @@
 #include "extendable_buffer.hpp"
 #include "host_params.hpp"
 #include "parallel.hpp"
+#include "partition.hpp"
 #include "workload_types.h"
 
 #include <array>
@@ -42,6 +43,7 @@ struct BPForest : ParallelManager<BPForest> {
     using Param = BPForestParameter;
 
     BPForest(std::vector<KVPair>&& sorted_pairs, const Param& = {});
+    BPForest(std::vector<KVPair>&& sorted_pairs, const std::vector<Partition>& partitioning, const Param& = {});
     ~BPForest();
 
     void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
@@ -111,6 +113,7 @@ private:
     std::array<ExtendableBuffer<KVPair>, MAX_NR_DPUS> hot_kvpairs;
 
     void distribute_initial_data(std::vector<KVPair>&& sorted_pairs);
+    void apply_partitioning_of_initial_data(std::vector<KVPair>&& sorted_pairs, const std::vector<Partition>& partitioning);
 
     template <bool HasHotRanges>
     void route_get_queries(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);

@@ -43,6 +43,14 @@ inline BPForest::BPForest(std::vector<KVPair>&& sorted_pairs, const Param& param
 
     distribute_initial_data(std::move(sorted_pairs));
 }
+inline BPForest::BPForest(std::vector<KVPair>&& sorted_pairs, const std::vector<Partition>& partitioning, const Param& param)
+    : ParallelManager<BPForest>{param.nr_host_threads},
+      nr_cold_ranges{(upmem_init(), upmem_get_nr_dpus())}, param{param}
+{
+    dpu_to_hot_range.fill(INVALID_DPU_ID);
+
+    apply_partitioning_of_initial_data(std::move(sorted_pairs), partitioning);
+}
 inline BPForest::~BPForest()
 {
     upmem_release();
@@ -108,6 +116,73 @@ void BPForest::distribute_initial_data(std::vector<KVPair>&& sorted_pairs_vec)
 #ifdef EXTRACT_BY_INITIALIZATION
     initial_data = std::move(sorted_pairs_vec);
 #endif
+}
+inline void BPForest::apply_partitioning_of_initial_data(std::vector<KVPair>&& sorted_pairs_vec, const std::vector<Partition>& partitioning)
+{
+    ASSERT(partitioning.size() == nr_cold_ranges * 2);
+
+    std::array<std::pair<key_uint64_t, dpu_id_t>, MAX_NR_DPUS> unsorted_hot_delims;
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
+        cold_delims[idx_dpu] = key_int64_to_uint64(partitioning[idx_dpu].left_key);
+
+        const auto& hot_partition = partitioning[nr_cold_ranges + idx_dpu];
+        if (hot_partition.length != 0) {
+            unsorted_hot_delims[nr_hot_ranges] = {key_int64_to_uint64(hot_partition.left_key), idx_dpu};
+            nr_hot_ranges++;
+        }
+    }
+    std::sort(&unsorted_hot_delims[0], &unsorted_hot_delims[nr_hot_ranges],
+        [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+
+    std::fill_n(&dpu_to_hot_range[0], nr_cold_ranges, INVALID_DPU_ID);
+    dpu_id_t idx_cold = 0;
+    key_uint64_t cold_max_key = cold_delims[idx_cold] + (partitioning[idx_cold].length - 1);
+    cold_to_hot[0] = 0;
+    for (dpu_id_t idx_hot = 0; idx_hot < nr_hot_ranges; idx_hot++) {
+        const auto [delim, idx_dpu] = unsorted_hot_delims[idx_hot];
+        hot_delims[idx_hot] = delim;
+        hot_max_key[idx_hot] = delim + (partitioning[idx_dpu + nr_cold_ranges].length - 1);
+
+        dpu_to_hot_range[idx_dpu] = idx_hot;
+        for (; cold_max_key < delim; idx_cold++, cold_max_key = cold_delims[idx_cold] + (partitioning[idx_cold].length - 1)) {
+            cold_to_hot[idx_cold + 1] = idx_hot;
+        }
+    }
+    for (; idx_cold <= nr_cold_ranges; idx_cold++) {
+        cold_to_hot[idx_cold] = nr_hot_ranges;
+    }
+
+#ifdef EXTRACT_BY_INITIALIZATION
+    initial_data = std::move(sorted_pairs_vec);
+#else
+    std::array<uint32_t, MAX_NR_DPUS> nr_pairs_in_each_dpus;
+    std::array<const KVPair*, MAX_NR_DPUS> pairs_for_each_dpus;
+
+    KVPair* cursor = &sorted_pairs_vec[0];
+    for (dpu_id_t idx_cold = 0; idx_cold + 1 < nr_cold_ranges; idx_cold++) {
+        pairs_for_each_dpus[idx_cold] = cursor;
+
+        KVPair* next_cursor = std::lower_bound(cursor, &sorted_pairs_vec[sorted_pairs_vec.size()], cold_delims[idx_cold + 1]);
+        nr_pairs_in_each_dpus[idx_cold] = static_cast<uint32_t>(next_cursor - cursor);
+
+        cursor = next_cursor;
+    }
+    nr_pairs_in_each_dpus[nr_cold_ranges - 1] = static_cast<uint32_t>(&sorted_pairs_vec[sorted_pairs_vec.size()] - cursor);
+
+    {
+        StopWatch t{ForestInitTime};
+
+        UPMEM_AsyncDuration async;
+        gather_to_dpu(all_dpu, 0, TaskInitInput{&nr_pairs_in_each_dpus[0], &pairs_for_each_dpus[0]}, async);
+        execute(all_dpu, async);
+    }
+#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+    std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+    std::cout << log->get() << std::flush;
+#endif
+#endif
+
+    extract_and_distribute_hot_ranges();
 }
 
 struct GetQueryWithIndexProxy {
