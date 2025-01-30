@@ -65,6 +65,10 @@ private:
     //! @brief i-th cold range -> [cold_to_hot[i]-th, cold_to_hot[i+1]-th) hot range(s)
     std::array<dpu_id_t, MAX_NR_DPUS + 1> cold_to_hot{};
 
+
+    std::vector<key_uint64_t> combined_delims;
+    std::vector<dpu_id_t> combined_delims_dest_dpu;
+
     const Param param;
     double threshold_nr_queries_to_hot = 0;
 
