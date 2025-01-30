@@ -1,7 +1,7 @@
 #pragma once
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <iostream>
 
 enum operation_t {
@@ -59,4 +59,3 @@ inline pimtree_queries make_pimtree_queries(std::string filepath);
 inline void show_pimtree_queries(pimtree_queries queries);
 
 #include "pimtree_query.ipp"
-

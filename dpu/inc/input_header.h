@@ -10,7 +10,7 @@ typedef struct __dma_aligned InputHeader {
         } init, construct_hot;
         struct {
             uint16_t nr_cold_qrys, nr_hot_qrys;
-        } get;
+        } get, rcq;
         struct {
             uint16_t nr_cold_lumps, nr_hot_lumps;
         } rmq;

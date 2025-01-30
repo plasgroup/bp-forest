@@ -32,6 +32,10 @@ typedef struct {
     uint32_t begin, end;
 } IndexRange;
 typedef struct {
+    KeyRange range;
+    value_uint64_t needle;
+} RangeCountQuery;
+typedef struct {
     uint16_t nr_keys[4];
     key_uint64_t head_keys[4];
 } SummaryBlock;

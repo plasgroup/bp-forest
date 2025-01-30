@@ -1,7 +1,6 @@
 #include <vector>
 #include "common.h"
-#include "host/inc/pimtree_query.hpp"
-#include "host/inc/pimtree_query.ipp"
+#include "pimtree_query.hpp"
 
 template <typename K>
 class PointGenerator {

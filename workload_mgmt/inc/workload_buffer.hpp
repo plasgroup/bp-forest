@@ -11,7 +11,8 @@ struct WorkloadBuffer {
 
     WorkloadBuffer() = default;
     WorkloadBuffer(std::vector<T> b) : buffer{std::move(b)} {}
-    WorkloadBuffer& operator=(std::vector<T>&& b) {
+    WorkloadBuffer& operator=(std::vector<T>&& b)
+    {
         buffer = std::move(b);
         consumed = 0;
         return *this;

@@ -41,6 +41,7 @@ private:
     uint32_t /* nr_values */ task_scan_hot(unsigned nr_queries, const KeyRange ranges[],
         IndexRange result_ranges[], value_uint64_t values[]);
     void task_range_min(const Tree& tree, unsigned nr_lumps, const uint16_t end_indices[], const key_uint64_t delim_keys[], value_uint64_t result[]);
+    void task_range_count(const Tree& tree, unsigned nr_queries, const RangeCountQuery queries[], uint64_t result[]);
     void task_insert(Tree& tree, unsigned nr_queries, const KVPair pairs[]);
     key_uint64_t /* min_key */ task_delete(Tree& tree, unsigned nr_queries, const key_uint64_t keys[]);
 

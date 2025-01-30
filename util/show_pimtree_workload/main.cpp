@@ -1,5 +1,4 @@
-#include "host/inc/pimtree_query.hpp"
-#include "host/inc/pimtree_query.ipp"
+#include "pimtree_query.hpp"
 
 int main(int argc, char* argv[])
 {

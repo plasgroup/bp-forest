@@ -37,7 +37,7 @@ class ParallelManager {
         Barrier(size_t thread_count)
             : thread_count(thread_count), counter(0) {}
         
-        void wait(size_t id) {
+        void wait(size_t) {
             std::unique_lock<std::mutex> lk(mtx);
         //    std::cout << "Worker:" << id << " waiting" << std::endl;
             counter++;
@@ -52,7 +52,7 @@ class ParallelManager {
         //    std::cout << "Worker:" << id << " done" << std::endl;
         }
 
-        void stop(int id) {
+        void stop(int) {
             std::unique_lock<std::mutex> lk(mtx);
             stopping = true;
             cv.notify_all();

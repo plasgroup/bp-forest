@@ -29,6 +29,11 @@ inline ParallelManager<Derived>::ParallelManager(unsigned nt)
                     if (nr_launched_workers == threads.size()) {
                         task = nullptr;
                         nr_launched_workers = 0;
+                        to_worker.notify_all();
+                    } else {
+                        to_worker.wait(lk, [&] {
+                            return nr_launched_workers == 0;
+                        });
                     }
                 }
 

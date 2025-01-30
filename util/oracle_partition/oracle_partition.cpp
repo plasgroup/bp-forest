@@ -1,9 +1,7 @@
 #include <cmdline.h>
 #include <random>
-#include "host/inc/pimtree_query.hpp"
-#include "host/inc/pimtree_query.ipp"
-#include "host/inc/partition.hpp"
-#include "host/inc/statistics.hpp"
+#include "pimtree_query.hpp"
+#include "partition.hpp"
 #include "partitioner.hpp"
 #include "workload.hpp"
 #include "load_simulator.hpp"
@@ -168,12 +166,12 @@ void save_load(
 }
 
 static void append_partitions(
-    std::vector<partition>& external,
+    std::vector<Partition>& external,
     std::vector<partition_t>& internal,
     std::vector<int64_t>& keys)
 {
     for (int i = 0; i < opt.num_dpus(); i++) {
-        partition p;
+        Partition p;
         if (internal[i] == INVALID_PARTITION) {
             p.left_key = 0;
             p.length = 0;
@@ -189,7 +187,7 @@ void save_partition(std::vector<int64_t>& keys, Partitioner* partitioner, const 
 {
     printf("output partitions to %s\n", file_name);
 
-    std::vector<partition> partitions;
+    std::vector<Partition> partitions;
     // base partition
     std::vector<partition_t>& base = partitioner->ref_partition(0);
     append_partitions(partitions, base, keys);

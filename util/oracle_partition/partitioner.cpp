@@ -1,7 +1,6 @@
 #include <vector>
 #include <functional>
-#include "host/inc/pimtree_query.hpp"
-#include "host/inc/pimtree_query.ipp"
+#include "pimtree_query.hpp"
 #include "partitioner.hpp"
 
 void BPForestChunkBuilder::build_chunks(

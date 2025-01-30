@@ -7,10 +7,9 @@
 #include "database.hpp"
 #include "benchmark.hpp"
 #include "host/inc/host_params.hpp"
-#include "host/inc/extendable_buffer.hpp"
+#include "extendable_buffer.hpp"
 #include "host/inc/statistics.hpp"
-#include "host/inc/pimtree_query.hpp"
-#include "host/inc/pimtree_query.ipp"
+#include "pimtree_query.hpp"
 #include "piecewise_constant_workload.hpp"
 #include "sparsetable.ipp"
 #include "segment_tree.ipp"
@@ -155,7 +154,7 @@ public:
                           const value_uint64_t results[]);
 
     void batch_range_count(uint64_t n, 
-                           const count_query_t queries[],
+                           const RangeCountQuery queries[],
                            value_uint64_t results[]);
 
     int get_parallelism() const
@@ -163,7 +162,7 @@ public:
         return parallel->get_parallelism();
     }
 
-    void print_params(std::ofstream& dump_param_file) {}
+    void print_params(std::ofstream&) {}
 };
 
 void CPUDatabase::batch_range_minimum(uint64_t n, 
@@ -230,7 +229,6 @@ void CPUDatabase::batch_range_sum_verify(size_t n,
                                       const KeyRange queries[],
                                       const value_uint64_t results[]) 
 {
-    std::mutex mtx;
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             const KeyRange &q = queries[i];
@@ -282,12 +280,15 @@ void CPUDatabase::batch_get_verify(size_t n,
             key_uint64_t q = queries[i];
             key_uint64_t key_interval = init_key_interval(nr_keys);
             value_uint64_t expected = 0;
+#pragma GCC diagnostic push 
+#pragma GCC diagnostic ignored "-Wtype-limits"
             if (q < KEY_MIN || q >= KEY_MAX)
                 expected = NOT_FOUND_VALUE;
             else if ((q - KEY_MIN) % key_interval != 0)
                 expected = NOT_FOUND_VALUE;
             else
                 expected = q;
+#pragma GCC diagnostic pop
             if (expected != results[i]) {
                 std::cerr << "get verification failed: expected=" << expected << ", actual=" << results[i] << std::endl;
                 exit(1);
@@ -298,24 +299,18 @@ void CPUDatabase::batch_get_verify(size_t n,
 
 
 void CPUDatabase::batch_range_count(uint64_t n, 
-                                    const count_query_t queries[],
+                                    const RangeCountQuery queries[],
                                     value_uint64_t results[])
 {
     parallel->run(0, n, [&](size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
-            const KeyRange &qr = queries[i].first;
-            const char* qs = queries[i].second.data();
+            const KeyRange &qr = queries[i].range;
+            const value_uint64_t needle = queries[i].needle;
             int count = 0;
             for (auto it = index->lower_bound(qr.begin);
                  it != index->end() && it->first < qr.end; it++) {
-                char* vs = (char*) &values[it->second];
-                const size_t qlen = qs[7] != '\0' ? 8 : strlen(qs);
-                for (size_t j = 0; j < 8 - qlen + 1; j++) {
-                    if (strncmp(&vs[j], qs, qlen) == 0) {
-                        count++;
-                        break;
-                    }
-                }
+                if (values[it->second] == needle)
+                    count++;
             }
             results[i] = count;
         }

@@ -6,4 +6,5 @@
 	url = git@github.com:USCiLab/cereal.git
 [submodule "external/PIM-tree"]
 	path = external/PIM-tree
-	url = git@github.com:cmuparlay/PIM-tree.git
+	url = git@github.com:plasgroup/bp-forest-PIM-tree.git
+	branch = generate-input

@@ -4,7 +4,7 @@
 #include <cstdint>
 
 struct sg_block_info {
-    uint8_t *addr;
+    uint8_t* addr;
     uint32_t length;
 };
 

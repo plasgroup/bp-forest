@@ -9,13 +9,12 @@
 
 #include "common_params.h"
 
-#include "workload_types.h"
 #include "common.h"
+#include "workload_types.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-
 
 
 constexpr size_t MAX_NR_DPUS = MAX_NR_DPUS_IN_RANK * NR_RANKS;
@@ -32,7 +31,8 @@ constexpr size_t MAX_NR_DPUS = MAX_NR_DPUS_IN_RANK * NR_RANKS;
 #define NUM_INIT_REQS (20000 * MAX_NR_DPUS)
 #endif
 
-inline key_uint64_t init_key_interval(size_t nr_keys) {
+inline key_uint64_t init_key_interval(size_t nr_keys)
+{
     return (KEY_MAX - KEY_MIN) / (nr_keys - 1);
 }
 
@@ -44,7 +44,7 @@ using block_id_t = uint32_t;
 #ifndef INVERSED_REBALANCING_NOISE_MARGIN
 #define INVERSED_REBALANCING_NOISE_MARGIN 5
 #endif
-//! @brief With this value as x, rebalancing is performed 
+//! @brief With this value as x, rebalancing is performed
 //!        when the number of queries exceeds (1 + 1/x) times the original upper limit.
 constexpr unsigned InversedRebalancingNoiseMargin = INVERSED_REBALANCING_NOISE_MARGIN;
 
