@@ -5,6 +5,7 @@
 #include <iostream>
 #include <cassert>
 #include <algorithm>
+#include <random>
 
 template<typename T>
 void for_each_bpforest_baserange(std::vector<T>& items, size_t nr_dpus, std::function<void (unsigned int, unsigned int)> f)
@@ -151,8 +152,54 @@ public:
         unsigned int begin_idx, unsigned int end_idx);
 };
 
+class RandomChunkBuilder : public ChunkBuilder {
+    size_t min_size, max_size;
+    int seed;
+public:
+    RandomChunkBuilder(size_t min_size, size_t max_size, int seed)
+        : min_size(min_size), max_size(max_size), seed(seed)
+    {}
+
+    void build_chunks(
+        std::vector<chunk>& chunks,
+        std::vector<int64_t>& keys,
+        unsigned int begin_idx, unsigned int end_idx)
+    {
+        std::mt19937 mt(seed);
+        std::uniform_int_distribution<size_t> dist(min_size, max_size);
+        size_t key_idx = begin_idx;
+        while (end_idx - key_idx >= min_size + max_size) {
+            chunk c;
+            c.left_key = keys[key_idx];
+            c.count = dist(mt);
+            chunks.push_back(c);
+            key_idx += c.count;
+        }
+        if (end_idx - key_idx <= max_size) {
+            assert(end_idx - key_idx >= min_size);
+            chunk c;
+            c.left_key = keys[key_idx];
+            c.count = end_idx - key_idx;
+            chunks.push_back(c);
+        } else {
+            // split
+            chunk c1;
+            c1.left_key = keys[key_idx];
+            c1.count = (end_idx - key_idx) / 2;
+            assert(c1.count >= min_size);
+            chunks.push_back(c1);
+            key_idx += c1.count;
+            chunk c2;
+            c2.left_key = keys[key_idx];
+            c2.count = end_idx - key_idx;
+            chunks.push_back(c2);
+        }
+    }
+};
+
 class OraclePartitioner : public Partitioner {
     size_t max_items_per_dpu;
+    std::vector<partition_t> partitions, empty;
 
     // ls and rs are lists of left and right ends of ranges.  They must be sorted.
     // Ranges are both inclusive.
@@ -235,7 +282,8 @@ public:
                 r = m;
         }
 
-        std::vector<partition_t> partitions = trial_pertition(keys, &sorted_workload, nullptr, max_items_per_dpu, l, false).second;
+        partitions = trial_pertition(keys, &sorted_workload, nullptr, max_items_per_dpu, l, false).second;
+        empty.resize(num_dpus, INVALID_PARTITION);
         return partitions;
     }
 
@@ -260,14 +308,17 @@ public:
                 r = m;
         }
 
-        std::vector<partition_t> partitions = trial_pertition(keys, &ls, &rs, max_items_per_dpu, l, false).second;
+        partitions = trial_pertition(keys, &ls, &rs, max_items_per_dpu, l, false).second;
+        empty.resize(num_dpus, INVALID_PARTITION);
         return partitions;
     }
 
-    std::vector<partition_t> empty;
     std::vector<partition_t>& ref_partition(int i)
     {
-        return empty;
+        if (i == 0)
+            return partitions;
+        else
+            return empty;
     }
 };
 
@@ -276,6 +327,7 @@ class ChunkedOraclePartitioner : public Partitioner {
     size_t max_items_per_dpu;
     ChunkBuilder* chunk_builder;
     std::vector<partition_t> partitions;
+    std::vector<partition_t> empty;
 
     // ls and rs are lists of left and right ends of ranges.  They must be sorted.
     // Ranges are both inclusive.
@@ -363,6 +415,7 @@ class ChunkedOraclePartitioner : public Partitioner {
         std::vector<partition_t> partitions = trial_pertition(chunks, &sorted_workload, nullptr, max_items_per_dpu, l, false).second;
         while (partitions.size() < num_dpus)
             partitions.push_back(INVALID_PARTITION);
+        empty.resize(num_dpus, INVALID_PARTITION);
         return partitions;
     }
 
@@ -390,6 +443,7 @@ class ChunkedOraclePartitioner : public Partitioner {
         std::vector<partition_t> partitions = trial_pertition(chunks, &ls, &rs, max_items_per_dpu, l, false).second;
         while (partitions.size() < num_dpus)
             partitions.push_back(INVALID_PARTITION);
+        empty.resize(num_dpus, INVALID_PARTITION);
         return partitions;
     }
 
@@ -404,7 +458,6 @@ public:
     std::vector<partition_t> partition_point(std::vector<int64_t>& keys, std::vector<int64_t>& workload);
     std::vector<partition_t> partition_range(std::vector<int64_t>& keys, std::vector<std::pair<int64_t, int64_t>>& workload);
 
-    std::vector<partition_t> empty;
     std::vector<partition_t>& ref_partition(int i)
     {
         if (i == 0)

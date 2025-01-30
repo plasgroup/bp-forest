@@ -19,10 +19,11 @@ struct Option {
         a.add<int>("oracle-max-items-per-dpu", 'm', "[oracle] maximum number of items per DPU", false, 40 * 1000);
 
         // chunk builder
-        a.add<std::string>("chunker", 'C', "chunk builder type (bpforest, fixsize, singleton)", false, "bpforest");
+        a.add<std::string>("chunker", 'C', "chunk builder type (bpforest, random, singleton)", false, "bpforest");
         a.add<int>("bpforest-leaf-size", 'L', "[bpforest]number of keys in a leaf node", false, 15);
         a.add<int>("bpforest-node-size", 'N', "[bpforest]number of children in a node", false, 20);
-        a.add<int>("fixsize-chunk-size", 'S', "[fixsize]chunk size", false, 16);
+        a.add<int>("random-chunk-max", 0, "[random] max chunk size", false, 16);
+        a.add<int>("random-chunk-min", 0, "[random] min chunk size", false, 8);
 
         // workload
         a.add<double>("zconst", 'z', "zipf constant", false, 0.99);
@@ -80,8 +81,12 @@ struct Option {
         return a.get<int>("bpforest-node-size");
     }
 
-    int fixsize_chunk_size() {
-        return a.get<int>("fixsize-chunk-size");
+    int random_chunk_max() {
+        return a.get<int>("random-chunk-max");
+    }
+
+    int random_chunk_min() {
+        return a.get<int>("random-chunk-min");
     }
 
     int num_dpus() {
@@ -200,11 +205,9 @@ void show_load(std::vector<int64_t>& keys)
     if (opt.chunker() == "bpforest") {
         printf("chunker: bpforest(%d, %d)\n", opt.bpforest_leaf_size(), opt.bpforest_node_size());
         builder = new BPForestChunkBuilder(opt.bpforest_leaf_size(), opt.bpforest_node_size());
-    } else if (opt.chunker() == "fixsize") {
-        //builder = new FixSizeChunkBuilder(opt.fixsize_chunk_size());
-        printf("chunker: fixsize\n");
-        printf("not implemented\n");
-        abort();
+    } else if (opt.chunker() == "random") {
+        printf("chunker: random(%d, %d)\n", opt.random_chunk_min(), opt.random_chunk_max());
+        builder = new RandomChunkBuilder(opt.random_chunk_min(), opt.random_chunk_max(), 0 /* seed */);
     } else if (opt.chunker() == "singleton") {
         printf("chunker: singleton\n");
         builder = new SingletonChunkBuilder();
