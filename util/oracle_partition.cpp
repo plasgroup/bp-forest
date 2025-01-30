@@ -31,10 +31,10 @@ struct Option {
         a.add<bool>("zipf-scramble", 0, "scramble zipf", false, true);
         a.add<int>("queries", 'q', "number of queries", false, 1024 * 1024);
         a.add<int>("items-in-range", 'r', "range width of queries (#of items)", false, 100);
-        //a.add<std::string>("pimtree-workload-file", 'w', "file path to PIM-Tree workload file", false);
-        //a.add<std::string>("pimtree-init-file", 'i', "file path to PIM-Tree init file", false);
+        a.add<std::string>("pimtree-workload-file", 'w', "file path to PIM-Tree workload file", false);
 
         // init data
+        a.add<std::string>("pimtree-init-file", 'i', "file path to PIM-Tree init file", false);
         a.add<double>("items", 'n', "number of items in millions", false, 500.0);
 
         a.add<std::string>("ops", 'o', "kind of operation (get, range)", false, "get");
@@ -265,9 +265,18 @@ int main(int argc, char* argv[])
 {
     opt.parse(argc, argv);
 
-    EvenGenerator<int64_t> init_gen(INT64_MIN, INT64_MAX);
-    std::vector<int64_t> keys = init_gen.generate(opt.items());
-
+    std::vector<int64_t> keys;
+    if (!opt.init_file().empty()) {
+        printf("load init data from %s\n", opt.init_file().c_str());
+        std::vector<std::pair<int64_t, int64_t>>kvs = load_init_data<int64_t, int64_t>(opt.init_file());
+        for (auto [key, value]: kvs)
+            keys.push_back(key);
+    } else {
+        printf("generate %ld keys\n", opt.items());
+        EvenGenerator<int64_t> init_gen(INT64_MIN, INT64_MAX);
+        keys = init_gen.generate(opt.items());
+    }
+    
     if (opt.verify_partitioner()) {
         sanity_check_compair_BPForestPartitioner_and_ChunkedBPForestPartitioner(keys);
         sanity_check_compair_OraclePartitioner_and_ChunkedOraclePartitioner(keys);
