@@ -6,6 +6,7 @@
 #include <cassert>
 #include <algorithm>
 #include <random>
+#include <functional>
 
 template<typename T>
 void for_each_bpforest_baserange(std::vector<T>& items, size_t nr_dpus, std::function<void (unsigned int, unsigned int)> f)
