@@ -62,6 +62,7 @@ typedef struct {
     } in;
     struct {
         __dma_aligned LinkLift lifted[TREE_CONSTRUCT_NR_CACHED_OUTPUT_LIFT];
+        __dma_aligned char values[TREE_CONSTRUCT_NR_CACHED_VALUES][16];
         unsigned nr_cached_lift;
     } out;
     __dma_aligned Node node;
@@ -95,6 +96,13 @@ typedef struct {
     __dma_aligned RangeCountQuery qrys[TASK_RANGE_COUNT_NR_CACHED_QRYS];
     __dma_aligned uint64_t results[TASK_RANGE_COUNT_NR_CACHED_RESULTS];
 } RCQWorkspace;
+
+
+typedef struct {
+    __dma_aligned Node node_cache;
+    __dma_aligned RangeCountPrefixQuery qrys[TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS];
+    __dma_aligned uint64_t results[TASK_RANGE_COUNT_PREFIX_NR_CACHED_RESULTS];
+} RCPQWorkspace;
 
 
 #define MAX_NR_SUMMARY_DATA (MAX_NR_NODES * (MAX_NR_CHILDREN - 1) / ((MAX_NR_CHILDREN - 1) * MIN_NR_CHILDREN + MAX_NR_CHILDREN))
@@ -155,5 +163,6 @@ typedef union {
     ExtractWorkspace extract;
     GetWorkspace get[TASK_GET_NR_TASKLETS];
     RCQWorkspace rcq[TASK_RANGE_COUNT_NR_TASKLETS];
+    RCPQWorkspace rcpq[TASK_RANGE_COUNT_PREFIX_NR_TASKLETS];
     RMQWorkspace rmq;
 } TreeWorkspace;

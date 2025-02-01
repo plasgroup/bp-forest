@@ -33,3 +33,8 @@
 // 8 + 65535 * sizeof(RangeCountQuery) * 2
 #define RCQ_RESULT_OFFSET 3145688
 #endif
+
+#ifndef RCPQ_RESULT_OFFSET
+// 8 + 65535 * sizeof(RangeCountPrefixQuery) * 2
+#define RCPQ_RESULT_OFFSET 3145688
+#endif

@@ -80,7 +80,7 @@ struct Option {
         a.add<std::string>("partition", 0, "load pre-calculated partitioning", false);
         a.add<unsigned>("nr-host-threads", 't', "num of threads used in pre/post-processing in B+-Forest", false, 0);
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
-        a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq, count", false, "get");
+        a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq, count, prefix", false, "get");
         a.add<dpu_id_t>("print-compute-load", 'c', "print number of queries sent for each dpu", false, 0);
         a.add<dpu_id_t>("print-cold-compute-load", 0, "print number of queries sent for cold ranges in each dpu", false, 0);
         a.add<dpu_id_t>("print-hot-compute-load", 0, "print number of queries sent for hot ranges in each dpu", false, 0);
@@ -124,6 +124,8 @@ struct Option {
             op_type = TASK_RANGE_MIN;
         else if (ops == "count")
             op_type = TASK_RANGE_COUNT;
+        else if (ops == "prefix")
+            op_type = TASK_RANGE_COUNT_PREFIX;
         else {
             fprintf(stderr, "invalid operation type: %s\n", ops.c_str());
             exit(1);
@@ -193,6 +195,13 @@ public:
         forest.batch_range_count(n, queries, results);
     };
 
+    void batch_range_count_prefix(uint64_t n,
+        const RangeCountPrefixQuery queries[],
+        uint64_t results[])
+    {
+        forest.batch_range_count_prefix(n, queries, results);
+    };
+
     int get_parallelism() const
     {
         return static_cast<int>(upmem_get_nr_dpus());
@@ -215,6 +224,8 @@ int main(int argc, char* argv[])
         benchmark = new RMQBenchmark(opt.workload_file, true, NUM_INIT_REQS);
     else if (opt.op_type == TASK_RANGE_COUNT)
         benchmark = new RangeCountBenchmark(opt.workload_file, true, NUM_INIT_REQS);
+    else if (opt.op_type == TASK_RANGE_COUNT_PREFIX)
+        benchmark = new RangeCountPrefixBenchmark(opt.workload_file, true, NUM_INIT_REQS);
     else {
         std::cerr << "unsupported task type: " << opt.op_type << std::endl;
         exit(1);
