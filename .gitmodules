@@ -8,3 +8,6 @@
 	path = external/PIM-tree
 	url = git@github.com:plasgroup/bp-forest-PIM-tree.git
 	branch = generate-input
+[submodule "external/timer_tree"]
+	path = external/timer_tree
+	url = https://github.com/Loremkang/timer_tree
