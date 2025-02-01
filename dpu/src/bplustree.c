@@ -22,6 +22,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 
 #define DEBUG_PRINT(datum) printf("th[%02d] " __FILE__ ":%d: " #datum " = %u (0x%x)\n", me(), __LINE__, datum, datum)
@@ -46,6 +47,10 @@ Node cold_root, hot_root;
 key_uint64_t cold_min_key, hot_min_key;
 uint8_t cold_height, hot_height;
 uint8_t cold_root_numKeys, hot_root_numKeys;
+
+#define MAX_NR_VALUES_PER_TASKLET ((MAX_NR_NODES / TREE_CONSTRUCT_NR_TASKLETS + 2) * MAX_NR_PAIRS)
+__mram_noinit char values_storage[TREE_CONSTRUCT_NR_TASKLETS][MAX_NR_VALUES_PER_TASKLET][16];
+char(__mram_ptr* next_value_ptrs[TREE_CONSTRUCT_NR_TASKLETS])[16];
 
 
 static uint16_t search_for_child_index(const key_uint64_t* delim_keys, uint8_t nr_keys, key_uint64_t query)
@@ -133,6 +138,7 @@ static unsigned construct_tree(uint8_t* root_numKeys, Node* root, uint8_t* heigh
     static const uintptr_t initial_pairs = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8;
 
     InitWorkspace* const wks = &workspace.tree.init[me()];
+    char(__mram_ptr * next_value_ptr)[16] = next_value_ptrs[me()];
 
     const unsigned nr_pairs = input_header.init.nr_pairs;
     if (nr_pairs == 0) {
@@ -181,6 +187,7 @@ static unsigned construct_tree(uint8_t* root_numKeys, Node* root, uint8_t* heigh
 
     // Cursors on WRAM cache
     unsigned idx_pair_cache = 0;
+    unsigned idx_value_cache = 0;
     // To place (idx_node_begin_sent_to_senior)-th node in wks->out.lifted[0], where should (idx_node_begin)-th be placed?
     //     -> wks->out.lifted[idx_lift_cache_begin]
     unsigned idx_lift_cache_begin = DIV_NR_NODES_BY_TREE_CONSTRUCT_NR_CACHED_OUTPUT_LIFT(nr_nodes_not_sent + TREE_CONSTRUCT_NR_CACHED_OUTPUT_LIFT - 1u)
@@ -208,8 +215,22 @@ static unsigned construct_tree(uint8_t* root_numKeys, Node* root, uint8_t* heigh
                         sizeof(KVPair) * TREE_CONSTRUCT_NR_CACHED_KVPAIRS);
                     idx_pair_cache = 0;
                 }
-                node_cache->lf.keys[idx_pair_in_this_node] = wks->in.pairs[idx_pair_cache].key;
-                node_cache->lf.values[idx_pair_in_this_node] = wks->in.pairs[idx_pair_cache].value;
+                const key_uint64_t key = node_cache->lf.keys[idx_pair_in_this_node] = wks->in.pairs[idx_pair_cache].key;
+                const uint8_t value_num = key % 16;
+                char (__mram_ptr* const value_ptr)[16] = next_value_ptr;
+                next_value_ptr++;
+                node_cache->lf.values[idx_pair_in_this_node] = (value_uint64_t)(uintptr_t)(value_ptr);
+
+                for (uint8_t idx_digit = 0; idx_digit < value_num; idx_digit++) {
+                    wks->out.values[idx_value_cache][idx_digit] = (char)('0' + value_num);
+                }
+                wks->out.values[idx_value_cache][value_num] = '\0';
+                idx_value_cache++;
+                if (idx_value_cache == TREE_CONSTRUCT_NR_CACHED_VALUES) {
+                    mram_write(&wks->out.values[0], next_value_ptr - idx_value_cache, 16 * TREE_CONSTRUCT_NR_CACHED_VALUES);
+                    idx_value_cache = 0;
+                }
+
                 idx_pair_cache++;
             }
             node_cache->lf.left = left_node;
@@ -246,6 +267,12 @@ static unsigned construct_tree(uint8_t* root_numKeys, Node* root, uint8_t* heigh
             node_cache->lf.right = link_to_this_node;
             mram_write(node_cache, &Deref(left_node), sizeof(Node));
         }
+
+        if (idx_value_cache != 0) {
+            mram_write(&wks->out.values[0], next_value_ptr - idx_value_cache, 16 * idx_value_cache);
+            idx_value_cache = 0;
+        }
+        next_value_ptrs[me()] = next_value_ptr;
     }
 
 
@@ -427,6 +454,8 @@ void task_init(void)
 {
     _Static_assert(TREE_CONSTRUCT_NR_TASKLETS > 0, "TREE_CONSTRUCT_NR_TASKLETS > 0");
     if (me() < TREE_CONSTRUCT_NR_TASKLETS) {
+        next_value_ptrs[me()] = &values_storage[me()][0];
+
         const unsigned nr_allocated_nodes = construct_tree(&cold_root_numKeys, &cold_root, &cold_height, &cold_min_key, INIT_allocator);
 
         TREE_CONSTRUCT_barrier();
@@ -870,11 +899,11 @@ void task_range_count(void)
 }
 
 
-static RangeCountQuery* RANGE_COUNT_PREFIX_pop_qry(RangeCountQuery* qrys_cache, unsigned* idx_qry_in_cache, uintptr_t* cursor_on_qrys)
+static RangeCountPrefixQuery* RANGE_COUNT_PREFIX_pop_qry(RangeCountPrefixQuery* qrys_cache, unsigned* idx_qry_in_cache, uintptr_t* cursor_on_qrys)
 {
     if (*idx_qry_in_cache == TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS) {
-        *cursor_on_qrys += sizeof(RangeCountQuery) * TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS;
-        mram_read((__mram_ptr void*)*cursor_on_qrys, qrys_cache, sizeof(RangeCountQuery) * TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS);
+        *cursor_on_qrys += sizeof(RangeCountPrefixQuery) * TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS;
+        mram_read((__mram_ptr void*)*cursor_on_qrys, qrys_cache, sizeof(RangeCountPrefixQuery) * TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS);
         *idx_qry_in_cache = 0;
     }
     return &qrys_cache[(*idx_qry_in_cache)++];
@@ -898,7 +927,7 @@ static void RANGE_COUNT_PREFIX_flush_results_cache(uint64_t* results_cache, unsi
     }
 }
 static uint64_t RANGE_COUNT_PREFIX_impl(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
-    const RangeCountQuery* const qry)
+    const RangeCountPrefixQuery* const qry)
 {
     RCPQWorkspace* const wks_me = &workspace.tree.rcpq[me()];
 
@@ -907,8 +936,10 @@ static uint64_t RANGE_COUNT_PREFIX_impl(const Node* const root, const uint8_t he
     if (height == 0) {
         uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, qry->range.begin);
         for (; idx_pair < root_numKeys && root->lf.keys[idx_pair] <= qry->range.end; idx_pair++) {
-            if (root->lf.values[idx_pair] == qry->needle) {
-
+            // __dma_aligned char value[8];
+            // mram_read((char(__mram_ptr*)[16])root->lf.values[idx_pair], &value, 8);
+            // if (strncmp(value, qry->prefix, 8) == 0) {
+            if (true) {
                 count++;
             }
         }
@@ -930,7 +961,10 @@ static uint64_t RANGE_COUNT_PREFIX_impl(const Node* const root, const uint8_t he
                 if (wks_me->node_cache.lf.keys[idx_pair] > qry->range.end) {
                     goto end_of_range;
                 }
-                if (wks_me->node_cache.lf.values[idx_pair] == qry->needle) {
+                __dma_aligned char value[8];
+                mram_read((__mram_ptr void*)(uintptr_t)root->lf.values[idx_pair], &value[0], 8);
+                // if (strncmp(value, qry->prefix, 8) == 0) {
+                if (true) {
                     count++;
                 }
             }
@@ -949,18 +983,18 @@ static uint64_t RANGE_COUNT_PREFIX_impl(const Node* const root, const uint8_t he
 static void RANGE_COUNT_PREFIX_execute(const uint16_t idx_qry_begin, const uint16_t idx_qry_end)
 {
     static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8;
-    static const uintptr_t results = (uintptr_t)DPU_MRAM_HEAP_POINTER + RCQ_RESULT_OFFSET;
+    static const uintptr_t results = (uintptr_t)DPU_MRAM_HEAP_POINTER + RCPQ_RESULT_OFFSET;
     RCPQWorkspace* const wks_me = &workspace.tree.rcpq[me()];
 
     unsigned idx_qry = idx_qry_begin, idx_qry_in_cache = 0;
-    uintptr_t cursor_on_qrys = qrys + sizeof(RangeCountQuery) * idx_qry;
+    uintptr_t cursor_on_qrys = qrys + sizeof(RangeCountPrefixQuery) * idx_qry;
 
-    mram_read((__mram_ptr void*)(cursor_on_qrys), &wks_me->qrys[0], sizeof(RangeCountQuery) * TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS);
+    mram_read((__mram_ptr void*)(cursor_on_qrys), &wks_me->qrys[0], sizeof(RangeCountPrefixQuery) * TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS);
     unsigned idx_result_in_cache = 0;
     uintptr_t cursor_on_results = results + sizeof(uint64_t) * idx_qry;
 
     for (; idx_qry < idx_qry_end; idx_qry++) {
-        const RangeCountQuery* const qry = RANGE_COUNT_PREFIX_pop_qry(&wks_me->qrys[0], &idx_qry_in_cache, &cursor_on_qrys);
+        const RangeCountPrefixQuery* const qry = RANGE_COUNT_PREFIX_pop_qry(&wks_me->qrys[0], &idx_qry_in_cache, &cursor_on_qrys);
 
         const uint64_t count = RANGE_COUNT_PREFIX_impl(&cold_root, cold_height, cold_root_numKeys, qry)
                                + RANGE_COUNT_PREFIX_impl(&hot_root, hot_height, hot_root_numKeys, qry);
@@ -980,7 +1014,6 @@ void task_range_count_prefix(void)
                        idx_qry_end = idx_qry_begin + nr_qrys_for_me;
         RANGE_COUNT_PREFIX_execute(idx_qry_begin, idx_qry_end);
     }
-
 }
 
 
