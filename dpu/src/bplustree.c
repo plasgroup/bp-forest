@@ -40,6 +40,8 @@ static DEFINE_DIV_BY(TASK_RANGE_MIN_NR_TASKLETS, 16, _NR_DELIMS);
 
 static DEFINE_DIV_BY(TASK_RANGE_COUNT_NR_TASKLETS, 16, _NR_QRYS);
 
+static DEFINE_DIV_BY(TASK_RANGE_COUNT_PREFIX_NR_TASKLETS, 16, _NR_QRYS);
+
 Node cold_root, hot_root;
 key_uint64_t cold_min_key, hot_min_key;
 uint8_t cold_height, hot_height;
@@ -865,6 +867,120 @@ void task_range_count(void)
 
         RANGE_COUNT_execute(idx_qry_begin, idx_qry_end);
     }
+}
+
+
+static RangeCountQuery* RANGE_COUNT_PREFIX_pop_qry(RangeCountQuery* qrys_cache, unsigned* idx_qry_in_cache, uintptr_t* cursor_on_qrys)
+{
+    if (*idx_qry_in_cache == TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS) {
+        *cursor_on_qrys += sizeof(RangeCountQuery) * TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS;
+        mram_read((__mram_ptr void*)*cursor_on_qrys, qrys_cache, sizeof(RangeCountQuery) * TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS);
+        *idx_qry_in_cache = 0;
+    }
+    return &qrys_cache[(*idx_qry_in_cache)++];
+}
+static void RANGE_COUNT_PREFIX_push_result(uint64_t result, uint64_t* results_cache, unsigned* idx_result_in_cache, uintptr_t* cursor_on_results)
+{
+    results_cache[*idx_result_in_cache] = result;
+    (*idx_result_in_cache)++;
+    if (*idx_result_in_cache == TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS) {
+        mram_write(results_cache, (__mram_ptr void*)*cursor_on_results, sizeof(uint64_t) * TASK_RANGE_COUNT_PREFIX_NR_CACHED_RESULTS);
+        *cursor_on_results += sizeof(uint64_t) * TASK_RANGE_COUNT_PREFIX_NR_CACHED_RESULTS;
+        *idx_result_in_cache = 0;
+    }
+}
+static void RANGE_COUNT_PREFIX_flush_results_cache(uint64_t* results_cache, unsigned* idx_result_in_cache, uintptr_t* cursor_on_results)
+{
+    if (*idx_result_in_cache != 0) {
+        mram_write(results_cache, (__mram_ptr void*)*cursor_on_results, sizeof(uint64_t) * *idx_result_in_cache);
+        *cursor_on_results += sizeof(uint64_t) * *idx_result_in_cache;
+        *idx_result_in_cache = 0;
+    }
+}
+static uint64_t RANGE_COUNT_PREFIX_impl(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
+    const RangeCountQuery* const qry)
+{
+    RCPQWorkspace* const wks_me = &workspace.tree.rcpq[me()];
+
+    uint64_t count = 0;
+
+    if (height == 0) {
+        uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, qry->range.begin);
+        for (; idx_pair < root_numKeys && root->lf.keys[idx_pair] <= qry->range.end; idx_pair++) {
+            if (root->lf.values[idx_pair] == qry->needle) {
+
+                count++;
+            }
+        }
+        return count;
+    } else {
+        NodeLink link = root->inl.children[search_for_child_index(&root->inl.keys[0], root_numKeys, qry->range.begin)];
+
+        for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
+            mram_read(&Deref(link.ptr).inl.keys[0], &wks_me->node_cache.inl.keys[0], sizeof(key_uint64_t) * link.numKeys);
+            const uint16_t idx_child = search_for_child_index(&wks_me->node_cache.inl.keys[0], link.numKeys, qry->range.begin);
+            mram_read(&Deref(link.ptr).inl.children[idx_child / 2 * 2], &wks_me->node_cache.inl.children[0], sizeof(NodeLink) * 2);
+            link = wks_me->node_cache.inl.children[idx_child % 2];
+        }
+        mram_read(&Deref(link.ptr).lf, &wks_me->node_cache.lf, offsetof(LeafNode, left));
+        uint16_t idx_pair = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, qry->range.begin);
+        for (;;) {
+            for (; idx_pair < link.numKeys; idx_pair++) {
+
+                if (wks_me->node_cache.lf.keys[idx_pair] > qry->range.end) {
+                    goto end_of_range;
+                }
+                if (wks_me->node_cache.lf.values[idx_pair] == qry->needle) {
+                    count++;
+                }
+            }
+            const NodeLink right_leaf = wks_me->node_cache.lf.right;
+            if (right_leaf.ptr == NODELINK_NULLPTR.ptr && right_leaf.numKeys == NODELINK_NULLPTR.numKeys) {
+                goto end_of_range;
+            }
+            link = right_leaf;
+            mram_read(&Deref(link.ptr).lf, &wks_me->node_cache.lf, offsetof(LeafNode, left));
+            idx_pair = 0;
+        }
+    end_of_range:
+        return count;
+    }
+}
+static void RANGE_COUNT_PREFIX_execute(const uint16_t idx_qry_begin, const uint16_t idx_qry_end)
+{
+    static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8;
+    static const uintptr_t results = (uintptr_t)DPU_MRAM_HEAP_POINTER + RCQ_RESULT_OFFSET;
+    RCPQWorkspace* const wks_me = &workspace.tree.rcpq[me()];
+
+    unsigned idx_qry = idx_qry_begin, idx_qry_in_cache = 0;
+    uintptr_t cursor_on_qrys = qrys + sizeof(RangeCountQuery) * idx_qry;
+
+    mram_read((__mram_ptr void*)(cursor_on_qrys), &wks_me->qrys[0], sizeof(RangeCountQuery) * TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS);
+    unsigned idx_result_in_cache = 0;
+    uintptr_t cursor_on_results = results + sizeof(uint64_t) * idx_qry;
+
+    for (; idx_qry < idx_qry_end; idx_qry++) {
+        const RangeCountQuery* const qry = RANGE_COUNT_PREFIX_pop_qry(&wks_me->qrys[0], &idx_qry_in_cache, &cursor_on_qrys);
+
+        const uint64_t count = RANGE_COUNT_PREFIX_impl(&cold_root, cold_height, cold_root_numKeys, qry)
+                               + RANGE_COUNT_PREFIX_impl(&hot_root, hot_height, hot_root_numKeys, qry);
+        RANGE_COUNT_PREFIX_push_result(count, &wks_me->results[0], &idx_result_in_cache, &cursor_on_results);
+    }
+    RANGE_COUNT_PREFIX_flush_results_cache(&wks_me->results[0], &idx_result_in_cache, &cursor_on_results);
+}
+void task_range_count_prefix(void)
+{
+    if (me() < TASK_RANGE_COUNT_PREFIX_NR_TASKLETS) {
+        const uint16_t nr_qrys = input_header.rcq.nr_cold_qrys;
+        const uint16_t nr_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_RANGE_COUNT_PREFIX_NR_TASKLETS(nr_qrys),
+                       nr_remainder_qrys = nr_qrys - nr_qrys_per_tasklet * TASK_RANGE_COUNT_PREFIX_NR_TASKLETS,
+
+                       nr_qrys_for_me = nr_qrys_per_tasklet + (me() < nr_remainder_qrys);
+        const uint16_t idx_qry_begin = (uint16_t)(nr_qrys_per_tasklet * me() + (me() <= nr_remainder_qrys ? me() : nr_remainder_qrys)),
+                       idx_qry_end = idx_qry_begin + nr_qrys_for_me;
+        RANGE_COUNT_PREFIX_execute(idx_qry_begin, idx_qry_end);
+    }
+
 }
 
 

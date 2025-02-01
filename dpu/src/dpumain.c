@@ -37,6 +37,9 @@ int main()
     case TASK_RANGE_COUNT:
         task_range_count();
         break;
+    case TASK_RANGE_COUNT_PREFIX:
+        task_range_count_prefix();
+        break;
     case TASK_SUMMARIZE:
         task_summarize();
         break;
