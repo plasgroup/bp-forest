@@ -158,8 +158,9 @@ int main(int argc, char* argv[])
     timer::default_detail = true;
     timer::print_when_time = true;
 
-    struct timeval start, end;
-    gettimeofday(&start, NULL);
+    //struct timeval start, end;
+    //gettimeofday(&start, NULL);
+
     time_nested_pass("main", [&](timer* timer) {
         std::vector<int64_t> keys;
         time_nested<true>("generate key", [&]() {
@@ -171,10 +172,10 @@ int main(int argc, char* argv[])
         std::vector<int> chunk_owner;
         time_nested<true>("parepare chunks", [&]() {
             RandomChunkBuilder cb(opt.random_chunk_min(), opt.random_chunk_max(), 0);
-            cb.build_chunks(chunks, keys, 0, keys.size());
+            cb.build_chunks(chunks, keys, 0, (unsigned int) keys.size());
 
             /* distribute chunks */
-            for (size_t i = 0; i < chunks.size(); i++)
+            for (int i = 0; i < (int) chunks.size(); i++)
                 chunk_owner.push_back(i % opt.num_dpus());
             /* shuffle */
             std::mt19937_64 mt(0);
@@ -186,14 +187,18 @@ int main(int argc, char* argv[])
             SlicedZipfOverKeyGenerator<int64_t> pgen(keys, opt.zconst(), opt.num_slices(), opt.zipf_scramble(), 0);
             ConstLengthRangeGenerator<int64_t> rgen(&pgen, keys, opt.items_in_range());
             workload = rgen.generate(opt.num_queries());
+            printf("workload size: %d\n", (int) workload.size());
+            printf("  params: zipf_const=%f num_slices=%d scramble=%s len=%d\n",
+                    opt.zconst(), opt.num_slices(), opt.zipf_scramble() ? "yes" : "no", opt.items_in_range());
         }, timer);
 
-        std::vector<std::vector<std::vector<int>>> sent_query_id;
+        std::vector<std::vector<std::vector<int>>> sent_query_id; // [thread_id][dpu_id][i] = query_id
+        std::vector<std::vector<int>> first_index; // [thread_id][dpu_id] = index of sent_query_id[thread_id][dpu_id]
         for (int i = 0; i < pm.get_parallelism(); i++)
             sent_query_id.push_back(std::vector<std::vector<int>>(opt.num_dpus()));
         time_nested<true>("query routing", [&]() {
             pm.run(0, workload.size(), [&](size_t tid, size_t s, size_t e) {
-                for (int i = s; i < (int) e; i++) {
+                for (int i = (int) s; i < (int) e; i++) {
                     int64_t left = workload[i].first;
                     int64_t right = workload[i].second;
                     if (left < chunks[0].left_key)
@@ -209,30 +214,46 @@ int main(int argc, char* argv[])
                     }
                 }               
             });
+            for (int tid = 0; tid < pm.get_parallelism() + 1; tid++)
+                first_index.push_back(std::vector<int>(opt.num_dpus()));
+            pm.run(0, opt.num_dpus(), [&](size_t _, size_t s, size_t e) {
+                for (size_t dpu_id = s; dpu_id < e; dpu_id++) {
+                    int acc = 0;
+                    for (int tid = 0; tid < pm.get_parallelism(); tid++) {
+                        first_index[tid][dpu_id] = acc;
+                        acc += (int) sent_query_id[tid][dpu_id].size();
+                    }
+                    first_index[pm.get_parallelism()][dpu_id] = acc; // sentinel
+                }
+            });
+            int total = 0;
+            for (int dpu_id = 0; dpu_id < opt.num_dpus(); dpu_id++)
+                total += first_index[pm.get_parallelism()][dpu_id];
+            printf("total duplicated queries: %d\n", total);
         }, timer);
+        std::vector<int>& num_queries = first_index[pm.get_parallelism()];  // [dpu_id] = num_queries
 
         struct aggregation_result {
             int query_id;
             int64_t value;
         };
 
-        struct aggregation_result** results;
+        struct aggregation_result** results; // [dpu_id][j] = result
         time_nested<true>("load simulation", [&]() {
             results = new struct aggregation_result*[opt.num_dpus()];
-            for (int i = 0; i < opt.num_dpus(); i++) {
-                int nqueries = 0;
-                for (int j = 0; j < pm.get_parallelism(); j++)
-                    nqueries += sent_query_id[j][i].size();
-                results[i] = new struct aggregation_result[nqueries];
+            for (int dpu_id = 0; dpu_id < opt.num_dpus(); dpu_id++) {
+                results[dpu_id] = new struct aggregation_result[num_queries[dpu_id]];
                 
                 int result_idx = 0;
-                for (int j = 0; j < pm.get_parallelism(); j++) {
-                    for (int k = 0; k < sent_query_id[j][i].size(); k++) {
-                        results[i][result_idx].query_id = sent_query_id[j][i][k];
-                        results[i][result_idx].value = j * 10000 + i;  // random value
+                for (int tid = 0; tid < pm.get_parallelism(); tid++) {
+                    for (size_t i = 0; i < sent_query_id[tid][dpu_id].size(); i++) {
+                        results[dpu_id][result_idx].query_id = sent_query_id[tid][dpu_id][i];
+                        results[dpu_id][result_idx].value = 1;  // random value
                         result_idx++;
                     }
                 }
+                if (result_idx != num_queries[dpu_id])
+                    fprintf(stderr, "assertion failed: result_idx=%d num_queries=%d\n", result_idx, num_queries[dpu_id]);
             }
         }, timer);
 
@@ -240,28 +261,40 @@ int main(int argc, char* argv[])
         for (int round = 0; round < 20; round++) {
             time_nested<true>("aggregation", [&]() {
                 pm.run(0, opt.num_queries(), [&](size_t tid, size_t s, size_t e) {
-                    for (int i = s; i < e; i++) {
-                        final_results[i].query_id = i;
+                    for (size_t i = s; i < e; i++) {
+                        final_results[i].query_id = (int) i;
                         final_results[i].value = 0;
                     }
                 });
-                pm.run(0, 1000, [&](size_t tid, size_t s, size_t e) {
-                    for (int i = 0; i < opt.num_dpus(); i++) {
-                        for (size_t j = 0; j < sent_query_id[tid][i].size(); j++) {
-                            final_results[sent_query_id[tid][i][j]].value += results[i][j].value;
-                        }
+
+                pm.run(0, pm.get_parallelism(), [&](size_t tid, size_t s, size_t e) {
+                    assert(s + 1 == e);
+                    for (int dpu_id = 0; dpu_id < opt.num_dpus(); dpu_id++) {
+                        size_t offset = first_index[tid][dpu_id];
+                        for (size_t i = 0; i < sent_query_id[tid][dpu_id].size(); i++)
+                            final_results[sent_query_id[tid][dpu_id][i]].value += results[dpu_id][i + offset].value;
                     } 
-                });            
+                });
             }, timer);
         }
-    });
-    gettimeofday(&end, NULL);
 
-    printf("elapsed time: %lf sec\n", (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1000000.0);
+        // verify
+        time_nested<true>("verify", [&]() {
+            int64_t sum = 0;
+            for (int i = 0; i < opt.num_queries(); i++)
+                sum += final_results[i].value;
+            printf("sum = %ld\n", sum);
+            if (sum != 8738202)
+                fprintf(stderr, "sum is not correct\n");
+        }, timer);
+    });
+
+    //gettimeofday(&end, NULL);
+    //printf("elapsed time: %lf sec\n", (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1000000.0);
 
 
     timer::active = false;
-    print_all_timers(print_type::pt_full);
+    //print_all_timers(print_type::pt_full);
 
     return 0;
 }
