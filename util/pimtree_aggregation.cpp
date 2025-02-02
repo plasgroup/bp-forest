@@ -156,21 +156,24 @@ int main(int argc, char* argv[])
     init_root_timer();
     timer::active = true;
     timer::default_detail = true;
-    timer::print_when_time = true;
+    //timer::print_when_time = true;
+    timer::print_when_time = false;
+
 
     //struct timeval start, end;
     //gettimeofday(&start, NULL);
 
     time_nested_pass("main", [&](timer* timer) {
         std::vector<int64_t> keys;
-        time_nested<true>("generate key", [&]() {
+        {
             EvenGenerator<int64_t> init_gen(INT64_MIN, INT64_MAX);
             keys = init_gen.generate(opt.items());
-        }, timer);
+            printf("number of keys: %d\n", (int) keys.size());
+        }
 
         std::vector<ChunkBuilder::chunk> chunks;
         std::vector<int> chunk_owner;
-        time_nested<true>("parepare chunks", [&]() {
+        {
             RandomChunkBuilder cb(opt.random_chunk_min(), opt.random_chunk_max(), 0);
             cb.build_chunks(chunks, keys, 0, (unsigned int) keys.size());
 
@@ -180,23 +183,24 @@ int main(int argc, char* argv[])
             /* shuffle */
             std::mt19937_64 mt(0);
             std::shuffle(chunk_owner.begin(), chunk_owner.end(), mt);
-        }, timer);
+            printf("chunk size: %d\n", (int) chunks.size());
+        }
 
         std::vector<std::pair<int64_t, int64_t>> workload;
-        time_nested<true>("generate workload", [&]() {
+        {
             SlicedZipfOverKeyGenerator<int64_t> pgen(keys, opt.zconst(), opt.num_slices(), opt.zipf_scramble(), 0);
             ConstLengthRangeGenerator<int64_t> rgen(&pgen, keys, opt.items_in_range());
             workload = rgen.generate(opt.num_queries());
             printf("workload size: %d\n", (int) workload.size());
             printf("  params: zipf_const=%f num_slices=%d scramble=%s len=%d\n",
                     opt.zconst(), opt.num_slices(), opt.zipf_scramble() ? "yes" : "no", opt.items_in_range());
-        }, timer);
+        }
 
         std::vector<std::vector<std::vector<int>>> sent_query_id; // [thread_id][dpu_id][i] = query_id
         std::vector<std::vector<int>> first_index; // [thread_id][dpu_id] = index of sent_query_id[thread_id][dpu_id]
         for (int i = 0; i < pm.get_parallelism(); i++)
             sent_query_id.push_back(std::vector<std::vector<int>>(opt.num_dpus()));
-        time_nested<true>("query routing", [&]() {
+        {
             pm.run(0, workload.size(), [&](size_t tid, size_t s, size_t e) {
                 for (int i = (int) s; i < (int) e; i++) {
                     int64_t left = workload[i].first;
@@ -230,7 +234,7 @@ int main(int argc, char* argv[])
             for (int dpu_id = 0; dpu_id < opt.num_dpus(); dpu_id++)
                 total += first_index[pm.get_parallelism()][dpu_id];
             printf("total duplicated queries: %d\n", total);
-        }, timer);
+        }
         std::vector<int>& num_queries = first_index[pm.get_parallelism()];  // [dpu_id] = num_queries
 
         struct aggregation_result {
@@ -239,7 +243,7 @@ int main(int argc, char* argv[])
         };
 
         struct aggregation_result** results; // [dpu_id][j] = result
-        time_nested<true>("load simulation", [&]() {
+        {
             results = new struct aggregation_result*[opt.num_dpus()];
             for (int dpu_id = 0; dpu_id < opt.num_dpus(); dpu_id++) {
                 results[dpu_id] = new struct aggregation_result[num_queries[dpu_id]];
@@ -255,7 +259,7 @@ int main(int argc, char* argv[])
                 if (result_idx != num_queries[dpu_id])
                     fprintf(stderr, "assertion failed: result_idx=%d num_queries=%d\n", result_idx, num_queries[dpu_id]);
             }
-        }, timer);
+        }
 
         struct aggregation_result* final_results = new struct aggregation_result[opt.num_queries()];
         for (int round = 0; round < 20; round++) {
@@ -279,14 +283,14 @@ int main(int argc, char* argv[])
         }
 
         // verify
-        time_nested<true>("verify", [&]() {
+        {
             int64_t sum = 0;
             for (int i = 0; i < opt.num_queries(); i++)
                 sum += final_results[i].value;
             printf("sum = %ld\n", sum);
             if (sum != 8738202)
                 fprintf(stderr, "sum is not correct\n");
-        }, timer);
+        }
     });
 
     //gettimeofday(&end, NULL);
@@ -294,7 +298,7 @@ int main(int argc, char* argv[])
 
 
     timer::active = false;
-    //print_all_timers(print_type::pt_full);
+    print_all_timers(print_type::pt_full);
 
     return 0;
 }
