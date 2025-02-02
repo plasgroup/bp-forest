@@ -14,8 +14,9 @@ target_link_libraries(pimtree_aggregation common_base cmdline workload_mgmt  Thr
 add_executable(bandwidth
     bandwidth.cpp)
 
-set_target_properties(bandwidth PROPERTIES
-    PKG_CONFIG_EXECUTABLE dpu-pkg-config)
+if (TARGET bandwidth)
+  set(PKG_CONFIG_EXECUTABLE dpu-pkg-config)
+endif()
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(DPU_CONFIG IMPORTED_TARGET dpu)
