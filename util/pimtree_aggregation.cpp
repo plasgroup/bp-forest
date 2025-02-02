@@ -183,7 +183,8 @@ int main(int argc, char* argv[])
             /* shuffle */
             std::mt19937_64 mt(0);
             std::shuffle(chunk_owner.begin(), chunk_owner.end(), mt);
-            printf("chunk size: %d\n", (int) chunks.size());
+            printf("chunk size: %d - %d\n", opt.random_chunk_min(), opt.random_chunk_max());
+            printf("number of chunks: %d\n", (int) chunks.size());
         }
 
         std::vector<std::pair<int64_t, int64_t>> workload;
