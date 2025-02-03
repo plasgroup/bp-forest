@@ -67,6 +67,36 @@ public:
 };
 
 template <typename K>
+class StepOverKeyGenerator : public OverKeyGenerator<K> {
+    size_t chunk_size;
+    size_t query_per_chunk;
+    int seed;
+public:
+    StepOverKeyGenerator(std::vector<K>& keys, size_t chunk_size, size_t query_per_chunk, int seed)
+        : OverKeyGenerator<K>(keys), chunk_size(chunk_size), query_per_chunk(query_per_chunk), seed(seed)
+    {}
+
+    std::vector<size_t> generate_indeces(size_t n)
+    {
+        std::mt19937_64 mt(seed);
+
+        std::vector<size_t> ids;
+
+        for (int i = 0; i < (n + query_per_chunk - 1) / query_per_chunk; i++) {
+            int left = i * chunk_size;
+            int right = std::min(left + chunk_size, this->keys.size());
+            for (int j = 0; j < query_per_chunk; j++) {
+                if (ids.size() >= n)
+                    break;
+                size_t key_idx = std::uniform_int_distribution<uint64_t>(left, right - 1)(mt);
+                ids.push_back(key_idx);
+            }
+        }
+        return ids;
+    }
+};
+
+template <typename K>
 class SlicedZipfOverKeyGenerator : public OverKeyGenerator<K> {
     double alpha;
     size_t nslices;
