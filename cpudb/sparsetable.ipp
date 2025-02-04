@@ -7,7 +7,7 @@
 #include <algorithm>
 
 #include "assert.h"
-#include "parallel.ipp"
+#include "util/parallel.ipp"
 
 template <typename T>
 class SparseTable
@@ -55,7 +55,7 @@ SparseTable<T>::SparseTable(const std::vector<T>& data, ParallelManager* paralle
         table[i].reserve(n);
     log.reserve(n + 1);
 
-    parallel->run(1, n + 1, [&](size_t s, size_t e) {
+    parallel->run(1, n + 1, [&](int tid, size_t s, size_t e) {
         size_t logi = (size_t) std::log2(s);
         size_t next = (1 << (logi + 1)) - 1;
         for (size_t i = s; i < e; i++) {
@@ -68,7 +68,7 @@ SparseTable<T>::SparseTable(const std::vector<T>& data, ParallelManager* paralle
     });
 
     // Initialize table for the intervals with length 1
-    parallel->run(0, n, [&](size_t s, size_t e) {
+    parallel->run(0, n, [&](int tid, size_t s, size_t e) {
         for (size_t i = s; i < e; i++)
             table[0][i] = data[i];
     });
@@ -76,7 +76,7 @@ SparseTable<T>::SparseTable(const std::vector<T>& data, ParallelManager* paralle
     // Compute values from smaller to bigger intervals
     for (size_t j = 1; j < K; j++) {
         size_t end = n - (1 << j) + 1;
-        parallel->run(0, end, [&](size_t s, size_t e) {
+        parallel->run(0, end, [&](int tid, size_t s, size_t e) {
             for (size_t i = s; i < e; i++)
                 table[j][i] = std::min(table[j - 1][i], table[j - 1][i + (1 << (j - 1))]); // 次元を入れ替え
         });

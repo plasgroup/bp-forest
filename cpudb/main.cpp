@@ -15,7 +15,7 @@
 #include "sparsetable.ipp"
 #include "segment_tree.ipp"
 #include "workload_buffer.hpp"
-#include "parallel.ipp"
+#include "util/parallel.ipp"
 
 
 struct Option {
@@ -112,7 +112,7 @@ public:
 
         std::mutex mtx;
         index = new std::map<key_uint64_t, int>();
-        init_parallel.run(0, nr_keys, [&](size_t s, size_t e) {
+        init_parallel.run(0, nr_keys, [&](int tid, size_t s, size_t e) {
             std::vector<std::pair<key_uint64_t, int>> data;
             data.reserve(e - s);
             for (size_t i = s; i < e; i++)
@@ -174,7 +174,7 @@ void CPUDatabase::batch_range_minimum(uint64_t n,
                                       const KeyRange queries[],
                                       value_uint64_t results[])
 {
-    parallel->run(0, n, [&](size_t s, size_t e) {
+    parallel->run(0, n, [&](int tid, size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             const KeyRange &q = queries[i];
             auto it = index->lower_bound(q.begin);
@@ -192,7 +192,7 @@ void CPUDatabase::batch_range_minimum_verify(uint64_t n,
                                           const KeyRange queries[],
                                           const value_uint64_t results[])
 {
-    parallel->run(0, n, [&](size_t s, size_t e) {
+    parallel->run(0, n, [&](int tid, size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             const KeyRange &q = queries[i];
             key_uint64_t key_interval = init_key_interval(nr_keys);
@@ -216,7 +216,7 @@ void CPUDatabase::batch_range_sum(uint64_t n,
                                   const KeyRange queries[],
                                   value_uint64_t results[])
 {
-    parallel->run(0, n, [&](size_t s, size_t e) {
+    parallel->run(0, n, [&](int tid, size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             const KeyRange &q = queries[i];
             auto it = index->lower_bound(q.begin);
@@ -234,7 +234,7 @@ void CPUDatabase::batch_range_sum_verify(size_t n,
                                       const KeyRange queries[],
                                       const value_uint64_t results[]) 
 {
-    parallel->run(0, n, [&](size_t s, size_t e) {
+    parallel->run(0, n, [&](int tid, size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             const KeyRange &q = queries[i];
             key_uint64_t key_interval = init_key_interval(nr_keys);
@@ -265,7 +265,7 @@ void CPUDatabase::batch_get(uint64_t n,
                             const key_uint64_t keys[],
                             value_uint64_t results[])
 {
-    parallel->run(0, n, [&](size_t s, size_t e) {
+    parallel->run(0, n, [&](int tid, size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             auto it = index->find(keys[i]);
             if (it != index->end())
@@ -280,7 +280,7 @@ void CPUDatabase::batch_get_verify(size_t n,
                                 const key_uint64_t queries[],
                                 const value_uint64_t results[])
 {
-    parallel->run(0, n, [&](size_t s, size_t e) {
+    parallel->run(0, n, [&](int tid, size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             key_uint64_t q = queries[i];
             key_uint64_t key_interval = init_key_interval(nr_keys);
@@ -307,7 +307,7 @@ void CPUDatabase::batch_range_count(uint64_t n,
                                     const RangeCountQuery queries[],
                                     value_uint64_t results[])
 {
-    parallel->run(0, n, [&](size_t s, size_t e) {
+    parallel->run(0, n, [&](int tid, size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             const KeyRange &qr = queries[i].range;
             const value_uint64_t needle = queries[i].needle;

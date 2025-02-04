@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <thread>
 #include <iostream>
+#include <cassert>
 
 class ParallelManager {
     class Worker {
@@ -15,13 +16,13 @@ class ParallelManager {
             : manager(manager), id(id) {
             }
         void operator ()() {
-            std::function<void(size_t, size_t)> task;
+            std::function<void(int, size_t, size_t)> task;
             while (true) {
                 size_t s = 0, e = 0;
                 task = manager->get_task(id, &s, &e);
                 if (task == nullptr)
                     return;
-                task(s, e);
+                task(id, s, e);
                 manager->notify_complete(id);
             }
         }
@@ -62,12 +63,12 @@ class ParallelManager {
     size_t nthreads;
     Barrier start_barrier, end_barrier;
     bool stopping = false;
-    std::function<void(size_t, size_t)> task = nullptr;
+    std::function<void(int, size_t, size_t)> task = nullptr;
     size_t start, end;
     std::thread* threads;
 
      // Called by worker
-    std::function<void(size_t, size_t)> get_task(size_t id, size_t* s, size_t* e) {
+    std::function<void(int, size_t, size_t)> get_task(size_t id, size_t* s, size_t* e) {
         start_barrier.wait(id);
         if (stopping)
             return nullptr;
@@ -100,10 +101,10 @@ public:
             threads[i].join();
     }
 
-    void run(size_t s, size_t e, std::function<void(size_t, size_t)> t)
+    void run(size_t s, size_t e, std::function<void(int, size_t, size_t)> t)
     {
         if (nthreads == 1) {
-            t(s, e);
+            t(0, s, e);
             return;
         } else {
             start = s;
