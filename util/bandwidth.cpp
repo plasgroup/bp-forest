@@ -33,11 +33,13 @@ void do_xfer(dpu_set_t* setp, int transfer_unit, dpu_xfer_t dir)
     struct dpu_set_t dpu;
     int each_dpu;
 
-    DPU_FOREACH(*setp, dpu, each_dpu)
-    {
-        DPU_ASSERT(dpu_prepare_xfer(dpu, &transfer_buffer[each_dpu][0]));
+    for (size_t offset = 0; offset < TRANSFER_BUFFER_MAX_SIZE; offset += transfer_unit) {
+        DPU_FOREACH(*setp, dpu, each_dpu)
+        {
+            DPU_ASSERT(dpu_prepare_xfer(dpu, &transfer_buffer[each_dpu][offset]));
+        }
+        DPU_ASSERT(dpu_push_xfer_symbol(*setp, dir, dest_buffer, 0, transfer_unit, DPU_XFER_DEFAULT));
     }
-    DPU_ASSERT(dpu_push_xfer_symbol(*setp, dir, dest_buffer, 0, transfer_unit, DPU_XFER_DEFAULT));
 }
 
 uint32_t test_nr_dpus[] = {1, 4, 16, 64, 256, 1024, 2048, DPU_ALLOCATE_ALL};
@@ -53,29 +55,32 @@ int main(int argc, char* argv[])
         DPU_ASSERT(dpu_alloc(nr_dpus, NULL, &set));
         DPU_ASSERT(dpu_get_nr_dpus(set, &nr_dpus));
 
+
         for (int round = 0; round < 10; round++) {
+            gettimeofday(&start, NULL);
+            DPU_ASSERT(dpu_load(set, DPU_BINARY, NULL));
+            gettimeofday(&end, NULL);
+            printf("round %d, load, nr_dpus=%d, time=%f\n", round, nr_dpus, time_diff(&start, &end));
+
             for (int j = 0; j < sizeof(test_transfer_unit) / sizeof(int); j++) {
                 int transfer_unit = test_transfer_unit[j];
                 gettimeofday(&start, NULL);
                 do_xfer(&set, transfer_unit, DPU_XFER_TO_DPU);
                 gettimeofday(&end, NULL);
-                printf("round %d, is_to_dpu=%d nr_dpus=%d, transfer_unit=%d, time=%f\n", round, 0, nr_dpus, transfer_unit, time_diff(&start, &end));
+                printf("round %d, is_to_dpu=%d nr_dpus=%d, size_per_dpu=%d, transfer_unit=%d, time=%f\n", round, 0, nr_dpus, TRANSFER_BUFFER_MAX_SIZE, transfer_unit, time_diff(&start, &end));
 
                 gettimeofday(&start, NULL);
                 do_xfer(&set, transfer_unit, DPU_XFER_FROM_DPU);
                 gettimeofday(&end, NULL);
-                printf("round %d, is_to_dpu=%d nr_dpus=%d, transfer_unit=%d, time=%f\n", round, 1, nr_dpus, transfer_unit, time_diff(&start, &end));
+                printf("round %d, is_to_dpu=%d nr_dpus=%d, size_per_dpu=%d,  transfer_unit=%d, time=%f\n", round, 1, nr_dpus, TRANSFER_BUFFER_MAX_SIZE, transfer_unit, time_diff(&start, &end));
             }
-        }
-
-        DPU_ASSERT(dpu_load(set, DPU_BINARY, NULL));
-
-        for (int round = 0; round < 10; round++) {
             gettimeofday(&start, NULL);
             DPU_ASSERT(dpu_launch(set, DPU_SYNCHRONOUS));
             gettimeofday(&end, NULL);
-            printf("round %d, launch nr_dpus=%d, time=%f\n", round, nr_dpus, time_diff(&start, &end));
+            printf("round %d, launch, nr_dpus=%d, time=%f\n", round, nr_dpus, time_diff(&start, &end));
         }
+
+
 
         DPU_ASSERT(dpu_free(set));
     }
