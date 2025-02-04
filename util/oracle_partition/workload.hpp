@@ -269,6 +269,7 @@ void save_init_data(const std::string &file_name, const std::vector<std::pair<K,
         perror("fopen");
         exit(1);
     }
+
     for (auto [key, value]: kvs) {
         op.type = insert_t;
         op.tsk.i.key = (int64_t) key;

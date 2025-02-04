@@ -43,6 +43,8 @@ struct Option {
 
         a.add<std::string>("load-output", 0, "output file for load (CSV)", false, "");
         a.add<std::string>("partition-output", 0, "output file for partition (binary)", false, "");
+        a.add<std::string>("workload-output", 0, "output file for workload in PIM-Tree format", false, "");
+        a.add<std::string>("init-output", 0, "output file for init data in PIM-Tree format", false, "");
 
         // debug
         a.add("verify-partitoner", 0, "verify-pertitioner");
@@ -155,6 +157,20 @@ struct Option {
 
     const std::string& partition_output() {
         return a.get<std::string>("partition-output");
+    }
+
+    const char* workload_output() {
+        if (a.exist("workload-output"))
+            return a.get<std::string>("workload-output").c_str();
+        else
+            return nullptr;
+    }
+
+    const char* init_output() {
+        if (a.exist("init-output"))
+            return a.get<std::string>("init-output").c_str();
+        else
+            return nullptr;
     }
 
     bool verify_partitioner() {
@@ -273,6 +289,9 @@ void show_load(std::vector<int64_t>& keys)
             workload = load_point_workload<int64_t>(opt.workload_file());
         } else
             workload = pgen->generate(opt.num_queries());
+        if (opt.workload_output() != nullptr)
+            save_point_workload(opt.workload_output(), workload);
+        
         partitioner->partition_point(keys, workload);
         load = simulate_load_for_point_query(keys, partitioner->ref_partition(0), partitioner->ref_partition(1), workload);
     } else {
@@ -284,6 +303,9 @@ void show_load(std::vector<int64_t>& keys)
             printf("range workload: const-len(len=%d)\n", opt.items_in_range());
             workload = ConstLengthRangeGenerator<int64_t>(pgen, keys, opt.items_in_range()).generate(opt.num_queries());
         }
+        if (opt.workload_output() != nullptr)
+            save_range_workload(opt.workload_output(), workload);
+
         partitioner->partition_range(keys, workload);
         load = simulate_load_for_range_query(keys, partitioner->ref_partition(0), partitioner->ref_partition(1), workload);
     }
@@ -313,13 +335,21 @@ int main(int argc, char* argv[])
     std::vector<int64_t> keys;
     if (!opt.init_file().empty()) {
         printf("load init data from %s\n", opt.init_file().c_str());
-        std::vector<std::pair<int64_t, int64_t>>kvs = load_init_data<int64_t, int64_t>(opt.init_file());
+        std::vector<std::pair<int64_t, int64_t>> kvs = load_init_data<int64_t, int64_t>(opt.init_file());
         for (auto [key, value]: kvs)
             keys.push_back(key);
+        if (opt.init_output() != nullptr)
+            save_init_data(opt.init_output(), kvs);
     } else {
         printf("generate %ld keys\n", opt.items());
         EvenGenerator<int64_t> init_gen(INT64_MIN, INT64_MAX);
         keys = init_gen.generate(opt.items());
+        if (opt.init_output() != nullptr) {
+            std::vector<std::pair<int64_t, int64_t>> kvs;
+            for (int64_t key: keys)
+                kvs.push_back({key, key & 0xff});
+            save_init_data(opt.init_output(), kvs);
+        }
     }
     
     if (opt.verify_partitioner()) {
