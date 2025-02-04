@@ -14,7 +14,7 @@ struct Option {
         // partitioner
         a.add<std::string>("partitioner", 'P', "partitioner type (bpforest, oracle)", false, "bpforest");
         a.add<int>("bpforest-alpha", 'a', "[bpforest] alpha parameter", false, 5);
-        a.add<int>("oracle-max-items-per-dpu", 'm', "[oracle] maximum number of items per DPU", false, 400 * 1000);
+        a.add<int>("oracle-max-items-per-dpu", 'm', "[oracle] maximum number of items per DPU (default = items / dpus * (1 + 1/bpforest-alpha) )", false, -1);
 
         // chunk builder
         a.add<std::string>("chunker", 'C', "chunk builder type (bpforest, random, singleton)", false, "bpforest");
@@ -67,7 +67,10 @@ struct Option {
     }
 
     int oracle_max_items_per_dpu() {
-        return a.get<int>("oracle-max-items-per-dpu");
+        if (a.exist("oracle-max-items-per-dpu"))
+            return a.get<int>("oracle-max-items-per-dpu");
+        else
+            return items() * (1.0 + 1.0 / bpforest_alpha()) / num_dpus();
     }
 
     const std::string& chunker() {
