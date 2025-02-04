@@ -869,6 +869,57 @@ public:
     }
 };
 
+class EqualSizePartitioner : public Partitioner {
+    std::vector<partition_t> partitions;
+    std::vector<partition_t> empty;
+
+    std::vector<partition_t> make_partition(std::vector<int64_t>&keys)
+    {
+        size_t key_range_per_dpu = (((size_t) INT64_MAX) - INT64_MIN) / num_dpus;
+
+        size_t idx_begin_key = 0;
+        size_t idx_end_key = 0;
+        for (size_t i = 0; i < num_dpus - 1; i++) {
+            int64_t end_key = INT64_MIN + (i + 1) * key_range_per_dpu;
+            auto it = std::upper_bound(keys.begin(), keys.end(), end_key);
+            size_t idx_end_key = it - keys.begin();
+            partition_t p(idx_begin_key, idx_end_key, false, (int)(idx_end_key - idx_begin_key), -1);
+            p.dpu_id = (unsigned int) i;
+            partitions.push_back(p);
+            idx_begin_key = idx_end_key;
+        }
+        partition_t p(idx_begin_key, keys.size(), false, (int)(keys.size() - idx_begin_key), -1);
+        p.dpu_id = (unsigned int) (num_dpus - 1);
+        partitions.push_back(p);
+
+        empty.resize(num_dpus, INVALID_PARTITION);
+        return partitions;
+    }
+
+public:
+    EqualSizePartitioner(size_t num_dpus)
+        : Partitioner(num_dpus)
+    {}
+
+    std::vector<partition_t> partition_point(std::vector<int64_t>& keys, std::vector<int64_t>& workload)
+    {
+        return make_partition(keys);
+    }
+
+    std::vector<partition_t> partition_range(std::vector<int64_t>& keys, std::vector<std::pair<int64_t, int64_t>>& workload)
+    {
+        return make_partition(keys);
+    }
+
+    std::vector<partition_t>& ref_partition(int i)
+    {
+        if (i == 0)
+            return partitions;
+        else
+            return empty;
+    }
+};
+
 std::vector<partition_t>
 combine_partitions(
     std::vector<int64_t>& keys,

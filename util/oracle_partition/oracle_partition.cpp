@@ -12,7 +12,7 @@ struct Option {
     void parse(int argc, char* argv[])
     {       
         // partitioner
-        a.add<std::string>("partitioner", 'P', "partitioner type (bpforest, oracle)", false, "bpforest");
+        a.add<std::string>("partitioner", 'P', "partitioner type (bpforest, oracle, equal)", false, "bpforest");
         a.add<int>("bpforest-alpha", 'a', "[bpforest] alpha parameter", false, 5);
         a.add<int>("oracle-max-items-per-dpu", 'm', "[oracle] maximum number of items per DPU (default = items / dpus * (1 + 1/bpforest-alpha) )", false, -1);
 
@@ -30,8 +30,8 @@ struct Option {
         a.add<double>("zconst", 'z', "[zipf] zipf constant", false, 0.99);
         a.add<int>("slices", 's', "[zipf] number of slices", false, 1024 * 10);
         a.add<bool>("zipf-scramble", 0, "[zipf] scramble zipf", false, true);
-        a.add<int>("chunk-size", 0, "[step] chunk size (default = bpforest-leaf-size * bpforest-node-size)", false, -1);
-        a.add<int>("query-per-chunk", 0, "[step] queries per chunk (default = queries/dpus)", false, -1);
+        a.add<int>("step-chunk-size", 0, "[step] chunk size (default = bpforest-leaf-size * bpforest-node-size)", false, -1);
+        a.add<int>("step-query-per-chunk", 0, "[step] queries per chunk (default = queries/dpus)", false, -1);
         a.add<std::string>("pimtree-workload-file", 'w', "file path to PIM-Tree workload file", false);
 
         // init data
@@ -117,12 +117,12 @@ struct Option {
         return a.get<std::string>("workload");
     }
 
-    int chunk_size() {
-        return a.exist("chunk-size") ? a.get<int>("chunk-size") : a.get<int>("bpforest-leaf-size") * a.get<int>("bpforest-node-size");
+    int step_chunk_size() {
+        return a.exist("step-chunk-size") ? a.get<int>("step-chunk-size") : a.get<int>("bpforest-leaf-size") * a.get<int>("bpforest-node-size");
     }
 
-    int query_per_chunk() {
-        return a.exist("query-per-chunk") ? a.get<int>("query-per-chunk") : a.get<int>("queries") / a.get<int>("dpus");
+    int step_query_per_chunk() {
+        return a.exist("step-query-per-chunk") ? a.get<int>("step-query-per-chunk") : a.get<int>("queries") / a.get<int>("dpus");
     }
 
     int items_in_range() {
@@ -243,6 +243,9 @@ void show_load(std::vector<int64_t>& keys)
     } else if (opt.partitioner() == "oracle") {
         printf("partitioner: oracle(%d)\n", opt.oracle_max_items_per_dpu());
         partitioner = new ChunkedOraclePartitioner(opt.num_dpus(), builder, opt.oracle_max_items_per_dpu());
+    } else if (opt.partitioner() == "equal") {
+        printf("partitioner: equal\n");
+        partitioner = new EqualSizePartitioner(opt.num_dpus());
     } else {
         fprintf(stderr, "invalid partitioner type: %s\n", opt.partitioner().c_str());
         exit(1);
@@ -254,8 +257,8 @@ void show_load(std::vector<int64_t>& keys)
             printf("point workload: zipf(n=%d, a=%f, #slice=%d, %s)\n", opt.num_queries(), opt.zconst(), opt.num_slices(), opt.zipf_scramble() ? "scramble" : "no-scramble");
             pgen = new SlicedZipfOverKeyGenerator<int64_t>(keys, opt.zconst(), opt.num_slices(), opt.zipf_scramble(), 0 /* seed */);
         } else if (opt.workload() == "step") {
-            printf("point workload: step(n=%d, chunk=%d, query_per_chunk=%d)\n", opt.num_queries(), opt.chunk_size(), opt.query_per_chunk());
-            pgen = new StepOverKeyGenerator<int64_t>(keys, opt.chunk_size(), opt.query_per_chunk(), 0 /* seed */);
+            printf("point workload: step(n=%d, chunk=%d, query_per_chunk=%d)\n", opt.num_queries(), opt.step_chunk_size(), opt.step_query_per_chunk());
+            pgen = new StepOverKeyGenerator<int64_t>(keys, opt.step_chunk_size(), opt.step_query_per_chunk(), 0 /* seed */);
         } else {
             fprintf(stderr, "invalid workload type: %s\n", opt.workload().c_str());
             exit(1);
