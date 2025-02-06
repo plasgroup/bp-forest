@@ -1,7 +1,6 @@
 
 #include <cereal/archives/binary.hpp>
 #include <cmdline.h>
-#include <cstdlib>
 #include <thread>
 #include <fstream>
 #include "common.h"
@@ -157,10 +156,6 @@ public:
     void batch_range_count(uint64_t n, 
                            const RangeCountQuery queries[],
                            value_uint64_t results[]);
-
-    void batch_range_count_prefix(uint64_t n, 
-                                  const RangeCountPrefixQuery queries[],
-                                  uint64_t results[]);
 
     int get_parallelism() const
     {
@@ -320,13 +315,6 @@ void CPUDatabase::batch_range_count(uint64_t n,
             results[i] = count;
         }
     });
-}
-
-void CPUDatabase::batch_range_count_prefix(uint64_t /* n */, 
-                                           const RangeCountPrefixQuery /* queries */[],
-                                           uint64_t /* results */[])
-{
-    std::abort();
 }
 
 int main(int argc, char* argv[])

@@ -8,10 +8,8 @@
 
 #include <cereal/archives/binary.hpp>
 
-#include <algorithm>
 #include <cstring>
 #include <functional>
-#include <stdint.h>
 #include <vector>
 
 
@@ -72,17 +70,6 @@ public:
                 key_int64_to_uint64(query.tsk.s.rkey)};
             value_uint64_t needle = range.begin & 0xff;
             workload.push_back({range, needle});
-        }
-    }
-    void push_back_query(std::vector<RangeCountPrefixQuery>& workload, operation& query)
-    {
-        if (query.type == scan_t) {
-            RangeCountPrefixQuery qry{};
-            qry.range = {
-                key_int64_to_uint64(query.tsk.s.lkey),
-                key_int64_to_uint64(query.tsk.s.rkey)};
-            std::fill_n(&qry.prefix[0], std::min<uint64_t>({8, qry.range.begin % 16}), '0' + qry.range.begin % 16);
-            workload.push_back(qry);
         }
     }
     template <typename T>
@@ -338,63 +325,6 @@ public:
             num_queries_in_last_batch, &results[0],
             [&](value_uint64_t* verify_results) {
                 verify_db->batch_range_count(num_queries_in_last_batch,
-                    &queries[0], verify_results);
-            });
-    }
-};
-
-class RangeCountPrefixBenchmark : public Benchmark
-{
-    WorkloadBuffer<RangeCountPrefixQuery>* workload_buffer;
-    ExtendableBuffer<value_uint64_t> results;
-    ExtendableBuffer<RangeCountPrefixQuery> queries;
-    size_t num_queries_in_last_batch = 0;
-
-public:
-    RangeCountPrefixBenchmark(const std::string& workload_file,
-        bool is_pimtree_workload, size_t nr_keys)
-    {
-        if (is_pimtree_workload)
-            workload_buffer = load_pimtree_workload<RangeCountPrefixQuery>(workload_file);
-        else {
-            PiecewiseConstantWorkload pworkload;
-            load_workload(workload_file, &pworkload);
-            key_uint64_t key_interval = init_key_interval(nr_keys);
-            size_t range_length = key_interval * 100 - 1;
-            std::vector<RangeCountPrefixQuery> workload;
-            workload.reserve(pworkload.data.size());
-            for (size_t i = 0; i < pworkload.data.size(); i++) {
-                const auto& p = pworkload.data[i];
-                RangeCountPrefixQuery qry{};
-                qry.range = {p, p + range_length};
-                std::fill_n(&qry.prefix[0], std::min<uint64_t>({8, qry.range.begin % 16}), '0' + qry.range.begin % 16);
-                workload.push_back(qry);
-            }
-            workload_buffer = new WorkloadBuffer<RangeCountPrefixQuery>(std::move(workload));
-        }
-    }
-
-    virtual ~RangeCountPrefixBenchmark()
-    {
-        delete workload_buffer;
-    }
-
-    virtual void do_one_batch(int idx_batch, Database* db)
-    {
-        size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, queries, results);
-        {
-            StopWatch sw(QueryProcessTime);
-            db->batch_range_count_prefix(num_queries_batch, &queries[0], &results[0]);
-        }
-        num_queries_in_last_batch = num_queries_batch;
-    }
-
-    void verify()
-    {
-        do_verify<value_uint64_t>(
-            num_queries_in_last_batch, &results[0],
-            [&](value_uint64_t* verify_results) {
-                verify_db->batch_range_count_prefix(num_queries_in_last_batch,
                     &queries[0], verify_results);
             });
     }

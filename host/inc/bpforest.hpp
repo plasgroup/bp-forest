@@ -49,7 +49,6 @@ struct BPForest : ParallelManager<BPForest> {
     void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
     void batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t result[]);
     void batch_range_count(size_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
-    void batch_range_count_prefix(size_t nr_queries, const RangeCountPrefixQuery queries[], uint64_t result[]);
     void batch_scan(size_t nr_queries, const KeyRange ranges[], BatchScanResult& result);
 
     void print_params(std::ostream&) const;
@@ -99,19 +98,6 @@ private:
     struct {
         std::array<RCQPerRange, MAX_NR_DPUS> cold, hot;
     } rcqs;
-
-    struct RCPQPerRange {
-        // qrys[idx_host_thread][idx_qry]
-        std::vector<std::vector<RangeCountPrefixQuery>> qrys;
-        // orig_idxs[idx_host_thread][idx_qry]
-        std::vector<std::vector<size_t>> orig_idxs;
-        // results[idx_host_thread][idx_qry]
-        std::vector<ExtendableBuffer<uint64_t>> results;
-        size_t nr_qrys;
-    };
-    struct {
-        std::array<RCPQPerRange, MAX_NR_DPUS> cold, hot;
-    } rcpqs;
 
 public:  // TODO: privatize
     struct Summary {
@@ -169,19 +155,6 @@ private:
         std::vector<std::vector<size_t>> orig_idxs;
     };
 
-    template <bool HasHotRanges>
-    void route_rcpq(size_t nr_queries, const RangeCountPrefixQuery queries[], uint64_t result[]);
-    template <bool HasHotRanges>
-    void route_rcpq_impl(unsigned tid);
-    template <bool HasHotRanges>
-    void route_single_rcpq(size_t idx_qry, const RangeCountPrefixQuery& qry, value_uint64_t& result, unsigned tid);
-    bool check_if_rcpq_balance();
-    void execute_rcpq_in_dpus(size_t nr_queries, uint64_t result[]);
-    void postprocess_of_rcpq(uint64_t result[]);
-    void postprocess_of_rcpq_impl(unsigned tid);
-    struct RCPQSender;
-    struct RCPQResultReceiver;
-
     union TmpData {
         TmpData() {}
         ~TmpData() {}
@@ -200,9 +173,6 @@ private:
 
         std::tuple<size_t, const RangeCountQuery*, uint64_t*> route_rcq;
         uint64_t* postprocess_of_rcq;
-
-        std::tuple<size_t, const RangeCountPrefixQuery*, uint64_t*> route_rcpq;
-        uint64_t* postprocess_of_rcpq;
 
         std::tuple<std::reference_wrapper<const std::array<bool, MAX_NR_DPUS>>,
             std::array<ReRoutedQrysPerColdRange, MAX_NR_DPUS>>
