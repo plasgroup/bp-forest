@@ -198,6 +198,7 @@ struct WorkloadGen : ParallelManager<WorkloadGen> {
         parser.add<RandSeedType>("rand_seed", 'r', "seed for random number generator (the default value on the right is chosen randomly each time)", false, std::random_device{}());
         parser.add<unsigned>("num_threads", 't', "num of threads", false, std::numeric_limits<unsigned>::max());
         parser.add("showinfo", 'v', "show debug info if true");
+	parser.add("noinit", 0, "do not create init key-value pairs");
         parser.parse_check(argc, argv);
 
         return instantiate_step2(parser);
@@ -272,7 +273,9 @@ private:
             zipf_nr_cands, std::stod(zipf_skewness_str),
             std::move(scramble_mapping),
             nthreads, std::move(rand_gens),
-            showinfo};
+            showinfo,
+	    parser.exist("noinit")
+	    };
     }
 
     explicit WorkloadGen(
@@ -282,8 +285,9 @@ private:
         uint64_t zipf_nr_cands, double zipf_skewness,
         std::vector<uint64_t>&& scramble_mapping,
         unsigned nthreads, std::vector<xoshiro256pp>&& rand_gens,
-        bool showinfo)
+        bool showinfo, bool noinit)
         : ParallelManager<WorkloadGen>(nthreads),
+	  noinit(noinit),
           pairs_file_str{pairs_file_str}, queries_file_str{queries_file_str},
           npairs{npairs}, nqueries{nqueries}, pimtree_op_tag{pimtree_op_tag},
           scan_width{scan_width},
@@ -294,6 +298,7 @@ private:
     {
     }
 
+    bool noinit;
     const std::string pairs_file_str;
     const std::string queries_file_str;
     const size_t npairs;
@@ -529,17 +534,19 @@ void WorkloadGen::operator()()
     std::cout << '[' << pairs_file_str << "] 100% values generated" << std::endl;
 
 
-    std::cout << '[' << pairs_file_str << "] file being written" << std::endl;
-    {
+    if (!noinit) {
+      std::cout << '[' << pairs_file_str << "] file being written" << std::endl;
+      {
         std::ofstream pairs_file{pairs_file_str, std::ios_base::binary};
         if (!pairs_file) {
-            std::cerr << "cannot open file " << pairs_file_str << std::endl;
-            std::exit(1);
+	  std::cerr << "cannot open file " << pairs_file_str << std::endl;
+	  std::exit(1);
         }
         pairs_file.write(reinterpret_cast<std::ofstream::char_type*>(&init_ops[0]), static_cast<std::streamsize>(sizeof(operation) * npairs));
+      }
+      std::cout << '[' << pairs_file_str << "] 100% written" << std::endl;
+      init_ops.reclaim();
     }
-    std::cout << '[' << pairs_file_str << "] 100% written" << std::endl;
-    init_ops.reclaim();
 
 
     if (showinfo) {
