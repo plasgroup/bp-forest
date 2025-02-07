@@ -17,7 +17,6 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
                                      "RMQ_RESULT_OFFSET: " EXPAND_STRINGIFY(RMQ_RESULT_OFFSET) "\n"
                                      "MAX_NR_RMQ_LUMPS: " EXPAND_STRINGIFY(MAX_NR_RMQ_LUMPS) "\n"
                                      "RCQ_RESULT_OFFSET: " EXPAND_STRINGIFY(RCQ_RESULT_OFFSET) "\n"
-                                     "RCPQ_RESULT_OFFSET: " EXPAND_STRINGIFY(RCPQ_RESULT_OFFSET) "\n"
                                      "NR_TASKLETS: " EXPAND_STRINGIFY(NR_TASKLETS) "\n"
                                      "MRAM_FOR_TREE: " EXPAND_STRINGIFY(MRAM_FOR_TREE) "\n"
 #ifdef BITMAP_IN_MRAM
