@@ -24,8 +24,8 @@ struct Option {
         a.add<int>("random-chunk-min", 0, "[random] min chunk size", false, 8);
 
         // workload
-        a.add<std::string>("workload", 'W', "workload type (zipf, step)", false, "point");
-        a.add<int>("queries", 'q', "number of queries", false, 1024 * 1024);
+        a.add<std::string>("workload", 'W', "workload type (zipf, step)", false, "zipf");
+        a.add<int>("queries", 'q', "number of queries", false, 1000 * 1000);
         a.add<int>("items-in-range", 'r', "range width of queries (#of items)", false, 100);
         a.add<double>("zconst", 'z', "[zipf] zipf constant", false, 0.99);
         a.add<int>("slices", 's', "[zipf] number of slices", false, 1024 * 10);
