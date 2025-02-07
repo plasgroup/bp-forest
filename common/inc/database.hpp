@@ -6,7 +6,6 @@
 
 #include <array>
 #include <cstddef>
-#include <cstring>
 #include <fstream>
 #include <functional>
 #include <utility>
@@ -38,11 +37,6 @@ public:
     virtual void batch_range_count(uint64_t n,
         const RangeCountQuery queries[],
         value_uint64_t results[])
-        = 0;
-
-    virtual void batch_range_count_prefix(uint64_t n,
-        const RangeCountPrefixQuery queries[],
-        uint64_t results[])
         = 0;
 
     virtual int get_parallelism() const = 0;
@@ -185,29 +179,6 @@ public:
             results[i] = foldl(range, 0,
                 [&needle](value_uint64_t count, const KVPair& kv) {
                     if (kv.value == needle)
-                        count++;
-                    return count;
-                });
-        }
-    }
-
-    void batch_range_count_prefix(uint64_t n,
-        const RangeCountPrefixQuery queries[],
-        uint64_t results[])
-    {
-        for (size_t i = 0; i < n; i++) {
-            const KeyRange& range = queries[i].range;
-            const char(&prefix)[8] = queries[i].prefix;
-            results[i] = foldl(range, 0,
-                [&prefix](value_uint64_t count, const KVPair& kv) {
-                    char value[16] = {};
-                    const uint8_t value_num = kv.key % 16;
-                    for (uint8_t idx_digit = 0; idx_digit < value_num; idx_digit++) {
-                        value[idx_digit] = (char)('0' + value_num);
-                    }
-                    value[value_num] = '\0';
-
-                    if (std::strncmp(value, prefix, 8) == 0)
                         count++;
                     return count;
                 });
