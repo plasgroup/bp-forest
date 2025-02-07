@@ -11,23 +11,23 @@ find_package(Threads REQUIRED)
 
 target_link_libraries(pimtree_aggregation common_base cmdline workload_mgmt  Threads::Threads)
 
-add_executable(bandwidth
-    bandwidth.cpp)
+# add_executable(bandwidth
+#     bandwidth.cpp)
 
-if (TARGET bandwidth)
-  set(PKG_CONFIG_EXECUTABLE dpu-pkg-config)
-endif()
+# if (TARGET bandwidth)
+#   set(PKG_CONFIG_EXECUTABLE dpu-pkg-config)
+# endif()
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(DPU_CONFIG IMPORTED_TARGET dpu)
-target_link_libraries(bandwidth PkgConfig::DPU_CONFIG)
+# find_package(PkgConfig REQUIRED)
+# pkg_check_modules(DPU_CONFIG IMPORTED_TARGET dpu)
+# target_link_libraries(bandwidth PkgConfig::DPU_CONFIG)
 
-add_executable(bandwidth-dpu
-    empty_dpu_program.c)
+# add_executable(bandwidth-dpu
+#     empty_dpu_program.c)
 
-if(TARGET bandwidth-dpu)
-    set(CMAKE_C_COMPILER dpu-upmem-dpurte-clang)
-endif()
+# if(TARGET bandwidth-dpu)
+#     set(CMAKE_C_COMPILER dpu-upmem-dpurte-clang)
+# endif()
 
-target_compile_definitions(bandwidth-dpu PRIVATE NR_TASKLETS=11)
-target_link_options(bandwidth-dpu PRIVATE -DNR_TASKLETS=11)
+# target_compile_definitions(bandwidth-dpu PRIVATE NR_TASKLETS=11)
+# target_link_options(bandwidth-dpu PRIVATE -DNR_TASKLETS=11)
