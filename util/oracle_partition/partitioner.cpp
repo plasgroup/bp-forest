@@ -119,20 +119,23 @@ combine_partitions(
                 // gap between hot partitions
                 int end_idx = hot_it->begin_idx;
                 partition_t p = base_it->subpartition(begin_idx, end_idx);
+                //printf("gap: %d, %d\n", begin_idx, end_idx);
                 partitions.push_back(p);
             } else {
+                assert(begin_idx == hot_it->begin_idx);
                 if (begin_idx != hot_it->begin_idx) {
                     printf("begin_idx = %d, hot_it->begin_idx = %d\n", begin_idx, hot_it->begin_idx);
                     exit(1);
                 }
-                assert(begin_idx == hot_it->begin_idx);
             }
             partitions.push_back(*hot_it);
+            //printf("hot: %d, %d\n", hot_it->begin_idx, hot_it->end_idx);
             hot_it++;
         }
         if (next_begin_index(partitions) < base_it->end_idx) {
             // remaining base partition
             partition_t p = base_it->subpartition(next_begin_index(partitions), base_it->end_idx);
+            //printf("rem: %d, %d\n", p.begin_idx, p.end_idx);
             partitions.push_back(p);
         }
         base_it++;

@@ -83,10 +83,14 @@ simulate_load_for_range_query(
         //printf("partition = (%ld, %ld) %d %d\n", keys[it->begin_idx], keys[it->end_idx], it->begin_idx, it->end_idx);
         while (it != partitions.end() && it->first_key(keys, INT64_MIN) <= range.second) {
             //printf("range = (%ld, %ld), partition = (%ld, %ld)\n", range.first, range.second, keys[it->begin_idx], keys[it->end_idx]);
-            if (it->is_hot)
+            if (it->type == partition_t::HOT || it->type == partition_t::WARM)
                 hot_load[it->dpu_id]++;
-            else
+            else if (it->type == partition_t::COLD)
                 base_load[it->dpu_id]++;
+            else {
+                printf("invalid partition type\n");
+                exit(1);
+            }
             it++;
         }
     }

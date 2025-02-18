@@ -12,8 +12,8 @@ struct Option {
     void parse(int argc, char* argv[])
     {       
         // partitioner
-        a.add<std::string>("partitioner", 'P', "partitioner type (bpforest, oracle, equal)", false, "bpforest");
-        a.add<int>("bpforest-alpha", 'a', "[bpforest] alpha parameter", false, 5);
+        a.add<std::string>("partitioner", 'P', "partitioner type (bpforest, hwc, oracle, equal)", false, "bpforest");
+        a.add<int>("bpforest-alpha", 'a', "[bpforest|hwc] alpha parameter", false, 5);
         a.add<int>("oracle-max-items-per-dpu", 'm', "[oracle] maximum number of items per DPU (default = items / dpus * (1 + 1/bpforest-alpha) )", false, -1);
 
         // chunk builder
@@ -195,11 +195,12 @@ void save_load(
     std::vector<partition_t>& hot = partitioner->ref_partition(1);
 
     fprintf(fp, "# dpu_id, base_load, hot_load, ");
-    fprintf(fp, "base_begin_idx, base_end_idx, hot_begin_idx, hot_end_idx\n");
+    fprintf(fp, "base_begin_idx, base_end_idx, hot_begin_idx, hot_end_idx, total_load, hot_items\n");
     for (size_t i = 0; i < base_load.size(); i++)
-        fprintf(fp, "%ld, %ld, %ld, %d, %d, %d, %d\n",
+        fprintf(fp, "%ld, %ld, %ld, %d, %d, %d, %d, %d, %d\n",
                 i, base_load[i], hot_load[i],
-                base[i].begin_idx, base[i].end_idx, hot[i].begin_idx, hot[i].end_idx);
+                base[i].begin_idx, base[i].end_idx, hot[i].begin_idx, hot[i].end_idx,
+                base_load[i] + hot_load[i], hot[i].end_idx - hot[i].begin_idx);
     fclose(fp);
 }
 
@@ -253,7 +254,10 @@ void show_load(std::vector<int64_t>& keys)
     }
 
     Partitioner* partitioner = nullptr;
-    if (opt.partitioner() == "bpforest") {
+    if (opt.partitioner() == "hwc") {
+        printf("partitioner: hwc(%d)\n", opt.bpforest_alpha());
+        partitioner = new HWCBPForestPartitioner(opt.num_dpus(), builder, opt.bpforest_alpha());
+    } else if (opt.partitioner() == "bpforest") {
         printf("partitioner: bpforest(%d)\n", opt.bpforest_alpha());
         partitioner = new ChunkedBPForestPartitioner(opt.num_dpus(), builder, opt.bpforest_alpha());
     } else if (opt.partitioner() == "oracle") {
@@ -307,12 +311,24 @@ void show_load(std::vector<int64_t>& keys)
             save_range_workload(opt.workload_output(), workload);
 
         partitioner->partition_range(keys, workload);
+        printf("partitioned\n");
         load = simulate_load_for_range_query(keys, partitioner->ref_partition(0), partitioner->ref_partition(1), workload);
     }
 
     auto& [base_load, hot_load] = load;
-    for (size_t i = 0; i < base_load.size(); i++)
-        printf("load[%ld] = %ld / %ld\n", i, base_load[i], hot_load[i]);
+    size_t max_load = 0;
+    size_t max_load_hot = 0;
+    size_t max_load_cold = 0;
+    size_t max_load_dpu = 0;
+    for (size_t i = 0; i < base_load.size(); i++) {
+        if (base_load[i] + hot_load[i] > max_load) {
+            max_load = base_load[i] + hot_load[i];
+            max_load_dpu = i;
+            max_load_hot = hot_load[i];
+            max_load_cold = base_load[i];
+        }
+    }
+    printf("max_load = %ld, max_load_hot = %ld, max_load_cold = %ld, max_load_dpu = %ld\n", max_load, max_load_hot, max_load_cold, max_load_dpu);
 
     if (!opt.load_output().empty())
         save_load(partitioner, base_load, hot_load, opt.load_output().c_str());
