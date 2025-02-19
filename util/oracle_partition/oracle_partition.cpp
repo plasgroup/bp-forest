@@ -46,6 +46,8 @@ struct Option {
         a.add<std::string>("workload-output", 0, "output file for workload in PIM-Tree format", false, "");
         a.add<std::string>("init-output", 0, "output file for init data in PIM-Tree format", false, "");
 
+        a.add<int>("seed", 0, "random seed", false, 1000*1000);
+
         // debug
         a.add("verify-partitoner", 0, "verify-pertitioner");
 
@@ -151,6 +153,10 @@ struct Option {
         }
     }
 
+    int seed() {
+        return a.get<int>("seed");
+    }
+
     const std::string& load_output() {
         return a.get<std::string>("load-output");
     }
@@ -236,6 +242,42 @@ void save_partition(std::vector<int64_t>& keys, Partitioner* partitioner, const 
     store_partition(file_name, partitions);
 }
 
+void evaluate_workload(std::vector<int64_t>& keys, size_t num_dpus, ChunkBuilder* chunk_builder, std::vector<std::pair<int64_t, int64_t>>& workload)
+{
+    std::vector<ChunkBuilder::chunk> chunks;
+    for_each_bpforest_baserange(keys, num_dpus, [&](unsigned int begin_idx, unsigned int end_idx) {
+        chunk_builder->build_chunks(chunks, keys, begin_idx, end_idx);
+    });
+
+    size_t queries = 0;
+    std::vector<size_t> queries_in_chunk(chunks.size(), 0);
+    for (auto [lkey, rkey]: workload) {
+        auto it = std::upper_bound(chunks.begin(), chunks.end(), lkey,
+        [&](int64_t key, const ChunkBuilder::chunk& c) {
+            return key < c.left_key;
+        });
+        for (auto it2 = it == chunks.begin() ? it : it - 1;
+             it2 != chunks.end() && it2->left_key <= rkey; it2++) {
+            queries_in_chunk[it2 - chunks.begin()]++;
+            queries++;
+        }
+    }
+
+    size_t max = 0;
+    for (auto q: queries_in_chunk) {
+        max = std::max(max, q);
+    }
+    printf("max queries in a chunk = %ld total = %ld\n", max, queries);
+}
+
+void evaluate_workload(std::vector<int64_t>& keys, size_t num_dpus, ChunkBuilder* chunk_builder, std::vector<int64_t>& workload)
+{
+    std::vector<std::pair<int64_t, int64_t>> range_workload;
+    for (auto key : workload)
+        range_workload.push_back({key, key});
+    evaluate_workload(keys, num_dpus, chunk_builder, range_workload);
+}
+
 void show_load(std::vector<int64_t>& keys)
 {
     ChunkBuilder* builder = nullptr;
@@ -244,7 +286,7 @@ void show_load(std::vector<int64_t>& keys)
         builder = new BPForestChunkBuilder(opt.bpforest_leaf_size(), opt.bpforest_node_size());
     } else if (opt.chunker() == "random") {
         printf("chunker: random(%d, %d)\n", opt.random_chunk_min(), opt.random_chunk_max());
-        builder = new RandomChunkBuilder(opt.random_chunk_min(), opt.random_chunk_max(), 0 /* seed */);
+        builder = new RandomChunkBuilder(opt.random_chunk_min(), opt.random_chunk_max(), opt.seed());
     } else if (opt.chunker() == "singleton") {
         printf("chunker: singleton\n");
         builder = new SingletonChunkBuilder();
@@ -275,10 +317,10 @@ void show_load(std::vector<int64_t>& keys)
     if (opt.workload_file().empty()) {
         if (opt.workload() == "zipf") {
             printf("point workload: zipf(n=%d, a=%f, #slice=%d, %s)\n", opt.num_queries(), opt.zconst(), opt.num_slices(), opt.zipf_scramble() ? "scramble" : "no-scramble");
-            pgen = new SlicedZipfOverKeyGenerator<int64_t>(keys, opt.zconst(), opt.num_slices(), opt.zipf_scramble(), 0 /* seed */);
+            pgen = new SlicedZipfOverKeyGenerator<int64_t>(keys, opt.zconst(), opt.num_slices(), opt.zipf_scramble(), opt.seed());
         } else if (opt.workload() == "step") {
             printf("point workload: step(n=%d, chunk=%d, query_per_chunk=%d)\n", opt.num_queries(), opt.step_chunk_size(), opt.step_query_per_chunk());
-            pgen = new StepOverKeyGenerator<int64_t>(keys, opt.step_chunk_size(), opt.step_query_per_chunk(), 0 /* seed */);
+            pgen = new StepOverKeyGenerator<int64_t>(keys, opt.step_chunk_size(), opt.step_query_per_chunk(), opt.seed());
         } else {
             fprintf(stderr, "invalid workload type: %s\n", opt.workload().c_str());
             exit(1);
@@ -298,6 +340,7 @@ void show_load(std::vector<int64_t>& keys)
         
         partitioner->partition_point(keys, workload);
         load = simulate_load_for_point_query(keys, partitioner->ref_partition(0), partitioner->ref_partition(1), workload);
+        evaluate_workload(keys, opt.num_dpus(), builder, workload);
     } else {
         std::vector<std::pair<int64_t, int64_t>> workload;
         if (!opt.workload_file().empty()) {
@@ -311,8 +354,8 @@ void show_load(std::vector<int64_t>& keys)
             save_range_workload(opt.workload_output(), workload);
 
         partitioner->partition_range(keys, workload);
-        printf("partitioned\n");
         load = simulate_load_for_range_query(keys, partitioner->ref_partition(0), partitioner->ref_partition(1), workload);
+        evaluate_workload(keys, opt.num_dpus(), builder, workload);
     }
 
     auto& [base_load, hot_load] = load;
@@ -383,7 +426,7 @@ int main(int argc, char* argv[])
 
 static void sanity_check_compair_BPForestPartitioner_and_ChunkedBPForestPartitioner(std::vector<int64_t> &keys)
 {
-    std::vector<int64_t> workload = SlicedZipfOverKeyGenerator<int64_t>(keys, opt.zconst(), opt.num_slices(), true /* scramble */, 0 /* seed */).generate(opt.num_queries());
+    std::vector<int64_t> workload = SlicedZipfOverKeyGenerator<int64_t>(keys, opt.zconst(), opt.num_slices(), true /* scramble */, opt.seed()).generate(opt.num_queries());
     BPForestPartitioner partitioner(opt.num_dpus(), opt.bpforest_alpha());
     SingletonChunkBuilder builder;
     ChunkedBPForestPartitioner chunked_partitioner(opt.num_dpus(), &builder, opt.bpforest_alpha());
@@ -404,7 +447,7 @@ static void sanity_check_compair_BPForestPartitioner_and_ChunkedBPForestPartitio
 
 static void sanity_check_compair_OraclePartitioner_and_ChunkedOraclePartitioner(std::vector<int64_t>& keys)
 {
-    std::vector<int64_t> workload = SlicedZipfOverKeyGenerator<int64_t>(keys, opt.zconst(), opt.num_slices(), true /* scramble */, 0 /* seed */).generate(opt.num_queries());
+    std::vector<int64_t> workload = SlicedZipfOverKeyGenerator<int64_t>(keys, opt.zconst(), opt.num_slices(), true /* scramble */, opt.seed()).generate(opt.num_queries());
     OraclePartitioner partitioner(opt.num_dpus(), opt.oracle_max_items_per_dpu());
     SingletonChunkBuilder builder;
     ChunkedOraclePartitioner chunked_partitioner(opt.num_dpus(), &builder, opt.oracle_max_items_per_dpu());
