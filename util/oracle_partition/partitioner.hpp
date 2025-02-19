@@ -1037,6 +1037,22 @@ class HWCBPForestPartitioner : public Partitioner {
     {
         std::vector<partition_t*> found_warm;
 
+        // compute remaining_queries and nr_warm_partitions
+        size_t remaining_queries = 0;
+        {
+            auto hot_it = hot_partitions.begin();
+            for (auto it = query_it; it != query_end && *it <= last_key; it++) {
+                while (hot_it != hot_partitions.end() && (*hot_it)->last_key(keys, INT64_MAX) < *it)
+                    hot_it++;
+                if (hot_it != hot_partitions.end() && (*hot_it)->first_key(keys, INT64_MIN) <= *it)
+                    continue;
+                remaining_queries++;
+            }
+        }
+        size_t nr_warm_partitions = remaining_queries / min_queries;
+        if (nr_warm_partitions == 0)
+            return found_warm;
+
         std::queue<size_t> nqueries;
         chunk_it_t right = chunks.begin();
         chunk_it_t left = chunks.begin();
@@ -1095,7 +1111,8 @@ class HWCBPForestPartitioner : public Partitioner {
             if (total_queries > best_warm.load)
                 best_warm = partition_t(left_key_idx, left_key_idx + total_items, partition_t::WARM, total_items, total_queries);
 
-            if (passed_queries >= min_queries) {
+            //if (passed_queries >= min_queries) {
+            if (passed_queries >= remaining_queries * (found_warm.size() + 1) / nr_warm_partitions) {
                 partition_t* warm = new partition_t(best_warm);
                 warm->src_dpu = dpu_id;
                 found_warm.push_back(warm);
@@ -1103,7 +1120,7 @@ class HWCBPForestPartitioner : public Partitioner {
                 // reset
                 right++;
                 left = right;
-                passed_queries = 0;
+                //passed_queries = 0;
                 total_items = 0;
                 total_queries = 0;
                 left_key_idx = warm->end_idx;
