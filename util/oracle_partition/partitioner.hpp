@@ -1225,25 +1225,40 @@ class HWCBPForestPartitioner : public Partitioner {
         
         // make "b" warm partitions from "best_left"
         {
+            auto hot_it = hot_partitions.begin();
             chunk_it_t left = best_left;
-            chunk_it_t right = left;
+            chunk_it_t next = left;
             left_key_idx = best_left_key_idx;
             for (int i = 0; i < b; i++) {
-                chunk_it_t prev_right = chunks.end();
+                chunk_it_t right = chunks.end();
                 size_t items = 0;
-                while (right != chunks.end()) {
-                    if (items + right->count > max_items)
+                size_t total_items = 0;
+                while (left != chunks.end()) {
+                    while (hot_it != hot_partitions.end() && (*hot_it)->last_key(keys, last_key) < left->left_key)
+                        hot_it++;
+                    if (hot_it == hot_partitions.end() || left->left_key < (*hot_it)->first_key(keys, chunks.begin()->left_key))
                         break;
-                    items += right->count;
-                    prev_right = right;
+                    total_items += left->count;
+                    left++;
+                }
+                right = left;
+                while (right != chunks.end()) {
+                    if (total_items + next->count > max_items)
+                        break;
+                    if (hot_it == hot_partitions.end() || next->left_key < (*hot_it)->first_key(keys, chunks.begin()->left_key)) {
+                        items += next->count;
+                        right = next;
+                    }
+                    total_items += next->count;
                     right++;
                 }
-                assert(prev_right != chunks.end());
-                size_t queries = count_queries_in_range(query_it, query_end, left->left_key, chunk_last_key(prev_right, chunks.end(), last_key));
-                partition_t* warm = new partition_t(left_key_idx, left_key_idx + items, partition_t::WARM, items, queries);
-                warm->src_dpu = dpu_id;
-                found_warm.push_back(warm);
-
+                if (right != chunks.end()) {
+                    size_t queries = count_queries_in_range(query_it, query_end, left->left_key, chunk_last_key(right, chunks.end(), last_key));
+                    partition_t* warm = new partition_t(left_key_idx, left_key_idx + items, partition_t::WARM, items, queries);
+                    warm->src_dpu = dpu_id;
+                    found_warm.push_back(warm);
+                } else 
+                    printf("empty warm partition\n");
                 left = right;
                 left_key_idx += items;
             }
