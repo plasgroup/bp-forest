@@ -54,6 +54,7 @@ struct BPForest : ParallelManager<BPForest> {
     void batch_scan(size_t nr_queries, const KeyRange ranges[], BatchScanResult& result);
 
     void print_params(std::ostream&) const;
+    std::vector<Partition> dump_partitions() const;
 
 private:
     const dpu_id_t nr_cold_ranges;

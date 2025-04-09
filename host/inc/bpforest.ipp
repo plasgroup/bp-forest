@@ -2947,3 +2947,23 @@ inline void BPForest::print_params(std::ostream& ostr) const
 #undef EXPAND_STRINGIFY
     // clang-format on
 }
+std::vector<Partition> BPForest::dump_partitions() const
+{
+    std::vector<Partition> result;
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
+        if (idx_dpu + 1 != nr_cold_ranges) {
+            result.push_back({key_uint64_to_int64(cold_delims[idx_dpu]), cold_delims[idx_dpu + 1] - cold_delims[idx_dpu]});
+        } else {
+            result.push_back({key_uint64_to_int64(cold_delims[idx_dpu]), KEY_MAX - cold_delims[idx_dpu] + 1});
+        }
+    }
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
+        const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
+        if (idx_hot == INVALID_DPU_ID) {
+            result.push_back({0, 0});
+        } else {
+            result.push_back({key_uint64_to_int64(hot_delims[idx_hot]), hot_max_key[idx_hot] - hot_delims[idx_hot] + 1});
+        }
+    }
+    return result;
+}
