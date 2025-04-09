@@ -91,7 +91,6 @@ cmake --build ./build
 ### switch between HOST_ONLY / UPMEM / SIMULATOR
 
 * in `./scripts/build.sh`
-  * replace `-D*_UPMEM` options in `base_cmake_ops` with `-D*_HOST_ONLY` / `-D*_SIMULATOR`
-  * replace `make -j \$(nproc) host_app_UPMEM` with `... host_app_host_only` / `... host_app_simulator`
+  * replace `make -j \$(nproc) host_app_UPMEM` with `... host_app_host_only` / `... host_app_upmem_simulator`
 * in `./scripts/run_all.sh`
-  * replace `./build/${variant}/host/host_app_UPMEM` with `.../host_app_host_only` / `.../host_app_simulator`
+  * replace `./build/${variant}/host/host_app_UPMEM` with `.../host_app_host_only` / `.../host_app_upmem_simulator`

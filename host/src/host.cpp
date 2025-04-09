@@ -77,6 +77,7 @@ struct Option {
         a.add<std::string>("workload_file", 'w', "file path to PIM-Tree workload file", true);
         a.add<std::string>("init_file", 'i', "file path to PIM-Tree init file", true);
         a.add<unsigned>("balancing-param", 'a', "the tunable parameter for compute/memory load balancing in B+-Forest", false, 1);
+        a.add("one-scan", '1', "perform only a single scan to find hot spots");
         a.add<std::string>("partition", 0, "load pre-calculated partitioning", false);
         a.add<unsigned>("nr-host-threads", 't', "num of threads used in pre/post-processing in B+-Forest", false, 0);
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
@@ -96,6 +97,7 @@ struct Option {
         workload_file = a.get<std::string>("workload_file");
         init_file = a.get<std::string>("init_file");
         balancing_param = a.get<unsigned>("balancing-param");
+        one_scan = a.exist("one-scan");
         std::string tmp_partition = a.get<std::string>("partition");
         nr_host_threads = a.get<unsigned>("nr-host-threads");
         nr_batches = a.get<int>("num_batches");
@@ -132,6 +134,7 @@ struct Option {
 
     std::string dump_param_file;
     unsigned balancing_param;
+    bool one_scan;
     std::optional<std::string> partition;
     unsigned nr_host_threads;
     std::string workload_file;
@@ -245,8 +248,8 @@ int main(int argc, char* argv[])
     }
 
     InitData init_data{opt.init_file};
-    BPForestDatabase db = partitions ? BPForestDatabase{init_data, *partitions, BPForest::Param{opt.balancing_param, opt.nr_host_threads}}
-                                     : BPForestDatabase{init_data, BPForest::Param{opt.balancing_param, opt.nr_host_threads}};
+    BPForestDatabase db = partitions ? BPForestDatabase{init_data, *partitions, BPForest::Param{opt.balancing_param, opt.one_scan, opt.nr_host_threads}}
+                                     : BPForestDatabase{init_data, BPForest::Param{opt.balancing_param, opt.one_scan, opt.nr_host_threads}};
 
 #ifdef PRINT_DEBUG
     printf("initialization finished\n");

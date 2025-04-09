@@ -8,6 +8,7 @@
 #include "partition.hpp"
 #include "workload_types.h"
 
+#include <any>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -37,6 +38,7 @@ struct BatchScanResult {
 
 struct BPForestParameter {
     unsigned balancing = 1;
+    bool one_scan = false;
     unsigned nr_host_threads = 0;
 };
 struct BPForest : ParallelManager<BPForest> {
@@ -86,18 +88,20 @@ private:
     ExtendableBuffer<std::array<size_t, 2>> rg_qry_to_minirg;
     std::vector<size_t> rg_lump_end_indices;
 
-    struct RCQPerRange {
+    template <typename Query, typename Result>
+    struct QueryDataPerRange {
         // qrys[idx_host_thread][idx_qry]
-        std::vector<std::vector<RangeCountQuery>> qrys;
+        std::vector<std::vector<Query>> qrys;
         // orig_idxs[idx_host_thread][idx_qry]
         std::vector<std::vector<size_t>> orig_idxs;
         // results[idx_host_thread][idx_qry]
-        std::vector<ExtendableBuffer<uint64_t>> results;
+        std::vector<ExtendableBuffer<Result>> results;
         size_t nr_qrys;
     };
-    struct {
-        std::array<RCQPerRange, MAX_NR_DPUS> cold, hot;
-    } rcqs;
+    template <typename Query, typename Result>
+    using QueryData = std::array<QueryDataPerRange<Query, Result>, MAX_NR_DPUS>;
+
+    QueryData<RangeCountQuery, uint64_t> rcqs;
 
 public:  // TODO: privatize
     struct Summary {
@@ -133,27 +137,17 @@ private:
     void route_get_queries_impl(unsigned tid);
     void postprocess_of_get_impl(unsigned tid);
 
-    template <bool HasHotRanges>
-    void route_rcq(size_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
-    template <bool HasHotRanges>
-    void route_rcq_impl(unsigned tid);
-    template <bool HasHotRanges>
-    void route_single_rcq(size_t idx_qry, const RangeCountQuery& qry, value_uint64_t& result, unsigned tid);
     bool check_if_rcq_balance();
-    void execute_rcq_in_dpus(size_t nr_queries, uint64_t result[]);
-    void postprocess_of_rcq(uint64_t result[]);
+    void execute_rcq_in_dpus();
+    void postprocess_of_rcq(size_t nr_queries, uint64_t result[]);
     void postprocess_of_rcq_impl(unsigned tid);
+    using TmpDataForPostprocessOfRCQ = std::tuple<size_t, uint64_t*>;
     struct RCQSender;
     struct RCQResultReceiver;
-    void merge_hot_rcq();
-    void merge_hot_rcq_impl(unsigned tid);
-    void re_route_rcq(const std::array<bool, MAX_NR_DPUS>& cold_range_rebalanced);
-    void re_route_rcq_impl(unsigned tid);
-    bool re_route_single_rcq(size_t orig_idx, const RangeCountQuery& qry, dpu_id_t idx_cold, unsigned tid);
-    struct ReRoutedQrysPerColdRange {
-        std::vector<std::vector<RangeCountQuery>> qrys;
-        std::vector<std::vector<size_t>> orig_idxs;
-    };
+
+    template <typename Query, typename Result>
+    using TmpDataForRouteRangeQueries = std::tuple<size_t, const Query*, QueryData<Query, Result>*>;
+    std::any any_tmp_data;
 
     union TmpData {
         TmpData() {}
@@ -170,13 +164,6 @@ private:
 
         std::tuple<size_t, const key_uint64_t*, value_uint64_t*> route_get_queries;
         value_uint64_t* postprocess_of_get;
-
-        std::tuple<size_t, const RangeCountQuery*, uint64_t*> route_rcq;
-        uint64_t* postprocess_of_rcq;
-
-        std::tuple<std::reference_wrapper<const std::array<bool, MAX_NR_DPUS>>,
-            std::array<ReRoutedQrysPerColdRange, MAX_NR_DPUS>>
-            re_route_rcq;
     } tmp_data;
 
 
@@ -200,7 +187,7 @@ private:
     size_t nr_rmq_to_cold(dpu_id_t idx_cold,
         const std::array<size_t, MAX_NR_DPUS + 1>& cold_range_to_delim_idx,
         const std::array<std::array<size_t, 2>, MAX_NR_DPUS>& hot_range_to_delim_idx,
-        const std::array<bool, MAX_NR_DPUS + 1>& if_cold_begins_middle,
+        const std::array<bool, MAX_NR_DPUS + 1>& if2_cold_begins_middle,
         const std::array<bool, MAX_NR_DPUS + 1>& if_hot_begins_middle,
         const std::array<bool, MAX_NR_DPUS + 1>& if_hot_ends_middle) const;
     size_t nr_rmq_to_hot(dpu_id_t idx_hot,
@@ -218,10 +205,20 @@ private:
     struct RMQSender;
     struct RMQResultReceiver;
 
-    // //! @return whether any hot range is to be restored
-    // bool propagete_rebalancing(
-    //     std::array<bool, MAX_NR_DPUS>& cold_range_rebalanced,
-    //     std::array<bool, MAX_NR_DPUS>& hot_range_rebalanced) const;
+    template <typename Query, typename Result>
+    void route_range_queries(
+        size_t nr_queries, const Query queries[],
+        QueryData<Query, Result>& routed);
+    template <typename Query, typename Result>
+    void route_range_queries_impl(unsigned tid);
+    template <typename Query, typename Result>
+    void route_single_range_query(
+        size_t idx_qry, const Query& qry,
+        QueryData<Query, Result>& routed,
+        unsigned tid);
+    template <typename Query, typename Result>
+    bool check_if_queries_balance(size_t nr_queries, const QueryData<Query, Result>& routed);
+    void repartition(const std::vector<key_uint64_t>& sorted_queries);
 
     void restore_hot_ranges();
     struct HotKVPairsFlattenedCollecter;
