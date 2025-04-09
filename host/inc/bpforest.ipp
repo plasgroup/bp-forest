@@ -1667,7 +1667,7 @@ void BPForest::execute_rmq_in_dpus(
 }
 
 
-inline void BPForest::batch_range_count(size_t nr_queries, const RangeCountQuery queries[], uint64_t result[])
+inline void BPForest::batch_range_count(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[])
 {
     StopWatch timer{BatchTotalTime};
 
@@ -1823,7 +1823,7 @@ inline void BPForest::execute_rcq_in_dpus()
 #endif
 }
 
-inline void BPForest::postprocess_of_rcq(size_t nr_queries, uint64_t result[])
+inline void BPForest::postprocess_of_rcq(uint32_t nr_queries, uint64_t result[])
 {
     StopWatch timer{PostprocessTime};
 
@@ -1835,12 +1835,12 @@ inline void BPForest::postprocess_of_rcq(size_t nr_queries, uint64_t result[])
 inline void BPForest::postprocess_of_rcq_impl(unsigned tid)
 {
     uint64_t* result;
-    size_t nr_queries;
+    uint32_t nr_queries;
     std::tie(nr_queries, result) = *std::any_cast<const TmpDataForPostprocessOfRCQ*>(any_tmp_data);
 
-    const size_t idx_qry_begin = nr_queries * tid / get_parallelism(),
-                 idx_qry_end = nr_queries * (tid + 1) / get_parallelism();
-    for (size_t idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
+    const uint32_t idx_qry_begin = nr_queries * tid / get_parallelism(),
+                   idx_qry_end = nr_queries * (tid + 1) / get_parallelism();
+    for (uint32_t idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
         result[idx_qry] = 0;
     }
 
@@ -1857,7 +1857,7 @@ inline void BPForest::postprocess_of_rcq_impl(unsigned tid)
 
 template <typename Query, typename Result>
 inline void BPForest::route_range_queries(
-    size_t nr_queries, const Query queries[],
+    uint32_t nr_queries, const Query queries[],
     QueryData<Query, Result>& routed)
 {
     StopWatch timer{QueryRoutingTime};
@@ -1887,22 +1887,22 @@ inline void BPForest::route_range_queries(
 template <typename Query, typename Result>
 inline void BPForest::route_range_queries_impl(unsigned tid)
 {
-    size_t nr_queries;
+    uint32_t nr_queries;
     const Query* queries;
     QueryData<Query, Result>* routed;
 
     using TmpData = TmpDataForRouteRangeQueries<Query, Result>;
     std::tie(nr_queries, queries, routed) = *std::any_cast<const TmpData*>(any_tmp_data);
 
-    const size_t idx_qry_begin = nr_queries * tid / get_parallelism(),
-                 idx_qry_end = nr_queries * (tid + 1) / get_parallelism();
-    for (size_t i = idx_qry_begin; i < idx_qry_end; i++) {
+    const uint32_t idx_qry_begin = nr_queries * tid / get_parallelism(),
+                   idx_qry_end = nr_queries * (tid + 1) / get_parallelism();
+    for (uint32_t i = idx_qry_begin; i < idx_qry_end; i++) {
         route_single_range_query(i, queries[i], *routed, tid);
     }
 }
 template <typename Query, typename Result>
 inline void BPForest::route_single_range_query(
-    size_t idx_qry, const Query& qry,
+    uint32_t idx_qry, const Query& qry,
     QueryData<Query, Result>& routed,
     unsigned tid)
 {

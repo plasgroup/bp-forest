@@ -50,7 +50,7 @@ struct BPForest : ParallelManager<BPForest> {
 
     void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
     void batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t result[]);
-    void batch_range_count(size_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
+    void batch_range_count(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
     void batch_scan(size_t nr_queries, const KeyRange ranges[], BatchScanResult& result);
 
     void print_params(std::ostream&) const;
@@ -93,7 +93,7 @@ private:
         // qrys[idx_host_thread][idx_qry]
         std::vector<std::vector<Query>> qrys;
         // orig_idxs[idx_host_thread][idx_qry]
-        std::vector<std::vector<size_t>> orig_idxs;
+        std::vector<std::vector<uint32_t>> orig_idxs;
         // results[idx_host_thread][idx_qry]
         std::vector<ExtendableBuffer<Result>> results;
         size_t nr_qrys;
@@ -139,14 +139,14 @@ private:
 
     bool check_if_rcq_balance();
     void execute_rcq_in_dpus();
-    void postprocess_of_rcq(size_t nr_queries, uint64_t result[]);
+    void postprocess_of_rcq(uint32_t nr_queries, uint64_t result[]);
     void postprocess_of_rcq_impl(unsigned tid);
-    using TmpDataForPostprocessOfRCQ = std::tuple<size_t, uint64_t*>;
+    using TmpDataForPostprocessOfRCQ = std::tuple<uint32_t, uint64_t*>;
     struct RCQSender;
     struct RCQResultReceiver;
 
     template <typename Query, typename Result>
-    using TmpDataForRouteRangeQueries = std::tuple<size_t, const Query*, QueryData<Query, Result>*>;
+    using TmpDataForRouteRangeQueries = std::tuple<uint32_t, const Query*, QueryData<Query, Result>*>;
     std::any any_tmp_data;
 
     union TmpData {
@@ -207,13 +207,13 @@ private:
 
     template <typename Query, typename Result>
     void route_range_queries(
-        size_t nr_queries, const Query queries[],
+        uint32_t nr_queries, const Query queries[],
         QueryData<Query, Result>& routed);
     template <typename Query, typename Result>
     void route_range_queries_impl(unsigned tid);
     template <typename Query, typename Result>
     void route_single_range_query(
-        size_t idx_qry, const Query& qry,
+        uint32_t idx_qry, const Query& qry,
         QueryData<Query, Result>& routed,
         unsigned tid);
     template <typename Query, typename Result>

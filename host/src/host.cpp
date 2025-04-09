@@ -193,7 +193,7 @@ public:
         const RangeCountQuery queries[],
         value_uint64_t results[])
     {
-        forest.batch_range_count(n, queries, results);
+        forest.batch_range_count(static_cast<uint32_t>(n), queries, results);
     };
 
     int get_parallelism() const
