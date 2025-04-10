@@ -10,6 +10,8 @@
 #include "common_params.h"
 
 
+// #define PRINT_DEBUG
+
 #ifndef MRAM_FOR_TREE
 #define MRAM_FOR_TREE 28311552  // 27 * 1024 * 1024
 #endif

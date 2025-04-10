@@ -48,6 +48,8 @@ public:
     virtual ~Benchmark() {}
     virtual void do_one_batch(int idx_batch, Database* db) = 0;
 
+    virtual void partition_with_one_batch(Database* db) = 0;
+
     void push_back_query(std::vector<key_uint64_t>& workload, operation& query)
     {
         if (query.type == get_t)
@@ -162,6 +164,12 @@ public:
         num_queries_in_last_batch = num_queries_batch;
     }
 
+    void partition_with_one_batch(Database* db)
+    {
+        size_t num_queries_batch = prepare_buffer(-1, workload_buffer, keys, results);
+        db->partition_with(num_queries_batch, &keys[0]);
+    }
+
     void verify()
     {
         do_verify<value_uint64_t>(
@@ -227,6 +235,12 @@ public:
             db->batch_range_minimum(num_queries_batch, &ranges[0], &results[0]);
         }
         num_queries_in_last_batch = num_queries_batch;
+    }
+
+    void partition_with_one_batch(Database* db)
+    {
+        size_t num_queries_batch = prepare_buffer(-1, workload_buffer, ranges, results);
+        db->partition_with(num_queries_batch, &ranges[0]);
     }
 
     void verify()
@@ -317,6 +331,12 @@ public:
             db->batch_range_count(num_queries_batch, &queries[0], &results[0]);
         }
         num_queries_in_last_batch = num_queries_batch;
+    }
+
+    void partition_with_one_batch(Database* db)
+    {
+        size_t num_queries_batch = prepare_buffer(-1, workload_buffer, queries, results);
+        db->partition_with(num_queries_batch, &queries[0]);
     }
 
     void verify()

@@ -39,6 +39,10 @@ public:
         value_uint64_t results[])
         = 0;
 
+    virtual void partition_with(uint64_t /* n */, const key_uint64_t /* keys */[]) {}
+    virtual void partition_with(uint64_t /* n */, const KeyRange /* queries */[]) {}
+    virtual void partition_with(uint64_t /* n */, const RangeCountQuery /* queries */[]) {}
+
     virtual int get_parallelism() const = 0;
 
     virtual void print_params(std::ofstream& param_dump_file) = 0;

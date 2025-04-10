@@ -51,7 +51,12 @@ struct BPForest : ParallelManager<BPForest> {
     void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
     void batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t result[]);
     void batch_range_count(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
+    std::vector<size_t> get_nr_rcqs() const;
     void batch_scan(size_t nr_queries, const KeyRange ranges[], BatchScanResult& result);
+
+    template <typename Query>
+    std::vector<std::pair<size_t /* nr pairs in cold */, size_t /* nr pairs in hot */>>
+    partition_data_with_reference_range_queries(size_t nr_queries, const Query queries[]);
 
     void print_params(std::ostream&) const;
     std::vector<Partition> dump_partitions() const;
@@ -219,7 +224,8 @@ private:
         unsigned tid);
     template <typename Query, typename Result>
     bool check_if_queries_balance(size_t nr_queries, const QueryData<Query, Result>& routed);
-    void repartition(const std::vector<key_uint64_t>& sorted_queries);
+    std::vector<std::pair<size_t /* nr pairs in cold */, size_t /* nr pairs in hot */>>
+    repartition(const std::vector<key_uint64_t>& sorted_queries);
 
     void restore_hot_ranges();
     struct HotKVPairsFlattenedCollecter;
