@@ -2160,7 +2160,7 @@ BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
                         continue;
                     }
                     if (idx_hot_as_mask < idx_hot_as_mask_end && hot_intervals[idx_hot_as_mask].first < idx_entry_end) {
-                        for (; idx_entry_end > hot_intervals[idx_hot_as_mask].first; idx_entry_end++) {
+                        for (; idx_entry_end > hot_intervals[idx_hot_as_mask].first; idx_entry_end--) {
                             nr_pairs_in_candidate -= summary.nr_keys(idx_entry_end);
                         }
                     }
