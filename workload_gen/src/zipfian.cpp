@@ -159,7 +159,7 @@ public:
     ZipfDistribution(size_t nr_elems, double skew) : nr_elems{nr_elems}, skew{skew}
     {
         assert(nr_elems > 0);
-        assert(skew > 0);
+        assert(skew >= 0);
     }
 
     template <class URBG>
