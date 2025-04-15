@@ -198,7 +198,7 @@ struct WorkloadGen : ParallelManager<WorkloadGen> {
         parser.add<RandSeedType>("rand_seed", 'r', "seed for random number generator (the default value on the right is chosen randomly each time)", false, std::random_device{}());
         parser.add<unsigned>("num_threads", 't', "num of threads", false, std::numeric_limits<unsigned>::max());
         parser.add("showinfo", 'v', "show debug info if true");
-	parser.add("noinit", 0, "do not create init key-value pairs");
+        parser.add("noinit", 0, "do not create init key-value pairs");
         parser.parse_check(argc, argv);
 
         return instantiate_step2(parser);
@@ -274,8 +274,7 @@ private:
             std::move(scramble_mapping),
             nthreads, std::move(rand_gens),
             showinfo,
-	    parser.exist("noinit")
-	    };
+            parser.exist("noinit")};
     }
 
     explicit WorkloadGen(
@@ -287,7 +286,7 @@ private:
         unsigned nthreads, std::vector<xoshiro256pp>&& rand_gens,
         bool showinfo, bool noinit)
         : ParallelManager<WorkloadGen>(nthreads),
-	  noinit(noinit),
+          noinit(noinit),
           pairs_file_str{pairs_file_str}, queries_file_str{queries_file_str},
           npairs{npairs}, nqueries{nqueries}, pimtree_op_tag{pimtree_op_tag},
           scan_width{scan_width},
@@ -298,7 +297,7 @@ private:
     {
     }
 
-    bool noinit;
+    const bool noinit;
     const std::string pairs_file_str;
     const std::string queries_file_str;
     const size_t npairs;
@@ -462,90 +461,92 @@ void WorkloadGen::generate_queries_impl<get_t>(const unsigned tid)
 }
 void WorkloadGen::operator()()
 {
-    init_keys.reserve(npairs);
-    parallel_run(&WorkloadGen::generate_init_keys_impl);
-    std::cout << '[' << pairs_file_str << "] 100% keys generated" << std::endl;
+    if (!noinit || pimtree_op_tag == get_t) {
+        init_keys.reserve(npairs);
+        parallel_run(&WorkloadGen::generate_init_keys_impl);
+        std::cout << '[' << pairs_file_str << "] 100% keys generated" << std::endl;
 
 
-    std::cout << '[' << pairs_file_str << "] keys being sorted" << std::endl;
-    parallel_run(&WorkloadGen::sort_init_keys_partially);
-    for (merge_step = 0; (1u << merge_step) < get_parallelism(); merge_step++) {
-        parallel_run(&WorkloadGen::merge_init_keys);
-    }
-    std::cout << '[' << pairs_file_str << "] 100% keys sorted" << std::endl;
-
-
-    std::cout << '[' << pairs_file_str << "] resolving duplication" << std::endl;
-    {
-        std::vector<size_t> dup_idxs;
-        std::vector<int64_t> appended_keys;
-        for (size_t idx_key = 0; idx_key < npairs - 1; idx_key++) {
-            if (init_keys[idx_key] == init_keys[idx_key + 1]) {
-                dup_idxs.push_back(idx_key);
-
-                int64_t key = key_value_dist(rand_gens[0]);
-                while (std::binary_search(&init_keys[0], &init_keys[npairs], key)
-                       || std::any_of(appended_keys.cbegin(), appended_keys.cend(), [&](int64_t init_key) { return key == init_key; })) {
-                    key = key_value_dist(rand_gens[0]);
-                }
-                appended_keys.push_back(key);
-            }
+        std::cout << '[' << pairs_file_str << "] keys being sorted" << std::endl;
+        parallel_run(&WorkloadGen::sort_init_keys_partially);
+        for (merge_step = 0; (1u << merge_step) < get_parallelism(); merge_step++) {
+            parallel_run(&WorkloadGen::merge_init_keys);
         }
+        std::cout << '[' << pairs_file_str << "] 100% keys sorted" << std::endl;
 
-        if (!dup_idxs.empty()) {
-            ExtendableBuffer<int64_t> tmp_keys;
-            tmp_keys.swap(init_keys);
-            init_keys.reserve(npairs);
 
-            std::sort(appended_keys.begin(), appended_keys.end());
+        std::cout << '[' << pairs_file_str << "] resolving duplication" << std::endl;
+        {
+            std::vector<size_t> dup_idxs;
+            std::vector<int64_t> appended_keys;
+            for (size_t idx_key = 0; idx_key < npairs - 1; idx_key++) {
+                if (init_keys[idx_key] == init_keys[idx_key + 1]) {
+                    dup_idxs.push_back(idx_key);
 
-            size_t idx_init_key = 0, idx_tmp_key = 0, idx_dup = 0;
-            for (const int64_t next_appended : appended_keys) {
+                    int64_t key = key_value_dist(rand_gens[0]);
+                    while (std::binary_search(&init_keys[0], &init_keys[npairs], key)
+                           || std::any_of(appended_keys.cbegin(), appended_keys.cend(), [&](int64_t init_key) { return key == init_key; })) {
+                        key = key_value_dist(rand_gens[0]);
+                    }
+                    appended_keys.push_back(key);
+                }
+            }
+
+            if (!dup_idxs.empty()) {
+                ExtendableBuffer<int64_t> tmp_keys;
+                tmp_keys.swap(init_keys);
+                init_keys.reserve(npairs);
+
+                std::sort(appended_keys.begin(), appended_keys.end());
+
+                size_t idx_init_key = 0, idx_tmp_key = 0, idx_dup = 0;
+                for (const int64_t next_appended : appended_keys) {
+                    for (; idx_tmp_key < npairs; idx_tmp_key++) {
+                        if (idx_dup < dup_idxs.size() && idx_tmp_key == dup_idxs[idx_dup]) {
+                            idx_dup++;
+                            continue;
+                        }
+                        if (tmp_keys[idx_tmp_key] > next_appended) {
+                            break;
+                        }
+                        init_keys[idx_init_key] = tmp_keys[idx_tmp_key];
+                        idx_init_key++;
+                    }
+                    init_keys[idx_init_key] = next_appended;
+                    idx_init_key++;
+                }
                 for (; idx_tmp_key < npairs; idx_tmp_key++) {
                     if (idx_dup < dup_idxs.size() && idx_tmp_key == dup_idxs[idx_dup]) {
                         idx_dup++;
                         continue;
                     }
-                    if (tmp_keys[idx_tmp_key] > next_appended) {
-                        break;
-                    }
                     init_keys[idx_init_key] = tmp_keys[idx_tmp_key];
                     idx_init_key++;
                 }
-                init_keys[idx_init_key] = next_appended;
-                idx_init_key++;
-            }
-            for (; idx_tmp_key < npairs; idx_tmp_key++) {
-                if (idx_dup < dup_idxs.size() && idx_tmp_key == dup_idxs[idx_dup]) {
-                    idx_dup++;
-                    continue;
-                }
-                init_keys[idx_init_key] = tmp_keys[idx_tmp_key];
-                idx_init_key++;
             }
         }
+        std::cout << '[' << pairs_file_str << "] 100% duplication resolved" << std::endl;
     }
-    std::cout << '[' << pairs_file_str << "] 100% duplication resolved" << std::endl;
-
-
-    std::cout << '[' << pairs_file_str << "] generating values" << std::endl;
-    init_ops.reserve(npairs);
-    parallel_run(&WorkloadGen::generate_values_impl);
-    std::cout << '[' << pairs_file_str << "] 100% values generated" << std::endl;
 
 
     if (!noinit) {
-      std::cout << '[' << pairs_file_str << "] file being written" << std::endl;
-      {
-        std::ofstream pairs_file{pairs_file_str, std::ios_base::binary};
-        if (!pairs_file) {
-	  std::cerr << "cannot open file " << pairs_file_str << std::endl;
-	  std::exit(1);
+        std::cout << '[' << pairs_file_str << "] generating values" << std::endl;
+        init_ops.reserve(npairs);
+        parallel_run(&WorkloadGen::generate_values_impl);
+        std::cout << '[' << pairs_file_str << "] 100% values generated" << std::endl;
+
+
+        std::cout << '[' << pairs_file_str << "] file being written" << std::endl;
+        {
+            std::ofstream pairs_file{pairs_file_str, std::ios_base::binary};
+            if (!pairs_file) {
+                std::cerr << "cannot open file " << pairs_file_str << std::endl;
+                std::exit(1);
+            }
+            pairs_file.write(reinterpret_cast<std::ofstream::char_type*>(&init_ops[0]), static_cast<std::streamsize>(sizeof(operation) * npairs));
         }
-        pairs_file.write(reinterpret_cast<std::ofstream::char_type*>(&init_ops[0]), static_cast<std::streamsize>(sizeof(operation) * npairs));
-      }
-      std::cout << '[' << pairs_file_str << "] 100% written" << std::endl;
-      init_ops.reclaim();
+        std::cout << '[' << pairs_file_str << "] 100% written" << std::endl;
+        init_ops.reclaim();
     }
 
 
