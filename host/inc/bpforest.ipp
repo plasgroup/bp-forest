@@ -139,7 +139,13 @@ inline void BPForest::apply_partitioning_of_initial_data(std::vector<KVPair>&& s
 
     std::array<std::pair<key_uint64_t, dpu_id_t>, MAX_NR_DPUS> unsorted_hot_delims;
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
-        cold_delims[idx_dpu] = key_int64_to_uint64(partitioning[idx_dpu].left_key);
+        const auto& base_partition = partitioning[idx_dpu];
+        if (base_partition.length != 0) {
+            cold_delims[idx_dpu] = key_int64_to_uint64(base_partition.left_key);
+        } else {
+            ASSERT(idx_dpu != 0);
+            cold_delims[idx_dpu] = cold_delims[idx_dpu - 1];
+        }
 
         const auto& hot_partition = partitioning[nr_cold_ranges + idx_dpu];
         if (hot_partition.length != 0) {
