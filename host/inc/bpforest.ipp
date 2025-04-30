@@ -2075,12 +2075,12 @@ BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
                         load_idxs[idx_entry] = 0;
                     }
 
+                    nr_pairs[idx_base].first -= nr_pairs_in_candidate;
+
                     nr_left_qrys -= nr_qrys_in_candidate;
                     if (nr_left_qrys <= min_nr_qrys_in_hot) {
                         break;
                     }
-
-                    nr_pairs[idx_base].first -= nr_pairs_in_candidate;
 
                     hot_candidate_begin = idx_summary_entry + 1;
                     nr_pairs_in_candidate = 0;
