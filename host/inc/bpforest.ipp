@@ -2190,6 +2190,8 @@ BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
                                                        : summary.head_key(idx_entry_end) - 1);
                     hot_info[idx_new_hot] = {idx_new_hot, {summary.head_key(idx_entry_begin), max_key}, nr_qrys_in_candidate, nr_pairs_in_candidate};
                     idx_new_hot++;
+
+                    nr_pairs[idx_base].first -= nr_pairs_in_candidate;
                 }
 
                 std::sort(&hot_info[cold_to_hot[idx_base]], &hot_info[idx_new_hot], [](auto& lhs, auto& rhs) { return std::get<1>(lhs).begin < std::get<1>(rhs).begin; });
