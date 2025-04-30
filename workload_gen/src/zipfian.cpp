@@ -170,7 +170,7 @@ public:
         for (;;) {
             const double u = -real_distribution(g);
             const double x = h_integral_inv(u);
-            const UIntType k = clamp<UIntType>(static_cast<UIntType>(x), 1, nr_elems);
+            const UIntType k = clamp<UIntType>(static_cast<UIntType>(x + 0.5), 1, nr_elems);
             const double k_double = static_cast<double>(k);
 
             if (k_double - x <= s || u >= h_integral(k_double + 0.5) - h(k_double)) {
@@ -577,10 +577,10 @@ void WorkloadGen::operator()()
         int64_t range_begin = std::numeric_limits<int64_t>::min();
         for (size_t idx_slice = 0; idx_slice < zipf_nr_cands; idx_slice++) {
             if (idx_slice + 1 != zipf_nr_cands) {
-                const int64_t range_end = std::numeric_limits<int64_t>::min()
-                                          + static_cast<int64_t>(avg_slice_width * (idx_slice + 1)
-                                                                 - 1
-                                                                 + std::min(idx_slice + 1, remainder_width));
+                const int64_t range_end = static_cast<int64_t>(static_cast<uint64_t>(std::numeric_limits<int64_t>::min())
+                                                               + avg_slice_width * (idx_slice + 1)
+                                                               - 1
+                                                               + std::min(idx_slice + 1, remainder_width));
                 query_key_dists.emplace_back(range_begin, range_end);
                 range_begin = range_end + 1;
             } else {
