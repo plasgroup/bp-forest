@@ -2103,21 +2103,15 @@ BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
                     }
 
                     uint32_t max_nr_qrys_in_window = nr_qrys_in_candidate;
-                    for (;;) {
-                        if (idx_window_end == nr_entries) {
-                            break;
-                        }
-                        nr_pairs_in_candidate -= summary.nr_keys(idx_window_begin);
-                        nr_qrys_in_candidate -= load_idxs[idx_window_begin];
-                        idx_window_begin++;
+                    while (idx_window_end < nr_entries) {
+                        nr_pairs_in_candidate += summary.nr_keys(idx_window_end);
+                        nr_qrys_in_candidate += load_idxs[idx_window_end];
+                        idx_window_end++;
 
-                        while (nr_pairs_in_candidate < window_in_pairs) {
-                            nr_pairs_in_candidate += summary.nr_keys(idx_window_end);
-                            nr_qrys_in_candidate += load_idxs[idx_window_end];
-                            idx_window_end++;
-                            if (idx_window_end == nr_entries) {
-                                break;
-                            }
+                        while (nr_pairs_in_candidate - summary.nr_keys(hot_candidate_begin) >= window_in_pairs) {
+                            nr_pairs_in_candidate -= summary.nr_keys(idx_window_begin);
+                            nr_qrys_in_candidate -= load_idxs[idx_window_begin];
+                            idx_window_begin++;
                         }
 
                         if (max_nr_qrys_in_window < nr_qrys_in_candidate) {
@@ -2142,7 +2136,7 @@ BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
                     uint32_t nr_pairs_in_candidate = 0;
                     while (idx_entry_begin > argmax_window_begin && nr_pairs_in_candidate < thres_nr_pairs_in_hot) {
                         idx_entry_begin--;
-                        nr_pairs_in_candidate += summary.nr_keys(idx_entry_end);
+                        nr_pairs_in_candidate += summary.nr_keys(idx_entry_begin);
                     }
                     nr_candidates++;
                     candidate_boundaries[nr_candidates] = idx_entry_begin;
@@ -2152,20 +2146,15 @@ BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
                 dpu_id_t idx_hot_as_mask = cold_to_hot[idx_base];
                 const dpu_id_t idx_hot_as_mask_end = idx_new_hot;
 
-                for (dpu_id_t rev_idx_candidate = 0; rev_idx_candidate < nr_candidates; rev_idx_candidate++) {
-                    const dpu_id_t idx_candidate = nr_candidates - rev_idx_candidate - 1;
+                for (dpu_id_t idx_candidate = nr_candidates - 1; idx_candidate < nr_candidates; idx_candidate--) {
                     uint32_t idx_entry_begin = candidate_boundaries[idx_candidate + 1], idx_entry_end = candidate_boundaries[idx_candidate];
 
                     while (idx_hot_as_mask < idx_hot_as_mask_end && hot_intervals[idx_hot_as_mask].second < idx_entry_begin) {
                         idx_hot_as_mask++;
                     }
                     while (idx_hot_as_mask < idx_hot_as_mask_end && hot_intervals[idx_hot_as_mask].second < idx_entry_end) {
-                        for (; idx_entry_begin <= hot_intervals[idx_hot_as_mask].second; idx_entry_begin++) {
-                        }
+                        idx_entry_begin = hot_intervals[idx_hot_as_mask].second + 1;
                         idx_hot_as_mask++;
-                        if (idx_entry_begin == idx_entry_end) {
-                            break;
-                        }
                     }
                     if (idx_entry_begin == idx_entry_end) {
                         continue;
@@ -2174,8 +2163,7 @@ BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
                         continue;
                     }
                     if (idx_hot_as_mask < idx_hot_as_mask_end && hot_intervals[idx_hot_as_mask].first < idx_entry_end) {
-                        for (; idx_entry_end > hot_intervals[idx_hot_as_mask].first; idx_entry_end--) {
-                        }
+                        idx_entry_end = hot_intervals[idx_hot_as_mask].first;
                     }
 
                     uint32_t nr_pairs_in_candidate = 0, nr_qrys_in_candidate = 0;
@@ -2212,7 +2200,7 @@ BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
 
     if (nr_hot_ranges > 0) {
         std::partial_sort(&nr_cold_queries[0], &nr_cold_queries[nr_hot_ranges], &nr_cold_queries[nr_cold_ranges], [](auto& lhs, auto& rhs) { return lhs.second < rhs.second; });
-        std::sort(&hot_info[0], &hot_info[nr_hot_ranges], [](auto& lhs, auto& rhs) { return std::get<2>(lhs) < std::get<2>(rhs); });
+        std::sort(&hot_info[0], &hot_info[nr_hot_ranges], [](auto& lhs, auto& rhs) { return std::get<2>(lhs) > std::get<2>(rhs); });
 
         for (dpu_id_t idx_range = 0; idx_range < nr_hot_ranges; idx_range++) {
             const dpu_id_t idx_dpu = nr_cold_queries[idx_range].first, idx_hot = nr_hot_ranges - 1 - idx_range;
