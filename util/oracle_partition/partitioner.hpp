@@ -1,5 +1,6 @@
 #pragma once
 
+#include <assert.h>
 #include <queue>
 #include <cstdint>
 #include <iostream>
@@ -14,10 +15,14 @@ template<typename T>
 void for_each_bpforest_baserange(std::vector<T>& items, size_t nr_dpus, std::function<void (unsigned int, unsigned int)> f)
 {
     // Left partitions absorb remainder.
+    const uint32_t nr_items_quot = static_cast<uint32_t>(items.size() / nr_dpus),
+                   nr_items_rem = static_cast<uint32_t>(items.size() % nr_dpus);
+    unsigned int begin_idx = 0;
     for (size_t i = 0; i < nr_dpus; i++) {
-        unsigned int begin_idx = (unsigned int)(items.size() - items.size() * (nr_dpus - i) / nr_dpus);
-        unsigned int end_idx = (unsigned int)(items.size() - items.size() * (nr_dpus - i - 1) / nr_dpus);
+        size_t nr_assigned = nr_items_quot + (i < nr_items_rem);
+        unsigned int end_idx = (unsigned int)(begin_idx + nr_assigned);
         f(begin_idx, end_idx);
+        begin_idx += nr_assigned;
     }
 }
 
@@ -364,7 +369,7 @@ class ChunkedOraclePartitioner : public Partitioner {
                 fprintf(stderr, "chunk[%zu].count = %zu exceeds max_items_per_dpu = %zu\n",
                         idx_chunk, chunks[idx_chunk].count, max_items_per_dpu);
                 exit(1);
-            }   
+            }
             if ((nq > 0 && nqueries > 0 && sea_level + nqueries + nq > max_queries_per_dpu) ||
                 nkeys + chunks[idx_chunk].count > max_items_per_dpu) {
                 if (!count_only) {
@@ -585,7 +590,7 @@ private:
         size_t min_hot_queries = workload.size() / num_dpus;
         if (workload.size() % num_dpus > 0)
             min_hot_queries++;
-        
+
         std::vector<int64_t> sorted_workload = workload;
         std::sort(sorted_workload.begin(), sorted_workload.end());
 
@@ -655,7 +660,7 @@ class ChunkedBPForestPartitioner : public Partitioner {
         });
         return base_partitions;
     }
-    
+
     using key_it_t = std::vector<int64_t>::iterator;
     using chunk_it_t = std::vector<ChunkBuilder::chunk>::iterator;
 
@@ -733,7 +738,7 @@ class ChunkedBPForestPartitioner : public Partitioner {
                 break;
             hot->src_dpu = dpu_id;
             hot_partitions[dpu_id].push_back(hot);
-            
+
 #if 0 // verify
             //verify
             size_t count = 0;
@@ -755,7 +760,7 @@ class ChunkedBPForestPartitioner : public Partitioner {
                 has_hot_range = true;
             } else
                 more_hot_ranges.push_back(hot);
-            
+
             key_idx = hot->end_idx;
         }
 
@@ -780,7 +785,7 @@ class ChunkedBPForestPartitioner : public Partitioner {
             size_t max_hot_items = total_items / alpha;
             if (total_items % alpha == 0)
                 max_hot_items--;
-            
+
             std::vector<ChunkBuilder::chunk> chunks;
             chunk_builder->build_chunks(chunks, keys, base.begin_idx, base.end_idx);
 
@@ -946,7 +951,7 @@ class HWCBPForestPartitioner : public Partitioner {
         });
         return base_partitions;
     }
-    
+
     using key_it_t = std::vector<int64_t>::iterator;
     using chunk_it_t = std::vector<ChunkBuilder::chunk>::iterator;
 
@@ -970,16 +975,6 @@ class HWCBPForestPartitioner : public Partitioner {
         size_t total_queries = 0;
         size_t total_items = 0;
         while (right < chunk_end) {
-            // check size limit
-            assert(right->count <= max_items);
-            while (total_items + right->count > max_items) {
-                total_queries -= nqueries.front();
-                nqueries.pop();
-                total_items -= left->count;
-                left_key_idx += left->count;
-                left++;
-            }
-
             size_t nq = 0;
             while (query_it != query_end && *query_it <= chunk_last_key(right, chunk_end, last_key)) {
                 nq++;
@@ -989,6 +984,14 @@ class HWCBPForestPartitioner : public Partitioner {
             total_queries += nq;
             total_items += right->count;
             right++;
+
+            while (total_items - left->count >= max_items) {
+                total_queries -= nqueries.front();
+                nqueries.pop();
+                total_items -= left->count;
+                left_key_idx += left->count;
+                left++;
+            }
 
             // check workload limit
             if (total_queries >= min_queries) {
@@ -1018,7 +1021,7 @@ class HWCBPForestPartitioner : public Partitioner {
                 break;
             hot->src_dpu = dpu_id;
             found_hot.push_back(hot);
-            
+
             key_idx = hot->end_idx;
         }
 
@@ -1078,7 +1081,7 @@ class HWCBPForestPartitioner : public Partitioner {
                 total_items = 0;
                 total_queries = 0;
                 left_key_idx = (*hot_it)->end_idx;
-                
+
                 while (query_it != query_end && (right == chunks.end() || *query_it < right->left_key))
                     query_it++;
                 hot_it++;
@@ -1124,7 +1127,7 @@ class HWCBPForestPartitioner : public Partitioner {
                 total_items = 0;
                 total_queries = 0;
                 left_key_idx = warm->end_idx;
-                best_warm = partition_t(0, 0, partition_t::INVALID, 0, 0); // nqueries msut be initialized to 0.        
+                best_warm = partition_t(0, 0, partition_t::INVALID, 0, 0); // nqueries msut be initialized to 0.
             } else
                 right++;
         }
@@ -1170,11 +1173,11 @@ class HWCBPForestPartitioner : public Partitioner {
         size_t remaining_queries = count_remaining_queries(query_it, query_end, chunks[0].left_key, last_key, keys, hot_partitions);
         size_t b = remaining_queries / min_queries;
         size_t items_in_warms = b * max_items;
-        
+
         if (b == 0)
             return found_warm;
 
-        chunk_it_t best_left = chunks.begin();
+        chunk_it_t best_left = chunks.begin(), best_right = best_left;
         size_t best_queries = 0;
         size_t best_left_key_idx = key_idx;
 
@@ -1184,21 +1187,13 @@ class HWCBPForestPartitioner : public Partitioner {
         size_t total_items = 0;
         size_t total_queries = 0;
         size_t left_key_idx = key_idx;
-        
+
         auto hot_it = hot_partitions.begin();
         key_it_t it = query_it;
-        while (right < chunks.end()) {
-            while (total_items + right->count > items_in_warms) {
-                total_items -= left->count;
-                total_queries -= nqueries.front();
-                nqueries.pop();
-                left_key_idx += left->count;
-                left++;
-            }
-
+        while (right != chunks.end()) {
             while (hot_it != hot_partitions.end() && (*hot_it)->last_key(keys, last_key) < right->left_key)
                 hot_it++;
-            
+
             if (hot_it == hot_partitions.end() || right->left_key < (*hot_it)->first_key(keys, chunks.begin()->left_key)) {
                 size_t nq = 0;
                 while (it != query_end && *it <= chunk_last_key(right, chunks.end(), last_key)) {
@@ -1213,54 +1208,76 @@ class HWCBPForestPartitioner : public Partitioner {
                 nqueries.push(0);
             }
             total_items += right->count;
+            right++;
+
+            while (total_items - left->count >= items_in_warms) {
+                total_items -= left->count;
+                total_queries -= nqueries.front();
+                nqueries.pop();
+                left_key_idx += left->count;
+                left++;
+            }
 
             if (total_queries > best_queries) {
                 best_left = left;
+                best_right = right;
                 best_queries = total_queries;
                 best_left_key_idx = left_key_idx;
             }
-
-            right++;
         }
-        
-        // make "b" warm partitions from "best_left"
+
+        std::vector<std::pair<chunk_it_t, chunk_it_t>> candidates;
+        {
+            chunk_it_t right = best_right;
+            while (right != best_left) {
+                chunk_it_t left = right;
+                size_t total_items = 0;
+                while (left != best_left && total_items < max_items) {
+                    left--;
+                    total_items += left->count;
+                }
+                candidates.push_back({left, right});
+                right = left;
+            }
+        }
+
         {
             auto hot_it = hot_partitions.begin();
-            chunk_it_t left = best_left;
-            chunk_it_t next = left;
+            // chunk_it_t left = best_left;
+            // chunk_it_t next = left;
             left_key_idx = best_left_key_idx;
-            for (int i = 0; i < b; i++) {
-                chunk_it_t right = chunks.end();
-                size_t items = 0;
-                size_t total_items = 0;
-                while (left != chunks.end()) {
+            for (auto candidate_iter = candidates.crbegin(); candidate_iter != candidates.crend(); candidate_iter++) {
+                chunk_it_t left = candidate_iter->first, end = candidate_iter->second;
+                while (left != end) {
                     while (hot_it != hot_partitions.end() && (*hot_it)->last_key(keys, last_key) < left->left_key)
                         hot_it++;
                     if (hot_it == hot_partitions.end() || left->left_key < (*hot_it)->first_key(keys, chunks.begin()->left_key))
                         break;
-                    total_items += left->count;
+                    left_key_idx += left->count;
                     left++;
                 }
-                right = left;
-                while (right != chunks.end()) {
-                    if (total_items + next->count > max_items)
-                        break;
-                    if (hot_it == hot_partitions.end() || next->left_key < (*hot_it)->first_key(keys, chunks.begin()->left_key)) {
-                        items += next->count;
-                        right = next;
-                    }
-                    total_items += next->count;
+                if (left == end) {
+                    printf("empty warm partition\n");
+                    continue;
+                }
+                chunk_it_t right = left;
+                size_t right_key_idx = left_key_idx;
+                while (right != end && (hot_it == hot_partitions.end() || right->left_key < (*hot_it)->first_key(keys, chunks.begin()->left_key))) {
+                    right_key_idx += right->count;
                     right++;
                 }
-                if (right != chunks.end()) {
-                    size_t queries = count_queries_in_range(query_it, query_end, left->left_key, chunk_last_key(right, chunks.end(), last_key));
-                    partition_t* warm = new partition_t(left_key_idx, left_key_idx + items, partition_t::WARM, items, queries);
-                    warm->src_dpu = dpu_id;
-                    found_warm.push_back(warm);
-                } else 
-                    printf("empty warm partition\n");
+
+                size_t queries = count_queries_in_range(query_it, query_end, left->left_key, chunk_last_key(right, chunks.end(), last_key));
+                partition_t* warm = new partition_t(left_key_idx, right_key_idx, partition_t::WARM, right_key_idx - left_key_idx, queries);
+                warm->src_dpu = dpu_id;
+                found_warm.push_back(warm);
+
                 left = right;
-                left_key_idx += items;
+                left_key_idx = right_key_idx;
+                while (left != end) {
+                    left_key_idx += left->count;
+                    left++;
+                }
             }
         }
 
@@ -1294,31 +1311,23 @@ class HWCBPForestPartitioner : public Partitioner {
             return a->begin_idx > b->begin_idx;
         });
 
-        if (all_hot_partitions[dpu_id].size() > 1)
-            more_hot_ranges.insert(more_hot_ranges.end(), all_hot_partitions[dpu_id].begin() + 1, all_hot_partitions[dpu_id].end());
+        more_hot_ranges.insert(more_hot_ranges.end(), all_hot_partitions[dpu_id].begin(), all_hot_partitions[dpu_id].end());
 
-        return all_hot_partitions[dpu_id].size() > 0;
+        return false;
     }
 
     std::pair<std::vector<bool>, std::vector<partition_t*>>
-    build_hot_partitions(std::vector<int64_t>& keys, std::vector<int64_t>& workload, std::vector<partition_t> base_partitions)
+    build_hot_partitions(std::vector<int64_t>& keys, std::vector<int64_t>& sorted_workload, const std::vector<partition_t>& base_partitions)
     {
-        size_t min_hot_queries = workload.size() / num_dpus;
-        if (workload.size() % num_dpus > 0)
-            min_hot_queries++;
-
-        std::vector<int64_t> sorted_workload = workload;
-        std::sort(sorted_workload.begin(), sorted_workload.end());
+        const size_t min_hot_queries = sorted_workload.size() / num_dpus;
 
         std::vector<bool> has_hot_partition(num_dpus, false);
         std::vector<partition_t*> more_hot_partitions;
         for (unsigned int i = 0; i < num_dpus; i++) {
-            partition_t& base = base_partitions[i];
+            const partition_t& base = base_partitions[i];
             size_t total_items = base.end_idx - base.begin_idx;  // HA: max_hot_items differs from DPU to DPU.
-            size_t max_hot_items = total_items / alpha;
-            if (total_items % alpha == 0)
-                max_hot_items--;
-            
+            size_t max_hot_items = (total_items + alpha - 1) / alpha;
+
             std::vector<ChunkBuilder::chunk> chunks;
             chunk_builder->build_chunks(chunks, keys, base.begin_idx, base.end_idx);
 
@@ -1333,30 +1342,44 @@ class HWCBPForestPartitioner : public Partitioner {
         return {has_hot_partition, more_hot_partitions};
     }
 
-    std::vector<partition_t> distribute_hot_partitions(std::vector<bool>& has_hot, std::vector<partition_t*>& more_hot)
+    std::vector<partition_t> distribute_hot_partitions(const std::vector<int64_t>& keys, const std::vector<partition_t>& base_partition, const std::vector<bool>& has_hot, const std::vector<partition_t*>& more_hot, std::vector<int64_t>& sorted_workload)
     {
         std::vector<partition_t> hot_partition(num_dpus, INVALID_PARTITION);
 
         std::cout << "more_hot.size() = " << more_hot.size() << std::endl;
 
-        // HA: distribute hot ranges from the left.
-        auto it = more_hot.begin();
-        for (unsigned int i = 0; i < num_dpus; i++) {
-            if (has_hot[i])
-                hot_partition[i] = INVALID_PARTITION;
-            else if (it != more_hot.end()) {
-                partition_t* hot = *it++;
-                hot->dpu_id = i;
-                hot_partition[i] = *hot;
-            } else
-                hot_partition[i] = INVALID_PARTITION;
-        }
-        assert(it == more_hot.end());
-        assert(hot_partition.size() == num_dpus);
+        std::vector<std::pair<int /* dpu_id */, size_t /* cold_queries */>> cold_info;
+        std::vector<std::pair<int /* idx in more_hot */, size_t /* hot_queries */>> hot_info;
 
-        if (it != more_hot.end()) {
+        auto hot_it = more_hot.begin();
+        for (unsigned int i = 0; i < num_dpus; i++) {
+            hot_partition[i] = INVALID_PARTITION;
+            if (!has_hot[i]) {
+                const int64_t first_key = base_partition[i].first_key(keys, keys[0]), last_key = base_partition[i].last_key(keys, INT64_MAX);
+                size_t cold_queries = count_queries_in_range(sorted_workload.begin(), sorted_workload.end(), first_key, last_key);
+                while (hot_it != more_hot.end() && (*hot_it)->begin_idx < base_partition[i].end_idx) {
+                    const int64_t first_key = (*hot_it)->first_key(keys, keys[0]), last_key = (*hot_it)->last_key(keys, INT64_MAX);
+                    const size_t hot_queries = count_queries_in_range(sorted_workload.begin(), sorted_workload.end(), first_key, last_key);
+                    cold_queries -= hot_queries;
+                    hot_info.push_back({hot_info.size(), hot_queries});
+                    hot_it++;
+                }
+                cold_info.push_back({i, cold_queries});
+            }
+        }
+        assert(hot_info.size() == more_hot.size());
+        if (cold_info.size() < hot_info.size()) {
             std::cerr << "too may hot partitions: more_hot.size() = " << more_hot.size() << std::endl;
             exit(1);
+        }
+
+        std::partial_sort(&cold_info[0], &cold_info[more_hot.size()], &cold_info[cold_info.size()], [](auto& lhs, auto& rhs) { return lhs.second < rhs.second; });
+        std::sort(hot_info.begin(), hot_info.end(), [](auto& lhs, auto& rhs) { return lhs.second < rhs.second; });
+
+        for (size_t i = 0; i < hot_info.size(); i++) {
+            const int idx_dpu = cold_info[i].first;
+            hot_partition[idx_dpu] = *more_hot[hot_info[i].first];
+            hot_partition[idx_dpu].dpu_id = idx_dpu;
         }
 
         return hot_partition;
@@ -1380,8 +1403,12 @@ public:
     std::vector<partition_t> partition_point(std::vector<int64_t>& keys, std::vector<int64_t>& workload)
     {
         std::vector<partition_t> base_partition = build_base_partitions(keys);
-        auto [has_hot_partition, more_hot_partitions] = build_hot_partitions(keys, workload, base_partition);
-        std::vector<partition_t> hot_partition = distribute_hot_partitions(has_hot_partition, more_hot_partitions);
+
+        std::vector<int64_t> sorted_workload = workload;
+        std::sort(sorted_workload.begin(), sorted_workload.end());
+
+        auto [has_hot_partition, more_hot_partitions] = build_hot_partitions(keys, sorted_workload, base_partition);
+        std::vector<partition_t> hot_partition = distribute_hot_partitions(keys, base_partition, has_hot_partition, more_hot_partitions, sorted_workload);
 
         partitions[0] = base_partition;
         partitions[1] = hot_partition;
@@ -1401,7 +1428,7 @@ public:
         std::sort(both_ends.begin(), both_ends.end());
         auto [has_hot_range, more_hot_ranges] = build_hot_partitions(keys, both_ends, base_partition);
 
-        std::vector<partition_t> hot_partition = distribute_hot_partitions(has_hot_range, more_hot_ranges);
+        std::vector<partition_t> hot_partition = distribute_hot_partitions(keys, base_partition, has_hot_range, more_hot_ranges, both_ends);
 
         partitions[0] = base_partition;
         partitions[1] = hot_partition;

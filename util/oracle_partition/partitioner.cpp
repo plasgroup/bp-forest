@@ -26,7 +26,8 @@ void BPForestChunkBuilder::build_chunks(
     if (rem_nodes == 2) {
         assert(nr_children_in_node >= 5);  // so that the last node can have at least 2 children.
         ChunkBuilder::chunk c;
-        size_t nchildren = (rem_leaves + 1) / 2;
+        const size_t min_nr_children_in_node = (nr_children_in_node + 1) / 2;
+        size_t nchildren = std::min({nr_children_in_node, rem_leaves - min_nr_children_in_node});
         c.left_key = keys[key_idx];
         c.count = nchildren * nr_keys_in_leaf;
         chunks.push_back(c);
