@@ -1319,7 +1319,7 @@ class HWCBPForestPartitioner : public Partitioner {
     std::pair<std::vector<bool>, std::vector<partition_t*>>
     build_hot_partitions(std::vector<int64_t>& keys, std::vector<int64_t>& sorted_workload, const std::vector<partition_t>& base_partitions)
     {
-        const size_t min_hot_queries = sorted_workload.size() / num_dpus;
+        const size_t min_hot_queries = (sorted_workload.size() + num_dpus - 1) / num_dpus;
 
         std::vector<bool> has_hot_partition(num_dpus, false);
         std::vector<partition_t*> more_hot_partitions;

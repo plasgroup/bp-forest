@@ -566,6 +566,9 @@ void WorkloadGen::operator()()
             query_item_dists.emplace_back(
                 /* min */ idx_slice * npairs / zipf_nr_cands,
                 /* max */ (idx_slice + 1) * npairs / zipf_nr_cands - 1);
+            if (showinfo) {
+                std::cout << idx_slice << "th range = [" << query_item_dists.back().min() << ", " << query_item_dists.back().max() << ']' << std::endl;
+            }
         }
         parallel_run(&WorkloadGen::generate_queries_impl<get_t>);
 
@@ -586,6 +589,9 @@ void WorkloadGen::operator()()
             } else {
                 const int64_t range_end = std::numeric_limits<int64_t>::max();
                 query_key_dists.emplace_back(range_begin, range_end);
+            }
+            if (showinfo) {
+                std::cout << idx_slice << "th range = [" << query_key_dists.back().min() << ", " << query_key_dists.back().max() << ']' << std::endl;
             }
         }
         switch (pimtree_op_tag) {
