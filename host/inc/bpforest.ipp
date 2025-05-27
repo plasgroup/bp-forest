@@ -2110,7 +2110,7 @@ BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
                         nr_qrys_in_candidate += load_idxs[idx_window_end];
                         idx_window_end++;
 
-                        while (nr_pairs_in_candidate - summary.nr_keys(hot_candidate_begin) >= window_in_pairs) {
+                        while (nr_pairs_in_candidate - summary.nr_keys(idx_window_begin) >= window_in_pairs) {
                             nr_pairs_in_candidate -= summary.nr_keys(idx_window_begin);
                             nr_qrys_in_candidate -= load_idxs[idx_window_begin];
                             idx_window_begin++;
@@ -2170,8 +2170,8 @@ BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
 
                     uint32_t nr_pairs_in_candidate = 0, nr_qrys_in_candidate = 0;
                     for (uint32_t idx_entry = idx_entry_begin; idx_entry < idx_entry_end; idx_entry++) {
-                        nr_pairs_in_candidate += summary.nr_keys(idx_entry_end);
-                        nr_qrys_in_candidate += load_idxs[idx_entry_end];
+                        nr_pairs_in_candidate += summary.nr_keys(idx_entry);
+                        nr_qrys_in_candidate += load_idxs[idx_entry];
                     }
 
                     const key_uint64_t max_key
