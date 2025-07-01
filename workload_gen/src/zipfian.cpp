@@ -227,6 +227,7 @@ private:
         std::ostringstream ostr_queries;
         ostr_queries << file_prefix
                      << ops << nqueries
+                     << "_item" << npairs
                      << "_slice" << zipf_nr_cands
                      << (scramble ? "_scramble" : "_ordered")
                      << "_skew" << zipf_skewness_str
