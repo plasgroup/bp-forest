@@ -1700,7 +1700,7 @@ inline bool BPForest::check_if_rcq_balance()
     return true;  // TODO: precice decision
 
     const size_t nr_sent_qrys = std::accumulate(&rcqs[0], &rcqs[nr_cold_ranges], size_t{0},
-                     [](size_t tmp, auto&added) { return tmp + added.nr_qrys; }),
+                     [](size_t tmp, auto& added) { return tmp + added.nr_qrys; }),
                  cold_range_threshold = nr_sent_qrys * (param.balancing + 1)
                                         * (1 + InversedRebalancingNoiseMargin) / InversedRebalancingNoiseMargin
                                         / nr_cold_ranges;
@@ -2022,192 +2022,196 @@ BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
     std::array<std::tuple<dpu_id_t, KeyRange, size_t /* nr qrys */, size_t /* nr pairs */>, MAX_NR_DPUS> hot_info;
     std::vector<std::pair<size_t /* cold */, size_t /* hot */>> nr_pairs(nr_cold_ranges);
 
-    for (dpu_id_t idx_base = 0; idx_base < nr_cold_ranges; idx_base++) {
-        cold_to_hot[idx_base] = idx_new_hot;
+    {
+        StopWatch timer{PartitioningTime};
 
-        size_t idx_qry = idx_qry_begin[idx_base], nr_left_qrys = idx_qry_begin[idx_base + 1] - idx_qry;
-        const Summary& summary = summaries[idx_base];
-        nr_pairs[idx_base].first = summary.nr_pairs;
+        for (dpu_id_t idx_base = 0; idx_base < nr_cold_ranges; idx_base++) {
+            cold_to_hot[idx_base] = idx_new_hot;
 
-        if (base_rebalanced[idx_base]) {
-            const uint32_t nr_entries = summary.nr_blocks * 4;
-            const uint32_t thres_nr_pairs_in_hot = (summary.nr_pairs + param.balancing - 1) / param.balancing;
+            size_t idx_qry = idx_qry_begin[idx_base], nr_left_qrys = idx_qry_begin[idx_base + 1] - idx_qry;
+            const Summary& summary = summaries[idx_base];
+            nr_pairs[idx_base].first = summary.nr_pairs;
 
-            // [begin, end] <- inclusive
-            std::array<std::pair<uint32_t, uint32_t>, MAX_NR_DPUS> hot_intervals;
+            if (base_rebalanced[idx_base]) {
+                const uint32_t nr_entries = summary.nr_blocks * 4;
+                const uint32_t thres_nr_pairs_in_hot = (summary.nr_pairs + param.balancing - 1) / param.balancing;
 
-            uint32_t hot_candidate_begin = 0;
-            uint32_t nr_pairs_in_candidate = 0, nr_qrys_in_candidate = 0;
-            load_idxs.reserve(nr_entries);
-            for (uint32_t idx_summary_entry = 0; idx_summary_entry < nr_entries; idx_summary_entry++) {
-                if (summary.nr_keys(idx_summary_entry) == 0) {
-                    load_idxs[idx_summary_entry] = 0;
-                    continue;
-                }
+                // [begin, end] <- inclusive
+                std::array<std::pair<uint32_t, uint32_t>, MAX_NR_DPUS> hot_intervals;
 
-                nr_pairs_in_candidate += summary.nr_keys(idx_summary_entry);
+                uint32_t hot_candidate_begin = 0;
+                uint32_t nr_pairs_in_candidate = 0, nr_qrys_in_candidate = 0;
+                load_idxs.reserve(nr_entries);
+                for (uint32_t idx_summary_entry = 0; idx_summary_entry < nr_entries; idx_summary_entry++) {
+                    if (summary.nr_keys(idx_summary_entry) == 0) {
+                        load_idxs[idx_summary_entry] = 0;
+                        continue;
+                    }
 
-                const size_t idx_qry_end = idx_qry_begin[idx_base + 1], idx_qry_begin = idx_qry;
-                const key_uint64_t max_key
-                    = (idx_summary_entry + 1 == nr_entries ? KEY_MAX
-                                                           : summary.head_key(idx_summary_entry + 1) - 1);
-                while (idx_qry < idx_qry_end && sorted_qrys[idx_qry] <= max_key) {
-                    idx_qry++;
-                }
-                nr_qrys_in_candidate += (load_idxs[idx_summary_entry] = idx_qry - idx_qry_begin);
+                    nr_pairs_in_candidate += summary.nr_keys(idx_summary_entry);
 
-                while (nr_pairs_in_candidate - summary.nr_keys(hot_candidate_begin) >= thres_nr_pairs_in_hot) {
-                    nr_pairs_in_candidate -= summary.nr_keys(hot_candidate_begin);
-                    nr_qrys_in_candidate -= load_idxs[hot_candidate_begin];
-                    hot_candidate_begin++;
-                }
-
-                if (nr_qrys_in_candidate >= min_nr_qrys_in_hot) {
+                    const size_t idx_qry_end = idx_qry_begin[idx_base + 1], idx_qry_begin = idx_qry;
                     const key_uint64_t max_key
-                        = (idx_summary_entry + 1 == nr_entries ? (idx_base + 1 == nr_cold_ranges ? KEY_MAX
-                                                                                                 : cold_delims[idx_base + 1] - 1)
+                        = (idx_summary_entry + 1 == nr_entries ? KEY_MAX
                                                                : summary.head_key(idx_summary_entry + 1) - 1);
-                    hot_info[idx_new_hot] = {idx_new_hot, {summary.head_key(hot_candidate_begin), max_key}, nr_qrys_in_candidate, nr_pairs_in_candidate};
-                    hot_intervals[idx_new_hot] = {hot_candidate_begin, idx_summary_entry};
-                    idx_new_hot++;
+                    while (idx_qry < idx_qry_end && sorted_qrys[idx_qry] <= max_key) {
+                        idx_qry++;
+                    }
+                    nr_qrys_in_candidate += (load_idxs[idx_summary_entry] = idx_qry - idx_qry_begin);
 
-                    for (uint32_t idx_entry = hot_candidate_begin; idx_entry <= idx_summary_entry; idx_entry++) {
-                        load_idxs[idx_entry] = 0;
+                    while (nr_pairs_in_candidate - summary.nr_keys(hot_candidate_begin) >= thres_nr_pairs_in_hot) {
+                        nr_pairs_in_candidate -= summary.nr_keys(hot_candidate_begin);
+                        nr_qrys_in_candidate -= load_idxs[hot_candidate_begin];
+                        hot_candidate_begin++;
                     }
 
-                    nr_pairs[idx_base].first -= nr_pairs_in_candidate;
+                    if (nr_qrys_in_candidate >= min_nr_qrys_in_hot) {
+                        const key_uint64_t max_key
+                            = (idx_summary_entry + 1 == nr_entries ? (idx_base + 1 == nr_cold_ranges ? KEY_MAX
+                                                                                                     : cold_delims[idx_base + 1] - 1)
+                                                                   : summary.head_key(idx_summary_entry + 1) - 1);
+                        hot_info[idx_new_hot] = {idx_new_hot, {summary.head_key(hot_candidate_begin), max_key}, nr_qrys_in_candidate, nr_pairs_in_candidate};
+                        hot_intervals[idx_new_hot] = {hot_candidate_begin, idx_summary_entry};
+                        idx_new_hot++;
 
-                    nr_left_qrys -= nr_qrys_in_candidate;
-                    if (nr_left_qrys < min_nr_qrys_in_hot) {
-                        break;
-                    }
-
-                    hot_candidate_begin = idx_summary_entry + 1;
-                    nr_pairs_in_candidate = 0;
-                    nr_qrys_in_candidate = 0;
-                }
-            }
-
-            const dpu_id_t nr_semi_hots = static_cast<dpu_id_t>(nr_left_qrys * nr_cold_ranges / sorted_qrys.size());
-            if (!param.one_scan && nr_semi_hots > 0) {
-                const uint32_t window_in_pairs = (nr_semi_hots * summary.nr_pairs + param.balancing - 1) / param.balancing;
-                uint32_t argmax_window_begin, argmax_window_end;
-
-                if (window_in_pairs < summary.nr_pairs) {
-                    uint32_t idx_window_begin = 0, idx_window_end = 0;
-                    uint32_t nr_pairs_in_candidate = 0, nr_qrys_in_candidate = 0;
-                    while (nr_pairs_in_candidate < window_in_pairs) {
-                        nr_pairs_in_candidate += summary.nr_keys(idx_window_end);
-                        nr_qrys_in_candidate += load_idxs[idx_window_end];
-                        idx_window_end++;
-                    }
-
-                    uint32_t max_nr_qrys_in_window = nr_qrys_in_candidate;
-                    argmax_window_begin = idx_window_begin;
-                    argmax_window_end = idx_window_end;
-                    while (idx_window_end < nr_entries) {
-                        nr_pairs_in_candidate += summary.nr_keys(idx_window_end);
-                        nr_qrys_in_candidate += load_idxs[idx_window_end];
-                        idx_window_end++;
-
-                        while (nr_pairs_in_candidate - summary.nr_keys(idx_window_begin) >= window_in_pairs) {
-                            nr_pairs_in_candidate -= summary.nr_keys(idx_window_begin);
-                            nr_qrys_in_candidate -= load_idxs[idx_window_begin];
-                            idx_window_begin++;
+                        for (uint32_t idx_entry = hot_candidate_begin; idx_entry <= idx_summary_entry; idx_entry++) {
+                            load_idxs[idx_entry] = 0;
                         }
 
-                        if (max_nr_qrys_in_window < nr_qrys_in_candidate) {
-                            max_nr_qrys_in_window = nr_qrys_in_candidate;
-                            argmax_window_begin = idx_window_begin;
-                            argmax_window_end = idx_window_end;
+                        nr_pairs[idx_base].first -= nr_pairs_in_candidate;
+
+                        nr_left_qrys -= nr_qrys_in_candidate;
+                        if (nr_left_qrys < min_nr_qrys_in_hot) {
+                            break;
                         }
+
+                        hot_candidate_begin = idx_summary_entry + 1;
+                        nr_pairs_in_candidate = 0;
+                        nr_qrys_in_candidate = 0;
                     }
-                } else {
-                    argmax_window_begin = 0;
-                    argmax_window_end = nr_entries;
                 }
 
-                dpu_id_t nr_candidates = 0;
-                // i-th candidate: summary[candidate_boundaries[i + 1]:candidate_boundaries[i]]
-                std::array<uint32_t, MAX_NR_DPUS + 1> candidate_boundaries;
+                const dpu_id_t nr_semi_hots = static_cast<dpu_id_t>(nr_left_qrys * nr_cold_ranges / sorted_qrys.size());
+                if (!param.one_scan && nr_semi_hots > 0) {
+                    const uint32_t window_in_pairs = (nr_semi_hots * summary.nr_pairs + param.balancing - 1) / param.balancing;
+                    uint32_t argmax_window_begin, argmax_window_end;
 
-                uint32_t idx_entry_end = argmax_window_end;
-                candidate_boundaries[0] = idx_entry_end;
-                while (idx_entry_end > argmax_window_begin) {
-                    uint32_t idx_entry_begin = idx_entry_end;
-                    uint32_t nr_pairs_in_candidate = 0;
-                    while (idx_entry_begin > argmax_window_begin && nr_pairs_in_candidate < thres_nr_pairs_in_hot) {
-                        idx_entry_begin--;
-                        nr_pairs_in_candidate += summary.nr_keys(idx_entry_begin);
+                    if (window_in_pairs < summary.nr_pairs) {
+                        uint32_t idx_window_begin = 0, idx_window_end = 0;
+                        uint32_t nr_pairs_in_candidate = 0, nr_qrys_in_candidate = 0;
+                        while (nr_pairs_in_candidate < window_in_pairs) {
+                            nr_pairs_in_candidate += summary.nr_keys(idx_window_end);
+                            nr_qrys_in_candidate += load_idxs[idx_window_end];
+                            idx_window_end++;
+                        }
+
+                        uint32_t max_nr_qrys_in_window = nr_qrys_in_candidate;
+                        argmax_window_begin = idx_window_begin;
+                        argmax_window_end = idx_window_end;
+                        while (idx_window_end < nr_entries) {
+                            nr_pairs_in_candidate += summary.nr_keys(idx_window_end);
+                            nr_qrys_in_candidate += load_idxs[idx_window_end];
+                            idx_window_end++;
+
+                            while (nr_pairs_in_candidate - summary.nr_keys(idx_window_begin) >= window_in_pairs) {
+                                nr_pairs_in_candidate -= summary.nr_keys(idx_window_begin);
+                                nr_qrys_in_candidate -= load_idxs[idx_window_begin];
+                                idx_window_begin++;
+                            }
+
+                            if (max_nr_qrys_in_window < nr_qrys_in_candidate) {
+                                max_nr_qrys_in_window = nr_qrys_in_candidate;
+                                argmax_window_begin = idx_window_begin;
+                                argmax_window_end = idx_window_end;
+                            }
+                        }
+                    } else {
+                        argmax_window_begin = 0;
+                        argmax_window_end = nr_entries;
                     }
-                    nr_candidates++;
-                    candidate_boundaries[nr_candidates] = idx_entry_begin;
-                    idx_entry_end = idx_entry_begin;
+
+                    dpu_id_t nr_candidates = 0;
+                    // i-th candidate: summary[candidate_boundaries[i + 1]:candidate_boundaries[i]]
+                    std::array<uint32_t, MAX_NR_DPUS + 1> candidate_boundaries;
+
+                    uint32_t idx_entry_end = argmax_window_end;
+                    candidate_boundaries[0] = idx_entry_end;
+                    while (idx_entry_end > argmax_window_begin) {
+                        uint32_t idx_entry_begin = idx_entry_end;
+                        uint32_t nr_pairs_in_candidate = 0;
+                        while (idx_entry_begin > argmax_window_begin && nr_pairs_in_candidate < thres_nr_pairs_in_hot) {
+                            idx_entry_begin--;
+                            nr_pairs_in_candidate += summary.nr_keys(idx_entry_begin);
+                        }
+                        nr_candidates++;
+                        candidate_boundaries[nr_candidates] = idx_entry_begin;
+                        idx_entry_end = idx_entry_begin;
+                    }
+
+                    dpu_id_t idx_hot_as_mask = cold_to_hot[idx_base];
+                    const dpu_id_t idx_hot_as_mask_end = idx_new_hot;
+
+                    for (dpu_id_t idx_candidate = nr_candidates - 1; idx_candidate < nr_candidates; idx_candidate--) {
+                        uint32_t idx_entry_begin = candidate_boundaries[idx_candidate + 1], idx_entry_end = candidate_boundaries[idx_candidate];
+
+                        while (idx_hot_as_mask < idx_hot_as_mask_end && hot_intervals[idx_hot_as_mask].second < idx_entry_begin) {
+                            idx_hot_as_mask++;
+                        }
+                        while (idx_hot_as_mask < idx_hot_as_mask_end && hot_intervals[idx_hot_as_mask].second < idx_entry_end) {
+                            idx_entry_begin = hot_intervals[idx_hot_as_mask].second + 1;
+                            idx_hot_as_mask++;
+                        }
+                        if (idx_entry_begin == idx_entry_end) {
+                            continue;
+                        }
+                        if (idx_hot_as_mask < idx_hot_as_mask_end && hot_intervals[idx_hot_as_mask].first <= idx_entry_begin) {
+                            continue;
+                        }
+                        if (idx_hot_as_mask < idx_hot_as_mask_end && hot_intervals[idx_hot_as_mask].first < idx_entry_end) {
+                            idx_entry_end = hot_intervals[idx_hot_as_mask].first;
+                        }
+
+                        uint32_t nr_pairs_in_candidate = 0, nr_qrys_in_candidate = 0;
+                        for (uint32_t idx_entry = idx_entry_begin; idx_entry < idx_entry_end; idx_entry++) {
+                            nr_pairs_in_candidate += summary.nr_keys(idx_entry);
+                            nr_qrys_in_candidate += load_idxs[idx_entry];
+                        }
+
+                        const key_uint64_t max_key
+                            = (idx_entry_end == nr_entries ? (idx_base + 1 == nr_cold_ranges ? KEY_MAX
+                                                                                             : cold_delims[idx_base + 1] - 1)
+                                                           : summary.head_key(idx_entry_end) - 1);
+                        hot_info[idx_new_hot] = {idx_new_hot, {summary.head_key(idx_entry_begin), max_key}, nr_qrys_in_candidate, nr_pairs_in_candidate};
+                        idx_new_hot++;
+
+                        nr_pairs[idx_base].first -= nr_pairs_in_candidate;
+                    }
+
+                    std::sort(&hot_info[cold_to_hot[idx_base]], &hot_info[idx_new_hot], [](auto& lhs, auto& rhs) { return std::get<1>(lhs).begin < std::get<1>(rhs).begin; });
                 }
-
-                dpu_id_t idx_hot_as_mask = cold_to_hot[idx_base];
-                const dpu_id_t idx_hot_as_mask_end = idx_new_hot;
-
-                for (dpu_id_t idx_candidate = nr_candidates - 1; idx_candidate < nr_candidates; idx_candidate--) {
-                    uint32_t idx_entry_begin = candidate_boundaries[idx_candidate + 1], idx_entry_end = candidate_boundaries[idx_candidate];
-
-                    while (idx_hot_as_mask < idx_hot_as_mask_end && hot_intervals[idx_hot_as_mask].second < idx_entry_begin) {
-                        idx_hot_as_mask++;
-                    }
-                    while (idx_hot_as_mask < idx_hot_as_mask_end && hot_intervals[idx_hot_as_mask].second < idx_entry_end) {
-                        idx_entry_begin = hot_intervals[idx_hot_as_mask].second + 1;
-                        idx_hot_as_mask++;
-                    }
-                    if (idx_entry_begin == idx_entry_end) {
-                        continue;
-                    }
-                    if (idx_hot_as_mask < idx_hot_as_mask_end && hot_intervals[idx_hot_as_mask].first <= idx_entry_begin) {
-                        continue;
-                    }
-                    if (idx_hot_as_mask < idx_hot_as_mask_end && hot_intervals[idx_hot_as_mask].first < idx_entry_end) {
-                        idx_entry_end = hot_intervals[idx_hot_as_mask].first;
-                    }
-
-                    uint32_t nr_pairs_in_candidate = 0, nr_qrys_in_candidate = 0;
-                    for (uint32_t idx_entry = idx_entry_begin; idx_entry < idx_entry_end; idx_entry++) {
-                        nr_pairs_in_candidate += summary.nr_keys(idx_entry);
-                        nr_qrys_in_candidate += load_idxs[idx_entry];
-                    }
-
-                    const key_uint64_t max_key
-                        = (idx_entry_end == nr_entries ? (idx_base + 1 == nr_cold_ranges ? KEY_MAX
-                                                                                         : cold_delims[idx_base + 1] - 1)
-                                                       : summary.head_key(idx_entry_end) - 1);
-                    hot_info[idx_new_hot] = {idx_new_hot, {summary.head_key(idx_entry_begin), max_key}, nr_qrys_in_candidate, nr_pairs_in_candidate};
-                    idx_new_hot++;
-
-                    nr_pairs[idx_base].first -= nr_pairs_in_candidate;
+                for (dpu_id_t idx_hot = cold_to_hot[idx_base]; idx_hot < idx_new_hot; idx_hot++) {
+                    std::get<0>(hot_info[idx_hot]) = idx_hot;
+                    hot_delims[idx_hot] = std::get<1>(hot_info[idx_hot]).begin;
+                    hot_max_key[idx_hot] = std::get<1>(hot_info[idx_hot]).end;
                 }
-
-                std::sort(&hot_info[cold_to_hot[idx_base]], &hot_info[idx_new_hot], [](auto& lhs, auto& rhs) { return std::get<1>(lhs).begin < std::get<1>(rhs).begin; });
             }
-            for (dpu_id_t idx_hot = cold_to_hot[idx_base]; idx_hot < idx_new_hot; idx_hot++) {
-                std::get<0>(hot_info[idx_hot]) = idx_hot;
-                hot_delims[idx_hot] = std::get<1>(hot_info[idx_hot]).begin;
-                hot_max_key[idx_hot] = std::get<1>(hot_info[idx_hot]).end;
-            }
+
+            summaries[idx_base].blocks.reclaim();
+
+            nr_cold_queries[idx_base] = {idx_base, nr_left_qrys};
         }
+        cold_to_hot[nr_cold_ranges] = idx_new_hot;
+        nr_hot_ranges = idx_new_hot;
 
-        summaries[idx_base].blocks.reclaim();
+        if (nr_hot_ranges > 0) {
+            std::partial_sort(&nr_cold_queries[0], &nr_cold_queries[nr_hot_ranges], &nr_cold_queries[nr_cold_ranges], [](auto& lhs, auto& rhs) { return lhs.second < rhs.second; });
+            std::sort(&hot_info[0], &hot_info[nr_hot_ranges], [](auto& lhs, auto& rhs) { return std::get<2>(lhs) > std::get<2>(rhs); });
 
-        nr_cold_queries[idx_base] = {idx_base, nr_left_qrys};
-    }
-    cold_to_hot[nr_cold_ranges] = idx_new_hot;
-    nr_hot_ranges = idx_new_hot;
-
-    if (nr_hot_ranges > 0) {
-        std::partial_sort(&nr_cold_queries[0], &nr_cold_queries[nr_hot_ranges], &nr_cold_queries[nr_cold_ranges], [](auto& lhs, auto& rhs) { return lhs.second < rhs.second; });
-        std::sort(&hot_info[0], &hot_info[nr_hot_ranges], [](auto& lhs, auto& rhs) { return std::get<2>(lhs) > std::get<2>(rhs); });
-
-        for (dpu_id_t idx_range = 0; idx_range < nr_hot_ranges; idx_range++) {
-            const dpu_id_t idx_dpu = nr_cold_queries[idx_range].first;
-            dpu_to_hot_range[idx_dpu] = std::get<0>(hot_info[idx_range]);
-            nr_pairs[idx_dpu].second = std::get<3>(hot_info[idx_range]);
+            for (dpu_id_t idx_range = 0; idx_range < nr_hot_ranges; idx_range++) {
+                const dpu_id_t idx_dpu = nr_cold_queries[idx_range].first;
+                dpu_to_hot_range[idx_dpu] = std::get<0>(hot_info[idx_range]);
+                nr_pairs[idx_dpu].second = std::get<3>(hot_info[idx_range]);
+            }
         }
     }
 

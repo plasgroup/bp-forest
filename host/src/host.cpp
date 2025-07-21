@@ -93,6 +93,7 @@ struct Option {
         a.add<dpu_id_t>("print-hot-memory-load", 0, "print number of KV pairs stored in hot ranges in each dpu", false, 0);
         a.add("print-perf", 'p', "print performance metrics");
         a.add("print-init-time", 0, "print elapsed time for initialization of BPForest");
+        a.add("print-part-time", 0, "print elapsed time for hot/cold partitioning");
         a.add("verify", 'v', "verify the result");
         a.parse_check(argc, argv);
 
@@ -116,6 +117,7 @@ struct Option {
         print_hot_memory_load = a.get<dpu_id_t>("print-hot-memory-load");
         print_perf = a.exist("print-perf");
         print_init_time = a.exist("print-init-time");
+        print_part_time = a.exist("print-part-time");
         verify = a.exist("verify");
 
         if (!tmp_partition.empty()) {
@@ -160,7 +162,7 @@ struct Option {
     std::optional<std::string> dump_compute_load, dump_memory_load;
     dpu_id_t print_compute_load, print_memory_load;
     dpu_id_t print_cold_compute_load, print_cold_memory_load, print_hot_compute_load, print_hot_memory_load;
-    bool print_perf, print_init_time;
+    bool print_perf, print_init_time, print_part_time;
     bool verify = false;
 } opt;
 
@@ -329,6 +331,10 @@ int main(int argc, char* argv[])
                 std::quick_exit(1);
             }
             db.print_nr_pairs(dump_memory_load_file, MAX_NR_DPUS);
+        }
+
+        if (opt.print_part_time) {
+            std::cout << "#PartitioningTime[ns]: " << PartitioningTime.count() << std::endl;
         }
     }
 
