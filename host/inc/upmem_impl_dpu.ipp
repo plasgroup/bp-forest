@@ -53,7 +53,7 @@ inline void upmem_init_impl()
     std::ostringstream sstr;
     sstr <<
 #ifdef UPMEM_SIMULATOR
-        "backend=simulator,sgXferEnable=true,sgXferMaxBlocksPerDpu="
+        "backend=simulator,chipId=0x42,sgXferEnable=true,sgXferMaxBlocksPerDpu="
 #else
         "sgXferEnable=true,sgXferMaxBlocksPerDpu="
 #endif
