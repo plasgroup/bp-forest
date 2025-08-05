@@ -39,6 +39,7 @@ struct BatchScanResult {
 struct BPForestParameter {
     unsigned balancing = 1;
     bool one_scan = false;
+    bool naive_init = false;
     unsigned nr_host_threads = 0;
 };
 struct BPForest : ParallelManager<BPForest> {

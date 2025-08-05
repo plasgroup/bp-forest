@@ -78,6 +78,7 @@ struct Option {
         a.add<std::string>("init_file", 'i', "file path to PIM-Tree init file", true);
         a.add<unsigned>("balancing-param", 'a', "the tunable parameter for compute/memory load balancing in B+-Forest", false, 1);
         a.add("one-scan", '1', "perform only a single scan to find hot spots");
+        a.add("naive-init", 0, "adopt naive way to send KV pairs");
         a.add<std::string>("partition", 0, "load pre-calculated partitioning", false);
         a.add<std::string>("dump-partition", 0, "store partitioning", false);
         a.add<unsigned>("nr-host-threads", 't', "num of threads used in pre/post-processing in B+-Forest", false, 0);
@@ -102,6 +103,7 @@ struct Option {
         init_file = a.get<std::string>("init_file");
         balancing_param = a.get<unsigned>("balancing-param");
         one_scan = a.exist("one-scan");
+        naive_init = a.exist("naive-init");
         std::string tmp_partition = a.get<std::string>("partition");
         std::string tmp_dump_partition = a.get<std::string>("dump-partition");
         nr_host_threads = a.get<unsigned>("nr-host-threads");
@@ -151,7 +153,7 @@ struct Option {
 
     std::string dump_param_file;
     unsigned balancing_param;
-    bool one_scan;
+    bool one_scan, naive_init;
     std::optional<std::string> partition;
     std::optional<std::string> dump_partition;
     unsigned nr_host_threads;
@@ -315,8 +317,8 @@ int main(int argc, char* argv[])
     }
 
     InitData init_data{opt.init_file};
-    BPForestDatabase db = partitions ? BPForestDatabase{init_data, *partitions, BPForest::Param{opt.balancing_param, opt.one_scan, opt.nr_host_threads}}
-                                     : BPForestDatabase{init_data, BPForest::Param{opt.balancing_param, opt.one_scan, opt.nr_host_threads}};
+    BPForestDatabase db = partitions ? BPForestDatabase{init_data, *partitions, BPForest::Param{opt.balancing_param, opt.one_scan, opt.naive_init, opt.nr_host_threads}}
+                                     : BPForestDatabase{init_data, BPForest::Param{opt.balancing_param, opt.one_scan, opt.naive_init, opt.nr_host_threads}};
 
     if (!opt.partition) {
         benchmark->partition_with_one_batch(&db);

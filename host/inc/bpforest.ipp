@@ -36,6 +36,26 @@
 #include <utility>
 
 
+template <class ScatteredBatchTransferBuffer>
+inline void bypass_gather_to_all_dpu(const uint32_t offset, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration& async)
+{
+    const dpu_id_t nr_dpus = upmem_get_nr_dpus();
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_dpus; idx_dpu++) {
+        DPUSet dpu = select_dpu(idx_dpu);
+        size_t tmp_offset = offset;
+        for (block_id_t idx_block = 0;; idx_block++) {
+            sg_block_info block;
+            if (!buf(&block, idx_dpu, idx_block)) {
+                break;
+            }
+            if (block.length > 0) {
+                send_to_dpu(dpu, tmp_offset, Single{block.addr, block.length}, async);
+                tmp_offset += block.length;
+            }
+        }
+    }
+}
+
 template <typename RangeQuery>
 struct RangeQueryToRange {
     const KeyRange& operator()(const RangeQuery&) const;
@@ -2704,7 +2724,14 @@ inline void BPForest::extract_and_distribute_hot_ranges()
 
     {
         UPMEM_AsyncDuration async;
-        gather_to_dpu(all_dpu, 0, RebalancedColdKVPairsSender{this, &cold_boundaries[0], &hot_boundaries[0], &cold_task_headers[0]}, async);
+
+        RebalancedColdKVPairsSender cold_sender{this, &cold_boundaries[0], &hot_boundaries[0], &cold_task_headers[0]};
+        if (param.naive_init) {
+            bypass_gather_to_all_dpu(0, cold_sender, async)
+        } else {
+            gather_to_dpu(all_dpu, 0, cold_sender, async);
+        }
+
         execute(all_dpu, async);
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
     }
@@ -2725,7 +2752,12 @@ inline void BPForest::extract_and_distribute_hot_ranges()
             }
         }
 
-        gather_to_dpu(all_dpu, 0, HotKVPairsSender{this, &hot_boundaries[0], &hot_task_headers[0]}, async);
+        HotKVPairsSender hot_sender{this, &hot_boundaries[0], &hot_task_headers[0]};
+        if (param.naive_init) {
+            bypass_gather_to_all_dpu(0, hot_sender, async)
+        } else {
+            gather_to_dpu(all_dpu, 0, hot_sender, async);
+        }
         execute(all_dpu, async);
     }
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
@@ -2996,6 +3028,9 @@ inline void BPForest::print_params(std::ostream& ostr) const
             "EXTRACT_BY_INITIALIZATION: 0\n"
 #endif
             "param.balancing: " << param.balancing << "\n"
+            "param.one_scan: " << param.one_scan << "\n"
+            "param.naive_init: " << param.naive_init << "\n"
+            "param.nr_host_threads: " << param.nr_host_threads << "\n"
             "get_parallelism(): " << get_parallelism() << "\n"
          << std::flush;
 #undef STRINGIFY
