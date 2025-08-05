@@ -1374,7 +1374,7 @@ class HWCBPForestPartitioner : public Partitioner {
         }
 
         std::partial_sort(&cold_info[0], &cold_info[more_hot.size()], &cold_info[cold_info.size()], [](auto& lhs, auto& rhs) { return lhs.second < rhs.second; });
-        std::sort(hot_info.begin(), hot_info.end(), [](auto& lhs, auto& rhs) { return lhs.second < rhs.second; });
+        std::sort(hot_info.begin(), hot_info.end(), [](auto& lhs, auto& rhs) { return lhs.second > rhs.second; });
 
         for (size_t i = 0; i < hot_info.size(); i++) {
             const int idx_dpu = cold_info[i].first;
