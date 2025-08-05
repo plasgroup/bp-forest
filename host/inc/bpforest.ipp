@@ -2727,7 +2727,7 @@ inline void BPForest::extract_and_distribute_hot_ranges()
 
         RebalancedColdKVPairsSender cold_sender{this, &cold_boundaries[0], &hot_boundaries[0], &cold_task_headers[0]};
         if (param.naive_init) {
-            bypass_gather_to_all_dpu(0, cold_sender, async)
+            bypass_gather_to_all_dpu(0, cold_sender, async);
         } else {
             gather_to_dpu(all_dpu, 0, cold_sender, async);
         }
@@ -2754,7 +2754,7 @@ inline void BPForest::extract_and_distribute_hot_ranges()
 
         HotKVPairsSender hot_sender{this, &hot_boundaries[0], &hot_task_headers[0]};
         if (param.naive_init) {
-            bypass_gather_to_all_dpu(0, hot_sender, async)
+            bypass_gather_to_all_dpu(0, hot_sender, async);
         } else {
             gather_to_dpu(all_dpu, 0, hot_sender, async);
         }
