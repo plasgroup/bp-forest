@@ -49,7 +49,7 @@ inline void bypass_gather_to_all_dpu(const uint32_t offset, ScatteredBatchTransf
                 break;
             }
             if (block.length > 0) {
-                send_to_dpu(dpu, tmp_offset, Single{block.addr, block.length}, async);
+                send_to_dpu(dpu, tmp_offset, Single{*block.addr, block.length}, async);
                 tmp_offset += block.length;
             }
         }
@@ -190,8 +190,8 @@ inline void BPForest::apply_partitioning_of_initial_data(std::vector<KVPair>&& s
             cold_to_hot[idx_cold + 1] = idx_hot;
         }
     }
-    for (; idx_cold <= nr_cold_ranges; idx_cold++) {
-        cold_to_hot[idx_cold] = nr_hot_ranges;
+    for (; idx_cold < nr_cold_ranges; idx_cold++) {
+        cold_to_hot[idx_cold + 1] = nr_hot_ranges;
     }
 
     combine_delims();
