@@ -768,7 +768,16 @@ class ChunkedBPForestPartitioner : public Partitioner {
         return {has_hot_partition, more_hot_partitions};
     }
 
-    std::vector<partition_t> distribute_hot_partitions(std::vector<bool>& has_hot, std::vector<partition_t*>& more_hot)
+    size_t count_queries_in_range(key_it_t query_it, key_it_t query_end, int64_t left_key, int64_t right_key)
+    {
+        key_it_t begin = std::lower_bound(query_it, query_end, left_key);
+        if (begin == query_end)
+            return 0;
+        key_it_t end = std::upper_bound(begin, query_end, right_key);
+        return end - begin;
+    }
+
+    std::vector<partition_t> distribute_hot_partitions(const std::vector<int64_t>& keys, const std::vector<partition_t>& base_partition, const std::vector<bool>& has_hot, const std::vector<partition_t*>& more_hot, std::vector<int64_t>& sorted_workload)
     {
         std::vector<partition_t> hot_partition(num_dpus, INVALID_PARTITION);
 
@@ -829,8 +838,12 @@ public:
     std::vector<partition_t> partition_point(std::vector<int64_t>& keys, std::vector<int64_t>& workload)
     {
         std::vector<partition_t> base_partition = build_base_partitions(keys);
+
+        std::vector<int64_t> sorted_workload = workload;
+        std::sort(sorted_workload.begin(), sorted_workload.end());
+
         auto [has_hot_partition, more_hot_partitions] = build_hot_partitions(keys, workload, base_partition);
-        std::vector<partition_t> hot_partition = distribute_hot_partitions(has_hot_partition, more_hot_partitions);
+        std::vector<partition_t> hot_partition = distribute_hot_partitions(keys, base_partition, has_hot_partition, more_hot_partitions, sorted_workload);
 
         partitions[0] = base_partition;
         partitions[1] = hot_partition;
@@ -850,7 +863,7 @@ public:
         std::sort(both_ends.begin(), both_ends.end());
         auto [has_hot_range, more_hot_ranges] = build_hot_partitions(keys, both_ends, base_partition);
 
-        std::vector<partition_t> hot_partition = distribute_hot_partitions(has_hot_range, more_hot_ranges);
+        std::vector<partition_t> hot_partition = distribute_hot_partitions(keys, base_partition, has_hot_range, more_hot_ranges, both_ends);
 
         partitions[0] = base_partition;
         partitions[1] = hot_partition;
