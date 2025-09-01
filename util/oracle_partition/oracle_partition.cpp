@@ -12,7 +12,7 @@ struct Option {
     void parse(int argc, char* argv[])
     {       
         // partitioner
-        a.add<std::string>("partitioner", 'P', "partitioner type (bpforest, hwc, oracle, equal)", false, "bpforest");
+        a.add<std::string>("partitioner", 'P', "partitioner type (bpforest, hwc, oracle, equal, data, query)", false, "bpforest");
         a.add<int>("bpforest-alpha", 'a', "[bpforest|hwc] alpha parameter", false, 5);
         a.add<int>("oracle-max-items-per-dpu", 'm', "[oracle] maximum number of items per DPU (default = items / dpus * (1 + 1/bpforest-alpha) )", false, -1);
 
@@ -308,6 +308,12 @@ void show_load(std::vector<int64_t>& keys)
     } else if (opt.partitioner() == "equal") {
         printf("partitioner: equal\n");
         partitioner = new EqualSizePartitioner(opt.num_dpus());
+    } else if (opt.partitioner() == "data") {
+        printf("partitioner: data\n");
+        partitioner = new EqualDataSizePartitioner(opt.num_dpus());
+    } else if (opt.partitioner() == "query") {
+        printf("partitioner: query\n");
+        partitioner = new EqualQueryLoadPartitioner(opt.num_dpus());
     } else {
         fprintf(stderr, "invalid partitioner type: %s\n", opt.partitioner().c_str());
         exit(1);

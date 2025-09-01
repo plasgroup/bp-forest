@@ -937,6 +937,101 @@ public:
     }
 };
 
+class EqualDataSizePartitioner : public Partitioner {
+    std::vector<partition_t> partitions;
+    std::vector<partition_t> empty;
+
+    std::vector<partition_t> make_partition(const std::vector<int64_t>& keys)
+    {
+        for (size_t i = 0; i < num_dpus; i++) {
+            const size_t idx_begin_key = keys.size() * i / num_dpus;
+            const size_t idx_end_key = keys.size() * (i + 1) / num_dpus;
+            partition_t p(idx_begin_key, idx_end_key, partition_t::COLD, (int)(idx_end_key - idx_begin_key), -1);
+            p.dpu_id = static_cast<unsigned int>(i);
+            partitions.push_back(p);
+        }
+        empty.resize(num_dpus, INVALID_PARTITION);
+        return partitions;
+    }
+
+public:
+    EqualDataSizePartitioner(size_t num_dpus)
+        : Partitioner(num_dpus)
+    {}
+
+    std::vector<partition_t> partition_point(std::vector<int64_t>& keys, std::vector<int64_t>& workload)
+    {
+        return make_partition(keys);
+    }
+
+    std::vector<partition_t> partition_range(std::vector<int64_t>& keys, std::vector<std::pair<int64_t, int64_t>>& workload)
+    {
+        return make_partition(keys);
+    }
+
+    std::vector<partition_t>& ref_partition(int i)
+    {
+        if (i == 0)
+            return partitions;
+        else
+            return empty;
+    }
+};
+
+class EqualQueryLoadPartitioner : public Partitioner {
+    std::vector<partition_t> partitions;
+    std::vector<partition_t> empty;
+
+    std::vector<partition_t> make_partition(const std::vector<int64_t>& keys, std::vector<int64_t> workload)
+    {
+        std::sort(workload.begin(), workload.end());
+
+        size_t idx_begin_key = 0;
+        for (size_t i = 0; i < num_dpus - 1; i++) {
+            const int64_t end_key = workload[workload.size() * (i + 1) / num_dpus];
+            const auto it = std::upper_bound(keys.begin() + 1, keys.end(), end_key) - 1;
+            const size_t idx_end_key = it - keys.begin();
+            partition_t p(idx_begin_key, idx_end_key, partition_t::COLD, (int)(idx_end_key - idx_begin_key), -1);
+            p.dpu_id = static_cast<unsigned int>(i);
+            partitions.push_back(p);
+            idx_begin_key = idx_end_key;
+        }
+        partition_t p(idx_begin_key, keys.size(), partition_t::COLD, (int)(keys.size() - idx_begin_key), -1);
+        p.dpu_id = (unsigned int) (num_dpus - 1);
+        partitions.push_back(p);
+        empty.resize(num_dpus, INVALID_PARTITION);
+        return partitions;
+    }
+
+public:
+    EqualQueryLoadPartitioner(size_t num_dpus)
+        : Partitioner(num_dpus)
+    {}
+
+    std::vector<partition_t> partition_point(std::vector<int64_t>& keys, std::vector<int64_t>& workload)
+    {
+        return make_partition(keys, workload);
+    }
+
+    std::vector<partition_t> partition_range(std::vector<int64_t>& keys, std::vector<std::pair<int64_t, int64_t>>& workload)
+    {
+        std::vector<int64_t> workload_keys;
+        for (const auto& range : workload) {
+            workload_keys.push_back(range.first);
+            workload_keys.push_back(range.second);
+        }
+        return make_partition(keys, workload_keys);
+    }
+
+    std::vector<partition_t>& ref_partition(int i)
+    {
+        if (i == 0)
+            return partitions;
+        else
+            return empty;
+    }
+};
+
 class HWCBPForestPartitioner : public Partitioner {
     int alpha;
     ChunkBuilder* chunk_builder;
