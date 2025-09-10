@@ -2015,12 +2015,60 @@ inline bool BPForest::check_if_queries_balance(size_t nr_queries, const QueryDat
     return true;
 }
 
+#ifdef EXTRACT_BY_INITIALIZATION
+struct SummaryDummy {
+    static constexpr uint32_t ChunkSize = 301;
+    KVPair* pairs;
+
+    uint32_t idx_last_chunk;
+    uint32_t last_chunk_size;
+
+    uint32_t nr_pairs;
+    uint32_t nr_blocks;
+
+    static SummaryDummy create(std::vector<KVPair>& pairs, dpu_id_t idx_dpu, dpu_id_t nr_dpus)
+    {
+        SummaryDummy result;
+
+        const size_t idx_pairs_begin = pairs.size() * idx_dpu / nr_dpus,
+                     idx_pairs_end = pairs.size() * (idx_dpu + 1) / nr_dpus;
+        result.pairs = &pairs[idx_pairs_begin];
+        result.nr_pairs = static_cast<uint32_t>(idx_pairs_end - idx_pairs_begin);
+
+        const uint32_t nr_chunks = ((result.nr_pairs + ChunkSize - 1) / ChunkSize);
+        result.idx_last_chunk = nr_chunks - 1;
+        result.last_chunk_size = result.nr_pairs - result.idx_last_chunk * ChunkSize;
+        result.nr_blocks = (nr_chunks + 3) / 4;
+
+        return result;
+    }
+
+    key_uint64_t head_key(uint32_t i) const
+    {
+        i = std::min(i, idx_last_chunk);
+        return pairs[i * ChunkSize].key;
+    }
+    uint16_t nr_keys(uint32_t i) const
+    {
+        return (i < idx_last_chunk ? ChunkSize
+                                   : (i % 4u == 3u ? last_chunk_size
+                                                   : 0));
+    }
+};
+#endif
 inline std::vector<std::pair<size_t /* nr pairs in cold */, size_t /* nr pairs in hot */>>
 BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
 {
     StopWatch timer{RebalancingTime};
 
     std::array<size_t, MAX_NR_DPUS + 1> idx_qry_begin;
+
+#ifdef EXTRACT_BY_INITIALIZATION
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
+        cold_delims[idx_dpu] = initial_data[initial_data.size() * idx_dpu / nr_cold_ranges].key;
+    }
+#endif
+
     for (dpu_id_t idx_base = 0; idx_base < nr_cold_ranges; idx_base++) {
         idx_qry_begin[idx_base] = static_cast<size_t>(std::lower_bound(sorted_qrys.cbegin(), sorted_qrys.cend(), cold_delims[idx_base]) - sorted_qrys.cbegin());
     }
@@ -2029,6 +2077,11 @@ BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
     const size_t min_nr_qrys_in_hot = (sorted_qrys.size() + nr_cold_ranges - 1) / nr_cold_ranges;
 
     std::array<bool, MAX_NR_DPUS> base_rebalanced;
+#ifdef EXTRACT_BY_INITIALIZATION
+    for (dpu_id_t idx_base = 0; idx_base < nr_cold_ranges; idx_base++) {
+        base_rebalanced[idx_base] = (idx_qry_begin[idx_base + 1] - idx_qry_begin[idx_base] >= min_nr_qrys_in_hot);
+    }
+#else
     {
         std::array<bool, MAX_NR_DPUS> all_true;
         for (dpu_id_t idx_base = 0; idx_base < nr_cold_ranges; idx_base++) {
@@ -2038,6 +2091,7 @@ BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
 
         take_summary(all_true);
     }
+#endif
 
     dpu_id_t idx_new_hot = 0;
     std::array<std::pair<dpu_id_t, size_t>, MAX_NR_DPUS> nr_cold_queries;
@@ -2051,7 +2105,11 @@ BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
             cold_to_hot[idx_base] = idx_new_hot;
 
             size_t idx_qry = idx_qry_begin[idx_base], nr_left_qrys = idx_qry_begin[idx_base + 1] - idx_qry;
+#ifdef EXTRACT_BY_INITIALIZATION
+            const SummaryDummy summary = SummaryDummy::create(initial_data, idx_base, nr_cold_ranges);
+#else
             const Summary& summary = summaries[idx_base];
+#endif
             nr_pairs[idx_base].first = summary.nr_pairs;
 
             if (base_rebalanced[idx_base]) {
