@@ -336,6 +336,7 @@ int main(int argc, char* argv[])
         }
 
         if (opt.print_part_time) {
+            std::cout << "#RebalancingTime[ns]: " << RebalancingTime.count() << std::endl;
             std::cout << "#PartitioningTime[ns]: " << PartitioningTime.count() << std::endl;
         }
     }

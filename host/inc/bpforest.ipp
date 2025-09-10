@@ -2018,6 +2018,8 @@ inline bool BPForest::check_if_queries_balance(size_t nr_queries, const QueryDat
 inline std::vector<std::pair<size_t /* nr pairs in cold */, size_t /* nr pairs in hot */>>
 BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
 {
+    StopWatch timer{RebalancingTime};
+
     std::array<size_t, MAX_NR_DPUS + 1> idx_qry_begin;
     for (dpu_id_t idx_base = 0; idx_base < nr_cold_ranges; idx_base++) {
         idx_qry_begin[idx_base] = static_cast<size_t>(std::lower_bound(sorted_qrys.cbegin(), sorted_qrys.cend(), cold_delims[idx_base]) - sorted_qrys.cbegin());
