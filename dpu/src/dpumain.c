@@ -31,16 +31,19 @@ int main()
         task_init();
         break;
     case TASK_GET:
+#if SUPPORT_GET
         task_get();
+#endif
         break;
     case TASK_RANGE_MIN:
+#if SUPPORT_RANGE_MIN
         task_range_min();
+#endif
         break;
     case TASK_RANGE_COUNT:
+#if SUPPORT_RANGE_COUNT
         task_range_count();
-        break;
-    case TASK_RANGE_COUNT_PREFIX:
-        task_range_count_prefix();
+#endif
         break;
     case TASK_SUMMARIZE:
         task_summarize();

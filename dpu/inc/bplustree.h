@@ -97,13 +97,6 @@ typedef struct {
 } RCQWorkspace;
 
 
-typedef struct {
-    __dma_aligned Node node_cache;
-    __dma_aligned RangeCountQuery qrys[TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS];
-    __dma_aligned uint64_t results[TASK_RANGE_COUNT_PREFIX_NR_CACHED_RESULTS];
-} RCPQWorkspace;
-
-
 #define MAX_NR_SUMMARY_DATA (MAX_NR_NODES * (MAX_NR_CHILDREN - 1) / ((MAX_NR_CHILDREN - 1) * MIN_NR_CHILDREN + MAX_NR_CHILDREN))
 _Static_assert(MAX_NR_SUMMARY_DATA <= UINT16_MAX * 4, "MAX_NR_SUMMARY_DATA <= UINT16_MAX * 4");
 #define NR_SUMMARY_BLOCKS_PER_CHUNK                                       \
@@ -162,6 +155,5 @@ typedef union {
     ExtractWorkspace extract;
     GetWorkspace get[TASK_GET_NR_TASKLETS];
     RCQWorkspace rcq[TASK_RANGE_COUNT_NR_TASKLETS];
-    RCPQWorkspace rcpq[TASK_RANGE_COUNT_PREFIX_NR_TASKLETS];
     RMQWorkspace rmq;
 } TreeWorkspace;
