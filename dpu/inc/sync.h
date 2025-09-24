@@ -3,24 +3,37 @@
 #include <attributes.h>
 #include <defs.h>
 
+#include <stdbool.h>
 #include <stdint.h>
 
 
 extern uint8_t __atomic_bit AtomicBits[NR_TASKLETS * 2];
+extern bool fwd_readiness[NR_TASKLETS - 1];
+extern bool bwd_readiness[NR_TASKLETS - 1];
 
-#if 0
 // AtomicBits[0, NR_TASKLETS - 1)
 __attribute__((unused)) static void notify_next_of_readiness(void)
 {
-    asm volatile("acquire id, %[base], t, .+1\n"
-                 "resume id, 1" ::[base] "i"(&AtomicBits)
+    asm volatile("acquire id, %[atomic], nz, .\n"
+                 "sb id, %[readiness], 1\n"
+                 "resume id, 1\n"
+                 "release id, %[atomic], nz, .+1"
+                 :
+                 : [atomic] "i"(&AtomicBits), [readiness] "i"(&fwd_readiness)
                  : "memory");
 }
 __attribute__((unused)) static void wait_for_prev_ready(void)
 {
+    bool ok;
     asm volatile("0:\n"
-                 "release id, %[base] - 1, nz, .+2\n"
-                 "stop true, 0b" ::[base] "i"(&AtomicBits)
+                 "acquire id, %[base] - 1, nz, .\n"
+                 "lbu %[ok], id, %[readiness] - 1\n"
+                 "release id, %[base] - 1, nz, .+1\n"
+                 "jnz %[ok], .+2\n"
+                 "stop true, 0b\n"
+                 "sb id, %[readiness] - 1, 0"
+                 : [ok] "=r"(ok)
+                 : [base] "i"(&AtomicBits), [readiness] "i"(&fwd_readiness)
                  : "memory");
 }
 
@@ -28,21 +41,28 @@ __attribute__((unused)) static void wait_for_prev_ready(void)
 __attribute__((unused)) static void notify_prev_of_readiness(void)
 {
     const unsigned prev_id = me() - 1;
-    asm volatile("acquire id, %[base] + %[nr_tasklets] - 2, true, .+1\n"
-                 "resume %[prev_id], 0" ::[base] "i"(&AtomicBits),
-                 [prev_id] "r"(prev_id),
-                 [nr_tasklets] "i"(NR_TASKLETS)
+    asm volatile("acquire id, %[atomic] + %[nr_tasklets] - 2, nz, .\n"
+                 "sb id, %[readiness] - 1, 1\n"
+                 "resume %[prev_id], 0\n"
+                 "release id, %[atomic] + %[nr_tasklets] - 2, nz, .+1"
+                 :
+                 : [atomic] "i"(&AtomicBits), [nr_tasklets] "i"(NR_TASKLETS), [readiness] "i"(&bwd_readiness), [prev_id] "r"(prev_id)
                  : "memory");
 }
 __attribute__((unused)) static void wait_for_next_ready(void)
 {
+    bool ok;
     asm volatile("0:\n"
-                 "release id, %[base] + %[nr_tasklets] - 1, nz, .+2\n"
-                 "stop true, 0b" ::[base] "i"(&AtomicBits),
-                 [nr_tasklets] "i"(NR_TASKLETS)
+                 "acquire id, %[atomic] + %[nr_tasklets] - 1, nz, .\n"
+                 "lbu %[ok], id, %[readiness]\n"
+                 "release id, %[atomic] + %[nr_tasklets] - 1, nz, .+1\n"
+                 "jnz %[ok], .+2\n"
+                 "stop true, 0b\n"
+                 "sb id, %[readiness], 0"
+                 : [ok] "=r"(ok)
+                 : [atomic] "i"(&AtomicBits), [nr_tasklets] "i"(NR_TASKLETS), [readiness] "i"(&bwd_readiness)
                  : "memory");
 }
-#endif
 
 // AtomicBits[2 * NR_TASKLETS - 2]
 __attribute__((unused)) static void acquire_lock(void)
@@ -59,11 +79,10 @@ __attribute__((unused)) static void release_lock(void)
 }
 
 
+#if 0
 #include <mutex.h>
 
 extern const mutex_id_t tmp_sync_mutex;
-extern bool fwd_readiness[NR_TASKLETS];
-extern bool bwd_readiness[NR_TASKLETS];
 
 __attribute__((unused)) static void notify_next_of_readiness(void)
 {
@@ -84,16 +103,17 @@ __attribute__((unused)) static void wait_for_prev_ready(void)
 __attribute__((unused)) static void notify_prev_of_readiness(void)
 {
     mutex_lock(tmp_sync_mutex);
-    bwd_readiness[me()] = true;
+    bwd_readiness[me() - 1] = true;
     mutex_unlock(tmp_sync_mutex);
 }
 __attribute__((unused)) static void wait_for_next_ready(void)
 {
     mutex_lock(tmp_sync_mutex);
-    while (!bwd_readiness[me() + 1]) {
+    while (!bwd_readiness[me()]) {
         mutex_unlock(tmp_sync_mutex);
         mutex_lock(tmp_sync_mutex);
     }
-    bwd_readiness[me() + 1] = false;
+    bwd_readiness[me()] = false;
     mutex_unlock(tmp_sync_mutex);
 }
+#endif

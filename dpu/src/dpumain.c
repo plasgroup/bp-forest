@@ -35,6 +35,11 @@ int main()
         task_get();
 #endif
         break;
+    case TASK_INSERT:
+#if SUPPORT_INSERT
+        task_insert();
+#endif
+        break;
     case TASK_RANGE_MIN:
 #if SUPPORT_RANGE_MIN
         task_range_min();

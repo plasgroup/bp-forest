@@ -195,6 +195,11 @@ public:
 #endif /* DEBUG_ON */
     }
 
+    void batch_insert(size_t nr_queries, const KVPair pairs[])
+    {
+        forest.batch_insert(static_cast<uint32_t>(nr_queries), pairs);
+    }
+
     void batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t results[])
     {
         forest.batch_range_minimum(nr_queries, ranges, results);
@@ -218,7 +223,9 @@ public:
         forest.batch_range_count(static_cast<uint32_t>(n), queries, results);
     };
 
-    // void partition_with(uint64_t /* n */, const key_uint64_t /* keys */[]) {}
+    void partition_with(uint64_t n, const key_uint64_t keys[]) {
+        nr_pairs = forest.partition_data_with_reference_point_queries(n, keys);
+    }
     void partition_with(uint64_t n, const KeyRange queries[])
     {
         nr_pairs = forest.partition_data_with_reference_range_queries(n, queries);
@@ -302,6 +309,8 @@ int main(int argc, char* argv[])
     Benchmark* benchmark;
     if (opt.op_type == TASK_GET)
         benchmark = new GetBenchmark(opt.workload_file, true);
+    else if (opt.op_type == TASK_INSERT)
+        benchmark = new InsertBenchmark(opt.workload_file, true);
     else if (opt.op_type == TASK_RANGE_MIN)
         benchmark = new RMQBenchmark(opt.workload_file, true, NUM_INIT_REQS);
     else if (opt.op_type == TASK_RANGE_COUNT)

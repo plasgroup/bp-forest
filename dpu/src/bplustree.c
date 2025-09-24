@@ -448,6 +448,420 @@ void task_init(void)
 }
 
 
+#if SUPPORT_INSERT
+static KVPair* INSERT_fetch_next_qry(InsertWorkspace* wks)
+{
+    if (wks->idx_qry_in_cache == TASK_INSERT_NR_CACHED_QRYS) {
+        mram_read((__mram_ptr void*)wks->cursor_on_qrys, wks->qrys, sizeof(KVPair) * TASK_INSERT_NR_CACHED_QRYS);
+        wks->cursor_on_qrys += sizeof(KVPair) * TASK_INSERT_NR_CACHED_QRYS;
+        wks->idx_qry_in_cache = 0;
+    }
+    return &wks->qrys[wks->idx_qry_in_cache++];
+}
+static void INSERT_execute(Node* const root, uint8_t* const height, uint8_t* const root_numKeys, const KVPair* const qry)
+{
+    InsertWorkspace* const wks_me = &workspace.tree.insert[me()];
+
+    if (*height == 0) {
+        // Insert into the leaf
+        const uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], *root_numKeys, qry->key);
+        if (idx_pair < *root_numKeys && root->lf.keys[idx_pair] == qry->key) {
+            root->lf.values[idx_pair] = qry->value;  // update
+        } else {
+            if (*root_numKeys < MAX_NR_PAIRS) {
+                // No split
+                for (unsigned i = *root_numKeys; i > idx_pair; i--) {
+                    root->lf.keys[i] = root->lf.keys[i - 1];
+                    root->lf.values[i] = root->lf.values[i - 1];
+                }
+                root->lf.keys[idx_pair] = qry->key;
+                root->lf.values[idx_pair] = qry->value;
+                (*root_numKeys)++;
+            } else {
+                // Split
+                Node* const new_sibling = &wks_me->node_cache[0];
+                const NodePtr old_root_ptr = Allocate_node(), new_sibling_ptr = Allocate_node();
+                const NodeLink old_root_link = {old_root_ptr, MAX_NR_PAIRS - MIN_NR_PAIRS + 1}, new_sibling_link = {new_sibling_ptr, MIN_NR_PAIRS};
+
+                root->lf.right = new_sibling_link;
+                new_sibling->lf.right = NODELINK_NULLPTR;
+                new_sibling->lf.left = old_root_ptr;
+
+                if (idx_pair <= MAX_NR_PAIRS - MIN_NR_PAIRS) {
+                    // Move the last MIN_NR_PAIRS pairs to the new sibling
+                    for (unsigned i = 0; i < MIN_NR_PAIRS; i++) {
+                        new_sibling->lf.keys[i] = root->lf.keys[i + MAX_NR_PAIRS - MIN_NR_PAIRS];
+                        new_sibling->lf.values[i] = root->lf.values[i + MAX_NR_PAIRS - MIN_NR_PAIRS];
+                    }
+                    // Insert the new pair into the old root
+                    for (unsigned i = MAX_NR_PAIRS - MIN_NR_PAIRS; i > idx_pair; i--) {
+                        root->lf.keys[i] = root->lf.keys[i - 1];
+                        root->lf.values[i] = root->lf.values[i - 1];
+                    }
+                    root->lf.keys[idx_pair] = qry->key;
+                    root->lf.values[idx_pair] = qry->value;
+                } else {
+                    // Move the last MIN_NR_PAIRS-1 pairs and the new pair to the new sibling
+                    for (unsigned i = MAX_NR_PAIRS - MIN_NR_PAIRS + 1; i < idx_pair; i++) {
+                        new_sibling->lf.keys[i - (MAX_NR_PAIRS - MIN_NR_PAIRS + 1)] = root->lf.keys[i];
+                        new_sibling->lf.values[i - (MAX_NR_PAIRS - MIN_NR_PAIRS + 1)] = root->lf.values[i];
+                    }
+                    new_sibling->lf.keys[idx_pair - (MAX_NR_PAIRS - MIN_NR_PAIRS + 1)] = qry->key;
+                    new_sibling->lf.values[idx_pair - (MAX_NR_PAIRS - MIN_NR_PAIRS + 1)] = qry->value;
+                    for (unsigned i = idx_pair; i < MAX_NR_PAIRS; i++) {
+                        new_sibling->lf.keys[i - (MAX_NR_PAIRS - MIN_NR_PAIRS)] = root->lf.keys[i];
+                        new_sibling->lf.values[i - (MAX_NR_PAIRS - MIN_NR_PAIRS)] = root->lf.values[i];
+                    }
+                }
+                mram_write(root, &Deref(old_root_ptr), sizeof(Node));
+                mram_write(new_sibling, &Deref(new_sibling_ptr), sizeof(Node));
+                // Create a new root
+                root->inl.keys[0] = new_sibling->lf.keys[0];
+                root->inl.children[0] = old_root_link;
+                root->inl.children[1] = new_sibling_link;
+                *root_numKeys = 1;
+                *height = 1;
+            }
+        }
+
+    } else {
+        bool idx_unused_cache = 0, is_cache_dirty = false;
+
+        NodePtr parent_ptr = /* parent of root, or root */ NODE_NULLPTR;
+        uint16_t idx_node = 0;
+        NodeLink link_to_node[2] = /* root */ {NODELINK_NULLPTR, NODELINK_NULLPTR};
+
+        uint8_t node_height = *height;
+        uint16_t idx_child = search_for_child_index(&root->inl.keys[0], *root_numKeys, qry->key);
+        __dma_aligned NodeLink child_link = root->inl.children[idx_child];
+
+
+        if (*root_numKeys == MAX_NR_CHILDREN - 1) {
+            // Split the root
+            _Static_assert(MIN_NR_CHILDREN * 2 <= MAX_NR_CHILDREN, "MIN_NR_CHILDREN * 2 <= MAX_NR_CHILDREN");
+            const bool old_root_cache = idx_unused_cache, new_sibling_cache = !idx_unused_cache;
+            Node *const old_root = &wks_me->node_cache[old_root_cache], *const new_sibling = &wks_me->node_cache[new_sibling_cache];
+            const NodePtr old_root_ptr = Allocate_node(), new_sibling_ptr = Allocate_node();
+            const NodeLink old_root_link = {old_root_ptr, MAX_NR_CHILDREN - MIN_NR_CHILDREN - 1}, new_sibling_link = {new_sibling_ptr, MIN_NR_CHILDREN - 1};
+
+            new_sibling->inl.children[0] = root->inl.children[MAX_NR_CHILDREN - MIN_NR_CHILDREN];
+            for (unsigned i = 1; i < MIN_NR_CHILDREN; i++) {
+                new_sibling->inl.keys[i - 1] = root->inl.keys[i + MAX_NR_CHILDREN - MIN_NR_CHILDREN - 1];
+                new_sibling->inl.children[i] = root->inl.children[i + MAX_NR_CHILDREN - MIN_NR_CHILDREN];
+            }
+
+            if (idx_child < MAX_NR_CHILDREN - MIN_NR_CHILDREN) {
+                mram_write(new_sibling, &Deref(new_sibling_ptr), sizeof(Node));
+                idx_unused_cache = new_sibling_cache;
+
+                // Move the old root to the cache
+                for (unsigned i = 0; i < MAX_NR_CHILDREN - MIN_NR_CHILDREN - 1; i++) {
+                    old_root->inl.keys[i] = root->inl.keys[i];
+                    old_root->inl.children[i] = root->inl.children[i];
+                }
+                old_root->inl.children[MAX_NR_CHILDREN - MIN_NR_CHILDREN - 1] = root->inl.children[MAX_NR_CHILDREN - MIN_NR_CHILDREN - 1];
+
+                // Continue to the appropriate child
+                idx_node = 0;
+
+            } else {
+                mram_write(root, &Deref(old_root_ptr), sizeof(Node));
+                idx_unused_cache = old_root_cache;
+
+                // Continue to the appropriate child
+                idx_node = 1;
+                idx_child -= MAX_NR_CHILDREN - MIN_NR_CHILDREN;
+            }
+            is_cache_dirty = true;
+
+            // Create a new root
+            root->inl.keys[0] = root->inl.keys[MAX_NR_CHILDREN - MIN_NR_CHILDREN - 1];
+            link_to_node[0] = root->inl.children[0] = old_root_link;
+            link_to_node[1] = root->inl.children[1] = new_sibling_link;
+            *root_numKeys = 1;
+            *height += 1;
+        }
+
+        for (; node_height > 1; node_height--) {
+            const bool child_cache = idx_unused_cache;
+            Node* const child = &wks_me->node_cache[child_cache];
+            mram_read(&Deref(child_link.ptr), child, sizeof(Node));
+
+            const uint16_t idx_grandchild = search_for_child_index(&child->inl.keys[0], child_link.numKeys, qry->key);
+            const NodeLink grandchild_link = child->inl.children[idx_grandchild];
+
+            if (child_link.numKeys == MAX_NR_CHILDREN - 1) {
+                // Split this internal node
+                _Static_assert(MIN_NR_CHILDREN * 2 <= MAX_NR_CHILDREN, "MIN_NR_CHILDREN * 2 <= MAX_NR_CHILDREN");
+                const bool new_sibling_cache = !child_cache;
+                const NodePtr new_sibling_ptr = Allocate_node();
+                const NodeLink new_child_link = {child_link.ptr, MAX_NR_CHILDREN - MIN_NR_CHILDREN - 1}, new_sibling_link = {new_sibling_ptr, MIN_NR_CHILDREN - 1};
+
+                // Insert a new key and a new child link to the parent
+                NodeLink* const node_link = &link_to_node[idx_node % 2];
+                if (/* root */ (node_link->ptr == NODELINK_NULLPTR.ptr && node_link->numKeys == NODELINK_NULLPTR.numKeys)) {
+                    for (unsigned i = *root_numKeys; i > idx_child; i--) {
+                        root->inl.keys[i] = root->inl.keys[i - 1];
+                        root->inl.children[i + 1] = root->inl.children[i];
+                    }
+                    root->inl.keys[idx_child] = child->inl.keys[MAX_NR_CHILDREN - MIN_NR_CHILDREN - 1];
+                    root->inl.children[idx_child] = new_child_link;
+                    root->inl.children[idx_child + 1] = new_sibling_link;
+                    *root_numKeys += 1;
+
+                    if (idx_grandchild >= MAX_NR_CHILDREN - MIN_NR_CHILDREN) {
+                        idx_child += 1;
+                    }
+                    link_to_node[0] = root->inl.children[idx_child / 2 * 2];
+                    link_to_node[1] = root->inl.children[idx_child / 2 * 2 + 1];
+
+                } else {
+                    Node* const node = &wks_me->node_cache[!child_cache];
+                    for (unsigned i = node_link->numKeys; i > idx_child; i--) {
+                        node->inl.keys[i] = node->inl.keys[i - 1];
+                        node->inl.children[i + 1] = node->inl.children[i];
+                    }
+                    node->inl.keys[idx_child] = child->inl.keys[MAX_NR_CHILDREN - MIN_NR_CHILDREN - 1];
+                    node->inl.children[idx_child] = new_child_link;
+                    node->inl.children[idx_child + 1] = new_sibling_link;
+
+                    node_link->numKeys += 1;
+                    if (/* root */ parent_ptr == NODE_NULLPTR) {
+                        root->inl.children[idx_node] = *node_link;
+                    } else {
+                        mram_write(&link_to_node[0], &Deref(parent_ptr).inl.children[idx_node / 2 * 2], sizeof(NodeLink) * 2);
+                    }
+
+                    mram_write(node, &Deref(node_link->ptr), sizeof(Node));
+
+                    parent_ptr = node_link->ptr;
+                    if (idx_grandchild >= MAX_NR_CHILDREN - MIN_NR_CHILDREN) {
+                        idx_child += 1;
+                    }
+                    link_to_node[0] = node->inl.children[idx_child / 2 * 2];
+                    link_to_node[1] = node->inl.children[idx_child / 2 * 2 + 1];
+                }
+                idx_node = idx_child;
+
+                // Move the appropriate half of children to the new sibling
+                Node* const new_sibling = &wks_me->node_cache[new_sibling_cache];
+                new_sibling->inl.children[0] = child->inl.children[MAX_NR_CHILDREN - MIN_NR_CHILDREN];
+                for (unsigned i = 1; i < MIN_NR_CHILDREN; i++) {
+                    new_sibling->inl.keys[i - 1] = child->inl.keys[i + MAX_NR_CHILDREN - MIN_NR_CHILDREN - 1];
+                    new_sibling->inl.children[i] = child->inl.children[i + MAX_NR_CHILDREN - MIN_NR_CHILDREN];
+                }
+
+                mram_write(new_sibling, &Deref(new_sibling_ptr), sizeof(Node));
+                if (idx_grandchild < MAX_NR_CHILDREN - MIN_NR_CHILDREN) {
+                    idx_unused_cache = new_sibling_cache;
+
+                    // Continue to the appropriate grandchild
+                    idx_child = idx_grandchild;
+                    is_cache_dirty = false;
+
+                } else {
+                    idx_unused_cache = child_cache;  // no change
+
+                    // Continue to the appropriate grandchild
+                    idx_child = idx_grandchild - (MAX_NR_CHILDREN - MIN_NR_CHILDREN);
+                    is_cache_dirty = true;
+                }
+
+            } else {
+                const NodeLink node_link = link_to_node[idx_node % 2];
+                Node* const node = &wks_me->node_cache[!child_cache];
+                if (is_cache_dirty) {
+                    mram_write(node, &Deref(node_link.ptr), sizeof(Node));
+
+                    is_cache_dirty = false;
+                }
+                idx_unused_cache = !child_cache;
+
+                parent_ptr = node_link.ptr;
+                if (/* root */ (node_link.ptr == NODELINK_NULLPTR.ptr && node_link.numKeys == NODELINK_NULLPTR.numKeys)) {
+                    link_to_node[0] = root->inl.children[idx_child / 2 * 2];
+                    link_to_node[1] = root->inl.children[idx_child / 2 * 2 + 1];
+                } else {
+                    link_to_node[0] = node->inl.children[idx_child / 2 * 2];
+                    link_to_node[1] = node->inl.children[idx_child / 2 * 2 + 1];
+                }
+                idx_node = idx_child;
+
+                idx_child = idx_grandchild;
+            }
+
+            child_link = grandchild_link;
+        }
+
+        // Insert into the leaf
+        const bool leaf_cache = idx_unused_cache;
+        Node* const leaf = &wks_me->node_cache[leaf_cache];
+        mram_read(&Deref(child_link.ptr), leaf, sizeof(Node));
+
+        NodeLink* const node_link = &link_to_node[idx_node % 2];
+        Node* const node = &wks_me->node_cache[!leaf_cache];
+
+        const uint16_t idx_pair = search_for_pair_index(&leaf->lf.keys[0], child_link.numKeys, qry->key);
+        if (idx_pair < child_link.numKeys && leaf->lf.keys[idx_pair] == qry->key) {
+            mram_write(&qry->value, &Deref(child_link.ptr).lf.values[idx_pair], sizeof(value_uint64_t));  // update
+            if (is_cache_dirty) {
+                mram_write(node, &Deref(node_link->ptr), sizeof(Node));
+            }
+        } else {
+            if (child_link.numKeys < MAX_NR_PAIRS) {
+                // No split
+                for (unsigned i = child_link.numKeys; i > idx_pair; i--) {
+                    leaf->lf.keys[i] = leaf->lf.keys[i - 1];
+                    leaf->lf.values[i] = leaf->lf.values[i - 1];
+                }
+                leaf->lf.keys[idx_pair] = qry->key;
+                leaf->lf.values[idx_pair] = qry->value;
+                mram_write(leaf, &Deref(child_link.ptr), sizeof(Node));
+
+                // Update the number of keys in the parent
+                child_link.numKeys += 1;
+                if (/* root */ (node_link->ptr == NODELINK_NULLPTR.ptr && node_link->numKeys == NODELINK_NULLPTR.numKeys)) {
+                    root->inl.children[idx_child] = child_link;
+                } else {
+                    node->inl.children[idx_child] = child_link;
+                    if (is_cache_dirty) {
+                        mram_write(node, &Deref(node_link->ptr), sizeof(Node));
+                    } else {
+                        mram_write(&node->inl.children[idx_child / 2 * 2],
+                            &Deref(node_link->ptr).inl.children[idx_child / 2 * 2],
+                            sizeof(NodeLink) * 2);
+                    }
+                }
+
+                // Update the number of keys in the predecessor leaf
+                if (leaf->lf.left != NODE_NULLPTR) {
+                    mram_write(&child_link, &Deref(leaf->lf.left).lf.right, 8);
+                }
+
+            } else {
+                // Split
+                const bool new_sibling_cache = !leaf_cache;
+                __dma_aligned const NodePtr new_sibling_ptr = Allocate_node();
+                __dma_aligned const NodeLink new_leaf_link = {child_link.ptr, MAX_NR_PAIRS - MIN_NR_PAIRS + 1}, new_sibling_link = {new_sibling_ptr, MIN_NR_PAIRS};
+                const key_uint64_t new_sibling_min_key = idx_pair == MAX_NR_PAIRS - MIN_NR_PAIRS + 1  ? qry->key
+                                                         : idx_pair < MAX_NR_PAIRS - MIN_NR_PAIRS + 1 ? leaf->lf.keys[MAX_NR_PAIRS - MIN_NR_PAIRS]
+                                                                                                      : leaf->lf.keys[MAX_NR_PAIRS - MIN_NR_PAIRS + 1];
+
+                // Insert a new key and a new child link to the parent
+                if (/* root */ (node_link->ptr == NODELINK_NULLPTR.ptr && node_link->numKeys == NODELINK_NULLPTR.numKeys)) {
+                    for (unsigned i = *root_numKeys; i > idx_child; i--) {
+                        root->inl.keys[i] = root->inl.keys[i - 1];
+                        root->inl.children[i + 1] = root->inl.children[i];
+                    }
+                    root->inl.keys[idx_child] = new_sibling_min_key;
+                    root->inl.children[idx_child] = new_leaf_link;
+                    root->inl.children[idx_child + 1] = new_sibling_link;
+                    *root_numKeys += 1;
+
+                } else {
+                    Node* const node = &wks_me->node_cache[!leaf_cache];
+                    for (unsigned i = node_link->numKeys; i > idx_child; i--) {
+                        node->inl.keys[i] = node->inl.keys[i - 1];
+                        node->inl.children[i + 1] = node->inl.children[i];
+                    }
+                    node->inl.keys[idx_child] = new_sibling_min_key;
+                    node->inl.children[idx_child] = new_leaf_link;
+                    node->inl.children[idx_child + 1] = new_sibling_link;
+
+                    node_link->numKeys += 1;
+                    if (/* root */ parent_ptr == NODE_NULLPTR) {
+                        root->inl.children[idx_node] = *node_link;
+                    } else {
+                        mram_write(&link_to_node[0], &Deref(parent_ptr).inl.children[idx_node / 2 * 2], sizeof(NodeLink) * 2);
+                    }
+
+                    mram_write(node, &Deref(node_link->ptr), sizeof(Node));
+                }
+
+                Node* const new_sibling = &wks_me->node_cache[new_sibling_cache];
+                new_sibling->lf.right = leaf->lf.right;
+                leaf->lf.right = new_sibling_link;
+                new_sibling->lf.left = child_link.ptr;
+                if (leaf->lf.left != NODE_NULLPTR) {
+                    mram_write(&new_leaf_link, &Deref(leaf->lf.left).lf.right, 8);
+                }
+                if (!(new_sibling->lf.right.ptr == NODELINK_NULLPTR.ptr && new_sibling->lf.right.numKeys == NODELINK_NULLPTR.numKeys)) {
+                    mram_write(&new_sibling_ptr, &Deref(new_sibling->lf.right.ptr).lf.left, 8);
+                }
+
+                if (idx_pair <= MAX_NR_PAIRS - MIN_NR_PAIRS) {
+                    // Move the last MIN_NR_PAIRS pairs to the new sibling
+                    for (unsigned i = 0; i < MIN_NR_PAIRS; i++) {
+                        new_sibling->lf.keys[i] = leaf->lf.keys[i + MAX_NR_PAIRS - MIN_NR_PAIRS];
+                        new_sibling->lf.values[i] = leaf->lf.values[i + MAX_NR_PAIRS - MIN_NR_PAIRS];
+                    }
+                    // Insert the new pair into the old root
+                    for (unsigned i = MAX_NR_PAIRS - MIN_NR_PAIRS; i > idx_pair; i--) {
+                        leaf->lf.keys[i] = leaf->lf.keys[i - 1];
+                        leaf->lf.values[i] = leaf->lf.values[i - 1];
+                    }
+                    leaf->lf.keys[idx_pair] = qry->key;
+                    leaf->lf.values[idx_pair] = qry->value;
+                } else {
+                    // Move the last MIN_NR_PAIRS-1 pairs and the new pair to the new sibling
+                    for (unsigned i = MAX_NR_PAIRS - MIN_NR_PAIRS + 1; i < idx_pair; i++) {
+                        new_sibling->lf.keys[i - (MAX_NR_PAIRS - MIN_NR_PAIRS + 1)] = leaf->lf.keys[i];
+                        new_sibling->lf.values[i - (MAX_NR_PAIRS - MIN_NR_PAIRS + 1)] = leaf->lf.values[i];
+                    }
+                    new_sibling->lf.keys[idx_pair - (MAX_NR_PAIRS - MIN_NR_PAIRS + 1)] = qry->key;
+                    new_sibling->lf.values[idx_pair - (MAX_NR_PAIRS - MIN_NR_PAIRS + 1)] = qry->value;
+                    for (unsigned i = idx_pair; i < MAX_NR_PAIRS; i++) {
+                        new_sibling->lf.keys[i - (MAX_NR_PAIRS - MIN_NR_PAIRS)] = leaf->lf.keys[i];
+                        new_sibling->lf.values[i - (MAX_NR_PAIRS - MIN_NR_PAIRS)] = leaf->lf.values[i];
+                    }
+                }
+                mram_write(leaf, &Deref(child_link.ptr), sizeof(Node));
+                mram_write(new_sibling, &Deref(new_sibling_ptr), sizeof(Node));
+            }
+        }
+    }
+}
+static void INSERT_execute_batch(Node* const root, uint8_t* const height, uint8_t* const root_numKeys,
+    const uint16_t idx_qry_begin, const uint16_t idx_qry_end,
+    const uintptr_t qrys)
+{
+    InsertWorkspace* const wks_me = &workspace.tree.insert[me()];
+    wks_me->idx_qry_in_cache = TASK_INSERT_NR_CACHED_QRYS;  // to trigger the first fetch
+    wks_me->cursor_on_qrys = qrys + sizeof(KVPair) * idx_qry_begin;
+
+    for (unsigned idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
+        const KVPair* const qry = INSERT_fetch_next_qry(wks_me);
+        INSERT_execute(root, height, root_numKeys, qry);
+    }
+}
+void task_insert(void)
+{
+    _Static_assert(TASK_INSERT_NR_TASKLETS == 1, "TASK_INSERT_NR_TASKLETS == 1");
+    if (me() < TASK_INSERT_NR_TASKLETS) {
+        const uint16_t nr_cold_qrys = input_header.insert.nr_cold_qrys, nr_hot_qrys = input_header.insert.nr_hot_qrys;
+
+        static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8,
+                               cold_qrys = qrys;
+        const uintptr_t hot_qrys = cold_qrys + sizeof(KVPair) * nr_cold_qrys;
+
+        INSERT_execute_batch(&cold_root, &cold_height, &cold_root_numKeys,
+            0, nr_cold_qrys,
+            cold_qrys);
+#ifdef TASK_INSERT_CHECK
+        check_tree_structure(&cold_root, cold_height, cold_root_numKeys);
+#endif
+
+        INSERT_execute_batch(&hot_root, &hot_height, &hot_root_numKeys,
+            0, nr_hot_qrys,
+            hot_qrys);
+#ifdef TASK_INSERT_CHECK
+        check_tree_structure(&hot_root, hot_height, hot_root_numKeys);
+#endif
+    }
+}
+#endif
+
+
 #if SUPPORT_GET
 static void GET_prepare_next_qry(key_uint64_t* qrys_cache, unsigned* idx_qry_in_cache, uintptr_t* cursor_on_qrys)
 {

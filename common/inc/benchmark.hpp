@@ -1,3 +1,4 @@
+#include "assert.hpp"
 #include "database.hpp"
 #include "extendable_buffer.hpp"
 #include "host/inc/statistics.hpp"
@@ -8,8 +9,10 @@
 
 #include <cereal/archives/binary.hpp>
 
+#include <algorithm>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <vector>
 
 
@@ -55,6 +58,11 @@ public:
         if (query.type == get_t)
             workload.push_back(key_int64_to_uint64(query.tsk.g.key));
     }
+    void push_back_query(std::vector<KVPair>& workload, operation& query)
+    {
+        if (query.type == insert_t)
+            workload.push_back({key_int64_to_uint64(query.tsk.i.key), value_int64_to_uint64(query.tsk.i.value)});
+    }
     void push_back_query(std::vector<KeyRange>& workload, operation& query)
     {
         if (query.type == scan_t) {
@@ -91,8 +99,8 @@ public:
         return new WorkloadBuffer<T>(std::move(workload));
     }
 
-    template <typename T>
-    size_t prepare_buffer(int idx_batch, WorkloadBuffer<T>* workload_buffer, ExtendableBuffer<T>& queires, ExtendableBuffer<value_uint64_t>& results)
+    template <typename T, typename R>
+    size_t prepare_buffer(int idx_batch, WorkloadBuffer<T>* workload_buffer, ExtendableBuffer<T>& queires, ExtendableBuffer<R>& results)
     {
         const auto tmp_input = workload_buffer->take(NUM_REQUESTS_PER_BATCH);
         const auto batch_queries = tmp_input.first;
@@ -105,6 +113,21 @@ public:
         for (size_t idx_query = 0; idx_query < num_queries_batch; idx_query++)
             queires[idx_query] = batch_queries[idx_query];
         results.reserve(num_queries_batch);
+        return num_queries_batch;
+    }
+    template <typename T>
+    size_t prepare_buffer(int idx_batch, WorkloadBuffer<T>* workload_buffer, ExtendableBuffer<T>& queires)
+    {
+        const auto tmp_input = workload_buffer->take(NUM_REQUESTS_PER_BATCH);
+        const auto batch_queries = tmp_input.first;
+        const auto num_queries_batch = tmp_input.second;
+        if (num_queries_batch != NUM_REQUESTS_PER_BATCH) {
+            std::cerr << "run out of workload in batch " << idx_batch << std::endl;
+            exit(1);
+        }
+        queires.reserve(num_queries_batch);
+        for (size_t idx_query = 0; idx_query < num_queries_batch; idx_query++)
+            queires[idx_query] = batch_queries[idx_query];
         return num_queries_batch;
     }
 
@@ -178,6 +201,45 @@ public:
                 verify_db->batch_get(num_queries_in_last_batch,
                     &keys[0], verify_results);
             });
+    }
+};
+
+class InsertBenchmark : public Benchmark
+{
+    std::unique_ptr<WorkloadBuffer<KVPair>> workload_buffer;
+    ExtendableBuffer<KVPair> pairs;
+    size_t num_queries_in_last_batch = 0;
+
+public:
+    InsertBenchmark(const std::string& workload_file,
+        bool is_pimtree_workload)
+        : workload_buffer{load_pimtree_workload<KVPair>(workload_file)}
+    {
+        ASSERT(is_pimtree_workload);
+    }
+
+    void do_one_batch(int idx_batch, Database* db)
+    {
+        size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer.get(), pairs);
+        {
+            StopWatch sw(QueryProcessTime);
+            db->batch_insert(num_queries_batch, &pairs[0]);
+        }
+        num_queries_in_last_batch = num_queries_batch;
+    }
+
+    void partition_with_one_batch(Database* db)
+    {
+        size_t num_queries_batch = prepare_buffer(-1, workload_buffer.get(), pairs);
+        std::vector<key_uint64_t> keys(num_queries_batch);
+        std::transform(&pairs[0], &pairs[num_queries_batch], keys.begin(),
+            [](const KVPair& p) { return p.key; });
+        db->partition_with(num_queries_batch, &keys[0]);
+    }
+
+    void verify()
+    {
+        verify_db->batch_insert(num_queries_in_last_batch, &pairs[0]);
     }
 };
 

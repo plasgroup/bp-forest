@@ -21,7 +21,7 @@ _Static_assert(_Alignof(NodeLink) == 4, "_Alignof(NodeLink) == 4");
 static const NodeLink NODELINK_NULLPTR = {NODE_NULLPTR, UINT_MAX&((1u << CEIL_LOG2_UINT32(SIZEOF_NODE)) - 1u)};
 
 
-#define MAX_NR_CHILDREN ((SIZEOF_NODE + 8) / 12)  // ((SIZEOF_NODE + sizeof(key_uint64_t)) / (sizeof(key_uint64_t) + sizeof(NodeLink)))
+#define MAX_NR_CHILDREN ((SIZEOF_NODE + 8) / 12 / 2 * 2)  // maximum even number <= ((SIZEOF_NODE + sizeof(key_uint64_t)) / (sizeof(key_uint64_t) + sizeof(NodeLink)))
 #define MIN_NR_CHILDREN ((MAX_NR_CHILDREN + 1) / 2)
 
 #define MAX_NR_PAIRS ((SIZEOF_NODE - 16) / (sizeof(key_uint64_t) + sizeof(value_uint64_t)))
@@ -74,6 +74,14 @@ typedef struct {
     __dma_aligned Node node_cache;
     __dma_aligned key_uint64_t qrys[TASK_GET_NR_CACHED_QRYS];
 } GetWorkspace;
+
+
+typedef struct {
+    __dma_aligned Node node_cache[2];
+    __dma_aligned KVPair qrys[TASK_GET_NR_CACHED_QRYS];
+    uint32_t idx_qry_in_cache;
+    uintptr_t cursor_on_qrys;
+} InsertWorkspace;
 
 
 typedef struct {
@@ -154,6 +162,7 @@ typedef union {
     SummarizeWorkspace summarize;
     ExtractWorkspace extract;
     GetWorkspace get[TASK_GET_NR_TASKLETS];
+    InsertWorkspace insert[TASK_INSERT_NR_TASKLETS];
     RCQWorkspace rcq[TASK_RANGE_COUNT_NR_TASKLETS];
     RMQWorkspace rmq;
 } TreeWorkspace;

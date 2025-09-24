@@ -4,6 +4,7 @@
 #include "host/inc/host_params.hpp"
 #include "pimtree_query.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <fstream>
@@ -14,14 +15,16 @@
 class Database
 {
 public:
-    const value_uint64_t NOT_FOUND_VALUE = 0;
-
     Database() {}
     virtual ~Database() {}
 
     virtual void batch_get(uint64_t n,
         const key_uint64_t keys[],
         value_uint64_t results[])
+        = 0;
+
+    virtual void batch_insert(uint64_t n,
+        const KVPair pairs[])
         = 0;
 
     virtual void batch_range_minimum(uint64_t n,
@@ -149,6 +152,20 @@ public:
             else
                 results[i] = NOT_FOUND_VALUE;
         }
+    }
+
+    void batch_insert(uint64_t n,
+        const KVPair pairs[])
+    {
+        data.insert(data.end(), &pairs[0], &pairs[n]);
+        std::sort(data.begin() + static_cast<ptrdiff_t>(data.size() - n), data.end(),
+            [](const KVPair& a, const KVPair& b) {
+                return a.key < b.key;
+            });
+        std::inplace_merge(data.begin(), data.end() - static_cast<ptrdiff_t>(n), data.end(),
+            [](const KVPair& a, const KVPair& b) {
+                return a.key < b.key;
+            });
     }
 
     void batch_range_minimum(uint64_t n,

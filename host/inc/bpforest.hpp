@@ -15,6 +15,7 @@
 #include <memory>
 #include <ostream>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -50,11 +51,15 @@ struct BPForest : ParallelManager<BPForest> {
     ~BPForest();
 
     void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
+    void batch_insert(uint32_t nr_queries, const KVPair pairs[]);
     void batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t result[]);
     void batch_range_count(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
     std::vector<size_t> get_nr_rcqs() const;
     void batch_scan(size_t nr_queries, const KeyRange ranges[], BatchScanResult& result);
 
+    template <typename Query>
+    std::vector<std::pair<size_t /* nr pairs in cold */, size_t /* nr pairs in hot */>>
+    partition_data_with_reference_point_queries(size_t nr_queries, const Query queries[]);
     template <typename Query>
     std::vector<std::pair<size_t /* nr pairs in cold */, size_t /* nr pairs in hot */>>
     partition_data_with_reference_range_queries(size_t nr_queries, const Query queries[]);
@@ -105,10 +110,22 @@ private:
         std::vector<ExtendableBuffer<Result>> results;
         size_t nr_qrys;
     };
+    template <typename Query>
+    struct QueryDataPerRange<Query, void> {
+        // qrys[idx_host_thread][idx_qry]
+        std::vector<std::vector<Query>> qrys;
+        size_t nr_qrys;
+    };
     template <typename Query, typename Result>
-    using QueryData = std::array<QueryDataPerRange<Query, Result>, MAX_NR_DPUS>;
+    struct QueryData {
+        std::array<QueryDataPerRange<Query, Result>, MAX_NR_DPUS> cold, hot;
+    };
 
+    QueryData<key_uint64_t, value_uint64_t> get_queries;
+    QueryData<KVPair, void> insert_queries;
     QueryData<RangeCountQuery, uint64_t> rcqs;
+
+    std::vector<key_uint64_t> new_min_keys;
 
 public:  // TODO: privatize
     struct Summary {
@@ -144,6 +161,9 @@ private:
     void route_get_queries_impl(unsigned tid);
     void postprocess_of_get_impl(unsigned tid);
 
+    void execute_insert_in_dpus();
+    struct InsertQuerySender;
+
     bool check_if_rcq_balance();
     void execute_rcq_in_dpus();
     void postprocess_of_rcq(uint32_t nr_queries, uint64_t result[]);
@@ -153,7 +173,7 @@ private:
     struct RCQResultReceiver;
 
     template <typename Query, typename Result>
-    using TmpDataForRouteRangeQueries = std::tuple<uint32_t, const Query*, QueryData<Query, Result>*>;
+    using TmpDataForRouteQueries = std::tuple<uint32_t, const Query*, QueryData<Query, Result>*, Result*>;
     std::any any_tmp_data;
 
     union TmpData {
@@ -212,17 +232,35 @@ private:
     struct RMQSender;
     struct RMQResultReceiver;
 
+public:
     template <typename Query, typename Result>
-    void route_range_queries(
-        uint32_t nr_queries, const Query queries[],
+    using RouteSingleQueryFunc = void (BPForest::*)(uint32_t idx_qry, const Query& qry, Result*, QueryData<Query, Result>& routed, unsigned tid);
+
+private:
+    template <auto /* RouteSingleQueryFunc<Query, Result> */ Func, typename Query, typename Result, std::enable_if_t<std::is_same_v<decltype(Func), RouteSingleQueryFunc<Query, Result>>, std::nullptr_t> = nullptr>
+    void route_queries(
+        uint32_t nr_queries, const Query queries[], Result* results,
         QueryData<Query, Result>& routed);
+    template <typename Query, typename Result, RouteSingleQueryFunc<Query, Result> Func>
+    void route_queries_impl(unsigned tid);
+
     template <typename Query, typename Result>
-    void route_range_queries_impl(unsigned tid);
-    template <typename Query, typename Result>
-    void route_single_range_query(
-        uint32_t idx_qry, const Query& qry,
+    void route_single_point_query(
+        uint32_t idx_qry, const Query& qry, Result* result,
         QueryData<Query, Result>& routed,
         unsigned tid);
+    template <typename Query, typename Result>
+    void not_found_in_point_query(
+        uint32_t idx_qry, const Query& qry, Result* result,
+        QueryData<Query, Result>& routed,
+        unsigned tid);
+
+    template <typename Query, typename Result>
+    void route_single_range_query(
+        uint32_t idx_qry, const Query& qry, Result* result,
+        QueryData<Query, Result>& routed,
+        unsigned tid);
+
     template <typename Query, typename Result>
     bool check_if_queries_balance(size_t nr_queries, const QueryData<Query, Result>& routed);
     std::vector<std::pair<size_t /* nr pairs in cold */, size_t /* nr pairs in hot */>>
