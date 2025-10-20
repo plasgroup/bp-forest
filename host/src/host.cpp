@@ -422,6 +422,8 @@ int main(int argc, char* argv[])
 #endif
                       << PostprocessTime.count() << ',' << BatchTotalTime.count() << std::endl;
         }
+
+        RebalancingTime = RebalancingTime.zero();
     });
 
 #ifdef MEASURE_XFER_BYTES

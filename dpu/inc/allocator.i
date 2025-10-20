@@ -11,6 +11,8 @@
 
 #include <assert.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 
 static DEFINE_BITMAP(allocated_bitmap, MAX_NR_NODES);
@@ -36,7 +38,10 @@ inline NodePtr Allocate_node()
     }
     release_lock();
 
-    assert(id >= 0);
+    if (!(id >= 0)) {
+        printf("mem exhausted\n");
+        abort();
+    }
     return (NodePtr)id;
 }
 

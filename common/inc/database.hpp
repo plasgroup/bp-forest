@@ -1,7 +1,7 @@
 #pragma once
 
 #include "common.h"
-#include "host/inc/host_params.hpp"
+#include "host_params.hpp"
 #include "pimtree_query.hpp"
 
 #include <algorithm>

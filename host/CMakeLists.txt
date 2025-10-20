@@ -6,7 +6,7 @@ foreach(build_version IN LISTS targets)
 endforeach(build_version)
 
 if(${USE_UPMEM_SDK})
-    set(PKG_CONFIG_EXECUTABLE dpu-pkg-config)
+    set(PKG_CONFIG_EXECUTABLE dpu-pkg-config CACHE STRING "pathname of the pkg-config program")
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(DPU_CONFIG IMPORTED_TARGET dpu)
 endif(${USE_UPMEM_SDK})
@@ -23,11 +23,9 @@ foreach(build_version IN LISTS targets)
     add_executable(host_app_${build_version} ${HOST_SOURCE})
     target_include_directories(host_app_${build_version} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/inc)
 
-    # TODO: remove this line
-    target_include_directories(host_app_${build_version} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/..)
-
     target_link_libraries(host_app_${build_version}
         common_${build_version}
+        assert
         workload_mgmt
         parallel_manager
         extendable_buffer
