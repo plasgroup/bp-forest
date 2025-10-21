@@ -7,6 +7,7 @@
 #include <mram.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 
 
 BARRIER_INIT(my_barrier, NR_TASKLETS);
@@ -30,26 +31,26 @@ int main()
     case TASK_INIT:
         task_init();
         break;
-    case TASK_GET:
 #if SUPPORT_GET
+    case TASK_GET:
         task_get();
-#endif
         break;
-    case TASK_INSERT:
+#endif
 #if SUPPORT_INSERT
+    case TASK_INSERT:
         task_insert();
-#endif
         break;
-    case TASK_RANGE_MIN:
+#endif
 #if SUPPORT_RANGE_MIN
+    case TASK_RANGE_MIN:
         task_range_min();
-#endif
         break;
-    case TASK_RANGE_COUNT:
+#endif
 #if SUPPORT_RANGE_COUNT
+    case TASK_RANGE_COUNT:
         task_range_count();
-#endif
         break;
+#endif
     case TASK_SUMMARIZE:
         task_summarize();
         break;
@@ -65,7 +66,7 @@ int main()
         if (me() == 0) {
             printf("no such a task: task %u\n", input_header.task_no);
         }
-        return -1;
+        abort();
     }
     return 0;
 }

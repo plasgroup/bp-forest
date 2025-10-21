@@ -16,7 +16,7 @@ __attribute__((unused)) static void notify_next_of_readiness(void)
 {
     asm volatile("acquire id, %[atomic], nz, .\n"
                  "sb id, %[readiness], 1\n"
-                 "resume id, 1\n"
+                 // "resume id, 1\n"
                  "release id, %[atomic], nz, .+1"
                  :
                  : [atomic] "i"(&AtomicBits), [readiness] "i"(&fwd_readiness)
@@ -29,8 +29,8 @@ __attribute__((unused)) static void wait_for_prev_ready(void)
                  "acquire id, %[base] - 1, nz, .\n"
                  "lbu %[ok], id, %[readiness] - 1\n"
                  "release id, %[base] - 1, nz, .+1\n"
-                 "jnz %[ok], .+2\n"
-                 "stop true, 0b\n"
+                 "jz %[ok], 0b\n"
+                 // "stop true, 0b\n"
                  "sb id, %[readiness] - 1, 0"
                  : [ok] "=r"(ok)
                  : [base] "i"(&AtomicBits), [readiness] "i"(&fwd_readiness)
@@ -40,13 +40,13 @@ __attribute__((unused)) static void wait_for_prev_ready(void)
 // AtomicBits[NR_TASKLETS - 1, 2 * NR_TASKLETS - 2)
 __attribute__((unused)) static void notify_prev_of_readiness(void)
 {
-    const unsigned prev_id = me() - 1;
+    // const unsigned prev_id = me() - 1;
     asm volatile("acquire id, %[atomic] + %[nr_tasklets] - 2, nz, .\n"
                  "sb id, %[readiness] - 1, 1\n"
-                 "resume %[prev_id], 0\n"
+                 // "resume %[prev_id], 0\n"
                  "release id, %[atomic] + %[nr_tasklets] - 2, nz, .+1"
                  :
-                 : [atomic] "i"(&AtomicBits), [nr_tasklets] "i"(NR_TASKLETS), [readiness] "i"(&bwd_readiness), [prev_id] "r"(prev_id)
+                 : [atomic] "i"(&AtomicBits), [nr_tasklets] "i"(NR_TASKLETS), [readiness] "i"(&bwd_readiness)  //, [prev_id] "r"(prev_id)
                  : "memory");
 }
 __attribute__((unused)) static void wait_for_next_ready(void)
@@ -56,8 +56,8 @@ __attribute__((unused)) static void wait_for_next_ready(void)
                  "acquire id, %[atomic] + %[nr_tasklets] - 1, nz, .\n"
                  "lbu %[ok], id, %[readiness]\n"
                  "release id, %[atomic] + %[nr_tasklets] - 1, nz, .+1\n"
-                 "jnz %[ok], .+2\n"
-                 "stop true, 0b\n"
+                 "jz %[ok], 0b\n"
+                 // "stop true, 0b\n"
                  "sb id, %[readiness], 0"
                  : [ok] "=r"(ok)
                  : [atomic] "i"(&AtomicBits), [nr_tasklets] "i"(NR_TASKLETS), [readiness] "i"(&bwd_readiness)

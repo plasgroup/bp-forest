@@ -1,6 +1,7 @@
 #include "assert.hpp"
 #include "common.h"
 #include "extendable_buffer.hpp"
+#include "log_buffer.hpp"
 #include "pimtree_query.hpp"
 #include "workload_buffer.hpp"
 
@@ -103,6 +104,10 @@ struct InitHeader {
     uint32_t task_no = TASK_INIT;
     uint32_t nr_pairs;
 };
+struct ConstructHotHeader {
+    uint32_t task_no = TASK_CONSTRUCT_HOT;
+    uint32_t nr_pairs;
+};
 struct NopHeader {
     uint32_t task_no = TASK_NONE;
     uint32_t pad = 0;
@@ -132,8 +137,13 @@ int main(int argc, char* argv[])
         const InitHeader init_header{TASK_INIT, static_cast<uint32_t>(init_qrys.length)};
         DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 0, &init_header, 8, DPU_XFER_DEFAULT));
         DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 8, &init_pairs[0], init_qrys.length * sizeof(KVPair), DPU_XFER_DEFAULT));
+        DPU_ASSERT(dpu_launch(dpu_hdr.all_dpu, DPU_SYNCHRONOUS));
+
+        const ConstructHotHeader hot_header{TASK_CONSTRUCT_HOT, static_cast<uint32_t>(init_qrys.length)};
+        DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 0, &hot_header, 8, DPU_XFER_DEFAULT));
+        DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 8, &init_pairs[0], init_qrys.length * sizeof(KVPair), DPU_XFER_DEFAULT));
+        DPU_ASSERT(dpu_launch(dpu_hdr.all_dpu, DPU_SYNCHRONOUS));
     }
-    DPU_ASSERT(dpu_launch(dpu_hdr.all_dpu, DPU_SYNCHRONOUS));
 
     {
         const pimtree_queries workload_qrys = make_pimtree_queries(opt.workload_file);
@@ -150,11 +160,26 @@ int main(int argc, char* argv[])
                 break;
             }
 
-            const InsertHeader insert_header{TASK_INSERT, static_cast<uint16_t>(nr_qrys), 0};
+            const InsertHeader insert_header{TASK_INSERT, static_cast<uint16_t>(nr_qrys), static_cast<uint16_t>(nr_qrys)};
 
             DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 0, &insert_header, 8, DPU_XFER_DEFAULT));
             DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 8, qrys, nr_qrys * sizeof(KVPair), DPU_XFER_DEFAULT));
+            DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, static_cast<uint32_t>(8 + nr_qrys * sizeof(KVPair)), qrys, nr_qrys * sizeof(KVPair), DPU_XFER_DEFAULT));
             DPU_ASSERT(dpu_launch(dpu_hdr.all_dpu, DPU_SYNCHRONOUS));
+
+#ifdef PRINT_DEBUG
+            {
+                LogStream stream;
+
+                dpu_set_t dpu;
+                DPU_FOREACH(dpu_hdr.all_dpu, dpu)
+                {
+                    DPU_ASSERT(dpu_log_read(dpu, stream.get()));
+                }
+
+                std::cout << std::move(stream).close()->get() << std::flush;
+            }
+#endif
 
             std::cout << "batch#" << idx_batch << " done" << std::endl;
         }

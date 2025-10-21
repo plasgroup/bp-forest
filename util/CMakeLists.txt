@@ -1,6 +1,7 @@
 add_subdirectory(parallel_manager)
 add_subdirectory(extendable_buffer)
 add_subdirectory(assert)
+add_subdirectory(log_buffer)
 
 add_subdirectory(show_pimtree_workload)
 add_subdirectory(oracle_partition)
