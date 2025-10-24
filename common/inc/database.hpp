@@ -3,6 +3,7 @@
 #include "common.h"
 #include "host_params.hpp"
 #include "pimtree_query.hpp"
+#include "workload_types.h"
 
 #include <algorithm>
 #include <array>
@@ -25,6 +26,10 @@ public:
 
     virtual void batch_insert(uint64_t n,
         const KVPair pairs[])
+        = 0;
+
+    virtual void batch_delete(uint64_t n,
+        const key_uint64_t keys[])
         = 0;
 
     virtual void batch_range_minimum(uint64_t n,
@@ -166,6 +171,32 @@ public:
             [](const KVPair& a, const KVPair& b) {
                 return a.key < b.key;
             });
+    }
+
+    void batch_delete(uint64_t n,
+        const key_uint64_t keys[])
+    {
+        std::vector<key_uint64_t> keys_to_delete(&keys[0], &keys[n]);
+        std::sort(keys_to_delete.begin(), keys_to_delete.end());
+
+        auto from_iter = data.begin(), to_iter = data.begin();
+        auto del_iter = keys_to_delete.begin();
+        for (; from_iter != data.end(); ++from_iter) {
+            while (del_iter != keys_to_delete.end() && *del_iter < from_iter->key) {
+                ++del_iter;
+            }
+            if (del_iter == keys_to_delete.end() || *del_iter > from_iter->key) {
+                if (to_iter != from_iter) {
+                    *to_iter = *from_iter;
+                }
+                ++to_iter;
+            } else {
+                // key matches, skip this item
+                ++del_iter;
+            }
+        }
+
+        data.erase(to_iter, data.end());
     }
 
     void batch_range_minimum(uint64_t n,

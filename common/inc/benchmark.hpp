@@ -57,6 +57,8 @@ public:
     {
         if (query.type == get_t)
             workload.push_back(key_int64_to_uint64(query.tsk.g.key));
+        if (query.type == remove_t)
+            workload.push_back(key_int64_to_uint64(query.tsk.r.key));
     }
     void push_back_query(std::vector<KVPair>& workload, operation& query)
     {
@@ -240,6 +242,42 @@ public:
     void verify()
     {
         verify_db->batch_insert(num_queries_in_last_batch, &pairs[0]);
+    }
+};
+
+class DeleteBenchmark : public Benchmark
+{
+    std::unique_ptr<WorkloadBuffer<key_uint64_t>> workload_buffer;
+    ExtendableBuffer<key_uint64_t> keys;
+    size_t num_queries_in_last_batch = 0;
+
+public:
+    DeleteBenchmark(const std::string& workload_file,
+        bool is_pimtree_workload)
+        : workload_buffer{load_pimtree_workload<key_uint64_t>(workload_file)}
+    {
+        ASSERT(is_pimtree_workload);
+    }
+
+    void do_one_batch(int idx_batch, Database* db)
+    {
+        size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer.get(), keys);
+        {
+            StopWatch sw(QueryProcessTime);
+            db->batch_delete(num_queries_batch, &keys[0]);
+        }
+        num_queries_in_last_batch = num_queries_batch;
+    }
+
+    void partition_with_one_batch(Database* db)
+    {
+        size_t num_queries_batch = prepare_buffer(-1, workload_buffer.get(), keys);
+        db->partition_with(num_queries_batch, &keys[0]);
+    }
+
+    void verify()
+    {
+        verify_db->batch_delete(num_queries_in_last_batch, &keys[0]);
     }
 };
 

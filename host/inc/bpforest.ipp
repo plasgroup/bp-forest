@@ -907,6 +907,101 @@ inline void BPForest::execute_insert_in_dpus()
 }
 
 
+inline void BPForest::batch_delete(uint32_t nr_queries, const key_uint64_t keys[])
+{
+    StopWatch timer{BatchTotalTime};
+
+    constexpr auto func = &BPForest::route_single_point_query<key_uint64_t, void>;
+    route_queries<func>(nr_queries, keys, (void*){nullptr}, delete_queries);
+
+    execute_delete_in_dpus();
+}
+
+struct BPForest::DeleteQuerySender {
+    static constexpr uint32_t TaskNo = TASK_DELETE;
+    BPForest* forest;
+
+    std::array<uint16_t, 2>* nr_cold_hot_queries;
+    DeleteQuerySender(BPForest* forest, std::array<uint16_t, 2>* nr_cold_hot_queries) : forest{forest}, nr_cold_hot_queries{nr_cold_hot_queries} {}
+
+    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
+    {
+        switch (block_index) {
+        case 0:
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<uint32_t*>(&TaskNo)));
+            out->length = sizeof(uint32_t);
+            return true;
+        case 1:
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(&nr_cold_hot_queries[dpu_index][0]));
+            out->length = sizeof(uint16_t) * 2;
+            return true;
+        default: {
+            block_index -= 2;
+            if (block_index < forest->get_parallelism()) {
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(&forest->delete_queries.cold[dpu_index].qrys[block_index][0]));
+                out->length = static_cast<uint32_t>(sizeof(key_uint64_t) * forest->delete_queries.cold[dpu_index].qrys[block_index].size());
+                return true;
+            }
+            block_index -= forest->get_parallelism();
+
+            const dpu_id_t idx_hot = forest->dpu_to_hot_range[dpu_index];
+            if (idx_hot != INVALID_DPU_ID && block_index < forest->get_parallelism()) {
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(&forest->delete_queries.hot[idx_hot].qrys[block_index][0]));
+                out->length = static_cast<uint32_t>(sizeof(key_uint64_t) * forest->delete_queries.hot[idx_hot].qrys[block_index].size());
+                return true;
+            }
+            return false;
+        }
+        }
+    }
+    size_t bytes_for_dpu(dpu_id_t dpu) const
+    {
+        return sizeof(uint32_t) + sizeof(uint16_t) * 2 + sizeof(key_uint64_t) * (size_t{nr_cold_hot_queries[dpu][0]} + nr_cold_hot_queries[dpu][1]);
+    }
+};
+inline void BPForest::execute_delete_in_dpus()
+{
+    std::array<std::array<uint16_t, 2>, MAX_NR_DPUS> nr_cold_hot_queries;
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
+        ASSERT(delete_queries.cold[idx_dpu].nr_qrys <= std::numeric_limits<uint16_t>::max());
+        nr_cold_hot_queries[idx_dpu][0] = static_cast<uint16_t>(delete_queries.cold[idx_dpu].nr_qrys);
+
+        const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
+        if (idx_hot != INVALID_DPU_ID) {
+            ASSERT(delete_queries.hot[idx_hot].nr_qrys <= std::numeric_limits<uint16_t>::max());
+            nr_cold_hot_queries[idx_dpu][1] = static_cast<uint16_t>(delete_queries.hot[idx_hot].nr_qrys);
+        } else {
+            nr_cold_hot_queries[idx_dpu][1] = 0;
+        }
+    }
+
+#ifdef SYNCHRONOUS_DPU_EXEC
+    {
+        StopWatch timer{QuerySendTime};
+        UPMEM_AsyncDuration async;
+        gather_to_dpu(all_dpu, 0, DeleteQuerySender{this, &nr_cold_hot_queries[0]}, async);
+    }
+    {
+        StopWatch timer{QueryExecTime};
+        UPMEM_AsyncDuration async;
+        execute(all_dpu, async);
+    }
+#else /* SYNCHRONOUS_DPU_EXEC */
+    {
+        StopWatch timer{QuerySendExecRecvTime};
+        UPMEM_AsyncDuration async;
+        gather_to_dpu(all_dpu, 0, DeleteQuerySender{this, &nr_cold_hot_queries[0]}, async);
+        execute(all_dpu, async);
+    }
+#endif
+
+#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+    std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+    std::cout << log->get() << std::flush;
+#endif
+}
+
+
 inline void BPForest::batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t result[])
 {
     StopWatch timer{BatchTotalTime};
@@ -2182,6 +2277,14 @@ inline void BPForest::not_found_in_point_query<KVPair, void>(
 {
     new_min_keys[tid] = pair.key;
     routed.cold[0].qrys[tid].emplace_back(pair);
+}
+// DELETE
+template <>
+inline void BPForest::not_found_in_point_query<key_uint64_t, void>(
+    uint32_t, const key_uint64_t&, void*,
+    QueryData<key_uint64_t, void>&,
+    unsigned)
+{
 }
 
 template <typename Query, typename Result>

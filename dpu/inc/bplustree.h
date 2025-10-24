@@ -78,10 +78,18 @@ typedef struct {
 
 typedef struct {
     __dma_aligned Node node_cache[2];
-    __dma_aligned KVPair qrys[TASK_GET_NR_CACHED_QRYS];
+    __dma_aligned KVPair qrys[TASK_INSERT_NR_CACHED_QRYS];
     uint32_t idx_qry_in_cache;
     uintptr_t cursor_on_qrys;
 } InsertWorkspace;
+
+
+typedef struct {
+    __dma_aligned Node node_cache;
+    __dma_aligned key_uint64_t qrys[TASK_DELETE_NR_CACHED_QRYS];
+    uint32_t idx_qry_in_cache;
+    uintptr_t cursor_on_qrys;
+} DeleteWorkspace;
 
 
 typedef struct {
@@ -163,6 +171,7 @@ typedef union {
     ExtractWorkspace extract;
     GetWorkspace get[TASK_GET_NR_TASKLETS];
     InsertWorkspace insert[TASK_INSERT_NR_TASKLETS];
+    DeleteWorkspace delete[TASK_DELETE_NR_TASKLETS];
     RCQWorkspace rcq[TASK_RANGE_COUNT_NR_TASKLETS];
     RMQWorkspace rmq;
 } TreeWorkspace;

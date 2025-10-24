@@ -41,6 +41,11 @@ int main()
         task_insert();
         break;
 #endif
+#if SUPPORT_DELETE
+    case TASK_DELETE:
+        task_delete();
+        break;
+#endif
 #if SUPPORT_RANGE_MIN
     case TASK_RANGE_MIN:
         task_range_min();

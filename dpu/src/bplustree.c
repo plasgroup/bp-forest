@@ -34,6 +34,10 @@ static DEFINE_DIV_BY(MAX_NR_CHILDREN, NODE_PTR_WIDTH, _NR_NODES);
 static DEFINE_DIV_BY(TREE_CONSTRUCT_NR_TASKLETS, NODE_PTR_WIDTH, _NR_NODES);
 static DEFINE_DIV_BY(TREE_CONSTRUCT_NR_CACHED_OUTPUT_LIFT, NODE_PTR_WIDTH, _NR_NODES);
 
+#ifdef SUPPORT_DELETE
+static DEFINE_DIV_BY(TASK_DELETE_NR_TASKLETS, 16, _NR_QRYS);
+#endif
+
 #ifdef SUPPORT_GET
 static DEFINE_DIV_BY(TASK_GET_NR_TASKLETS, 16, _NR_QRYS);
 #endif
@@ -862,6 +866,87 @@ void task_insert(void)
 #endif
 
 
+#if SUPPORT_DELETE
+static key_uint64_t* DELETE_fetch_next_qry(DeleteWorkspace* wks)
+{
+    if (wks->idx_qry_in_cache == TASK_INSERT_NR_CACHED_QRYS) {
+        mram_read((__mram_ptr void*)wks->cursor_on_qrys, wks->qrys, sizeof(key_uint64_t) * TASK_INSERT_NR_CACHED_QRYS);
+        wks->cursor_on_qrys += sizeof(key_uint64_t) * TASK_INSERT_NR_CACHED_QRYS;
+        wks->idx_qry_in_cache = 0;
+    }
+    return &wks->qrys[wks->idx_qry_in_cache++];
+}
+static void DELETE_execute(Node* const root, const uint8_t height, const uint8_t root_numKeys,
+    const uint16_t idx_qry_begin, const uint16_t idx_qry_end,
+    const uintptr_t qrys)
+{
+    DeleteWorkspace* const wks_me = &workspace.tree.delete[me()];
+    wks_me->idx_qry_in_cache = TASK_INSERT_NR_CACHED_QRYS;  // to trigger the first fetch
+    wks_me->cursor_on_qrys = qrys + sizeof(key_uint64_t) * idx_qry_begin;
+
+    if (height == 0) {
+        for (unsigned idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
+            const key_uint64_t key = *DELETE_fetch_next_qry(wks_me);
+
+            const uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, key);
+            if (idx_pair < root_numKeys && root->lf.keys[idx_pair] == key) {
+                root->lf.values[idx_pair] = NOT_FOUND_VALUE;  // mark as deleted
+            }
+        }
+
+    } else {
+        __dma_aligned const value_uint64_t tombstone = NOT_FOUND_VALUE;
+        for (unsigned idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
+            const key_uint64_t key = *DELETE_fetch_next_qry(wks_me);
+
+            NodeLink link = root->inl.children[search_for_child_index(&root->inl.keys[0], root_numKeys, key)];
+            for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
+                mram_read(&Deref(link.ptr).inl.keys[0], &wks_me->node_cache.inl.keys[0], sizeof(key_uint64_t) * link.numKeys);
+                const uint16_t idx_child = search_for_child_index(&wks_me->node_cache.inl.keys[0], link.numKeys, key);
+                mram_read(&Deref(link.ptr).inl.children[idx_child / 2 * 2], &wks_me->node_cache.inl.children[idx_child / 2 * 2], sizeof(NodeLink) * 2);
+                link = wks_me->node_cache.inl.children[idx_child];
+            }
+            mram_read(&Deref(link.ptr).lf.keys[0], &wks_me->node_cache.lf.keys[0], sizeof(key_uint64_t) * link.numKeys);
+            const uint16_t idx_pair = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, key);
+
+            if (idx_pair < link.numKeys && wks_me->node_cache.lf.keys[idx_pair] == key) {
+                mram_write(&tombstone, &Deref(link.ptr).lf.values[idx_pair], sizeof(value_uint64_t));
+            }
+        }
+    }
+}
+void task_delete(void)
+{
+    if (me() < TASK_DELETE_NR_TASKLETS) {
+        const uint16_t nr_cold_qrys = input_header.delete.nr_cold_qrys, nr_hot_qrys = input_header.delete.nr_hot_qrys;
+
+        static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8,
+                               cold_qrys = qrys;
+        const uintptr_t hot_qrys = cold_qrys + sizeof(key_uint64_t) * nr_cold_qrys;
+
+        const uint16_t nr_cold_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_DELETE_NR_TASKLETS(nr_cold_qrys),
+                       nr_remainder_cold_qrys = nr_cold_qrys - nr_cold_qrys_per_tasklet * TASK_DELETE_NR_TASKLETS,
+                       nr_cold_qrys_for_me = nr_cold_qrys_per_tasklet + (me() < nr_remainder_cold_qrys);
+        const uint16_t idx_cold_qry_begin = (uint16_t)(nr_cold_qrys_per_tasklet * me() + (me() <= nr_remainder_cold_qrys ? me() : nr_remainder_cold_qrys)),
+                       idx_cold_qry_end = idx_cold_qry_begin + nr_cold_qrys_for_me;
+
+        const uint16_t nr_hot_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_DELETE_NR_TASKLETS(nr_hot_qrys),
+                       nr_remainder_hot_qrys = nr_hot_qrys - nr_hot_qrys_per_tasklet * TASK_DELETE_NR_TASKLETS,
+                       nr_hot_qrys_for_me = nr_hot_qrys_per_tasklet + (me() < nr_remainder_hot_qrys);
+        const uint16_t idx_hot_qry_begin = (uint16_t)(nr_hot_qrys_per_tasklet * me() + (me() <= nr_remainder_hot_qrys ? me() : nr_remainder_hot_qrys)),
+                       idx_hot_qry_end = idx_hot_qry_begin + nr_hot_qrys_for_me;
+
+        DELETE_execute(&cold_root, cold_height, cold_root_numKeys,
+            idx_cold_qry_begin, idx_cold_qry_end,
+            cold_qrys);
+        DELETE_execute(&hot_root, hot_height, hot_root_numKeys,
+            idx_hot_qry_begin, idx_hot_qry_end,
+            hot_qrys);
+    }
+}
+#endif
+
+
 #if SUPPORT_GET
 static void GET_prepare_next_qry(key_uint64_t* qrys_cache, unsigned* idx_qry_in_cache, uintptr_t* cursor_on_qrys)
 {
@@ -1217,7 +1302,7 @@ static uint64_t RANGE_COUNT_impl(const Node* const root, const uint8_t height, c
         uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, qry->range.begin);
 
         for (; idx_pair < root_numKeys && root->lf.keys[idx_pair] <= qry->range.end; idx_pair++) {
-            if (root->lf.values[idx_pair] == qry->needle) {
+            if (root->lf.values[idx_pair] != NOT_FOUND_VALUE && root->lf.values[idx_pair] == qry->needle) {
                 count++;
             }
         }
@@ -1239,7 +1324,7 @@ static uint64_t RANGE_COUNT_impl(const Node* const root, const uint8_t height, c
                 if (wks_me->node_cache.lf.keys[idx_pair] > qry->range.end) {
                     goto end_of_range;
                 }
-                if (wks_me->node_cache.lf.values[idx_pair] == qry->needle) {
+                if (wks_me->node_cache.lf.values[idx_pair] != NOT_FOUND_VALUE && wks_me->node_cache.lf.values[idx_pair] == qry->needle) {
                     count++;
                 }
             }

@@ -52,6 +52,7 @@ struct BPForest : ParallelManager<BPForest> {
 
     void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
     void batch_insert(uint32_t nr_queries, const KVPair pairs[]);
+    void batch_delete(uint32_t nr_queries, const key_uint64_t pairs[]);
     void batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t result[]);
     void batch_range_count(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
     std::vector<size_t> get_nr_rcqs() const;
@@ -123,6 +124,7 @@ private:
 
     QueryData<key_uint64_t, value_uint64_t> get_queries;
     QueryData<KVPair, void> insert_queries;
+    QueryData<key_uint64_t, void> delete_queries;
     QueryData<RangeCountQuery, uint64_t> rcqs;
 
     std::vector<key_uint64_t> new_min_keys;
@@ -163,6 +165,9 @@ private:
 
     void execute_insert_in_dpus();
     struct InsertQuerySender;
+
+    void execute_delete_in_dpus();
+    struct DeleteQuerySender;
 
     bool check_if_rcq_balance();
     void execute_rcq_in_dpus();

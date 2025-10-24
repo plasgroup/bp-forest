@@ -190,7 +190,7 @@ struct WorkloadGen : ParallelManager<WorkloadGen> {
         parser.add<std::string>("file_prefix", 'f', "prefix of the output workload file (including directory path)", true);
         parser.add<size_t>("npairs", 'p', "num of generated key-value pairs", false, 100000000);
         parser.add<size_t>("nqueries", 'q', "num of generated operations", false, 20000000);
-        parser.add<std::string>("ops", 'o', "kind of generated operations; either of get, insert, pred, scan", true);
+        parser.add<std::string>("ops", 'o', "kind of generated operations; either of get, insert, delete, pred, scan", true);
         parser.add<uint64_t>("scan_width", 'w', "expected num of key-value pairs in each scan", false, 100);
         parser.add<std::string>("zipf_skewness", 'z', "zipfian skewness parameter (often called theta)", false, "0.99");
         parser.add<uint64_t>("zipf_nr_cands", 'c', "size of candidates of the zipfian dist.", false, 2500);
@@ -239,6 +239,8 @@ private:
             pimtree_op_tag = get_t;
         } else if (ops == "insert") {
             pimtree_op_tag = insert_t;
+        } else if (ops == "delete") {
+            pimtree_op_tag = remove_t;
         } else if (ops == "pred") {
             pimtree_op_tag = predecessor_t;
         } else if (ops == "scan") {
@@ -314,7 +316,8 @@ private:
     using Clock = std::chrono::system_clock;
 
     ExtendableBuffer<int64_t> init_keys;
-    std::uniform_int_distribution<int64_t> key_value_dist{std::numeric_limits<int64_t>::min()};
+    std::uniform_int_distribution<int64_t> key_dist{std::numeric_limits<int64_t>::min()};
+    std::uniform_int_distribution<int64_t> value_dist{std::numeric_limits<int64_t>::min() + 1};
     unsigned merge_step;
     ExtendableBuffer<operation> init_ops;
     std::vector<std::vector<size_t>> counts_per_slice;
@@ -347,7 +350,7 @@ void WorkloadGen::generate_init_keys_impl(unsigned tid)
             }
         }
 
-        init_keys[idx_key] = key_value_dist(rand_gens[tid]);
+        init_keys[idx_key] = key_dist(rand_gens[tid]);
     }
 }
 void WorkloadGen::sort_init_keys_partially(unsigned tid)
@@ -385,7 +388,7 @@ void WorkloadGen::generate_values_impl(unsigned tid)
         }
 
         operation& op = init_ops[idx_pair];
-        op.tsk.i = {init_keys[idx_pair], key_value_dist(rand_gens[tid])};
+        op.tsk.i = {init_keys[idx_pair], value_dist(rand_gens[tid])};
         op.type = insert_t;
     }
 }
@@ -393,76 +396,76 @@ template <operation_t op_tag>
 void WorkloadGen::generate_queries_impl(const unsigned tid)
 {
     auto timer_start = Clock::now();
-
-    const uint64_t scan_range_width = std::numeric_limits<uint64_t>::max() / npairs * scan_width;
     const size_t idx_query_begin = nqueries * tid / get_parallelism(),
                  idx_query_end = nqueries * (tid + 1) / get_parallelism();
-    for (size_t idx_query = idx_query_begin; idx_query < idx_query_end; idx_query++) {
-        if (tid == 0 && idx_query % 0x10000 == 0) {
-            const auto now = Clock::now();
-            if (now - timer_start > std::chrono::seconds{3}) {
-                std::cout << '[' << queries_file_str << "] " << (idx_query * 100 / idx_query_end) << "% queries generated" << std::endl;
-                timer_start = now;
+
+    if constexpr (op_tag == get_t || op_tag == remove_t) {
+        for (size_t idx_query = idx_query_begin; idx_query < idx_query_end; idx_query++) {
+            if (tid == 0 && idx_query % 0x10000 == 0) {
+                const auto now = Clock::now();
+                if (now - timer_start > std::chrono::seconds{3}) {
+                    std::cout << '[' << queries_file_str << "] " << (idx_query * 100 / idx_query_begin) << "% queries generated" << std::endl;
+                    timer_start = now;
+                }
             }
-        }
 
-        const uint64_t idx_slice = scramble_mapping[zipf_dist(rand_gens[tid])];
-        if (showinfo) {
-            counts_per_slice[tid][idx_slice]++;
-        }
-        const int64_t key = query_key_dists[idx_slice](rand_gens[tid]);
-
-        operation& op = query_ops[idx_query];
-        switch (op_tag) {
-        case predecessor_t:
-            op.tsk.p.key = key;
-            break;
-        case scan_t: {
-            op.tsk.s.lkey = key;
-            op.tsk.s.rkey = std::min(key, std::numeric_limits<int64_t>::max() - static_cast<int64_t>(scan_range_width)) + static_cast<int64_t>(scan_range_width);
-        } break;
-        case insert_t: {
-            op.tsk.i.key = key;
-            op.tsk.i.value = key_value_dist(rand_gens[tid]);
-        } break;
-        default:
-            // unreachable
-            std::exit(1);
-        }
-        op.type = op_tag;
-    }
-}
-template <>
-void WorkloadGen::generate_queries_impl<get_t>(const unsigned tid)
-{
-    auto timer_start = Clock::now();
-    const size_t idx_query_begin = nqueries * tid / get_parallelism(),
-                 idx_query_end = nqueries * (tid + 1) / get_parallelism();
-    for (size_t idx_query = idx_query_begin; idx_query < idx_query_end; idx_query++) {
-        if (tid == 0 && idx_query % 0x10000 == 0) {
-            const auto now = Clock::now();
-            if (now - timer_start > std::chrono::seconds{3}) {
-                std::cout << '[' << queries_file_str << "] " << (idx_query * 100 / idx_query_begin) << "% queries generated" << std::endl;
-                timer_start = now;
+            const uint64_t idx_slice = scramble_mapping[zipf_dist(rand_gens[tid])];
+            if (showinfo) {
+                counts_per_slice[tid][idx_slice]++;
             }
-        }
 
-        const uint64_t idx_slice = scramble_mapping[zipf_dist(rand_gens[tid])];
-        if (showinfo) {
-            counts_per_slice[tid][idx_slice]++;
+            operation& op = query_ops[idx_query];
+            auto tmp = query_item_dists[idx_slice](rand_gens[tid]);
+            if (tmp >= npairs)
+                std::cout << "tmp = " << tmp << ", npairs = " << npairs << std::endl;
+            if constexpr (op_tag == get_t) {
+                op.tsk.g.key = init_keys[tmp];
+            } else {
+                op.tsk.r.key = init_keys[tmp];
+            }
+            op.type = op_tag;
         }
+    } else {
+        const uint64_t scan_range_width = std::numeric_limits<uint64_t>::max() / npairs * scan_width;
+        for (size_t idx_query = idx_query_begin; idx_query < idx_query_end; idx_query++) {
+            if (tid == 0 && idx_query % 0x10000 == 0) {
+                const auto now = Clock::now();
+                if (now - timer_start > std::chrono::seconds{3}) {
+                    std::cout << '[' << queries_file_str << "] " << (idx_query * 100 / idx_query_end) << "% queries generated" << std::endl;
+                    timer_start = now;
+                }
+            }
 
-        operation& op = query_ops[idx_query];
-        auto tmp = query_item_dists[idx_slice](rand_gens[tid]);
-        if (tmp >= npairs)
-            std::cout << "tmp = " << tmp << ", npairs = " << npairs << std::endl;
-        op.tsk.g.key = init_keys[tmp];
-        op.type = get_t;
+            const uint64_t idx_slice = scramble_mapping[zipf_dist(rand_gens[tid])];
+            if (showinfo) {
+                counts_per_slice[tid][idx_slice]++;
+            }
+            const int64_t key = query_key_dists[idx_slice](rand_gens[tid]);
+
+            operation& op = query_ops[idx_query];
+            switch (op_tag) {
+            case predecessor_t:
+                op.tsk.p.key = key;
+                break;
+            case scan_t: {
+                op.tsk.s.lkey = key;
+                op.tsk.s.rkey = std::min(key, std::numeric_limits<int64_t>::max() - static_cast<int64_t>(scan_range_width)) + static_cast<int64_t>(scan_range_width);
+            } break;
+            case insert_t: {
+                op.tsk.i.key = key;
+                op.tsk.i.value = value_dist(rand_gens[tid]);
+            } break;
+            default:
+                // unreachable
+                std::exit(1);
+            }
+            op.type = op_tag;
+        }
     }
 }
 void WorkloadGen::operator()()
 {
-    if (!noinit || pimtree_op_tag == get_t) {
+    if (!noinit || pimtree_op_tag == get_t || pimtree_op_tag == remove_t) {
         init_keys.reserve(npairs);
         parallel_run(&WorkloadGen::generate_init_keys_impl);
         std::cout << '[' << pairs_file_str << "] 100% keys generated" << std::endl;
@@ -484,10 +487,10 @@ void WorkloadGen::operator()()
                 if (init_keys[idx_key] == init_keys[idx_key + 1]) {
                     dup_idxs.push_back(idx_key);
 
-                    int64_t key = key_value_dist(rand_gens[0]);
+                    int64_t key = key_dist(rand_gens[0]);
                     while (std::binary_search(&init_keys[0], &init_keys[npairs], key)
                            || std::any_of(appended_keys.cbegin(), appended_keys.cend(), [&](int64_t init_key) { return key == init_key; })) {
-                        key = key_value_dist(rand_gens[0]);
+                        key = key_dist(rand_gens[0]);
                     }
                     appended_keys.push_back(key);
                 }
@@ -560,7 +563,7 @@ void WorkloadGen::operator()()
     }
 
     query_ops.reserve(nqueries);
-    if (pimtree_op_tag == get_t) {
+    if (pimtree_op_tag == get_t || pimtree_op_tag == remove_t) {
         query_item_dists.clear();
         query_item_dists.reserve(zipf_nr_cands);
         for (size_t idx_slice = 0; idx_slice < zipf_nr_cands; idx_slice++) {
@@ -571,7 +574,17 @@ void WorkloadGen::operator()()
                 std::cout << idx_slice << "th range = [" << query_item_dists.back().min() << ", " << query_item_dists.back().max() << ']' << std::endl;
             }
         }
-        parallel_run(&WorkloadGen::generate_queries_impl<get_t>);
+        switch (pimtree_op_tag) {
+        case get_t:
+            parallel_run(&WorkloadGen::generate_queries_impl<get_t>);
+            break;
+        case remove_t:
+            parallel_run(&WorkloadGen::generate_queries_impl<remove_t>);
+            break;
+        default:
+            // unreachable
+            std::exit(1);
+        }
 
     } else {
         query_key_dists.clear();

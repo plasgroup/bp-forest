@@ -139,6 +139,8 @@ struct Option {
             op_type = TASK_GET;
         else if (ops == "insert")
             op_type = TASK_INSERT;
+        else if (ops == "delete")
+            op_type = TASK_DELETE;
         else if (ops == "pred")
             op_type = TASK_PRED;
         else if (ops == "rmq")
@@ -198,6 +200,11 @@ public:
     void batch_insert(size_t nr_queries, const KVPair pairs[])
     {
         forest.batch_insert(static_cast<uint32_t>(nr_queries), pairs);
+    }
+
+    void batch_delete(size_t nr_queries, const key_uint64_t keys[])
+    {
+        forest.batch_delete(static_cast<uint32_t>(nr_queries), keys);
     }
 
     void batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t results[])
@@ -311,6 +318,8 @@ int main(int argc, char* argv[])
         benchmark = new GetBenchmark(opt.workload_file, true);
     else if (opt.op_type == TASK_INSERT)
         benchmark = new InsertBenchmark(opt.workload_file, true);
+    else if (opt.op_type == TASK_DELETE)
+        benchmark = new DeleteBenchmark(opt.workload_file, true);
     else if (opt.op_type == TASK_RANGE_MIN)
         benchmark = new RMQBenchmark(opt.workload_file, true, NUM_INIT_REQS);
     else if (opt.op_type == TASK_RANGE_COUNT)
