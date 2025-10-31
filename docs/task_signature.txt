@@ -40,6 +40,8 @@ TASK_EXTRACT
     ; (uint16_t, (Key, Key)[]) -> (uint32_t[], (Key, Value)[])  ; アラインメントを考えると16bitを使う必要なし
     (uint32_t, (Key, Key)[]) -> (uint32_t[], (Key, Value)[])
     キー範囲は閉区間
+TASK_SERIALIZE
+    () -> (uint32_t, uint32_t, (Key, Value)[], (Key, Value)[])
 TASK_CONSTRUCT_HOT
     (uint32_t, (Key, Value)[]) -> ()
 TASK_FLATTEN_HOT

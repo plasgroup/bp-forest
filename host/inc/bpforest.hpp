@@ -270,6 +270,7 @@ private:
     bool check_if_queries_balance(size_t nr_queries, const QueryData<Query, Result>& routed);
     std::vector<std::pair<size_t /* nr pairs in cold */, size_t /* nr pairs in hot */>>
     repartition(const std::vector<key_uint64_t>& sorted_queries);
+    std::vector<KVPair> retrieve_all_data() const;
 
     void restore_hot_ranges();
     struct HotKVPairsFlattenedCollecter;

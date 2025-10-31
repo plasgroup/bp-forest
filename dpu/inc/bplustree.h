@@ -165,9 +165,20 @@ typedef struct {
     __aligned(8) ExtractStackElem initial_stack[MAX_HEIGHT];
 } ExtractWorkspace;
 
+typedef struct {
+    union {
+        __dma_aligned LeafNode leaf_cache;
+        __dma_aligned NodeLink children_cache[2];
+    };
+    __dma_aligned KVPair pairs[TASK_SERIALIZE_NR_CACHED_KVPAIRS];
+    uint32_t nr_pairs, idx_pair_in_cache;
+    uintptr_t cursor_on_pairs;
+} SerializeWorkspace;
+
 typedef union {
     InitWorkspace init[TREE_CONSTRUCT_NR_TASKLETS];
     SummarizeWorkspace summarize;
+    SerializeWorkspace serialize[TASK_SERIALIZE_NR_TASKLETS];
     ExtractWorkspace extract;
     GetWorkspace get[TASK_GET_NR_TASKLETS];
     InsertWorkspace insert[TASK_INSERT_NR_TASKLETS];

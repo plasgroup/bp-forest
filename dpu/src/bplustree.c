@@ -1999,6 +1999,86 @@ void task_extract(void)
 }
 
 
+static void SERIALIZE_init_pair_cache(SerializeWorkspace* wks, uintptr_t result_pairs)
+{
+    wks->nr_pairs = 0;
+    wks->idx_pair_in_cache = 0;
+    wks->cursor_on_pairs = result_pairs;
+}
+static KVPair* SERIALIZE_prepare_pair_cache(SerializeWorkspace* wks)
+{
+    if (wks->idx_pair_in_cache == TASK_SERIALIZE_NR_CACHED_KVPAIRS) {
+        mram_write(&wks->pairs[0], (__mram_ptr void*)wks->cursor_on_pairs, sizeof(KVPair) * TASK_SERIALIZE_NR_CACHED_KVPAIRS);
+        wks->cursor_on_pairs += sizeof(KVPair) * TASK_SERIALIZE_NR_CACHED_KVPAIRS;
+        wks->idx_pair_in_cache = 0;
+    }
+    wks->nr_pairs++;
+    return &wks->pairs[wks->idx_pair_in_cache++];
+}
+static void SERIALIZE_flush_pair_cache(SerializeWorkspace* wks)
+{
+    if (wks->idx_pair_in_cache != 0) {
+        mram_write(&wks->pairs[0], (__mram_ptr void*)wks->cursor_on_pairs, sizeof(KVPair) * wks->idx_pair_in_cache);
+    }
+}
+static uint32_t /* nr_pairs */ SERIALIZE_execute(uint8_t root_numKeys, const Node* root, uint8_t height,
+    uintptr_t result_pairs)
+{
+    SerializeWorkspace* const wks = &workspace.tree.serialize[me()];
+    SERIALIZE_init_pair_cache(wks, result_pairs);
+
+    if (height == 0) {
+        for (uint8_t i = 0; i < root_numKeys; i++) {
+            if (root->lf.values[i] != NOT_FOUND_VALUE) {
+                KVPair* const pairs = SERIALIZE_prepare_pair_cache(wks);
+                *pairs = (KVPair){root->lf.keys[i], root->lf.values[i]};
+            }
+        }
+    } else {
+        NodeLink cursor = root->inl.children[0];
+        // find first leaf
+        for (uint8_t height_of_parent = height; height_of_parent > 1; height_of_parent--) {
+            mram_read(&Deref(cursor.ptr).inl.children[0], &wks->children_cache[0], sizeof(NodeLink) * 2);
+            cursor = wks->children_cache[0];
+        }
+
+        // serialize kvpairs in leaf nodes
+        for (;;) {
+            mram_read(&Deref(cursor.ptr), &wks->leaf_cache, sizeof(LeafNode));
+
+            for (uint8_t i = 0; i < cursor.numKeys; i++) {
+                if (wks->leaf_cache.values[i] != NOT_FOUND_VALUE) {
+                    KVPair* const pairs = SERIALIZE_prepare_pair_cache(wks);
+                    *pairs = (KVPair){wks->leaf_cache.keys[i], wks->leaf_cache.values[i]};
+                }
+            }
+
+            cursor = wks->leaf_cache.right;
+            if (cursor.ptr == NODELINK_NULLPTR.ptr && cursor.numKeys == NODELINK_NULLPTR.numKeys) {
+                break;
+            }
+        }
+    }
+
+    SERIALIZE_flush_pair_cache(wks);
+    return wks->nr_pairs;
+}
+void task_serialize(void)
+{
+    _Static_assert(TASK_SERIALIZE_NR_TASKLETS == 1, "TASK_SERIALIZE_NR_TASKLETS == 1");
+    if (me() < TASK_SERIALIZE_NR_TASKLETS) {
+        uint32_t nr_pairs[2];
+
+        nr_pairs[0] = SERIALIZE_execute(cold_root_numKeys, &cold_root, cold_height,
+            (uintptr_t)DPU_MRAM_HEAP_POINTER + 8);
+        nr_pairs[1] = SERIALIZE_execute(hot_root_numKeys, &hot_root, hot_height,
+            (uintptr_t)DPU_MRAM_HEAP_POINTER + 8 + sizeof(KVPair) * nr_pairs[0]);
+
+        mram_write(&nr_pairs[0], (__mram_ptr void*)DPU_MRAM_HEAP_POINTER, sizeof(uint32_t) * 2);
+    }
+}
+
+
 static NodePtr CONSTRUCT_HOT_allocator(unsigned idx_node)
 {
     (void)idx_node;

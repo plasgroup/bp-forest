@@ -62,6 +62,9 @@ int main()
     case TASK_EXTRACT:
         task_extract();
         break;
+    case TASK_SERIALIZE:
+        task_serialize();
+        break;
     case TASK_CONSTRUCT_HOT:
         task_construct_hot();
         break;

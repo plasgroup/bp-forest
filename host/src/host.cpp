@@ -230,7 +230,8 @@ public:
         forest.batch_range_count(static_cast<uint32_t>(n), queries, results);
     };
 
-    void partition_with(uint64_t n, const key_uint64_t keys[]) {
+    void partition_with(uint64_t n, const key_uint64_t keys[])
+    {
         nr_pairs = forest.partition_data_with_reference_point_queries(n, keys);
     }
     void partition_with(uint64_t n, const KeyRange queries[])
