@@ -17,14 +17,17 @@
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <initializer_list>
 #include <ios>
 #include <iostream>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -181,19 +184,89 @@ public:
 };
 
 
-struct WorkloadGen : ParallelManager<WorkloadGen> {
+template <class UIntType>
+struct DegenerateDistribution {
+    using result_type = UIntType;
+
+private:
+    const UIntType point;
+
+public:
+    DegenerateDistribution(UIntType point) : point{point} {}
+
+    template <class URBG>
+    constexpr result_type operator()(URBG& /* g */)
+    {
+        return point;
+    }
+};
+
+
+template <class... Components>
+struct MixtureDistribution {
+    static_assert(sizeof...(Components) > 0);
+    using result_type = std::common_type_t<typename Components::result_type...>;
+    using components_tuple = std::tuple<Components...>;
+    using weights = std::array<double, sizeof...(Components)>;
+
+private:
+    std::discrete_distribution<size_t> choice;
+    components_tuple components;
+
+public:
+    MixtureDistribution(const weights& weights, Components&&... components)
+        : choice{weights.cbegin(), weights.cend()},
+          components{std::forward<Components>(components)...}
+    {
+    }
+
+    template <class URBG>
+    constexpr result_type operator()(URBG& g)
+    {
+        return invoke_helper(g, choice(g), std::make_index_sequence<sizeof...(Components)>{});
+    }
+
+private:
+    template <class URBG, size_t... Is>
+    constexpr result_type invoke_helper(URBG& g, size_t idx_component, std::integer_sequence<size_t, Is...>)
+    {
+        result_type res;
+        std::initializer_list<int> tmp{(idx_component == Is ? (res = std::get<Is>(components)(g), 0) : 0)...};
+        return res;
+    }
+};
+
+
+struct CMDOpt {
     using RandSeedType = std::random_device::result_type;
 
-    static WorkloadGen instantiate(int argc, char* argv[])
+    std::string pairs_file_str;
+    std::string queries_file_str;
+    size_t npairs;
+    size_t nqueries;
+    operation_t pimtree_op_tag;
+    uint64_t scan_width;
+    uint64_t zipf_nr_cands;
+    bool showinfo;
+    bool noinit;
+
+    double zipf_skewness;
+    std::optional<double> hot_spike_ratio;
+    bool scramble;
+    RandSeedType rand_seed;
+    unsigned nthreads;
+
+    CMDOpt(int argc, char* argv[])
     {
         cmdline::parser parser;
         parser.add<std::string>("file_prefix", 'f', "prefix of the output workload file (including directory path)", true);
         parser.add<size_t>("npairs", 'p', "num of generated key-value pairs", false, 100000000);
         parser.add<size_t>("nqueries", 'q', "num of generated operations", false, 20000000);
-        parser.add<std::string>("ops", 'o', "kind of generated operations; either of get, insert, delete, pred, scan", true);
+        parser.add<std::string>("ops", 'o', "kind of generated operations; either of get, insert, delete, pred, scan", true, "", cmdline::oneof<std::string>("get", "insert", "delete", "pred", "scan"));
         parser.add<uint64_t>("scan_width", 'w', "expected num of key-value pairs in each scan", false, 100);
         parser.add<std::string>("zipf_skewness", 'z', "zipfian skewness parameter (often called theta)", false, "0.99");
         parser.add<uint64_t>("zipf_nr_cands", 'c', "size of candidates of the zipfian dist.", false, 2500);
+        parser.add<std::string>("hot_spike_ratio", 'h', "add a spike of hotness to the least popular slice (must be in [0.0, 1.0])", false, "");
         parser.add("scramble", 's', "whether scramble or not");
         parser.add<RandSeedType>("rand_seed", 'r', "seed for random number generator (the default value on the right is chosen randomly each time)", false, std::random_device{}());
         parser.add<unsigned>("num_threads", 't', "num of threads", false, std::numeric_limits<unsigned>::max());
@@ -201,29 +274,34 @@ struct WorkloadGen : ParallelManager<WorkloadGen> {
         parser.add("noinit", 0, "do not create init key-value pairs");
         parser.parse_check(argc, argv);
 
-        return instantiate_step2(parser);
-    }
-
-private:
-    static WorkloadGen instantiate_step2(cmdline::parser& parser)
-    {
         const std::string file_prefix = parser.get<std::string>("file_prefix");
-        const size_t npairs = parser.get<size_t>("npairs");
-        const size_t nqueries = parser.get<size_t>("nqueries");
+        npairs = parser.get<size_t>("npairs");
+        nqueries = parser.get<size_t>("nqueries");
         const std::string ops = parser.get<std::string>("ops");
-        const uint64_t scan_width = parser.get<uint64_t>("scan_width");
+        scan_width = parser.get<uint64_t>("scan_width");
         const std::string zipf_skewness_str = parser.get<std::string>("zipf_skewness");
-        const uint64_t zipf_nr_cands = parser.get<uint64_t>("zipf_nr_cands");
-        const bool scramble = parser.exist("scramble");
-        const auto rand_seed = parser.get<RandSeedType>("rand_seed");
-        const unsigned num_threads = parser.get<unsigned>("num_threads");
-        const bool showinfo = parser.exist("showinfo");
+        zipf_nr_cands = parser.get<uint64_t>("zipf_nr_cands");
+        const std::string hot_spike_ratio_str = parser.get<std::string>("hot_spike_ratio");
+        scramble = parser.exist("scramble");
+        rand_seed = parser.get<RandSeedType>("rand_seed");
+        nthreads = parser.get<unsigned>("num_threads");
+        showinfo = parser.exist("showinfo");
+        noinit = parser.exist("noinit");
+
+        const bool has_hot_spike = !hot_spike_ratio_str.empty();
+        if (has_hot_spike) {
+            hot_spike_ratio = std::stod(hot_spike_ratio_str);
+            if (*hot_spike_ratio < 0.0 || *hot_spike_ratio > 1.0) {
+                std::cerr << "hot_spike_ratio must be in [0.0, 1.0]" << std::endl;
+                throw cmdline::cmdline_error{""};
+            }
+        }
 
         std::ostringstream ostr_pairs;
         ostr_pairs << file_prefix
                    << "init" << npairs
                    << ".datasorted";
-        const std::string pairs_file_str = ostr_pairs.str();
+        pairs_file_str = ostr_pairs.str();
         std::ostringstream ostr_queries;
         ostr_queries << file_prefix
                      << ops << nqueries
@@ -231,10 +309,10 @@ private:
                      << "_slice" << zipf_nr_cands
                      << (scramble ? "_scramble" : "_ordered")
                      << "_skew" << zipf_skewness_str
+                     << (has_hot_spike ? ("_hotspike" + hot_spike_ratio_str) : "")
                      << ".data";
-        const std::string queries_file_str = ostr_queries.str();
+        queries_file_str = ostr_queries.str();
 
-        operation_t pimtree_op_tag;
         if (ops == "get") {
             pimtree_op_tag = get_t;
         } else if (ops == "insert") {
@@ -245,62 +323,66 @@ private:
             pimtree_op_tag = predecessor_t;
         } else if (ops == "scan") {
             pimtree_op_tag = scan_t;
-        } else {
-            std::cerr << "invalid operation type: " << ops << std::endl;
-            exit(1);
         }
 
-        unsigned nthreads = num_threads;
+        zipf_skewness = std::stod(zipf_skewness_str);
+
         if (nthreads == std::numeric_limits<unsigned>::max()) {
             nthreads = std::thread::hardware_concurrency() + 1;
         }
         if (nthreads == 0) {
             nthreads = 4;
         }
-        xoshiro256pp rand_gen{rand_seed};
-        std::vector<xoshiro256pp> rand_gens;
-        for (unsigned tid = 0; tid < nthreads; tid++) {
-            rand_gens.emplace_back(rand_gen);
-            rand_gen.jump();
-        }
-
-        std::vector<uint64_t> scramble_mapping(zipf_nr_cands);
-        std::iota(scramble_mapping.begin(), scramble_mapping.end(), uint64_t{0});
-        if (scramble) {
-            std::shuffle(scramble_mapping.begin(), scramble_mapping.end(), rand_gen);
-        }
-
-        return WorkloadGen{pairs_file_str, queries_file_str,
-            npairs, nqueries, pimtree_op_tag,
-            scan_width,
-            zipf_nr_cands, std::stod(zipf_skewness_str),
-            std::move(scramble_mapping),
-            nthreads, std::move(rand_gens),
-            showinfo,
-            parser.exist("noinit")};
     }
+};
 
+
+template <typename Func>
+void create_slice_dict(const CMDOpt& opt, Func&& func)
+{
+    if (opt.hot_spike_ratio) {
+        MixtureDistribution<DegenerateDistribution<size_t>, ZipfDistribution<size_t>> mix_dist(
+            {*opt.hot_spike_ratio, 1.0 - *opt.hot_spike_ratio},
+            DegenerateDistribution<size_t>{opt.zipf_nr_cands - 1},
+            ZipfDistribution<size_t>{opt.zipf_nr_cands, opt.zipf_skewness});
+        std::forward<Func>(func)(mix_dist);
+    } else {
+        ZipfDistribution<size_t> zipf_dist{opt.zipf_nr_cands, opt.zipf_skewness};
+        std::forward<Func>(func)(zipf_dist);
+    }
+}
+
+template <class SliceDist>
+struct WorkloadGen;
+template <class SliceDist>
+static WorkloadGen<SliceDist> instantiate_workload_gen(const CMDOpt& opt, const SliceDist& slice_dist);
+
+template <class SliceDist>
+struct WorkloadGen : ParallelManager<WorkloadGen<SliceDist>> {
+    friend WorkloadGen<SliceDist> instantiate_workload_gen<SliceDist>(const CMDOpt& opt, const SliceDist& slice_dist);
+
+private:
     explicit WorkloadGen(
-        std::string pairs_file_str, std::string queries_file_str,
-        size_t npairs, size_t nqueries, operation_t pimtree_op_tag,
-        uint64_t scan_width,
-        uint64_t zipf_nr_cands, double zipf_skewness,
+        const CMDOpt& opt,
+        const SliceDist& slice_dist,
         std::vector<uint64_t>&& scramble_mapping,
-        unsigned nthreads, std::vector<xoshiro256pp>&& rand_gens,
-        bool showinfo, bool noinit)
-        : ParallelManager<WorkloadGen>(nthreads),
-          noinit(noinit),
-          pairs_file_str{pairs_file_str}, queries_file_str{queries_file_str},
-          npairs{npairs}, nqueries{nqueries}, pimtree_op_tag{pimtree_op_tag},
-          scan_width{scan_width},
-          zipf_nr_cands{zipf_nr_cands}, zipf_dist{zipf_nr_cands, zipf_skewness},
+        std::vector<xoshiro256pp>&& rand_gens)
+        : ParallelManager<WorkloadGen>(opt.nthreads),
+          pairs_file_str{opt.pairs_file_str},
+          queries_file_str{opt.queries_file_str},
+          npairs{opt.npairs},
+          nqueries{opt.nqueries},
+          pimtree_op_tag{opt.pimtree_op_tag},
+          scan_width{opt.scan_width},
+          zipf_nr_cands{opt.zipf_nr_cands},
+          showinfo{opt.showinfo},
+          noinit{opt.noinit},
+          slice_dist{slice_dist},
           scramble_mapping{std::move(scramble_mapping)},
-          rand_gens{std::move(rand_gens)},
-          showinfo{showinfo}
+          rand_gens{std::move(rand_gens)}
     {
     }
 
-    const bool noinit;
     const std::string pairs_file_str;
     const std::string queries_file_str;
     const size_t npairs;
@@ -308,10 +390,12 @@ private:
     const operation_t pimtree_op_tag;
     const uint64_t scan_width;
     const uint64_t zipf_nr_cands;
-    ZipfDistribution<uint64_t> zipf_dist;
+    const bool showinfo;
+    const bool noinit;
+
+    SliceDist slice_dist;
     const std::vector<uint64_t> scramble_mapping;
     std::vector<xoshiro256pp> rand_gens;
-    const bool showinfo;
 
     using Clock = std::chrono::system_clock;
 
@@ -325,6 +409,8 @@ private:
     std::vector<std::uniform_int_distribution<size_t>> query_item_dists;
     std::vector<std::uniform_int_distribution<int64_t>> query_key_dists;
 
+    using ParallelManager<WorkloadGen<SliceDist>>::get_parallelism;
+    using ParallelManager<WorkloadGen<SliceDist>>::parallel_run;
 
 public:
     void generate_init_keys_impl(unsigned tid);
@@ -336,7 +422,8 @@ public:
 
     void operator()();
 };
-void WorkloadGen::generate_init_keys_impl(unsigned tid)
+template <class SliceDist>
+void WorkloadGen<SliceDist>::generate_init_keys_impl(unsigned tid)
 {
     auto timer_start = Clock::now();
     const size_t idx_key_begin = npairs * tid / get_parallelism(),
@@ -353,13 +440,15 @@ void WorkloadGen::generate_init_keys_impl(unsigned tid)
         init_keys[idx_key] = key_dist(rand_gens[tid]);
     }
 }
-void WorkloadGen::sort_init_keys_partially(unsigned tid)
+template <class SliceDist>
+void WorkloadGen<SliceDist>::sort_init_keys_partially(unsigned tid)
 {
     const size_t idx_key_begin = npairs * tid / get_parallelism(),
                  idx_key_end = npairs * (tid + 1) / get_parallelism();
     std::sort(&init_keys[idx_key_begin], &init_keys[idx_key_end]);
 }
-void WorkloadGen::merge_init_keys(unsigned tid)
+template <class SliceDist>
+void WorkloadGen<SliceDist>::merge_init_keys(unsigned tid)
 {
     const unsigned merge_window_size = 2u << merge_step;
     if (tid % merge_window_size == 0) {
@@ -373,7 +462,8 @@ void WorkloadGen::merge_init_keys(unsigned tid)
         }
     }
 }
-void WorkloadGen::generate_values_impl(unsigned tid)
+template <class SliceDist>
+void WorkloadGen<SliceDist>::generate_values_impl(unsigned tid)
 {
     auto timer_start = Clock::now();
     const size_t idx_pair_begin = npairs * tid / get_parallelism(),
@@ -392,8 +482,9 @@ void WorkloadGen::generate_values_impl(unsigned tid)
         op.type = insert_t;
     }
 }
+template <class SliceDist>
 template <operation_t op_tag>
-void WorkloadGen::generate_queries_impl(const unsigned tid)
+void WorkloadGen<SliceDist>::generate_queries_impl(const unsigned tid)
 {
     auto timer_start = Clock::now();
     const size_t idx_query_begin = nqueries * tid / get_parallelism(),
@@ -409,7 +500,7 @@ void WorkloadGen::generate_queries_impl(const unsigned tid)
                 }
             }
 
-            const uint64_t idx_slice = scramble_mapping[zipf_dist(rand_gens[tid])];
+            const uint64_t idx_slice = scramble_mapping[slice_dist(rand_gens[tid])];
             if (showinfo) {
                 counts_per_slice[tid][idx_slice]++;
             }
@@ -436,7 +527,7 @@ void WorkloadGen::generate_queries_impl(const unsigned tid)
                 }
             }
 
-            const uint64_t idx_slice = scramble_mapping[zipf_dist(rand_gens[tid])];
+            const uint64_t idx_slice = scramble_mapping[slice_dist(rand_gens[tid])];
             if (showinfo) {
                 counts_per_slice[tid][idx_slice]++;
             }
@@ -463,7 +554,8 @@ void WorkloadGen::generate_queries_impl(const unsigned tid)
         }
     }
 }
-void WorkloadGen::operator()()
+template <class SliceDist>
+void WorkloadGen<SliceDist>::operator()()
 {
     if (!noinit || pimtree_op_tag == get_t || pimtree_op_tag == remove_t) {
         init_keys.reserve(npairs);
@@ -650,8 +742,32 @@ void WorkloadGen::operator()()
 }
 
 
+template <class SliceDist>
+static WorkloadGen<SliceDist> instantiate_workload_gen(const CMDOpt& opt, const SliceDist& slice_dist)
+{
+    xoshiro256pp rand_gen{opt.rand_seed};
+    std::vector<xoshiro256pp> rand_gens;
+    for (unsigned tid = 0; tid < opt.nthreads; tid++) {
+        rand_gens.emplace_back(rand_gen);
+        rand_gen.jump();
+    }
+
+    std::vector<uint64_t> scramble_mapping(opt.zipf_nr_cands);
+    std::iota(scramble_mapping.begin(), scramble_mapping.end(), uint64_t{0});
+    if (opt.scramble) {
+        std::shuffle(scramble_mapping.begin(), scramble_mapping.end(), rand_gen);
+    }
+
+    return WorkloadGen{opt, slice_dist, std::move(scramble_mapping), std::move(rand_gens)};
+}
+
+
 int main(int argc, char* argv[])
 {
-    WorkloadGen::instantiate(argc, argv)();
+    CMDOpt opt{argc, argv};
+    create_slice_dict(opt, [&](auto&& slice_dist) {
+        auto workload_gen = instantiate_workload_gen(opt, std::forward<decltype(slice_dist)>(slice_dist));
+        (workload_gen)();
+    });
     return 0;
 }
