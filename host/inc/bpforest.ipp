@@ -2113,7 +2113,7 @@ inline std::vector<KVPair> BPForest::retrieve_all_data() const
     }
     {
         UPMEM_AsyncDuration async;
-        gather_to_dpu(all_dpu, 0, SerializedKVPairReceiver{&nr_pairs[0], &kvpair_bufs[0]}, async);
+        scatter_from_dpu(all_dpu, 0, SerializedKVPairReceiver{&nr_pairs[0], &kvpair_bufs[0]}, async);
     }
 
     std::vector<KVPair> kvpairs;
