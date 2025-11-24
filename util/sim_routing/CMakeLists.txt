@@ -1,0 +1,10 @@
+add_executable(sim_routing
+    main.cpp
+)
+target_link_libraries(sim_routing
+    common_base
+    workload_mgmt
+    assert
+    parallel_manager
+    cmdline
+)

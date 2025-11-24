@@ -5,6 +5,7 @@ add_subdirectory(log_buffer)
 
 add_subdirectory(show_pimtree_workload)
 add_subdirectory(oracle_partition)
+add_subdirectory(sim_routing)
 
 add_executable(pimtree_aggregation
     pimtree_aggregation.cpp)
