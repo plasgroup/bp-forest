@@ -237,6 +237,34 @@ private:
 };
 
 
+namespace cmdline
+{
+template <typename T>
+struct default_reader<std::optional<T>> {
+    std::optional<T> operator()(const std::string& str)
+    {
+        return default_reader<T>{}(str);
+    }
+};
+namespace detail
+{
+template <typename T>
+class lexical_cast_t<std::string, std::optional<T>, false>
+{
+public:
+    static std::string cast(const std::optional<T>& opt)
+    {
+        return opt ? lexical_cast<std::string>(*opt) : "(nullopt)";
+    }
+};
+template <>
+inline std::string readable_typename<std::optional<uint64_t>>()
+{
+    return "optional<" + readable_typename<uint64_t>() + ">";
+}
+}  // namespace detail
+}  // namespace cmdline
+
 struct CMDOpt {
     using RandSeedType = std::random_device::result_type;
 
@@ -251,7 +279,8 @@ struct CMDOpt {
     bool noinit;
 
     double zipf_skewness;
-    std::optional<double> hot_spike_ratio;
+    std::optional<uint64_t> spike_pos;
+    double spike_ratio;
     bool scramble;
     RandSeedType rand_seed;
     unsigned nthreads;
@@ -266,7 +295,8 @@ struct CMDOpt {
         parser.add<uint64_t>("scan_width", 'w', "expected num of key-value pairs in each scan", false, 100);
         parser.add<std::string>("zipf_skewness", 'z', "zipfian skewness parameter (often called theta)", false, "0.99");
         parser.add<uint64_t>("zipf_nr_cands", 'c', "size of candidates of the zipfian dist.", false, 2500);
-        parser.add<std::string>("hot_spike_ratio", 'h', "add a spike of hotness to the least popular slice (must be in [0.0, 1.0])", false, "");
+        parser.add<std::optional<uint64_t>>("spike_pos", 0, "add a spike of hotness to the slice with the specified index (must be in [0, zipf_nr_cands))", false);
+        parser.add<std::string>("spike_ratio", 0, "height of spike (must be in [0.0, 1.0])", false, "");
         parser.add("scramble", 's', "whether scramble or not");
         parser.add<RandSeedType>("rand_seed", 'r', "seed for random number generator (the default value on the right is chosen randomly each time)", false, std::random_device{}());
         parser.add<unsigned>("num_threads", 't', "num of threads", false, std::numeric_limits<unsigned>::max());
@@ -281,18 +311,22 @@ struct CMDOpt {
         scan_width = parser.get<uint64_t>("scan_width");
         const std::string zipf_skewness_str = parser.get<std::string>("zipf_skewness");
         zipf_nr_cands = parser.get<uint64_t>("zipf_nr_cands");
-        const std::string hot_spike_ratio_str = parser.get<std::string>("hot_spike_ratio");
+        spike_pos = parser.get<std::optional<uint64_t>>("spike_pos");
+        const std::string spike_ratio_str = parser.get<std::string>("spike_ratio");
         scramble = parser.exist("scramble");
         rand_seed = parser.get<RandSeedType>("rand_seed");
         nthreads = parser.get<unsigned>("num_threads");
         showinfo = parser.exist("showinfo");
         noinit = parser.exist("noinit");
 
-        const bool has_hot_spike = !hot_spike_ratio_str.empty();
-        if (has_hot_spike) {
-            hot_spike_ratio = std::stod(hot_spike_ratio_str);
-            if (*hot_spike_ratio < 0.0 || *hot_spike_ratio > 1.0) {
-                std::cerr << "hot_spike_ratio must be in [0.0, 1.0]" << std::endl;
+        if (spike_pos) {
+            if (*spike_pos >= zipf_nr_cands) {
+                std::cerr << "spike_pos must be in [0, zipf_nr_cands)" << std::endl;
+                throw cmdline::cmdline_error{""};
+            }
+            spike_ratio = std::stod(spike_ratio_str);
+            if (spike_ratio < 0.0 || spike_ratio > 1.0) {
+                std::cerr << "spike_ratio must be in [0.0, 1.0]" << std::endl;
                 throw cmdline::cmdline_error{""};
             }
         }
@@ -308,9 +342,11 @@ struct CMDOpt {
                      << "_item" << npairs
                      << "_slice" << zipf_nr_cands
                      << (scramble ? "_scramble" : "_ordered")
-                     << "_skew" << zipf_skewness_str
-                     << (has_hot_spike ? ("_hotspike" + hot_spike_ratio_str) : "")
-                     << ".data";
+                     << "_skew" << zipf_skewness_str;
+        if (spike_pos) {
+            ostr_queries << "_hotspike" << spike_ratio << "_at" << *spike_pos;
+        }
+        ostr_queries << ".data";
         queries_file_str = ostr_queries.str();
 
         if (ops == "get") {
@@ -340,10 +376,10 @@ struct CMDOpt {
 template <typename Func>
 void create_slice_dict(const CMDOpt& opt, Func&& func)
 {
-    if (opt.hot_spike_ratio) {
+    if (opt.spike_pos) {
         MixtureDistribution<DegenerateDistribution<size_t>, ZipfDistribution<size_t>> mix_dist(
-            {*opt.hot_spike_ratio, 1.0 - *opt.hot_spike_ratio},
-            DegenerateDistribution<size_t>{opt.zipf_nr_cands - 1},
+            {opt.spike_ratio, 1.0 - opt.spike_ratio},
+            DegenerateDistribution<size_t>{*opt.spike_pos},
             ZipfDistribution<size_t>{opt.zipf_nr_cands, opt.zipf_skewness});
         std::forward<Func>(func)(mix_dist);
     } else {
