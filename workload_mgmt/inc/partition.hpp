@@ -43,9 +43,6 @@ inline std::vector<Partition> load_partition(const std::string& file_name)
             break;
         }
     }
-#ifdef PRINT_DEBUG
-    std::cout << partitions.size() << " partitions are loaded" << std::endl;
-#endif
 
     return partitions;
 }
