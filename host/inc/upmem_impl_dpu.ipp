@@ -18,6 +18,7 @@ extern "C" {
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -39,11 +40,19 @@ inline struct dpu_symbol_t comm_buffer_handler;
 inline UPMEM_AsyncDuration::~UPMEM_AsyncDuration()
 {
     if (all) {
-        DPU_ASSERT(dpu_sync(all_dpu_impl));
+        DPU_CHECK(dpu_sync(all_dpu_impl), {
+            std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+            std::cerr << log->get() << std::flush;
+            std::exit(EXIT_FAILURE);
+        });
     }
     for (dpu_id_t i = 0; i < NR_RANKS; i++) {
         if (rank[i]) {
-            DPU_ASSERT(dpu_sync(each_rank_impl[i]));
+            DPU_CHECK(dpu_sync(each_rank_impl[i]), {
+                std::unique_ptr<LogBuffer> log = read_log(select_rank(i));
+                std::cerr << log->get() << std::flush;
+                std::exit(EXIT_FAILURE);
+            });
         }
     }
 }
