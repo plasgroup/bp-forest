@@ -21,8 +21,13 @@ _Static_assert(_Alignof(NodeLink) == 4, "_Alignof(NodeLink) == 4");
 static const NodeLink NODELINK_NULLPTR = {NODE_NULLPTR, UINT_MAX&((1u << CEIL_LOG2_UINT32(SIZEOF_NODE)) - 1u)};
 
 
+#ifdef DEBUG_OCCUPANCY
+#define MAX_NR_CHILDREN ((SIZEOF_NODE + 8 - 4) / 12 / 2 * 2)  // maximum even number <= ((SIZEOF_NODE + sizeof(key_uint64_t) - sizeof(unsigned)) / (sizeof(key_uint64_t) + sizeof(NodeLink)))
+#define MIN_NR_CHILDREN ((MAX_NR_CHILDREN + 1) / 2)
+#else
 #define MAX_NR_CHILDREN ((SIZEOF_NODE + 8) / 12 / 2 * 2)  // maximum even number <= ((SIZEOF_NODE + sizeof(key_uint64_t)) / (sizeof(key_uint64_t) + sizeof(NodeLink)))
 #define MIN_NR_CHILDREN ((MAX_NR_CHILDREN + 1) / 2)
+#endif
 
 #define MAX_NR_PAIRS ((SIZEOF_NODE - 16) / (sizeof(key_uint64_t) + sizeof(value_uint64_t)))
 #define MIN_NR_PAIRS ((MAX_NR_PAIRS + 1) / 2)
@@ -30,12 +35,18 @@ static const NodeLink NODELINK_NULLPTR = {NODE_NULLPTR, UINT_MAX&((1u << CEIL_LO
 typedef struct {
     __dma_aligned key_uint64_t keys[MAX_NR_CHILDREN - 1];
     __dma_aligned NodeLink children[MAX_NR_CHILDREN];
+#ifdef DEBUG_OCCUPANCY
+    unsigned numKeys;
+#endif
 } InternalNode;
 typedef struct {
     __dma_aligned key_uint64_t keys[MAX_NR_PAIRS];
     __dma_aligned value_uint64_t values[MAX_NR_PAIRS];
     __dma_aligned NodeLink right;
     __dma_aligned NodePtr left;
+#ifdef DEBUG_OCCUPANCY
+    unsigned numKeys;
+#endif
 } LeafNode;
 
 typedef union {
@@ -67,6 +78,9 @@ typedef struct {
     __dma_aligned Node node;
     __dma_aligned NodeLink first_leaf;
     __dma_aligned NodePtr last_leaf;
+#ifdef DEBUG_OCCUPANCY
+    unsigned numKeys_in_next_of_last_leaf;
+#endif
 } InitWorkspace;
 
 

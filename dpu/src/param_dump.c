@@ -23,6 +23,11 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
 #else
                                      "PRINT_DEBUG: 0\n"
 #endif
+#ifdef DEBUG_OCCUPANCY
+                                     "DEBUG_OCCUPANCY: 1\n"
+#else
+                                     "DEBUG_OCCUPANCY: 0\n"
+#endif
                                      "MRAM_FOR_TREE: " EXPAND_STRINGIFY(MRAM_FOR_TREE) "\n"
 #ifdef BITMAP_IN_MRAM
                                      "BITMAP_IN_MRAM: 1\n"
