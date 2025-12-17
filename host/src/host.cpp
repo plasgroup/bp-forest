@@ -392,10 +392,16 @@ int main(int argc, char* argv[])
 
     /* main routine */
     if (opt.print_perf) {
-        printf("NR_DPUS,batch_num,num_keys,rebalancing_time[ns],routing_time[ns]"
+        printf("NR_DPUS,batch_num,num_keys,rebalancing_time[ns]"
+#ifdef SYNCHRONOUS_DPU_EXEC
+               ",commnd_serialize_time[ns],serialize_time[ns],nrpairs_recv_time[ns]"
+#else
+               ",serialize_time[ns]"
+#endif
+               ",pairs_recv_time[ns],pairs_align_time[ns],ref_workload_time[ns],partitioning_time[ns],tree_const_time[ns],routing_time[ns]"
 #ifdef SYNCHRONOUS_DPU_EXEC
                ",send_time[ns],exec_time[ns],recv_time[ns]"
-#else /* SYNCHRONOUS_DPU_EXEC */
+#else
                ",send_exec_recv_time[ns]"
 #endif
                ",postprocess_time[ns],batch_time[ns]\n");
@@ -426,8 +432,14 @@ int main(int argc, char* argv[])
             std::cout << upmem_get_nr_dpus() << ',' << idx_batch << ','
                       << long{NUM_REQUESTS_PER_BATCH} << ',' << RebalancingTime.count() << ',' << QueryRoutingTime.count() << ','
 #ifdef SYNCHRONOUS_DPU_EXEC
+                      << CommandingSerializationTime.count() << ',' << SerializeTime.count() << ',' << NrPairsRecvTime.count() << ','
+#else
+                      << SerializeTime.count() << ','
+#endif
+                      << PairsRecvTime.count() << ',' << PairsAlignTime.count() << ',' << RefWorkloadPrepareTime.count() << ',' << PartitioningTime.count() << ',' << TreeConstructTime.count() << ',' << QueryRoutingTime.count() << ','
+#ifdef SYNCHRONOUS_DPU_EXEC
                       << QuerySendTime.count() << ',' << QueryExecTime.count() << ',' << QueryRecvTime.count() << ','
-#else /* SYNCHRONOUS_DPU_EXEC */
+#else
                       << QuerySendExecRecvTime.count() << ','
 #endif
                       << PostprocessTime.count() << ',' << BatchTotalTime.count() << std::endl;

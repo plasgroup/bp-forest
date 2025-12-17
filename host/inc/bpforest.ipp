@@ -2104,7 +2104,7 @@ inline std::vector<KVPair> BPForest::retrieve_all_data() const
         broadcast_to_dpu(all_dpu, 0, Single{command[0], 2}, async);
     }
     {
-        StopWatch timer{SerializationTime};
+        StopWatch timer{SerializeTime};
         UPMEM_AsyncDuration async;
         execute(all_dpu, async);
     }
