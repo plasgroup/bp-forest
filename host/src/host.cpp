@@ -430,7 +430,7 @@ int main(int argc, char* argv[])
 
         if (opt.print_perf) {
             std::cout << upmem_get_nr_dpus() << ',' << idx_batch << ','
-                      << long{NUM_REQUESTS_PER_BATCH} << ',' << RebalancingTime.count() << ',' << QueryRoutingTime.count() << ','
+                      << long{NUM_REQUESTS_PER_BATCH} << ',' << RebalancingTime.count() << ','
 #ifdef SYNCHRONOUS_DPU_EXEC
                       << CommandingSerializationTime.count() << ',' << SerializeTime.count() << ',' << NrPairsRecvTime.count() << ','
 #else
