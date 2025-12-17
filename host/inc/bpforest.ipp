@@ -2096,13 +2096,33 @@ struct SerializedKVPairReceiver {
 inline std::vector<KVPair> BPForest::retrieve_all_data() const
 {
     std::array<uint32_t[2], MAX_NR_DPUS> nr_pairs;
+#ifdef SYNCHRONOUS_DPU_EXEC
     {
+        StopWatch timer{CommandingSerializationTime};
+        UPMEM_AsyncDuration async;
+        constexpr std::array<uint32_t, 2> command{TASK_SERIALIZE};
+        broadcast_to_dpu(all_dpu, 0, Single{command[0], 2}, async);
+    }
+    {
+        StopWatch timer{SerializationTime};
+        UPMEM_AsyncDuration async;
+        execute(all_dpu, async);
+    }
+    {
+        StopWatch timer{NrPairsRecvTime};
+        UPMEM_AsyncDuration async;
+        recv_from_dpu(all_dpu, 0, EachInArray{nr_pairs.data()}, async);
+    }
+#else
+    {
+        StopWatch timer{SerializeTime};
         UPMEM_AsyncDuration async;
         constexpr std::array<uint32_t, 2> command{TASK_SERIALIZE};
         broadcast_to_dpu(all_dpu, 0, Single{command[0], 2}, async);
         execute(all_dpu, async);
         recv_from_dpu(all_dpu, 0, EachInArray{nr_pairs.data()}, async);
     }
+#endif
 
     uint32_t total_nr_pairs = 0;
     std::array<ExtendableBuffer<KVPair>, MAX_NR_DPUS> kvpair_bufs;
@@ -2112,17 +2132,21 @@ inline std::vector<KVPair> BPForest::retrieve_all_data() const
         kvpair_bufs[idx_dpu].reserve(sum);
     }
     {
+        StopWatch timer{PairsRecvTime};
         UPMEM_AsyncDuration async;
         scatter_from_dpu(all_dpu, 8, SerializedKVPairReceiver{&nr_pairs[0], &kvpair_bufs[0]}, async);
     }
 
     std::vector<KVPair> kvpairs;
-    kvpairs.reserve(total_nr_pairs);
-    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
-        kvpairs.insert(kvpairs.end(), &kvpair_bufs[idx_dpu][0], &kvpair_bufs[idx_dpu][nr_pairs[idx_dpu][0] + nr_pairs[idx_dpu][1]]);
-        kvpair_bufs[idx_dpu].reclaim();
+    {
+        StopWatch timer{PairsAlignTime};
+        kvpairs.reserve(total_nr_pairs);
+        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
+            kvpairs.insert(kvpairs.end(), &kvpair_bufs[idx_dpu][0], &kvpair_bufs[idx_dpu][nr_pairs[idx_dpu][0] + nr_pairs[idx_dpu][1]]);
+            kvpair_bufs[idx_dpu].reclaim();
+        }
+        std::sort(kvpairs.begin(), kvpairs.end(), [](const KVPair& a, const KVPair& b) { return a.key < b.key; });
     }
-    std::sort(kvpairs.begin(), kvpairs.end(), [](const KVPair& a, const KVPair& b) { return a.key < b.key; });
     return kvpairs;
 }
 template <typename Query>
@@ -2143,12 +2167,15 @@ BPForest::partition_data_with_reference_point_queries(size_t nr_queries, const Q
 
     if (param.balancing > 0) {
         std::vector<key_uint64_t> delims;
-        delims.reserve(nr_queries);
-        for (size_t idx_qry = 0; idx_qry < nr_queries; idx_qry++) {
-            const key_uint64_t key = PointQueryToKey<Query>{}(queries[idx_qry]);
-            delims.push_back(key);
+        {
+            StopWatch timer{RefWorkloadPrepareTime};
+            delims.reserve(nr_queries);
+            for (size_t idx_qry = 0; idx_qry < nr_queries; idx_qry++) {
+                const key_uint64_t key = PointQueryToKey<Query>{}(queries[idx_qry]);
+                delims.push_back(key);
+            }
+            std::sort(delims.begin(), delims.end());
         }
-        std::sort(delims.begin(), delims.end());
 
         return repartition(delims);
 
@@ -3206,6 +3233,7 @@ inline void BPForest::extract_and_distribute_hot_ranges()
     }
 
     {
+        StopWatch timer{TreeConstructTime};
         UPMEM_AsyncDuration async;
 
         RebalancedColdKVPairsSender cold_sender{this, &cold_boundaries[0], &hot_boundaries[0], &cold_task_headers[0]};
@@ -3222,7 +3250,9 @@ inline void BPForest::extract_and_distribute_hot_ranges()
         std::unique_ptr<LogBuffer> log = read_log(all_dpu);
         std::cout << log->get() << std::flush;
     }
+    auto tmp_time = TreeConstructTime;
     {
+        StopWatch timer{TreeConstructTime};
         UPMEM_AsyncDuration async;
 #endif
 
@@ -3244,6 +3274,7 @@ inline void BPForest::extract_and_distribute_hot_ranges()
         execute(all_dpu, async);
     }
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+    TreeConstructTime += tmp_time;
     {
         std::unique_ptr<LogBuffer> log = read_log(all_dpu);
         std::cout << log->get() << std::flush;
