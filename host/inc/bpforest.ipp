@@ -2073,17 +2073,25 @@ inline void BPForest::postprocess_of_rcq_impl(unsigned tid)
     }
 }
 
-struct SerializedKVPairReceiver {
+struct BPForest::SerializedKVPairReceiver {
+    BPForest* forest;
     uint32_t (*nr_kvpairs)[2];
-    ExtendableBuffer<KVPair>* kvpairs;
+    ExtendableBuffer<KVPair>* cold_kvpairs;
+    ExtendableBuffer<KVPair>* hot_kvpairs;
 
-    SerializedKVPairReceiver(uint32_t (*nr_kvpairs)[2], ExtendableBuffer<KVPair>* kvpairs) : nr_kvpairs{nr_kvpairs}, kvpairs{kvpairs} {}
+    SerializedKVPairReceiver(uint32_t (*nr_kvpairs)[2], ExtendableBuffer<KVPair>* cold_kvpairs, ExtendableBuffer<KVPair>* hot_kvpairs) : nr_kvpairs{nr_kvpairs}, cold_kvpairs{cold_kvpairs}, hot_kvpairs{hot_kvpairs} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
     {
         if (block_index == 0) {
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(&kvpairs[dpu_index][0]));
-            out->length = static_cast<uint32_t>(bytes_for_dpu(dpu_index));
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(&cold_kvpairs[dpu_index][0]));
+            out->length = static_cast<uint32_t>(nr_kvpairs[dpu_index][0] * sizeof(KVPair));
+            return true;
+        } else if (block_index == 1 && nr_kvpairs[dpu_index][1] > 0) {
+            const auto idx_hot = forest->dpu_to_hot_range[dpu_index];
+            assert(idx_hot != INVALID_DPU_ID);
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(&hot_kvpairs[idx_hot][0]));
+            out->length = static_cast<uint32_t>(nr_kvpairs[dpu_index][1] * sizeof(KVPair));
             return true;
         }
         return false;
@@ -2125,16 +2133,24 @@ inline std::vector<KVPair> BPForest::retrieve_all_data() const
 #endif
 
     uint32_t total_nr_pairs = 0;
-    std::array<ExtendableBuffer<KVPair>, MAX_NR_DPUS> kvpair_bufs;
+    std::array<uint32_t, MAX_NR_DPUS> nr_hot_pairs;
+    std::array<ExtendableBuffer<KVPair>, MAX_NR_DPUS> cold_kvpair_bufs, hot_kvpair_bufs;
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
-        const uint32_t sum = nr_pairs[idx_dpu][0] + nr_pairs[idx_dpu][1];
-        total_nr_pairs += sum;
-        kvpair_bufs[idx_dpu].reserve(sum);
+        cold_kvpair_bufs[idx_dpu].reserve(nr_pairs[idx_dpu][0]);
+        total_nr_pairs += nr_pairs[idx_dpu][0];
+
+        if (nr_pairs[idx_dpu][1] > 0) {
+            const auto idx_hot = dpu_to_hot_range[idx_dpu];
+            assert(idx_hot != INVALID_DPU_ID);
+            nr_hot_pairs[idx_hot] = nr_pairs[idx_dpu][1];
+            hot_kvpair_bufs[idx_hot].reserve(nr_hot_pairs[idx_hot]);
+            total_nr_pairs += nr_hot_pairs[idx_hot];
+        }
     }
     {
         StopWatch timer{PairsRecvTime};
         UPMEM_AsyncDuration async;
-        scatter_from_dpu(all_dpu, 8, SerializedKVPairReceiver{&nr_pairs[0], &kvpair_bufs[0]}, async);
+        scatter_from_dpu(all_dpu, 8, SerializedKVPairReceiver{&nr_pairs[0], &cold_kvpair_bufs[0], &hot_kvpair_bufs[0]}, async);
     }
 
     std::vector<KVPair> kvpairs;
@@ -2142,10 +2158,18 @@ inline std::vector<KVPair> BPForest::retrieve_all_data() const
         StopWatch timer{PairsAlignTime};
         kvpairs.reserve(total_nr_pairs);
         for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
-            kvpairs.insert(kvpairs.end(), &kvpair_bufs[idx_dpu][0], &kvpair_bufs[idx_dpu][nr_pairs[idx_dpu][0] + nr_pairs[idx_dpu][1]]);
-            kvpair_bufs[idx_dpu].reclaim();
+            const auto nr_cold_pairs = nr_pairs[idx_dpu][0];
+            const KVPair *cursor_in_cold = &cold_kvpair_bufs[idx_dpu][0], *const end_in_cold = &cold_kvpair_bufs[idx_dpu][nr_cold_pairs];
+
+            for (dpu_id_t idx_hot = cold_to_hot[idx_dpu]; idx_hot < cold_to_hot[idx_dpu + 1]; idx_hot++) {
+                const KVPair* const hot_pos = std::lower_bound(cursor_in_cold, end_in_cold, hot_kvpair_bufs[idx_hot][0],
+                    [](const KVPair& a, const KVPair& b) { return a.key < b.key; });
+                kvpairs.insert(kvpairs.end(), cursor_in_cold, hot_pos);
+                cursor_in_cold = hot_pos;
+                kvpairs.insert(kvpairs.end(), &hot_kvpair_bufs[idx_hot][0], &hot_kvpair_bufs[idx_hot][nr_hot_pairs[idx_hot]]);
+            }
+            kvpairs.insert(kvpairs.end(), cursor_in_cold, end_in_cold);
         }
-        std::sort(kvpairs.begin(), kvpairs.end(), [](const KVPair& a, const KVPair& b) { return a.key < b.key; });
     }
     return kvpairs;
 }
