@@ -2074,12 +2074,12 @@ inline void BPForest::postprocess_of_rcq_impl(unsigned tid)
 }
 
 struct BPForest::SerializedKVPairReceiver {
-    BPForest* forest;
+    const BPForest* forest;
     uint32_t (*nr_kvpairs)[2];
     ExtendableBuffer<KVPair>* cold_kvpairs;
     ExtendableBuffer<KVPair>* hot_kvpairs;
 
-    SerializedKVPairReceiver(uint32_t (*nr_kvpairs)[2], ExtendableBuffer<KVPair>* cold_kvpairs, ExtendableBuffer<KVPair>* hot_kvpairs) : nr_kvpairs{nr_kvpairs}, cold_kvpairs{cold_kvpairs}, hot_kvpairs{hot_kvpairs} {}
+    SerializedKVPairReceiver(const BPForest* forest, uint32_t (*nr_kvpairs)[2], ExtendableBuffer<KVPair>* cold_kvpairs, ExtendableBuffer<KVPair>* hot_kvpairs) : forest{forest}, nr_kvpairs{nr_kvpairs}, cold_kvpairs{cold_kvpairs}, hot_kvpairs{hot_kvpairs} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
     {
@@ -2150,7 +2150,7 @@ inline std::vector<KVPair> BPForest::retrieve_all_data() const
     {
         StopWatch timer{PairsRecvTime};
         UPMEM_AsyncDuration async;
-        scatter_from_dpu(all_dpu, 8, SerializedKVPairReceiver{&nr_pairs[0], &cold_kvpair_bufs[0], &hot_kvpair_bufs[0]}, async);
+        scatter_from_dpu(all_dpu, 8, SerializedKVPairReceiver{this, &nr_pairs[0], &cold_kvpair_bufs[0], &hot_kvpair_bufs[0]}, async);
     }
 
     std::vector<KVPair> kvpairs;
@@ -2179,15 +2179,15 @@ BPForest::partition_data_with_reference_point_queries(size_t nr_queries, const Q
 {
     StopWatch timer{RebalancingTime};
 
-    if (nr_hot_ranges > 0) {
-        dpu_to_hot_range.fill(INVALID_DPU_ID);
-    }
-
 #ifdef EXTRACT_BY_INITIALIZATION
     initial_data = retrieve_all_data();
 #else
     distribute_initial_data(retrieve_all_data());
 #endif
+
+    if (nr_hot_ranges > 0) {
+        dpu_to_hot_range.fill(INVALID_DPU_ID);
+    }
 
     if (param.balancing > 0) {
         std::vector<key_uint64_t> delims;
@@ -2237,15 +2237,15 @@ BPForest::partition_data_with_reference_range_queries(size_t nr_queries, const Q
 {
     StopWatch timer{RebalancingTime};
 
-    if (nr_hot_ranges > 0) {
-        dpu_to_hot_range.fill(INVALID_DPU_ID);
-    }
-
 #ifdef EXTRACT_BY_INITIALIZATION
     initial_data = retrieve_all_data();
 #else
     distribute_initial_data(retrieve_all_data());
 #endif
+
+    if (nr_hot_ranges > 0) {
+        dpu_to_hot_range.fill(INVALID_DPU_ID);
+    }
 
     if (param.balancing > 0) {
         std::vector<key_uint64_t> delims;
