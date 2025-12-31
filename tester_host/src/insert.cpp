@@ -124,6 +124,20 @@ int main(int argc, char* argv[])
     CMDOpt opt{argc, argv};
     DPUHandler dpu_hdr;
 
+    const auto print_stdout = [&] {
+#ifdef PRINT_DEBUG
+        LogStream stream;
+
+        dpu_set_t dpu;
+        DPU_FOREACH(dpu_hdr.all_dpu, dpu)
+        {
+            DPU_ASSERT(dpu_log_read(dpu, stream.get()));
+        }
+
+        std::cout << std::move(stream).close()->get() << std::flush;
+#endif
+    };
+
     dump_param(opt, dpu_hdr);
 
     {
@@ -138,11 +152,13 @@ int main(int argc, char* argv[])
         DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 0, &init_header, 8, DPU_XFER_DEFAULT));
         DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 8, &init_pairs[0], init_qrys.length * sizeof(KVPair), DPU_XFER_DEFAULT));
         DPU_ASSERT(dpu_launch(dpu_hdr.all_dpu, DPU_SYNCHRONOUS));
+        print_stdout();
 
         const ConstructHotHeader hot_header{TASK_CONSTRUCT_HOT, static_cast<uint32_t>(init_qrys.length)};
         DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 0, &hot_header, 8, DPU_XFER_DEFAULT));
         DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 8, &init_pairs[0], init_qrys.length * sizeof(KVPair), DPU_XFER_DEFAULT));
         DPU_ASSERT(dpu_launch(dpu_hdr.all_dpu, DPU_SYNCHRONOUS));
+        print_stdout();
     }
 
     {
@@ -167,19 +183,7 @@ int main(int argc, char* argv[])
             DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, static_cast<uint32_t>(8 + nr_qrys * sizeof(KVPair)), qrys, nr_qrys * sizeof(KVPair), DPU_XFER_DEFAULT));
             DPU_ASSERT(dpu_launch(dpu_hdr.all_dpu, DPU_SYNCHRONOUS));
 
-#ifdef PRINT_DEBUG
-            {
-                LogStream stream;
-
-                dpu_set_t dpu;
-                DPU_FOREACH(dpu_hdr.all_dpu, dpu)
-                {
-                    DPU_ASSERT(dpu_log_read(dpu, stream.get()));
-                }
-
-                std::cout << std::move(stream).close()->get() << std::flush;
-            }
-#endif
+            print_stdout();
 
             std::cout << "batch#" << idx_batch << " done" << std::endl;
         }

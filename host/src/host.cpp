@@ -398,7 +398,7 @@ int main(int argc, char* argv[])
 #else
                ",serialize_time[ns]"
 #endif
-               ",pairs_recv_time[ns],pairs_align_time[ns],ref_workload_time[ns],partitioning_time[ns],tree_const_time[ns],routing_time[ns]"
+               ",pairs_recv_time[ns],pairs_align_time[ns],ref_workload_time[ns],partitioning_time[ns],tree_const_time[ns],routing_table_make_time[ns],routing_time[ns]"
 #ifdef SYNCHRONOUS_DPU_EXEC
                ",send_time[ns],exec_time[ns],recv_time[ns]"
 #else
@@ -436,7 +436,7 @@ int main(int argc, char* argv[])
 #else
                       << SerializeTime.count() << ','
 #endif
-                      << PairsRecvTime.count() << ',' << PairsAlignTime.count() << ',' << RefWorkloadPrepareTime.count() << ',' << PartitioningTime.count() << ',' << TreeConstructTime.count() << ',' << QueryRoutingTime.count() << ','
+                      << PairsRecvTime.count() << ',' << PairsAlignTime.count() << ',' << RefWorkloadPrepareTime.count() << ',' << PartitioningTime.count() << ',' << TreeConstructTime.count() << ',' << RoutingTableMakeTime.count() << ',' << QueryRoutingTime.count() << ','
 #ifdef SYNCHRONOUS_DPU_EXEC
                       << QuerySendTime.count() << ',' << QueryExecTime.count() << ',' << QueryRecvTime.count() << ','
 #else

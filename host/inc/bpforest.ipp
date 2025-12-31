@@ -244,6 +244,8 @@ inline void BPForest::apply_partitioning_of_initial_data(std::vector<KVPair>&& s
 
 inline void BPForest::combine_delims()
 {
+    StopWatch timer{RoutingTableMakeTime};
+
     combined_delims.clear();
     combined_delims_dest_dpu.clear();
 

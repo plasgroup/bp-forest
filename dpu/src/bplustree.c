@@ -900,7 +900,7 @@ static void INSERT_execute(Node* const root, uint8_t* const height, uint8_t* con
                     }
                     new_sibling->lf.keys[idx_pair - new_leaf_numKeys] = qry->key;
                     new_sibling->lf.values[idx_pair - new_leaf_numKeys] = qry->value;
-                    for (unsigned i = idx_pair; i < new_sibling_numKeys; i++) {
+                    for (unsigned i = idx_pair; i < MAX_NR_PAIRS; i++) {
                         new_sibling->lf.keys[i - (new_leaf_numKeys - 1)] = leaf->lf.keys[i];
                         new_sibling->lf.values[i - (new_leaf_numKeys - 1)] = leaf->lf.values[i];
                     }
