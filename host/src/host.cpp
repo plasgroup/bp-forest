@@ -392,13 +392,13 @@ int main(int argc, char* argv[])
 
     /* main routine */
     if (opt.print_perf) {
-        printf("NR_DPUS,batch_num,num_keys,rebalancing_time[ns]"
+        printf("NR_DPUS,batch_num,num_keys,rebalancing_time[ns],data_retrieve_time[ns]"
 #ifdef SYNCHRONOUS_DPU_EXEC
                ",commnd_serialize_time[ns],serialize_time[ns],nrpairs_recv_time[ns]"
 #else
                ",serialize_time[ns]"
 #endif
-               ",pairs_recv_time[ns],pairs_align_time[ns],ref_workload_time[ns],partitioning_time[ns],tree_const_time[ns],routing_table_make_time[ns],routing_time[ns]"
+               ",pairs_buf_alloc_time[ns],pairs_recv_time[ns],pairs_align_time[ns],ref_workload_time[ns],prepare_for_partitioning_time[ns],partitioning_time[ns],partition_apply_time[ns],tree_const_time[ns],routing_table_make_time[ns],routing_time[ns]"
 #ifdef SYNCHRONOUS_DPU_EXEC
                ",send_time[ns],exec_time[ns],recv_time[ns]"
 #else
@@ -430,13 +430,13 @@ int main(int argc, char* argv[])
 
         if (opt.print_perf) {
             std::cout << upmem_get_nr_dpus() << ',' << idx_batch << ','
-                      << long{NUM_REQUESTS_PER_BATCH} << ',' << RebalancingTime.count() << ','
+                      << long{NUM_REQUESTS_PER_BATCH} << ',' << RebalancingTime.count() << ',' << DataRetrieveTime.count() << ','
 #ifdef SYNCHRONOUS_DPU_EXEC
-                      << CommandingSerializationTime.count() << ',' << SerializeTime.count() << ',' << NrPairsRecvTime.count() << ','
+                      << CommandingSerializationTime.count() << ',' << SerializeTime.count() << ',' << PairsBufAllocTime.count() << ',' << NrPairsRecvTime.count() << ','
 #else
                       << SerializeTime.count() << ','
 #endif
-                      << PairsRecvTime.count() << ',' << PairsAlignTime.count() << ',' << RefWorkloadPrepareTime.count() << ',' << PartitioningTime.count() << ',' << TreeConstructTime.count() << ',' << RoutingTableMakeTime.count() << ',' << QueryRoutingTime.count() << ','
+                      << PairsRecvTime.count() << ',' << PairsAlignTime.count() << ',' << RefWorkloadPrepareTime.count() << ',' << PrepareForPartitioningTime.count() << ',' << PartitioningTime.count() << ',' << PartitionApplyTime.count() << ',' << TreeConstructTime.count() << ',' << RoutingTableMakeTime.count() << ',' << QueryRoutingTime.count() << ','
 #ifdef SYNCHRONOUS_DPU_EXEC
                       << QuerySendTime.count() << ',' << QueryExecTime.count() << ',' << QueryRecvTime.count() << ','
 #else
@@ -446,6 +446,7 @@ int main(int argc, char* argv[])
         }
 
         RebalancingTime = RebalancingTime.zero();
+        benchmark->partition_with_one_batch(&db);
     });
 
 #ifdef MEASURE_XFER_BYTES
