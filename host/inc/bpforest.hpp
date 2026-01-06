@@ -46,8 +46,8 @@ struct BPForestParameter {
 struct BPForest : ParallelManager<BPForest> {
     using Param = BPForestParameter;
 
-    BPForest(std::vector<KVPair>&& sorted_pairs, const Param& = {});
-    BPForest(std::vector<KVPair>&& sorted_pairs, const std::vector<Partition>& partitioning, const Param& = {});
+    BPForest(const KVPair sorted_pairs[], size_t nr_pairs, const Param& = {});
+    BPForest(const KVPair sorted_pairs[], size_t nr_pairs, const std::vector<Partition>& partitioning, const Param& = {});
     ~BPForest();
 
     void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
@@ -146,8 +146,8 @@ private:
     ExtendableBuffer<size_t> load_idxs;
     std::array<ExtendableBuffer<KVPair>, MAX_NR_DPUS> hot_kvpairs;
 
-    void distribute_initial_data(std::vector<KVPair>&& sorted_pairs);
-    void apply_partitioning_of_initial_data(std::vector<KVPair>&& sorted_pairs, const std::vector<Partition>& partitioning);
+    void distribute_initial_data(const KVPair sorted_pairs[], size_t nr_pairs);
+    void apply_partitioning_of_initial_data(const KVPair sorted_pairs[], size_t nr_pairs, const std::vector<Partition>& partitioning);
 
     void combine_delims();
 
@@ -270,7 +270,9 @@ private:
     bool check_if_queries_balance(size_t nr_queries, const QueryData<Query, Result>& routed);
     std::vector<std::pair<size_t /* nr pairs in cold */, size_t /* nr pairs in hot */>>
     repartition(const std::vector<key_uint64_t>& sorted_queries);
-    std::vector<KVPair> retrieve_all_data() const;
+    size_t retrieve_all_data(ExtendableBuffer<KVPair>& buf) const;
+    struct SerializationCommander;
+    struct SerializaionNrPairsReceiver;
     struct SerializedKVPairReceiver;
 
     void restore_hot_ranges();
@@ -284,7 +286,8 @@ private:
 
     void extract_and_distribute_hot_ranges();
 #ifdef EXTRACT_BY_INITIALIZATION
-    std::vector<KVPair> initial_data;
+    ExtendableBuffer<KVPair> initial_data;
+    size_t data_size;
     struct RebalancedColdKVPairsSender;
     struct HotKVPairsSender;
 #else

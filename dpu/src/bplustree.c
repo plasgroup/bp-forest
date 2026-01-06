@@ -2133,17 +2133,75 @@ static void SERIALIZE_flush_pair_cache(SerializeWorkspace* wks)
         mram_write(&wks->pairs[0], (__mram_ptr void*)wks->cursor_on_pairs, sizeof(KVPair) * wks->idx_pair_in_cache);
     }
 }
+static void SERIALIZE_init_delim_cache(SerializeWorkspace* wks, uint32_t nr_delims, uintptr_t delims)
+{
+    wks->nr_delims = nr_delims;
+    wks->idx_delim_in_cache = TASK_SERIALIZE_NR_CACHED_DELIMS;
+    wks->cursor_on_delims = delims;
+}
+static key_uint64_t* SERIALIZE_fetch_next_delim(SerializeWorkspace* wks)
+{
+    if (wks->nr_delims == 0) {
+        return NULL;
+    }
+    if (wks->idx_delim_in_cache == TASK_SERIALIZE_NR_CACHED_DELIMS) {
+        mram_read((__mram_ptr void*)wks->cursor_on_delims, wks->delims, sizeof(key_uint64_t) * TASK_SERIALIZE_NR_CACHED_DELIMS);
+        wks->cursor_on_delims += sizeof(key_uint64_t) * TASK_SERIALIZE_NR_CACHED_DELIMS;
+        wks->idx_delim_in_cache = 0;
+    }
+    wks->nr_delims--;
+    return &wks->delims[wks->idx_delim_in_cache++];
+}
+static void SERIALIZE_init_incision_cache(SerializeWorkspace* wks, uintptr_t result_incisions)
+{
+    wks->idx_incision_in_cache = 0;
+    wks->cursor_on_incisions = result_incisions;
+}
+static uint32_t* SERIALIZE_prepare_incision_cache(SerializeWorkspace* wks)
+{
+    if (wks->idx_incision_in_cache == TASK_SERIALIZE_NR_CACHED_INCISIONS) {
+        mram_write(&wks->incisions[0], (__mram_ptr void*)wks->cursor_on_incisions, sizeof(uint32_t) * TASK_SERIALIZE_NR_CACHED_INCISIONS);
+        wks->cursor_on_incisions += sizeof(uint32_t) * TASK_SERIALIZE_NR_CACHED_INCISIONS;
+        wks->idx_incision_in_cache = 0;
+    }
+    return &wks->incisions[wks->idx_incision_in_cache++];
+}
+static void SERIALIZE_flush_incision_cache(SerializeWorkspace* wks)
+{
+    if (wks->idx_incision_in_cache != 0) {
+        mram_write(&wks->incisions[0], (__mram_ptr void*)wks->cursor_on_incisions, sizeof(uint32_t) * ((wks->idx_incision_in_cache + 1) / 2 * 2));
+    }
+}
+static void SERIALIZE_mark_incision(SerializeWorkspace* wks, key_uint64_t** p_delim)
+{
+    uint32_t* const incision = SERIALIZE_prepare_incision_cache(wks);
+    *incision = wks->nr_pairs;
+    *p_delim = SERIALIZE_fetch_next_delim(wks);
+}
 static uint32_t /* nr_pairs */ SERIALIZE_execute(uint8_t root_numKeys, const Node* root, uint8_t height,
-    uintptr_t result_pairs)
+    uintptr_t result_pairs,
+    uint32_t nr_delims, uintptr_t delims,
+    uintptr_t result_incisions)
 {
     SerializeWorkspace* const wks = &workspace.tree.serialize[me()];
     SERIALIZE_init_pair_cache(wks, result_pairs);
+    SERIALIZE_init_delim_cache(wks, nr_delims, delims);
+    SERIALIZE_init_incision_cache(wks, result_incisions);
+
+    key_uint64_t* delim = SERIALIZE_fetch_next_delim(wks);
 
     if (height == 0) {
         for (uint8_t i = 0; i < root_numKeys; i++) {
-            if (root->lf.values[i] != NOT_FOUND_VALUE) {
-                KVPair* const pairs = SERIALIZE_prepare_pair_cache(wks);
-                *pairs = (KVPair){root->lf.keys[i], root->lf.values[i]};
+            const value_uint64_t value = root->lf.values[i];
+            if (value != NOT_FOUND_VALUE) {
+                const key_uint64_t key = root->lf.keys[i];
+
+                while (delim != NULL && *delim < key) {
+                    SERIALIZE_mark_incision(wks, &delim);
+                }
+
+                KVPair* const pair = SERIALIZE_prepare_pair_cache(wks);
+                *pair = (KVPair){key, value};
             }
         }
     } else {
@@ -2159,9 +2217,16 @@ static uint32_t /* nr_pairs */ SERIALIZE_execute(uint8_t root_numKeys, const Nod
             mram_read(&Deref(cursor.ptr), &wks->leaf_cache, sizeof(LeafNode));
 
             for (uint8_t i = 0; i < cursor.numKeys; i++) {
-                if (wks->leaf_cache.values[i] != NOT_FOUND_VALUE) {
-                    KVPair* const pairs = SERIALIZE_prepare_pair_cache(wks);
-                    *pairs = (KVPair){wks->leaf_cache.keys[i], wks->leaf_cache.values[i]};
+                const value_uint64_t value = wks->leaf_cache.values[i];
+                if (value != NOT_FOUND_VALUE) {
+                    const key_uint64_t key = wks->leaf_cache.keys[i];
+
+                    while (delim != NULL && *delim < key) {
+                        SERIALIZE_mark_incision(wks, &delim);
+                    }
+
+                    KVPair* const pair = SERIALIZE_prepare_pair_cache(wks);
+                    *pair = (KVPair){key, value};
                 }
             }
 
@@ -2172,19 +2237,29 @@ static uint32_t /* nr_pairs */ SERIALIZE_execute(uint8_t root_numKeys, const Nod
         }
     }
 
+    while (delim != NULL) {
+        SERIALIZE_mark_incision(wks, &delim);
+    }
+
     SERIALIZE_flush_pair_cache(wks);
+    SERIALIZE_flush_incision_cache(wks);
     return wks->nr_pairs;
 }
 void task_serialize(void)
 {
     _Static_assert(TASK_SERIALIZE_NR_TASKLETS == 1, "TASK_SERIALIZE_NR_TASKLETS == 1");
     if (me() < TASK_SERIALIZE_NR_TASKLETS) {
+        static const uintptr_t result_nr_pairs = (uintptr_t)DPU_MRAM_HEAP_POINTER,
+                               input_delims = result_nr_pairs + sizeof(uint32_t) * 2, result_incisions = input_delims,
+                               result_pairs = result_incisions + sizeof(key_uint64_t) * NR_RANKS * MAX_NR_DPUS_IN_RANK;
+        const unsigned nr_delims = input_header.serialize.nr_delims;
+
         uint32_t nr_pairs[2];
 
         nr_pairs[0] = SERIALIZE_execute(cold_root_numKeys, &cold_root, cold_height,
-            (uintptr_t)DPU_MRAM_HEAP_POINTER + 8);
+            result_pairs, nr_delims, input_delims, result_incisions);
         nr_pairs[1] = SERIALIZE_execute(hot_root_numKeys, &hot_root, hot_height,
-            (uintptr_t)DPU_MRAM_HEAP_POINTER + 8 + sizeof(KVPair) * nr_pairs[0]);
+            result_pairs + sizeof(KVPair) * nr_pairs[0], 0, 0, 0);
 
         mram_write(&nr_pairs[0], (__mram_ptr void*)DPU_MRAM_HEAP_POINTER, sizeof(uint32_t) * 2);
     }

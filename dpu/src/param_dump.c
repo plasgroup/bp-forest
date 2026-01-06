@@ -56,6 +56,7 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
 #endif
                                      "TASK_SERIALIZE_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_SERIALIZE_NR_TASKLETS) "\n"
                                      "TASK_SERIALIZE_NR_CACHED_KVPAIRS: " EXPAND_STRINGIFY(TASK_SERIALIZE_NR_CACHED_KVPAIRS) "\n"
+                                     "TASK_SERIALIZE_NR_CACHED_DELIMS: " EXPAND_STRINGIFY(TASK_SERIALIZE_NR_CACHED_DELIMS) "\n"
 #ifdef TASK_CONSTRUCT_HOT_CHECK
                                      "TASK_CONSTRUCT_HOT_CHECK: 1\n"
 #else

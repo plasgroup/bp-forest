@@ -82,21 +82,21 @@ struct RangeQueryToRange<RangeCountQuery> {
     const KeyRange& operator()(const RangeCountQuery& query) const { return query.range; }
 };
 
-inline BPForest::BPForest(std::vector<KVPair>&& sorted_pairs, const Param& param)
+inline BPForest::BPForest(const KVPair sorted_pairs[], size_t nr_pairs, const Param& param)
     : ParallelManager<BPForest>{param.nr_host_threads},
       nr_cold_ranges{(upmem_init(), upmem_get_nr_dpus())}, param{param}
 {
     dpu_to_hot_range.fill(INVALID_DPU_ID);
 
-    distribute_initial_data(std::move(sorted_pairs));
+    distribute_initial_data(sorted_pairs, nr_pairs);
 }
-inline BPForest::BPForest(std::vector<KVPair>&& sorted_pairs, const std::vector<Partition>& partitioning, const Param& param)
+inline BPForest::BPForest(const KVPair sorted_pairs[], size_t nr_pairs, const std::vector<Partition>& partitioning, const Param& param)
     : ParallelManager<BPForest>{param.nr_host_threads},
       nr_cold_ranges{(upmem_init(), upmem_get_nr_dpus())}, param{param}
 {
     dpu_to_hot_range.fill(INVALID_DPU_ID);
 
-    apply_partitioning_of_initial_data(std::move(sorted_pairs), partitioning);
+    apply_partitioning_of_initial_data(sorted_pairs, nr_pairs, partitioning);
 }
 inline BPForest::~BPForest()
 {
@@ -129,16 +129,14 @@ struct TaskInitInput {
     }
     size_t bytes_for_dpu(dpu_id_t dpu) const { return sizeof(uint32_t) * 2 + sizeof(KVPair) * nr_pairs_in_each_dpus[dpu]; }
 };
-void BPForest::distribute_initial_data(std::vector<KVPair>&& sorted_pairs_vec)
+void BPForest::distribute_initial_data(const KVPair sorted_pairs[], const size_t nr_pairs)
 {
-    const size_t nr_pairs = sorted_pairs_vec.size();
-
     std::array<uint32_t, MAX_NR_DPUS> nr_pairs_in_each_dpus;
     std::array<const KVPair*, MAX_NR_DPUS> pairs_for_each_dpus;
 
     const uint32_t nr_pairs_quot = static_cast<uint32_t>(nr_pairs / nr_cold_ranges),
                    nr_pairs_rem = static_cast<uint32_t>(nr_pairs % nr_cold_ranges);
-    const KVPair* cursor = &sorted_pairs_vec[0];
+    const KVPair* cursor = &sorted_pairs[0];
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
         nr_pairs_in_each_dpus[idx_dpu] = nr_pairs_quot + (idx_dpu < nr_pairs_rem);
         pairs_for_each_dpus[idx_dpu] = cursor;
@@ -163,10 +161,12 @@ void BPForest::distribute_initial_data(std::vector<KVPair>&& sorted_pairs_vec)
 #endif
 
 #ifdef EXTRACT_BY_INITIALIZATION
-    initial_data = std::move(sorted_pairs_vec);
+    initial_data.reserve(nr_pairs);
+    data_size = nr_pairs;
+    std::copy_n(sorted_pairs, nr_pairs, &initial_data[0]);
 #endif
 }
-inline void BPForest::apply_partitioning_of_initial_data(std::vector<KVPair>&& sorted_pairs_vec, const std::vector<Partition>& partitioning)
+inline void BPForest::apply_partitioning_of_initial_data(const KVPair sorted_pairs[], const size_t nr_pairs, const std::vector<Partition>& partitioning)
 {
     ASSERT(partitioning.size() == nr_cold_ranges * 2);
 
@@ -210,21 +210,23 @@ inline void BPForest::apply_partitioning_of_initial_data(std::vector<KVPair>&& s
     combine_delims();
 
 #ifdef EXTRACT_BY_INITIALIZATION
-    initial_data = std::move(sorted_pairs_vec);
+    initial_data.reserve(nr_pairs);
+    data_size = nr_pairs;
+    std::copy_n(sorted_pairs, nr_pairs, &initial_data[0]);
 #else
     std::array<uint32_t, MAX_NR_DPUS> nr_pairs_in_each_dpus;
     std::array<const KVPair*, MAX_NR_DPUS> pairs_for_each_dpus;
 
-    KVPair* cursor = &sorted_pairs_vec[0];
+    const KVPair* cursor = &sorted_pairs[0];
     for (dpu_id_t idx_cold = 0; idx_cold + 1 < nr_cold_ranges; idx_cold++) {
         pairs_for_each_dpus[idx_cold] = cursor;
 
-        KVPair* next_cursor = std::lower_bound(cursor, &sorted_pairs_vec[sorted_pairs_vec.size()], cold_delims[idx_cold + 1]);
+        KVPair* next_cursor = std::lower_bound(cursor, &sorted_pairs[nr_pairs], cold_delims[idx_cold + 1]);
         nr_pairs_in_each_dpus[idx_cold] = static_cast<uint32_t>(next_cursor - cursor);
 
         cursor = next_cursor;
     }
-    nr_pairs_in_each_dpus[nr_cold_ranges - 1] = static_cast<uint32_t>(&sorted_pairs_vec[sorted_pairs_vec.size()] - cursor);
+    nr_pairs_in_each_dpus[nr_cold_ranges - 1] = static_cast<uint32_t>(&sorted_pairs[nr_pairs] - cursor);
 
     {
         StopWatch t{ForestInitTime};
@@ -2075,45 +2077,127 @@ inline void BPForest::postprocess_of_rcq_impl(unsigned tid)
     }
 }
 
-struct BPForest::SerializedKVPairReceiver {
+struct BPForest::SerializationCommander {
+    static constexpr uint32_t TaskNo = TASK_SERIALIZE;
     const BPForest* forest;
-    uint32_t (*nr_kvpairs)[2];
-    ExtendableBuffer<KVPair>* cold_kvpairs;
-    ExtendableBuffer<KVPair>* hot_kvpairs;
+    const dpu_id_t* nr_extracted_hots;
 
-    SerializedKVPairReceiver(const BPForest* forest, uint32_t (*nr_kvpairs)[2], ExtendableBuffer<KVPair>* cold_kvpairs, ExtendableBuffer<KVPair>* hot_kvpairs) : forest{forest}, nr_kvpairs{nr_kvpairs}, cold_kvpairs{cold_kvpairs}, hot_kvpairs{hot_kvpairs} {}
+    SerializationCommander(const BPForest* forest, const dpu_id_t* nr_extracted_hots) : forest{forest}, nr_extracted_hots{nr_extracted_hots} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
     {
         if (block_index == 0) {
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(&cold_kvpairs[dpu_index][0]));
-            out->length = static_cast<uint32_t>(nr_kvpairs[dpu_index][0] * sizeof(KVPair));
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<uint32_t*>(&TaskNo)));
+            out->length = sizeof(uint32_t);
             return true;
-        } else if (block_index == 1 && nr_kvpairs[dpu_index][1] > 0) {
-            const auto idx_hot = forest->dpu_to_hot_range[dpu_index];
-            assert(idx_hot != INVALID_DPU_ID);
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(&hot_kvpairs[idx_hot][0]));
-            out->length = static_cast<uint32_t>(nr_kvpairs[dpu_index][1] * sizeof(KVPair));
+        } else if (block_index == 1) {
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<uint32_t*>(&nr_extracted_hots[dpu_index])));
+            out->length = sizeof(uint32_t);
+            return true;
+        } else if (block_index == 2 && nr_extracted_hots[dpu_index] > 0) {
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<key_uint64_t*>(&forest->hot_delims[forest->cold_to_hot[dpu_index]])));
+            out->length = static_cast<uint32_t>(nr_extracted_hots[dpu_index] * sizeof(key_uint64_t));
             return true;
         }
         return false;
     }
     size_t bytes_for_dpu(dpu_id_t dpu) const
     {
+        return sizeof(uint32_t) * 2 + nr_extracted_hots[dpu] * sizeof(key_uint64_t);
+    }
+};
+struct BPForest::SerializaionNrPairsReceiver {
+    const BPForest* forest;
+    const dpu_id_t* nr_extracted_hots;
+    std::array<uint32_t, 2>* nr_pairs;
+    uint32_t* incision_indices;
+
+    SerializaionNrPairsReceiver(const BPForest* forest, const dpu_id_t* nr_extracted_hots, std::array<uint32_t, 2>* nr_pairs, uint32_t* incision_indices)
+        : forest{forest}, nr_extracted_hots{nr_extracted_hots}, nr_pairs{nr_pairs}, incision_indices{incision_indices} {}
+
+    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
+    {
+        if (block_index == 0) {
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(&nr_pairs[dpu_index][0]));
+            out->length = sizeof(uint32_t) * 2;
+            return true;
+        } else if (block_index == 1 && nr_extracted_hots[dpu_index] > 0) {
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(&incision_indices[forest->cold_to_hot[dpu_index]]));
+            out->length = static_cast<uint32_t>(nr_extracted_hots[dpu_index] * sizeof(uint32_t));
+            return true;
+        }
+        return false;
+    }
+    size_t bytes_for_dpu(dpu_id_t dpu) const
+    {
+        return sizeof(uint32_t) * (2 + nr_extracted_hots[dpu]);
+    }
+};
+struct BPForest::SerializedKVPairReceiver {
+    const BPForest* forest;
+    const std::array<uint32_t, 2>* nr_kvpairs;
+    const dpu_id_t* nr_extracted_hots;
+    const uint32_t* cold_boundaries;
+    const uint32_t* hot_beginning;
+    const uint32_t* nr_hot_pairs;
+    KVPair* kvpairs;
+
+    SerializedKVPairReceiver(const BPForest* forest, const std::array<uint32_t, 2>* nr_kvpairs, const dpu_id_t* nr_extracted_hots, const uint32_t* cold_boundaries, const uint32_t* hot_beginning, const uint32_t* nr_hot_pairs, KVPair* kvpairs)
+        : forest{forest}, nr_kvpairs{nr_kvpairs}, nr_extracted_hots{nr_extracted_hots}, cold_boundaries{cold_boundaries}, hot_beginning{hot_beginning}, nr_hot_pairs{nr_hot_pairs}, kvpairs{kvpairs} {}
+
+    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
+    {
+        const dpu_id_t nr_extracted = nr_extracted_hots[dpu_index];
+        if (/* cold partition */ block_index <= nr_extracted) {
+            KVPair *head, *tail;
+            if (block_index == 0) {
+                head = &kvpairs[cold_boundaries[dpu_index]];
+            } else {
+                const dpu_id_t idx_hot = forest->cold_to_hot[dpu_index] + block_index - 1;
+                head = &kvpairs[hot_beginning[idx_hot] + nr_hot_pairs[idx_hot]];
+            }
+
+            if (block_index == nr_extracted) {
+                tail = &kvpairs[cold_boundaries[dpu_index + 1]];
+            } else {
+                const dpu_id_t idx_hot = forest->cold_to_hot[dpu_index] + block_index;
+                tail = &kvpairs[hot_beginning[idx_hot]];
+            }
+
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(head));
+            out->length = sizeof(KVPair) * static_cast<uint32_t>(tail - head);
+            return true;
+
+        } else if (/* hot partition */ block_index == nr_extracted + 1 && nr_kvpairs[dpu_index][1] > 0) {
+            const dpu_id_t idx_hot = forest->dpu_to_hot_range[dpu_index];
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(&kvpairs[hot_beginning[idx_hot]]));
+            out->length = sizeof(KVPair) * nr_hot_pairs[idx_hot];
+            return true;
+        } else {
+            return false;
+        }
+    }
+    size_t bytes_for_dpu(dpu_id_t dpu) const
+    {
         return sizeof(KVPair) * (nr_kvpairs[dpu][0] + nr_kvpairs[dpu][1]);
     }
 };
-inline std::vector<KVPair> BPForest::retrieve_all_data() const
+inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf) const
 {
     StopWatch timer{DataRetrieveTime};
 
-    std::array<uint32_t[2], MAX_NR_DPUS> nr_pairs;
+    std::array<dpu_id_t, MAX_NR_DPUS> nr_extracted_hots;
+    for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
+        nr_extracted_hots[idx_cold] = cold_to_hot[idx_cold + 1] - cold_to_hot[idx_cold];
+    }
+
+    std::array<std::array<uint32_t, 2>, MAX_NR_DPUS> nr_pairs;
+    std::array<uint32_t, MAX_NR_DPUS> incision_indices;
 #ifdef SYNCHRONOUS_DPU_EXEC
     {
         StopWatch timer{CommandingSerializationTime};
         UPMEM_AsyncDuration async;
-        constexpr std::array<uint32_t, 2> command{TASK_SERIALIZE};
-        broadcast_to_dpu(all_dpu, 0, Single{command[0], 2}, async);
+        gather_to_dpu(all_dpu, 0, SerializationCommander{this, &nr_extracted_hots[0]}, async);
     }
     {
         StopWatch timer{SerializeTime};
@@ -2123,62 +2207,65 @@ inline std::vector<KVPair> BPForest::retrieve_all_data() const
     {
         StopWatch timer{NrPairsRecvTime};
         UPMEM_AsyncDuration async;
-        recv_from_dpu(all_dpu, 0, EachInArray{nr_pairs.data()}, async);
+        scatter_from_dpu(all_dpu, 0, SerializaionNrPairsReceiver{this, &nr_extracted_hots[0], &nr_pairs[0], &incision_indices[0]}, async);
     }
 #else
     {
         StopWatch timer{SerializeTime};
         UPMEM_AsyncDuration async;
-        constexpr std::array<uint32_t, 2> command{TASK_SERIALIZE};
-        broadcast_to_dpu(all_dpu, 0, Single{command[0], 2}, async);
+        gather_to_dpu(all_dpu, 0, SerializationCommander{this, &nr_extracted_hots[0]}, async);
         execute(all_dpu, async);
-        recv_from_dpu(all_dpu, 0, EachInArray{nr_pairs.data()}, async);
+        scatter_from_dpu(all_dpu, 0, SerializaionNrPairsReceiver{this, &nr_extracted_hots[0], &nr_pairs[0], &incision_indices[0]}, async);
     }
+#endif
+#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+        {
+            std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+            std::cout << log->get() << std::flush;
+        }
 #endif
 
     uint32_t total_nr_pairs = 0;
+    std::array<uint32_t, MAX_NR_DPUS + 1> cold_boundaries;
+    std::array<uint32_t, MAX_NR_DPUS> hot_beginning;
     std::array<uint32_t, MAX_NR_DPUS> nr_hot_pairs;
-    std::array<ExtendableBuffer<KVPair>, MAX_NR_DPUS> cold_kvpair_bufs, hot_kvpair_bufs;
     {
         StopWatch timer{PairsBufAllocTime};
         for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
-            cold_kvpair_bufs[idx_dpu].reserve(nr_pairs[idx_dpu][0]);
-            total_nr_pairs += nr_pairs[idx_dpu][0];
-
-            if (nr_pairs[idx_dpu][1] > 0) {
-                const auto idx_hot = dpu_to_hot_range[idx_dpu];
-                assert(idx_hot != INVALID_DPU_ID);
+            const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
+            if (idx_hot != INVALID_DPU_ID) {
                 nr_hot_pairs[idx_hot] = nr_pairs[idx_dpu][1];
-                hot_kvpair_bufs[idx_hot].reserve(nr_hot_pairs[idx_hot]);
-                total_nr_pairs += nr_hot_pairs[idx_hot];
             }
         }
+
+        for (dpu_id_t idx_dpu = 0, idx_hot = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
+            cold_boundaries[idx_dpu] = total_nr_pairs;
+
+            uint32_t cursor_in_cold = 0;
+            for (; idx_hot < cold_to_hot[idx_dpu + 1]; idx_hot++) {
+                const uint32_t incision_idx = incision_indices[idx_hot];
+                total_nr_pairs += incision_idx - cursor_in_cold;
+                cursor_in_cold = incision_idx;
+
+                hot_beginning[idx_hot] = total_nr_pairs;
+                total_nr_pairs += nr_hot_pairs[idx_hot];
+            }
+
+            total_nr_pairs += nr_pairs[idx_dpu][0] - cursor_in_cold;
+        }
+        cold_boundaries[nr_cold_ranges] = total_nr_pairs;
+
+        buf.reserve(total_nr_pairs);
     }
+
     {
         StopWatch timer{PairsRecvTime};
         UPMEM_AsyncDuration async;
-        scatter_from_dpu(all_dpu, 8, SerializedKVPairReceiver{this, &nr_pairs[0], &cold_kvpair_bufs[0], &hot_kvpair_bufs[0]}, async);
+        scatter_from_dpu(all_dpu, sizeof(uint32_t) * 2 + sizeof(key_uint64_t) * NR_RANKS * MAX_NR_DPUS_IN_RANK,
+            SerializedKVPairReceiver{this, &nr_pairs[0], &nr_extracted_hots[0], &cold_boundaries[0], &hot_beginning[0], &nr_hot_pairs[0], &buf[0]}, async);
     }
 
-    std::vector<KVPair> kvpairs;
-    {
-        StopWatch timer{PairsAlignTime};
-        kvpairs.reserve(total_nr_pairs);
-        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
-            const auto nr_cold_pairs = nr_pairs[idx_dpu][0];
-            const KVPair *cursor_in_cold = &cold_kvpair_bufs[idx_dpu][0], *const end_in_cold = &cold_kvpair_bufs[idx_dpu][nr_cold_pairs];
-
-            for (dpu_id_t idx_hot = cold_to_hot[idx_dpu]; idx_hot < cold_to_hot[idx_dpu + 1]; idx_hot++) {
-                const KVPair* const hot_pos = std::lower_bound(cursor_in_cold, end_in_cold, hot_kvpair_bufs[idx_hot][0],
-                    [](const KVPair& a, const KVPair& b) { return a.key < b.key; });
-                kvpairs.insert(kvpairs.end(), cursor_in_cold, hot_pos);
-                cursor_in_cold = hot_pos;
-                kvpairs.insert(kvpairs.end(), &hot_kvpair_bufs[idx_hot][0], &hot_kvpair_bufs[idx_hot][nr_hot_pairs[idx_hot]]);
-            }
-            kvpairs.insert(kvpairs.end(), cursor_in_cold, end_in_cold);
-        }
-    }
-    return kvpairs;
+    return total_nr_pairs;
 }
 template <typename Query>
 inline std::vector<std::pair<size_t /* nr pairs in cold */, size_t /* nr pairs in hot */>>
@@ -2187,9 +2274,11 @@ BPForest::partition_data_with_reference_point_queries(size_t nr_queries, const Q
     StopWatch timer{RebalancingTime};
 
 #ifdef EXTRACT_BY_INITIALIZATION
-    initial_data = retrieve_all_data();
+    data_size = retrieve_all_data(initial_data);
 #else
-    distribute_initial_data(retrieve_all_data());
+    ExtendableBuffer<KVPair> kvpairs;
+    const size_t data_size = retrieve_all_data(kvpairs);
+    distribute_initial_data(&kvpairs[0], data_size);
 #endif
 
     if (nr_hot_ranges > 0) {
@@ -2221,10 +2310,10 @@ BPForest::partition_data_with_reference_point_queries(size_t nr_queries, const Q
         nr_pairs.reserve(nr_cold_ranges);
 
 #ifdef EXTRACT_BY_INITIALIZATION
-        distribute_initial_data(std::move(initial_data));
+        distribute_initial_data(&initial_data[0], data_size);
 
-        const uint32_t nr_pairs_quot = static_cast<uint32_t>(initial_data.size() / nr_cold_ranges),
-                       nr_pairs_rem = static_cast<uint32_t>(initial_data.size() % nr_cold_ranges);
+        const uint32_t nr_pairs_quot = static_cast<uint32_t>(data_size / nr_cold_ranges),
+                       nr_pairs_rem = static_cast<uint32_t>(data_size % nr_cold_ranges);
         for (dpu_id_t idx_base = 0; idx_base < nr_cold_ranges; idx_base++) {
             nr_pairs.push_back({nr_pairs_quot + (idx_base < nr_pairs_rem), 0});
         }
@@ -2251,7 +2340,7 @@ BPForest::partition_data_with_reference_range_queries(size_t nr_queries, const Q
     StopWatch timer{RebalancingTime};
 
 #ifdef EXTRACT_BY_INITIALIZATION
-    initial_data = retrieve_all_data();
+    data_size = retrieve_all_data(initial_data);
 #else
     distribute_initial_data(retrieve_all_data());
 #endif
@@ -2277,10 +2366,10 @@ BPForest::partition_data_with_reference_range_queries(size_t nr_queries, const Q
         nr_pairs.reserve(nr_cold_ranges);
 
 #ifdef EXTRACT_BY_INITIALIZATION
-        distribute_initial_data(std::move(initial_data));
+        distribute_initial_data(&initial_data[0], data_size);
 
-        const uint32_t nr_pairs_quot = static_cast<uint32_t>(initial_data.size() / nr_cold_ranges),
-                       nr_pairs_rem = static_cast<uint32_t>(initial_data.size() % nr_cold_ranges);
+        const uint32_t nr_pairs_quot = static_cast<uint32_t>(data_size / nr_cold_ranges),
+                       nr_pairs_rem = static_cast<uint32_t>(data_size % nr_cold_ranges);
         for (dpu_id_t idx_base = 0; idx_base < nr_cold_ranges; idx_base++) {
             nr_pairs.push_back({nr_pairs_quot + (idx_base < nr_pairs_rem), 0});
         }
@@ -2513,12 +2602,12 @@ struct SummaryDummy {
     uint32_t nr_pairs;
     uint32_t nr_blocks;
 
-    static SummaryDummy create(std::vector<KVPair>& pairs, dpu_id_t idx_dpu, dpu_id_t nr_dpus)
+    static SummaryDummy create(ExtendableBuffer<KVPair>& pairs, size_t nr_pairs, dpu_id_t idx_dpu, dpu_id_t nr_dpus)
     {
         SummaryDummy result;
 
-        const size_t idx_pairs_begin = pairs.size() * idx_dpu / nr_dpus,
-                     idx_pairs_end = pairs.size() * (idx_dpu + 1) / nr_dpus;
+        const size_t idx_pairs_begin = nr_pairs * idx_dpu / nr_dpus,
+                     idx_pairs_end = nr_pairs * (idx_dpu + 1) / nr_dpus;
         result.pairs = &pairs[idx_pairs_begin];
         result.nr_pairs = static_cast<uint32_t>(idx_pairs_end - idx_pairs_begin);
 
@@ -2557,7 +2646,7 @@ BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
 
 #ifdef EXTRACT_BY_INITIALIZATION
         for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
-            cold_delims[idx_dpu] = initial_data[initial_data.size() * idx_dpu / nr_cold_ranges].key;
+            cold_delims[idx_dpu] = initial_data[data_size * idx_dpu / nr_cold_ranges].key;
         }
 #endif
 
@@ -2596,7 +2685,7 @@ BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
 
             size_t idx_qry = idx_qry_begin[idx_base], nr_left_qrys = idx_qry_begin[idx_base + 1] - idx_qry;
 #ifdef EXTRACT_BY_INITIALIZATION
-            const SummaryDummy summary = SummaryDummy::create(initial_data, idx_base, nr_cold_ranges);
+            const SummaryDummy summary = SummaryDummy::create(initial_data, data_size, idx_base, nr_cold_ranges);
 #else
             const Summary& summary = summaries[idx_base];
 #endif
@@ -3136,13 +3225,13 @@ inline void BPForest::take_summary(const std::array<bool, MAX_NR_DPUS>& cold_ran
 #ifdef EXTRACT_BY_INITIALIZATION
 struct BPForest::RebalancedColdKVPairsSender {
     const BPForest* const forest;
-    const std::vector<KVPair>::const_iterator* const cold_boundaries;
-    const std::array<std::vector<KVPair>::const_iterator, 2>* const hot_boundaries;
+    const KVPair* const* const cold_boundaries;
+    const std::array<const KVPair*, 2>* const hot_boundaries;
     const std::array<uint32_t, 2>* const task_headers;
 
     RebalancedColdKVPairsSender(BPForest* forest,
-        const std::vector<KVPair>::const_iterator* cold_boundaries,
-        const std::array<std::vector<KVPair>::const_iterator, 2>* hot_boundaries,
+        const KVPair* const* cold_boundaries,
+        const std::array<const KVPair*, 2>* hot_boundaries,
         const std::array<uint32_t, 2>* task_headers)
         : forest{forest}, cold_boundaries{cold_boundaries}, hot_boundaries{hot_boundaries}, task_headers{task_headers} {}
 
@@ -3160,7 +3249,7 @@ struct BPForest::RebalancedColdKVPairsSender {
             return false;
         }
 
-        std::vector<KVPair>::const_iterator head, tail;
+        const KVPair *head, *tail;
 
         if (block_index == 0) {
             head = cold_boundaries[dpu_index];
@@ -3174,7 +3263,7 @@ struct BPForest::RebalancedColdKVPairsSender {
             tail = hot_boundaries[forest->cold_to_hot[dpu_index] + block_index][0];
         }
 
-        out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<KVPair*>(&*head)));
+        out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<KVPair*>(head)));
         out->length = sizeof(KVPair) * static_cast<uint32_t>(tail - head);
         return true;
     }
@@ -3185,11 +3274,11 @@ struct BPForest::RebalancedColdKVPairsSender {
 };
 struct BPForest::HotKVPairsSender {
     const BPForest* const forest;
-    const std::array<std::vector<KVPair>::const_iterator, 2>* const hot_boundaries;
+    const std::array<const KVPair*, 2>* const hot_boundaries;
     const std::array<uint32_t, 2>* const task_headers;
 
     HotKVPairsSender(BPForest* forest,
-        const std::array<std::vector<KVPair>::const_iterator, 2>* hot_boundaries,
+        const std::array<const KVPair*, 2>* hot_boundaries,
         const std::array<uint32_t, 2>* task_headers)
         : forest{forest}, hot_boundaries{hot_boundaries}, task_headers{task_headers} {}
 
@@ -3206,7 +3295,7 @@ struct BPForest::HotKVPairsSender {
             if (idx_hot == INVALID_DPU_ID) {
                 return false;
             } else {
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<KVPair*>(&*hot_boundaries[idx_hot][0])));
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<KVPair*>(hot_boundaries[idx_hot][0])));
                 out->length = uint32_t{sizeof(KVPair)} * task_headers[dpu_index][1];
                 return true;
             }
@@ -3225,24 +3314,24 @@ inline void BPForest::extract_and_distribute_hot_ranges()
 {
     StopWatch timer{PartitionApplyTime};
 
-    std::array<std::vector<KVPair>::const_iterator, MAX_NR_DPUS + 1> cold_boundaries;
-    std::array<std::array<std::vector<KVPair>::const_iterator, 2>, MAX_NR_DPUS> hot_boundaries;
+    std::array<const KVPair*, MAX_NR_DPUS + 1> cold_boundaries;
+    std::array<std::array<const KVPair*, 2>, MAX_NR_DPUS> hot_boundaries;
 
     constexpr auto kvpair_comp = [](const KVPair& lhs, const KVPair& rhs) {
         return lhs.key < rhs.key;
     };
 
-    cold_boundaries[0] = initial_data.begin();
+    cold_boundaries[0] = &initial_data[0];
     for (dpu_id_t idx_cold = 1; idx_cold < nr_cold_ranges; idx_cold++) {
-        cold_boundaries[idx_cold] = std::lower_bound(initial_data.begin(), initial_data.end(),
+        cold_boundaries[idx_cold] = std::lower_bound(&initial_data[0], &initial_data[data_size],
             KVPair{cold_delims[idx_cold], 0}, kvpair_comp);
     }
-    cold_boundaries[nr_cold_ranges] = initial_data.end();
+    cold_boundaries[nr_cold_ranges] = &initial_data[data_size];
 
     for (dpu_id_t idx_hot = 0; idx_hot < nr_hot_ranges; idx_hot++) {
-        hot_boundaries[idx_hot][0] = std::lower_bound(initial_data.begin(), initial_data.end(),
+        hot_boundaries[idx_hot][0] = std::lower_bound(&initial_data[0], &initial_data[data_size],
             KVPair{hot_delims[idx_hot], 0}, kvpair_comp);
-        hot_boundaries[idx_hot][1] = std::upper_bound(initial_data.begin(), initial_data.end(),
+        hot_boundaries[idx_hot][1] = std::upper_bound(&initial_data[0], &initial_data[data_size],
             KVPair{hot_max_key[idx_hot], 0}, kvpair_comp);
     }
 
@@ -3254,7 +3343,7 @@ inline void BPForest::extract_and_distribute_hot_ranges()
         const dpu_id_t nr_extracted_ranges = cold_to_hot[idx_dpu + 1] - cold_to_hot[idx_dpu];
 
         for (block_id_t block_index = 0; block_index <= nr_extracted_ranges; block_index++) {
-            std::vector<KVPair>::const_iterator head, tail;
+            const KVPair *head, *tail;
 
             if (block_index == 0) {
                 head = cold_boundaries[idx_dpu];

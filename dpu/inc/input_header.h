@@ -17,6 +17,9 @@ typedef struct __dma_aligned InputHeader {
         struct {
             uint32_t nr_ranges;
         } extract, restore;
+        struct {
+            uint32_t nr_delims;
+        } serialize;
     };
 } InputHeader;
 extern InputHeader input_header;

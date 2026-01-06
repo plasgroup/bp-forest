@@ -183,11 +183,11 @@ public:
     BPForestDatabase(const InitData& init_data, const BPForest::Param& param)
         : BPForestDatabase(init_data.get_data(), param) {}
 
-    BPForestDatabase(std::vector<KVPair> init_data, const std::vector<Partition>& partitioning, const BPForest::Param& param)
-        : forest(std::move(init_data), partitioning, param) {}
+    BPForestDatabase(const std::vector<KVPair>& init_data, const std::vector<Partition>& partitioning, const BPForest::Param& param)
+        : forest(&init_data[0], init_data.size(), partitioning, param) {}
 
-    BPForestDatabase(std::vector<KVPair> init_data, const BPForest::Param& param)
-        : forest(std::move(init_data), param) {}
+    BPForestDatabase(const std::vector<KVPair>& init_data, const BPForest::Param& param)
+        : forest(&init_data[0], init_data.size(), param) {}
 
     void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t results[])
     {

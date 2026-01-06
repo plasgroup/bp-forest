@@ -185,8 +185,14 @@ typedef struct {
         __dma_aligned NodeLink children_cache[2];
     };
     __dma_aligned KVPair pairs[TASK_SERIALIZE_NR_CACHED_KVPAIRS];
+    __dma_aligned key_uint64_t delims[TASK_SERIALIZE_NR_CACHED_DELIMS];
+    __dma_aligned uint32_t incisions[TASK_SERIALIZE_NR_CACHED_INCISIONS];
     uint32_t nr_pairs, idx_pair_in_cache;
     uintptr_t cursor_on_pairs;
+    uint32_t nr_delims, idx_delim_in_cache;
+    uintptr_t cursor_on_delims;
+    uint32_t idx_incision_in_cache;
+    uintptr_t cursor_on_incisions;
 } SerializeWorkspace;
 
 typedef union {
