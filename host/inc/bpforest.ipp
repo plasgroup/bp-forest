@@ -2219,10 +2219,10 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf) const
     }
 #endif
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
-        {
-            std::unique_ptr<LogBuffer> log = read_log(all_dpu);
-            std::cout << log->get() << std::flush;
-        }
+    {
+        std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+        std::cout << log->get() << std::flush;
+    }
 #endif
 
     uint32_t total_nr_pairs = 0;
@@ -3362,18 +3362,57 @@ inline void BPForest::extract_and_distribute_hot_ranges()
 
         cold_task_headers[idx_dpu] = {TASK_INIT, bytes_for_dpu / uint32_t{sizeof(KVPair)}};
     }
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
+        const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
+        if (idx_hot == INVALID_DPU_ID) {
+            hot_task_headers[idx_dpu] = {TASK_NONE, 0};
+        } else {
+            hot_task_headers[idx_dpu] = {TASK_CONSTRUCT_HOT, static_cast<uint32_t>(hot_boundaries[idx_hot][1] - hot_boundaries[idx_hot][0])};
+        }
+    }
 
+#ifdef SYNCHRONOUS_DPU_EXEC
+    {
+        StopWatch timer{ColdPairsSendTime};
+        UPMEM_AsyncDuration async;
+        RebalancedColdKVPairsSender cold_sender{this, &cold_boundaries[0], &hot_boundaries[0], &cold_task_headers[0]};
+        gather_to_dpu(all_dpu, 0, cold_sender, async);
+    }
+    {
+        StopWatch timer{ColdTreesConstructTime};
+        UPMEM_AsyncDuration async;
+        execute(all_dpu, async);
+    }
+#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+    {
+        std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+        std::cout << log->get() << std::flush;
+    }
+#endif
+    {
+        StopWatch timer{HotPairsSendTime};
+        UPMEM_AsyncDuration async;
+        HotKVPairsSender hot_sender{this, &hot_boundaries[0], &hot_task_headers[0]};
+        gather_to_dpu(all_dpu, 0, hot_sender, async);
+    }
+    {
+        StopWatch timer{HotTreesConstructTime};
+        UPMEM_AsyncDuration async;
+        execute(all_dpu, async);
+    }
+#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+    {
+        std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+        std::cout << log->get() << std::flush;
+    }
+#endif
+#else /* SYNCHRONOUS_DPU_EXEC */
     {
         StopWatch timer{TreeConstructTime};
         UPMEM_AsyncDuration async;
 
         RebalancedColdKVPairsSender cold_sender{this, &cold_boundaries[0], &hot_boundaries[0], &cold_task_headers[0]};
-        if (param.naive_init) {
-            bypass_gather_to_all_dpu(0, cold_sender, async);
-        } else {
-            gather_to_dpu(all_dpu, 0, cold_sender, async);
-        }
-
+        gather_to_dpu(all_dpu, 0, cold_sender, async);
         execute(all_dpu, async);
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
     }
@@ -3386,22 +3425,8 @@ inline void BPForest::extract_and_distribute_hot_ranges()
         StopWatch timer{TreeConstructTime};
         UPMEM_AsyncDuration async;
 #endif
-
-        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
-            const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
-            if (idx_hot == INVALID_DPU_ID) {
-                hot_task_headers[idx_dpu] = {TASK_NONE, 0};
-            } else {
-                hot_task_headers[idx_dpu] = {TASK_CONSTRUCT_HOT, static_cast<uint32_t>(hot_boundaries[idx_hot][1] - hot_boundaries[idx_hot][0])};
-            }
-        }
-
         HotKVPairsSender hot_sender{this, &hot_boundaries[0], &hot_task_headers[0]};
-        if (param.naive_init) {
-            bypass_gather_to_all_dpu(0, hot_sender, async);
-        } else {
-            gather_to_dpu(all_dpu, 0, hot_sender, async);
-        }
+        gather_to_dpu(all_dpu, 0, hot_sender, async);
         execute(all_dpu, async);
     }
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
@@ -3410,6 +3435,7 @@ inline void BPForest::extract_and_distribute_hot_ranges()
         std::unique_ptr<LogBuffer> log = read_log(all_dpu);
         std::cout << log->get() << std::flush;
     }
+#endif
 #endif
 }
 

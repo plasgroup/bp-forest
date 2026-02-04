@@ -398,7 +398,13 @@ int main(int argc, char* argv[])
 #else
                ",serialize_time[ns]"
 #endif
-               ",pairs_buf_alloc_time[ns],pairs_recv_time[ns],pairs_align_time[ns],ref_workload_time[ns],prepare_for_partitioning_time[ns],partitioning_time[ns],partition_apply_time[ns],tree_const_time[ns],routing_table_make_time[ns],routing_time[ns]"
+               ",pairs_buf_alloc_time[ns],pairs_recv_time[ns],pairs_align_time[ns],ref_workload_time[ns],prepare_for_partitioning_time[ns],partitioning_time[ns],partition_apply_time[ns]"
+#ifdef SYNCHRONOUS_DPU_EXEC
+               ",cold_pairs_send_time[ns],cold_tree_const_time[ns],hot_pairs_send_time[ns],hot_tree_const_time[ns]"
+#else
+               ",tree_const_time[ns]"
+#endif
+               ",routing_table_make_time[ns],routing_time[ns]"
 #ifdef SYNCHRONOUS_DPU_EXEC
                ",send_time[ns],exec_time[ns],recv_time[ns]"
 #else
@@ -436,7 +442,13 @@ int main(int argc, char* argv[])
 #else
                       << SerializeTime.count() << ','
 #endif
-                      << PairsRecvTime.count() << ',' << PairsAlignTime.count() << ',' << RefWorkloadPrepareTime.count() << ',' << PrepareForPartitioningTime.count() << ',' << PartitioningTime.count() << ',' << PartitionApplyTime.count() << ',' << TreeConstructTime.count() << ',' << RoutingTableMakeTime.count() << ',' << QueryRoutingTime.count() << ','
+                      << PairsRecvTime.count() << ',' << PairsAlignTime.count() << ',' << RefWorkloadPrepareTime.count() << ',' << PrepareForPartitioningTime.count() << ',' << PartitioningTime.count() << ',' << PartitionApplyTime.count() << ','
+#ifdef SYNCHRONOUS_DPU_EXEC
+                      << ColdPairsSendTime.count() << ',' << ColdTreesConstructTime.count() << ',' << HotPairsSendTime.count() << ',' << HotTreesConstructTime.count() << ','
+#else
+                      << TreeConstructTime.count() << ','
+#endif
+                      << RoutingTableMakeTime.count() << ',' << QueryRoutingTime.count() << ','
 #ifdef SYNCHRONOUS_DPU_EXEC
                       << QuerySendTime.count() << ',' << QueryExecTime.count() << ',' << QueryRecvTime.count() << ','
 #else

@@ -106,12 +106,13 @@ struct StopWatch final {
 };
 
 
-inline std::chrono::nanoseconds ForestInitTime, RebalancingTime, DataRetrieveTime, SerializeTime, PairsBufAllocTime, PairsRecvTime, PairsAlignTime, RefWorkloadPrepareTime, PrepareForPartitioningTime, PartitioningTime, PartitionApplyTime, TreeConstructTime, RoutingTableMakeTime;
+inline std::chrono::nanoseconds ForestInitTime, RebalancingTime, DataRetrieveTime, SerializeTime, PairsBufAllocTime, PairsRecvTime, PairsAlignTime, RefWorkloadPrepareTime, PrepareForPartitioningTime, PartitioningTime, PartitionApplyTime, RoutingTableMakeTime;
 inline std::chrono::nanoseconds BatchTotalTime, QueryRoutingTime, PostprocessTime;
 #ifdef SYNCHRONOUS_DPU_EXEC
-inline std::chrono::nanoseconds CommandingSerializationTime, NrPairsRecvTime;
+inline std::chrono::nanoseconds CommandingSerializationTime, NrPairsRecvTime, ColdPairsSendTime, ColdTreesConstructTime, HotPairsSendTime, HotTreesConstructTime;
 inline std::chrono::nanoseconds QuerySendTime, QueryExecTime, QueryRecvTime;
 #else /* SYNCHRONOUS_DPU_EXEC */
+inline std::chrono::nanoseconds TreeConstructTime;
 inline std::chrono::nanoseconds QuerySendExecRecvTime;
 #endif
 
