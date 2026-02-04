@@ -2342,7 +2342,9 @@ BPForest::partition_data_with_reference_range_queries(size_t nr_queries, const Q
 #ifdef EXTRACT_BY_INITIALIZATION
     data_size = retrieve_all_data(initial_data);
 #else
-    distribute_initial_data(retrieve_all_data());
+    ExtendableBuffer<KVPair> kvpairs;
+    const size_t data_size = retrieve_all_data(kvpairs);
+    distribute_initial_data(&kvpairs[0], data_size);
 #endif
 
     if (nr_hot_ranges > 0) {
@@ -2350,16 +2352,25 @@ BPForest::partition_data_with_reference_range_queries(size_t nr_queries, const Q
     }
 
     if (param.balancing > 0) {
-        std::vector<key_uint64_t> delims;
-        delims.reserve(nr_queries * 2);
-        for (size_t idx_qry = 0; idx_qry < nr_queries; idx_qry++) {
-            const KeyRange& range = RangeQueryToRange<Query>{}(queries[idx_qry]);
-            delims.push_back(range.begin);
-            delims.push_back(range.end);
-        }
-        std::sort(delims.begin(), delims.end());
+        std::vector<std::pair<size_t, size_t>> result;
+        {
+            StopWatch timer{RefWorkloadPrepareTime};
 
-        return repartition(delims);
+            std::vector<key_uint64_t> delims;
+            delims.reserve(nr_queries * 2);
+            for (size_t idx_qry = 0; idx_qry < nr_queries; idx_qry++) {
+                const KeyRange& range = RangeQueryToRange<Query>{}(queries[idx_qry]);
+                delims.push_back(range.begin);
+                delims.push_back(range.end);
+            }
+            std::sort(delims.begin(), delims.end());
+
+            result = repartition(delims);
+        }
+
+        RefWorkloadPrepareTime -= RebalancingTime;
+
+        return result;
 
     } else {
         std::vector<std::pair<size_t, size_t>> nr_pairs;
