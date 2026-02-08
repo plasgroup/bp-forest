@@ -18,6 +18,7 @@ extern "C" {
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -39,11 +40,19 @@ inline struct dpu_symbol_t comm_buffer_handler;
 inline UPMEM_AsyncDuration::~UPMEM_AsyncDuration()
 {
     if (all) {
-        DPU_ASSERT(dpu_sync(all_dpu_impl));
+        DPU_CHECK(dpu_sync(all_dpu_impl), {
+            std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+            std::cerr << log->get() << std::flush;
+            std::exit(EXIT_FAILURE);
+        });
     }
     for (dpu_id_t i = 0; i < NR_RANKS; i++) {
         if (rank[i]) {
-            DPU_ASSERT(dpu_sync(each_rank_impl[i]));
+            DPU_CHECK(dpu_sync(each_rank_impl[i]), {
+                std::unique_ptr<LogBuffer> log = read_log(select_rank(i));
+                std::cerr << log->get() << std::flush;
+                std::exit(EXIT_FAILURE);
+            });
         }
     }
 }
@@ -232,7 +241,7 @@ struct VisitorOf_broadcast_to_dpu {
 
     void operator()(const DPUSetAll&) const
     {
-        DPU_ASSERT(dpu_broadcast_to(all_dpu_impl, comm_buffer_handler, offset, datum.for_dpu(0), datum.bytes_for_dpu(0), DPU_XFER_ASYNC));
+        DPU_ASSERT(dpu_broadcast_to_symbol(all_dpu_impl, comm_buffer_handler, offset, datum.for_dpu(0), datum.bytes_for_dpu(0), DPU_XFER_ASYNC));
         async.all = true;
     }
 
@@ -240,14 +249,14 @@ struct VisitorOf_broadcast_to_dpu {
     {
         const DPUSetRanks ranks = ranks_;
         for (dpu_id_t idx_rank = ranks.idx_rank_begin; idx_rank < ranks.idx_rank_end; idx_rank++) {
-            DPU_ASSERT(dpu_broadcast_to(each_rank_impl[idx_rank], comm_buffer_handler, offset, datum.for_dpu(0), datum.bytes_for_dpu(0), DPU_XFER_ASYNC));
+            DPU_ASSERT(dpu_broadcast_to_symbol(each_rank_impl[idx_rank], comm_buffer_handler, offset, datum.for_dpu(0), datum.bytes_for_dpu(0), DPU_XFER_ASYNC));
             async.rank[idx_rank] = true;
         }
     }
 
     void operator()(const DPUSetSingle& dpu) const
     {
-        DPU_ASSERT(dpu_broadcast_to(each_dpu_impl[dpu.idx_dpu], comm_buffer_handler, offset, datum.for_dpu(0), datum.bytes_for_dpu(0), DPU_XFER_DEFAULT));
+        DPU_ASSERT(dpu_broadcast_to_symbol(each_dpu_impl[dpu.idx_dpu], comm_buffer_handler, offset, datum.for_dpu(0), datum.bytes_for_dpu(0), DPU_XFER_DEFAULT));
     }
 };
 template <typename T>

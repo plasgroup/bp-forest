@@ -11,6 +11,7 @@ extern uint8_t __atomic_bit AtomicBits[NR_TASKLETS * 2];
 extern bool fwd_readiness[NR_TASKLETS - 1];
 extern bool bwd_readiness[NR_TASKLETS - 1];
 
+#if 0
 // AtomicBits[0, NR_TASKLETS - 1)
 __attribute__((unused)) static void notify_next_of_readiness(void)
 {
@@ -28,10 +29,12 @@ __attribute__((unused)) static void wait_for_prev_ready(void)
     asm volatile("0:\n"
                  "acquire id, %[base] - 1, nz, .\n"
                  "lbu %[ok], id, %[readiness] - 1\n"
+                 "jnz %[ok], 1f\n"
+                 "release id, %[base] - 1, nz, 0b\n"  // "release id, %[base] - 1, nz, .+1\n"
+                                                      // "stop true, 0b\n"
+                 "1:\n"
+                 "sb id, %[readiness] - 1, 0\n"
                  "release id, %[base] - 1, nz, .+1\n"
-                 "jz %[ok], 0b\n"
-                 // "stop true, 0b\n"
-                 "sb id, %[readiness] - 1, 0"
                  : [ok] "=r"(ok)
                  : [base] "i"(&AtomicBits), [readiness] "i"(&fwd_readiness)
                  : "memory");
@@ -55,14 +58,17 @@ __attribute__((unused)) static void wait_for_next_ready(void)
     asm volatile("0:\n"
                  "acquire id, %[atomic] + %[nr_tasklets] - 1, nz, .\n"
                  "lbu %[ok], id, %[readiness]\n"
-                 "release id, %[atomic] + %[nr_tasklets] - 1, nz, .+1\n"
-                 "jz %[ok], 0b\n"
-                 // "stop true, 0b\n"
-                 "sb id, %[readiness], 0"
+                 "jnz %[ok], 1f\n"
+                 "release id, %[atomic] + %[nr_tasklets] - 1, nz, 0b\n"  // "release id, %[atomic] + %[nr_tasklets] - 1, nz, .+1\n"
+                                                                         // "stop true, 0b\n"
+                 "1:\n"
+                 "sb id, %[readiness], 0\n"
+                 "release id, %[atomic] + %[nr_tasklets] - 1, nz, .+1"
                  : [ok] "=r"(ok)
                  : [atomic] "i"(&AtomicBits), [nr_tasklets] "i"(NR_TASKLETS), [readiness] "i"(&bwd_readiness)
                  : "memory");
 }
+#endif
 
 // AtomicBits[2 * NR_TASKLETS - 2]
 __attribute__((unused)) static void acquire_lock(void)
@@ -79,7 +85,6 @@ __attribute__((unused)) static void release_lock(void)
 }
 
 
-#if 0
 #include <mutex.h>
 
 extern const mutex_id_t tmp_sync_mutex;
@@ -116,4 +121,3 @@ __attribute__((unused)) static void wait_for_next_ready(void)
     bwd_readiness[me()] = false;
     mutex_unlock(tmp_sync_mutex);
 }
-#endif

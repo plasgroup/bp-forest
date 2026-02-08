@@ -3,7 +3,7 @@
 #include "bitmap_fwd.h"
 
 
-static void bitmap_init(bitmap_word_ptr bitmap, const unsigned nr_nodes);
+static void bitmap_init(bitmap_word_ptr bitmap, const unsigned nr_bits, const unsigned nr_nodes);
 
 __attribute__((unused)) static void bitmap_set(bitmap_word_ptr bitmap, unsigned n);
 static void bitmap_clear(bitmap_word_ptr bitmap, unsigned n);

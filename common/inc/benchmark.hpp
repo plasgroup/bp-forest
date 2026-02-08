@@ -101,8 +101,8 @@ public:
         return new WorkloadBuffer<T>(std::move(workload));
     }
 
-    template <typename T, typename R>
-    size_t prepare_buffer(int idx_batch, WorkloadBuffer<T>* workload_buffer, ExtendableBuffer<T>& queires, ExtendableBuffer<R>& results)
+    template <typename T>
+    size_t prepare_buffer(int idx_batch, WorkloadBuffer<T>* workload_buffer, ExtendableBuffer<T>& queires)
     {
         const auto tmp_input = workload_buffer->take(NUM_REQUESTS_PER_BATCH);
         const auto batch_queries = tmp_input.first;
@@ -114,13 +114,20 @@ public:
         queires.reserve(num_queries_batch);
         for (size_t idx_query = 0; idx_query < num_queries_batch; idx_query++)
             queires[idx_query] = batch_queries[idx_query];
+        return num_queries_batch;
+    }
+    template <typename T, typename R>
+    size_t prepare_buffer(int idx_batch, WorkloadBuffer<T>* workload_buffer, ExtendableBuffer<T>& queires, ExtendableBuffer<R>& results)
+    {
+        const auto num_queries_batch = prepare_buffer(idx_batch, workload_buffer, queires);
         results.reserve(num_queries_batch);
         return num_queries_batch;
     }
+
     template <typename T>
-    size_t prepare_buffer(int idx_batch, WorkloadBuffer<T>* workload_buffer, ExtendableBuffer<T>& queires)
+    size_t prepare_buffer_wo_comsuming_query(int idx_batch, WorkloadBuffer<T>* workload_buffer, ExtendableBuffer<T>& queires)
     {
-        const auto tmp_input = workload_buffer->take(NUM_REQUESTS_PER_BATCH);
+        const auto tmp_input = workload_buffer->peek(NUM_REQUESTS_PER_BATCH);
         const auto batch_queries = tmp_input.first;
         const auto num_queries_batch = tmp_input.second;
         if (num_queries_batch != NUM_REQUESTS_PER_BATCH) {
@@ -191,7 +198,7 @@ public:
 
     void partition_with_one_batch(Database* db)
     {
-        size_t num_queries_batch = prepare_buffer(-1, workload_buffer, keys, results);
+        size_t num_queries_batch = prepare_buffer_wo_comsuming_query(-1, workload_buffer, keys);
         db->partition_with(num_queries_batch, &keys[0]);
     }
 
@@ -232,7 +239,7 @@ public:
 
     void partition_with_one_batch(Database* db)
     {
-        size_t num_queries_batch = prepare_buffer(-1, workload_buffer.get(), pairs);
+        size_t num_queries_batch = prepare_buffer_wo_comsuming_query(-1, workload_buffer.get(), pairs);
         std::vector<key_uint64_t> keys(num_queries_batch);
         std::transform(&pairs[0], &pairs[num_queries_batch], keys.begin(),
             [](const KVPair& p) { return p.key; });
@@ -271,7 +278,7 @@ public:
 
     void partition_with_one_batch(Database* db)
     {
-        size_t num_queries_batch = prepare_buffer(-1, workload_buffer.get(), keys);
+        size_t num_queries_batch = prepare_buffer_wo_comsuming_query(-1, workload_buffer.get(), keys);
         db->partition_with(num_queries_batch, &keys[0]);
     }
 
@@ -339,7 +346,7 @@ public:
 
     void partition_with_one_batch(Database* db)
     {
-        size_t num_queries_batch = prepare_buffer(-1, workload_buffer, ranges, results);
+        size_t num_queries_batch = prepare_buffer_wo_comsuming_query(-1, workload_buffer, ranges);
         db->partition_with(num_queries_batch, &ranges[0]);
     }
 
@@ -435,7 +442,7 @@ public:
 
     void partition_with_one_batch(Database* db)
     {
-        size_t num_queries_batch = prepare_buffer(-1, workload_buffer, queries, results);
+        size_t num_queries_batch = prepare_buffer_wo_comsuming_query(-1, workload_buffer, queries);
         db->partition_with(num_queries_batch, &queries[0]);
     }
 

@@ -40,6 +40,11 @@ TASK_EXTRACT
     ; (uint16_t, (Key, Key)[]) -> (uint32_t[], (Key, Value)[])  ; アラインメントを考えると16bitを使う必要なし
     (uint32_t, (Key, Key)[]) -> (uint32_t[], (Key, Value)[])
     キー範囲は閉区間
+TASK_SERIALIZE
+    (uint32_t, Key[]) -> (uint32_t, uint32_t, uint32_t[], (Key, Value)[], (Key, Value)[])
+    cold range の切れ目 (hot range) のキー配列を受け取る
+    cold range の切れ目が cold のKVペア配列の何番目にあるかを教える
+    cold/hot それぞれのKVペア配列
 TASK_CONSTRUCT_HOT
     (uint32_t, (Key, Value)[]) -> ()
 TASK_FLATTEN_HOT

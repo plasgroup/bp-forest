@@ -183,11 +183,11 @@ public:
     BPForestDatabase(const InitData& init_data, const BPForest::Param& param)
         : BPForestDatabase(init_data.get_data(), param) {}
 
-    BPForestDatabase(std::vector<KVPair> init_data, const std::vector<Partition>& partitioning, const BPForest::Param& param)
-        : forest(std::move(init_data), partitioning, param) {}
+    BPForestDatabase(const std::vector<KVPair>& init_data, const std::vector<Partition>& partitioning, const BPForest::Param& param)
+        : forest(&init_data[0], init_data.size(), partitioning, param) {}
 
-    BPForestDatabase(std::vector<KVPair> init_data, const BPForest::Param& param)
-        : forest(std::move(init_data), param) {}
+    BPForestDatabase(const std::vector<KVPair>& init_data, const BPForest::Param& param)
+        : forest(&init_data[0], init_data.size(), param) {}
 
     void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t results[])
     {
@@ -230,7 +230,8 @@ public:
         forest.batch_range_count(static_cast<uint32_t>(n), queries, results);
     };
 
-    void partition_with(uint64_t n, const key_uint64_t keys[]) {
+    void partition_with(uint64_t n, const key_uint64_t keys[])
+    {
         nr_pairs = forest.partition_data_with_reference_point_queries(n, keys);
     }
     void partition_with(uint64_t n, const KeyRange queries[])
@@ -391,10 +392,22 @@ int main(int argc, char* argv[])
 
     /* main routine */
     if (opt.print_perf) {
-        printf("NR_DPUS,batch_num,num_keys,rebalancing_time[ns],routing_time[ns]"
+        printf("NR_DPUS,batch_num,num_keys,rebalancing_time[ns],data_retrieve_time[ns]"
+#ifdef SYNCHRONOUS_DPU_EXEC
+               ",commnd_serialize_time[ns],serialize_time[ns],nrpairs_recv_time[ns]"
+#else
+               ",serialize_time[ns]"
+#endif
+               ",pairs_buf_alloc_time[ns],pairs_recv_time[ns],pairs_align_time[ns],ref_workload_time[ns],prepare_for_partitioning_time[ns],partitioning_time[ns],partition_apply_time[ns]"
+#ifdef SYNCHRONOUS_DPU_EXEC
+               ",cold_pairs_send_time[ns],cold_tree_const_time[ns],hot_pairs_send_time[ns],hot_tree_const_time[ns]"
+#else
+               ",tree_const_time[ns]"
+#endif
+               ",routing_table_make_time[ns],routing_time[ns]"
 #ifdef SYNCHRONOUS_DPU_EXEC
                ",send_time[ns],exec_time[ns],recv_time[ns]"
-#else /* SYNCHRONOUS_DPU_EXEC */
+#else
                ",send_exec_recv_time[ns]"
 #endif
                ",postprocess_time[ns],batch_time[ns]\n");
@@ -423,16 +436,29 @@ int main(int argc, char* argv[])
 
         if (opt.print_perf) {
             std::cout << upmem_get_nr_dpus() << ',' << idx_batch << ','
-                      << long{NUM_REQUESTS_PER_BATCH} << ',' << RebalancingTime.count() << ',' << QueryRoutingTime.count() << ','
+                      << long{NUM_REQUESTS_PER_BATCH} << ',' << RebalancingTime.count() << ',' << DataRetrieveTime.count() << ','
+#ifdef SYNCHRONOUS_DPU_EXEC
+                      << CommandingSerializationTime.count() << ',' << SerializeTime.count() << ',' << PairsBufAllocTime.count() << ',' << NrPairsRecvTime.count() << ','
+#else
+                      << SerializeTime.count() << ','
+#endif
+                      << PairsRecvTime.count() << ',' << PairsAlignTime.count() << ',' << RefWorkloadPrepareTime.count() << ',' << PrepareForPartitioningTime.count() << ',' << PartitioningTime.count() << ',' << PartitionApplyTime.count() << ','
+#ifdef SYNCHRONOUS_DPU_EXEC
+                      << ColdPairsSendTime.count() << ',' << ColdTreesConstructTime.count() << ',' << HotPairsSendTime.count() << ',' << HotTreesConstructTime.count() << ','
+#else
+                      << TreeConstructTime.count() << ','
+#endif
+                      << RoutingTableMakeTime.count() << ',' << QueryRoutingTime.count() << ','
 #ifdef SYNCHRONOUS_DPU_EXEC
                       << QuerySendTime.count() << ',' << QueryExecTime.count() << ',' << QueryRecvTime.count() << ','
-#else /* SYNCHRONOUS_DPU_EXEC */
+#else
                       << QuerySendExecRecvTime.count() << ','
 #endif
                       << PostprocessTime.count() << ',' << BatchTotalTime.count() << std::endl;
         }
 
         RebalancingTime = RebalancingTime.zero();
+        benchmark->partition_with_one_batch(&db);
     });
 
 #ifdef MEASURE_XFER_BYTES

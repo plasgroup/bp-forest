@@ -122,7 +122,7 @@ public:
 
     ~InitData() {}
 
-    std::vector<KVPair> get_data() const
+    const std::vector<KVPair>& get_data() const&
     {
         return data;
     }

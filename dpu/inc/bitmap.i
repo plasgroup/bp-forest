@@ -19,10 +19,10 @@
 
 #ifdef BITMAP_IN_MRAM
 
-#define TASK_INIT_NR_CACHED_ALLONE_WORDS (TASK_INIT_NR_CACHED_WORDS - 1)
+#define TASK_INIT_NR_CACHED_WORDS_M1 (TASK_INIT_NR_CACHED_WORDS - 1)
 
-static DEFINE_DIV_BY(TASK_INIT_NR_CACHED_ALLONE_WORDS, NODE_PTR_WIDTH - LOG_BITS_IN_BMPWD, _BMP_WORDS);
-static DEFINE_DIV_BY(TASK_INIT_BITMAP_NR_TASKLETS, BITWIDTH_UINT32(MAX_NR_NODES / BITS_IN_BMPWD / TASK_INIT_NR_CACHED_ALLONE_WORDS), _ALLONE_WRITES);
+static DEFINE_DIV_BY(TASK_INIT_NR_CACHED_WORDS_M1, NODE_PTR_WIDTH - LOG_BITS_IN_BMPWD, _BMP_WORDS);
+static DEFINE_DIV_BY(TASK_INIT_BITMAP_NR_TASKLETS, BITWIDTH_UINT32(MAX_NR_NODES / BITS_IN_BMPWD / TASK_INIT_NR_CACHED_WORDS_M1), _ALLONE_WRITES);
 
 static void INIT_barrier_wait_for_preparing_bitmap_cache(void)
 {
@@ -38,15 +38,15 @@ static void INIT_barrier_wait_for_preparing_bitmap_cache(void)
     }
 }
 
-static void bitmap_init(bitmap_word_ptr bitmap, const unsigned nr_nodes)
+static void bitmap_init(bitmap_word_ptr bitmap, const unsigned nr_bits, const unsigned nr_nodes)
 {
     _Static_assert(TASK_INIT_BITMAP_NR_TASKLETS > 0, "TASK_INIT_BITMAP_NR_TASKLETS > 0");
     if (me() < TASK_INIT_BITMAP_NR_TASKLETS) {
         const unsigned unsigned_me = (unsigned)me();
-        const unsigned nr_preparation_per_tasklet = TASK_INIT_NR_CACHED_ALLONE_WORDS / TASK_INIT_BITMAP_NR_TASKLETS,
-                       nr_remainder_preparation = TASK_INIT_NR_CACHED_ALLONE_WORDS % TASK_INIT_BITMAP_NR_TASKLETS,
+        const unsigned nr_preparation_per_tasklet = TASK_INIT_NR_CACHED_WORDS_M1 / TASK_INIT_BITMAP_NR_TASKLETS,
+                       nr_remainder_preparation = TASK_INIT_NR_CACHED_WORDS_M1 % TASK_INIT_BITMAP_NR_TASKLETS,
                        nr_preparation_by_me = nr_preparation_per_tasklet + (unsigned_me < nr_remainder_preparation),
-                       prepare_begin = nr_preparation_per_tasklet * me() + (unsigned_me <= nr_remainder_preparation ? me() : nr_remainder_preparation),
+                       prepare_begin = nr_preparation_per_tasklet * unsigned_me + (unsigned_me <= nr_remainder_preparation ? unsigned_me : nr_remainder_preparation),
                        prepare_end = prepare_begin + nr_preparation_by_me;
         for (unsigned i = prepare_begin; i < prepare_end; i++) {
             workspace.bitmap[i] = BITMAP_WORD_MAX;
@@ -54,32 +54,70 @@ static void bitmap_init(bitmap_word_ptr bitmap, const unsigned nr_nodes)
 
         INIT_barrier_wait_for_preparing_bitmap_cache();
 
-        const unsigned nr_all_one_words = nr_nodes / BITS_IN_BMPWD,
-                       nr_allone_writes = DIV_BMP_WORDS_BY_TASK_INIT_NR_CACHED_ALLONE_WORDS(nr_all_one_words),
-                       nr_writes_per_tasklet = DIV_ALLONE_WRITES_BY_TASK_INIT_BITMAP_NR_TASKLETS(nr_allone_writes),
-                       nr_remainder_allones = nr_allone_writes - nr_writes_per_tasklet * TASK_INIT_BITMAP_NR_TASKLETS,
-                       nr_writes_by_me = nr_writes_per_tasklet + (unsigned_me < nr_remainder_allones),
-                       idx_writes_begin = nr_writes_per_tasklet * unsigned_me + (unsigned_me <= nr_remainder_allones ? unsigned_me : nr_remainder_allones),
-                       idx_dest_begin = idx_writes_begin * TASK_INIT_NR_CACHED_ALLONE_WORDS,
-                       idx_writes_end = idx_writes_begin + nr_writes_by_me,
-                       idx_dest_end = idx_writes_end * TASK_INIT_NR_CACHED_ALLONE_WORDS;
+        {
+            const unsigned nr_all_one_words = nr_nodes / BITS_IN_BMPWD,
+                           nr_allone_writes = DIV_BMP_WORDS_BY_TASK_INIT_NR_CACHED_WORDS_M1(nr_all_one_words),
+                           nr_writes_per_tasklet = DIV_ALLONE_WRITES_BY_TASK_INIT_BITMAP_NR_TASKLETS(nr_allone_writes),
+                           nr_remainder_writes = nr_allone_writes - nr_writes_per_tasklet * TASK_INIT_BITMAP_NR_TASKLETS,
+                           nr_writes_by_me = nr_writes_per_tasklet + (unsigned_me < nr_remainder_writes),
+                           idx_writes_begin = nr_writes_per_tasklet * unsigned_me + (unsigned_me <= nr_remainder_writes ? unsigned_me : nr_remainder_writes),
+                           idx_dest_begin = idx_writes_begin * TASK_INIT_NR_CACHED_WORDS_M1,
+                           idx_writes_end = idx_writes_begin + nr_writes_by_me,
+                           idx_dest_end = idx_writes_end * TASK_INIT_NR_CACHED_WORDS_M1;
 
-        unsigned idx_dest = idx_dest_begin;
-        for (; idx_dest < idx_dest_end; idx_dest += TASK_INIT_NR_CACHED_ALLONE_WORDS) {
-            mram_write(&workspace.bitmap[0], &bitmap[idx_dest], sizeof(bitmap_word_t) * TASK_INIT_NR_CACHED_ALLONE_WORDS);
+            unsigned idx_dest = idx_dest_begin;
+            for (; idx_dest < idx_dest_end; idx_dest += TASK_INIT_NR_CACHED_WORDS_M1) {
+                mram_write(&workspace.bitmap[0], &bitmap[idx_dest], sizeof(bitmap_word_t) * TASK_INIT_NR_CACHED_WORDS_M1);
+            }
+
+            if (me() == TASK_INIT_BITMAP_NR_TASKLETS - 1) {
+                const unsigned nr_remained_bits = nr_nodes % BITS_IN_BMPWD,
+                               nr_remained_allones = nr_all_one_words - nr_allone_writes * TASK_INIT_NR_CACHED_WORDS_M1;
+                unsigned nr_words_written = nr_remained_allones;
+
+                if (nr_remained_bits != 0) {
+                    nr_words_written += 1;
+                    workspace.bitmap[TASK_INIT_NR_CACHED_WORDS_M1] = BITMAP_WORD_MAX >> (BITS_IN_BMPWD - nr_remained_bits);
+                }
+                if (nr_remained_allones != 0) {
+                    mram_write(&workspace.bitmap[TASK_INIT_NR_CACHED_WORDS_M1 - nr_remained_allones],
+                        &bitmap[idx_dest], sizeof(bitmap_word_t) * nr_words_written);
+                }
+            }
         }
 
-        if (me() == TASK_INIT_BITMAP_NR_TASKLETS - 1) {
-            const unsigned nr_remained_bits = nr_nodes % BITS_IN_BMPWD,
-                           nr_remained_allones = nr_all_one_words - nr_allone_writes * TASK_INIT_NR_CACHED_ALLONE_WORDS;
-            unsigned nr_words_written = nr_remained_allones;
+        INIT_barrier_wait_for_preparing_bitmap_cache();
 
-            if (nr_remained_bits != 0) {
-                nr_words_written += 1;
-                workspace.bitmap[TASK_INIT_NR_CACHED_ALLONE_WORDS] = BITMAP_WORD_MAX >> (BITS_IN_BMPWD - nr_remained_bits);
+        for (unsigned i = prepare_begin; i < prepare_end; i++) {
+            workspace.bitmap[i] = 0;
+        }
+
+        INIT_barrier_wait_for_preparing_bitmap_cache();
+
+        {
+            const unsigned nr_words = (nr_bits + BITS_IN_BMPWD - 1) / BITS_IN_BMPWD,
+                           nr_nonzero_words = (nr_nodes + BITS_IN_BMPWD - 1) / BITS_IN_BMPWD,
+                           nr_zero_words = nr_words - nr_nonzero_words,
+                           nr_zero_writes = DIV_BMP_WORDS_BY_TASK_INIT_NR_CACHED_WORDS_M1(nr_zero_words),
+                           nr_writes_per_tasklet = DIV_ALLONE_WRITES_BY_TASK_INIT_BITMAP_NR_TASKLETS(nr_zero_writes),
+                           nr_remainder_writes = nr_zero_writes - nr_writes_per_tasklet * TASK_INIT_BITMAP_NR_TASKLETS,
+                           nr_writes_by_me = nr_writes_per_tasklet + (unsigned_me < nr_remainder_writes),
+                           idx_writes_begin = nr_writes_per_tasklet * unsigned_me + (unsigned_me <= nr_remainder_writes ? unsigned_me : nr_remainder_writes),
+                           idx_dest_begin = nr_nonzero_words + idx_writes_begin * TASK_INIT_NR_CACHED_WORDS_M1,
+                           idx_writes_end = idx_writes_begin + nr_writes_by_me,
+                           idx_dest_end = nr_nonzero_words + idx_writes_end * TASK_INIT_NR_CACHED_WORDS_M1;
+
+            unsigned idx_dest = idx_dest_begin;
+            for (; idx_dest < idx_dest_end; idx_dest += TASK_INIT_NR_CACHED_WORDS_M1) {
+                mram_write(&workspace.bitmap[0], &bitmap[idx_dest], sizeof(bitmap_word_t) * TASK_INIT_NR_CACHED_WORDS_M1);
             }
-            mram_write(&workspace.bitmap[TASK_INIT_NR_CACHED_ALLONE_WORDS - nr_remained_allones],
-                &bitmap[idx_dest], sizeof(bitmap_word_t) * nr_words_written);
+
+            if (me() == TASK_INIT_BITMAP_NR_TASKLETS - 1) {
+                const unsigned nr_remained_zeros = nr_zero_words - nr_zero_writes * TASK_INIT_NR_CACHED_WORDS_M1;
+                if (nr_remained_zeros != 0) {
+                    mram_write(&workspace.bitmap[0], &bitmap[idx_dest], sizeof(bitmap_word_t) * nr_remained_zeros);
+                }
+            }
         }
     }
 }
@@ -87,26 +125,42 @@ static void bitmap_init(bitmap_word_ptr bitmap, const unsigned nr_nodes)
 
 static DEFINE_DIV_BY(TASK_INIT_BITMAP_NR_TASKLETS, NODE_PTR_WIDTH - LOG_BITS_IN_BMPWD, _BMP_WORDS);
 
-static void bitmap_init(bitmap_word_ptr bitmap, const unsigned nr_nodes)
+static void bitmap_init(bitmap_word_ptr bitmap, const unsigned nr_bits, const unsigned nr_nodes)
 {
     _Static_assert(TASK_INIT_BITMAP_NR_TASKLETS > 0, "TASK_INIT_BITMAP_NR_TASKLETS > 0");
     if (me() < TASK_INIT_BITMAP_NR_TASKLETS) {
         const unsigned unsigned_me = (unsigned)me();
-        const unsigned nr_all_one_words = nr_nodes / BITS_IN_BMPWD,
-                       nr_words_per_tasklet = DIV_BMP_WORDS_BY_TASK_INIT_BITMAP_NR_TASKLETS(nr_all_one_words),
-                       nr_remainder_words = nr_all_one_words - nr_words_per_tasklet * TASK_INIT_BITMAP_NR_TASKLETS,
+        const unsigned nr_words = (nr_bits + BITS_IN_BMPWD - 1) / BITS_IN_BMPWD,
+                       nr_words_per_tasklet = DIV_BMP_WORDS_BY_TASK_INIT_BITMAP_NR_TASKLETS(nr_words),
+                       nr_remainder_words = nr_words - nr_words_per_tasklet * TASK_INIT_BITMAP_NR_TASKLETS,
                        nr_words_for_me = nr_words_per_tasklet + (unsigned_me < nr_remainder_words),
                        idx_word_begin = nr_words_per_tasklet * unsigned_me + (unsigned_me <= nr_remainder_words ? unsigned_me : nr_remainder_words),
                        idx_words_end = idx_word_begin + nr_words_for_me;
 
-        for (unsigned idx_word = idx_word_begin; idx_word < idx_words_end; idx_word++) {
-            bitmap[idx_word] = BITMAP_WORD_MAX;
-        }
-
-        if (me() == TASK_INIT_BITMAP_NR_TASKLETS - 1) {
+        const unsigned nr_all_one_words = nr_nodes / BITS_IN_BMPWD;
+        if (idx_words_end <= nr_all_one_words) {
+            // All words to be set to all-one
+            for (unsigned i = idx_word_begin; i < idx_words_end; i++) {
+                bitmap[i] = BITMAP_WORD_MAX;
+            }
+        } else if (nr_all_one_words < idx_word_begin) {
+            // All words to be set to zero
+            for (unsigned i = idx_word_begin; i < idx_words_end; i++) {
+                bitmap[i] = 0;
+            }
+        } else {
+            // Some words to be set to all-one, some words to be set to zero, and possibly one partial word
+            unsigned i = idx_word_begin;
+            for (; i < nr_all_one_words; i++) {
+                bitmap[i] = BITMAP_WORD_MAX;
+            }
             const unsigned nr_remained_bits = nr_nodes % BITS_IN_BMPWD;
             if (nr_remained_bits != 0) {
-                bitmap[nr_all_one_words] = BITMAP_WORD_MAX >> (BITS_IN_BMPWD - nr_remained_bits);
+                bitmap[i] = BITMAP_WORD_MAX >> (BITS_IN_BMPWD - nr_remained_bits);
+                i++;
+            }
+            for (; i < idx_words_end; i++) {
+                bitmap[i] = 0;
             }
         }
     }
