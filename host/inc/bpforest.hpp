@@ -82,7 +82,11 @@ private:
 
 
     std::vector<key_uint64_t> combined_delims;
-    std::vector<dpu_id_t> combined_delims_dest_dpu;
+    struct QueryDest {
+        dpu_id_t dpu;
+        bool is_hot;
+    };
+    std::vector<QueryDest> combined_delims_dest;
 
     const Param param;
     double threshold_nr_queries_to_hot = 0;

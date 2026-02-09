@@ -71,14 +71,17 @@ struct PointQueryToKey<KVPair> {
 
 template <typename RangeQuery>
 struct RangeQueryToRange {
+    KeyRange& operator()(RangeQuery&) const;
     const KeyRange& operator()(const RangeQuery&) const;
 };
 template <>
 struct RangeQueryToRange<KeyRange> {
+    KeyRange& operator()(KeyRange& range) const { return range; }
     const KeyRange& operator()(const KeyRange& range) const { return range; }
 };
 template <>
 struct RangeQueryToRange<RangeCountQuery> {
+    KeyRange& operator()(RangeCountQuery& query) const { return query.range; }
     const KeyRange& operator()(const RangeCountQuery& query) const { return query.range; }
 };
 
@@ -249,7 +252,7 @@ inline void BPForest::combine_delims()
     StopWatch timer{RoutingTableMakeTime};
 
     combined_delims.clear();
-    combined_delims_dest_dpu.clear();
+    combined_delims_dest.clear();
 
     std::vector<dpu_id_t> hot_to_dpuid(nr_hot_ranges, INVALID_DPU_ID);
     for (dpu_id_t i = 0; i < nr_cold_ranges; i++)
@@ -264,16 +267,16 @@ inline void BPForest::combine_delims()
             if (next_key < hot_delims[idx_hot]) {
                 // gap between hot partitions
                 combined_delims.push_back(next_key);
-                combined_delims_dest_dpu.push_back(static_cast<dpu_id_t>(idx_cold));
+                combined_delims_dest.push_back({static_cast<dpu_id_t>(idx_cold), false});
             }
             combined_delims.push_back(hot_delims[idx_hot]);
-            combined_delims_dest_dpu.push_back(hot_to_dpuid[idx_hot]);
+            combined_delims_dest.push_back({hot_to_dpuid[idx_hot], true});
             next_key = hot_max_key[idx_hot] + 1;  // may wrap around
             idx_hot++;
         }
         if ((idx_cold < nr_cold_ranges - 1 && next_key < cold_delims[idx_cold + 1]) || (idx_cold == nr_cold_ranges - 1 && next_key != 0)) {
             combined_delims.push_back(next_key);
-            combined_delims_dest_dpu.push_back(static_cast<dpu_id_t>(idx_cold));
+            combined_delims_dest.push_back({static_cast<dpu_id_t>(idx_cold), false});
         }
     }
 }
@@ -2539,19 +2542,19 @@ inline void BPForest::not_found_in_point_query<key_uint64_t, void>(
 
 template <typename Query, typename Result>
 inline void BPForest::route_single_range_query(
-    uint32_t idx_qry, const Query& qry, Result*,
+    uint32_t idx_qry, const Query& orig_qry, Result*,
     QueryData<Query, Result>& routed,
     unsigned tid)
 {
-    const KeyRange& range = RangeQueryToRange<Query>{}(qry);
-    const key_uint64_t qry_range_begin = range.begin;
-    const key_uint64_t qry_range_end = range.end;
+    Query tmp_qry = orig_qry;
+    KeyRange& range = RangeQueryToRange<Query>{}(tmp_qry);
+    const key_uint64_t orig_qry_end = range.end;
 
-    if (qry_range_end < combined_delims[0]) {
+    if (orig_qry_end < combined_delims[0]) {
         return;
     }
 
-    auto it = std::upper_bound(combined_delims.begin(), combined_delims.end(), qry_range_begin);
+    auto it = std::upper_bound(combined_delims.begin(), combined_delims.end(), range.begin);
     size_t idx;
     if (it != combined_delims.begin()) {
         idx = static_cast<size_t>(it - combined_delims.begin()) - 1;  // points to the partition that contains qry.range.begin
@@ -2559,23 +2562,20 @@ inline void BPForest::route_single_range_query(
         idx = 0;
     }
 
-    dpu_id_t dpu_id = combined_delims_dest_dpu[idx];
-    auto& out = routed.cold[dpu_id];
-    out.qrys[tid].push_back(qry);
-    out.orig_idxs[tid].push_back(idx_qry);
-    while (1) {
+    for (;;) {
+        const QueryDest& dest = combined_delims_dest[idx];
+        auto& out = dest.is_hot ? routed.hot[dest.dpu] : routed.cold[dest.dpu];
         ++idx;
-        if (idx == combined_delims.size()) {
-            return;
-        }
-        if (qry_range_end < combined_delims[idx]) {
-            return;
-        }
-        dpu_id = combined_delims_dest_dpu[idx];
-        auto& out = routed.cold[dpu_id];
-        if (out.orig_idxs[tid].size() == 0 || out.orig_idxs[tid].back() != idx_qry) {
-            out.qrys[tid].push_back(qry);
+        if (idx == combined_delims.size() || orig_qry_end < combined_delims[idx]) {
+            range.end = orig_qry_end;
+            out.qrys[tid].push_back(tmp_qry);
             out.orig_idxs[tid].push_back(idx_qry);
+            return;
+        } else {
+            range.end = combined_delims[idx] - 1;
+            out.qrys[tid].push_back(tmp_qry);
+            out.orig_idxs[tid].push_back(idx_qry);
+            range.begin = combined_delims[idx];
         }
     }
 }
