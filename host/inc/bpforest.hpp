@@ -50,7 +50,7 @@ struct BPForest : ParallelManager<BPForest> {
     BPForest(const KVPair sorted_pairs[], size_t nr_pairs, const std::vector<Partition>& partitioning, const Param& = {});
     ~BPForest();
 
-    void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
+    void batch_get(uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
     void batch_insert(uint32_t nr_queries, const KVPair pairs[]);
     void batch_delete(uint32_t nr_queries, const key_uint64_t pairs[]);
     void batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t result[]);
@@ -91,16 +91,6 @@ private:
     const Param param;
     double threshold_nr_queries_to_hot = 0;
 
-    struct PointQueriesPerRange {
-        // qrys[idx_host_thread][idx_qry]
-        std::vector<std::vector<uint64_t>> qrys;
-        // orig_idxs[idx_host_thread][idx_qry]
-        std::vector<std::vector<size_t>> orig_idxs;
-        size_t nr_qrys;
-    };
-    struct {
-        std::array<PointQueriesPerRange, MAX_NR_DPUS> cold, hot;
-    } point_qrys;
     ExtendableBuffer<uint64_t> rg_qry_data;
     ExtendableBuffer<std::array<size_t, 2>> rg_qry_to_minirg;
     std::vector<size_t> rg_lump_end_indices;
@@ -113,13 +103,18 @@ private:
         std::vector<std::vector<uint32_t>> orig_idxs;
         // results[idx_host_thread][idx_qry]
         std::vector<ExtendableBuffer<Result>> results;
-        size_t nr_qrys;
+        uint16_t nr_qrys;
+    };
+    template <typename QandR>
+    struct QueryDataPerRange<QandR, QandR> {
+        std::vector<std::vector<QandR>> qrys;
+        std::vector<std::vector<uint32_t>> orig_idxs;
+        uint16_t nr_qrys;
     };
     template <typename Query>
     struct QueryDataPerRange<Query, void> {
-        // qrys[idx_host_thread][idx_qry]
         std::vector<std::vector<Query>> qrys;
-        size_t nr_qrys;
+        uint16_t nr_qrys;
     };
     template <typename Query, typename Result>
     struct QueryData {
@@ -269,6 +264,13 @@ private:
         uint32_t idx_qry, const Query& qry, Result* result,
         QueryData<Query, Result>& routed,
         unsigned tid);
+
+    template <typename Query, typename Result>
+    struct QuerySender;
+    template <typename Query, typename Result>
+    struct ResultReceiver;
+    template <typename Query, typename Result>
+    void execute_in_dpus(uint32_t task_no, QueryData<Query, Result>&);
 
     template <typename Query, typename Result>
     bool check_if_queries_balance(size_t nr_queries, const QueryData<Query, Result>& routed);

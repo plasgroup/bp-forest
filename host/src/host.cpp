@@ -191,9 +191,9 @@ public:
 
     void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t results[])
     {
-        forest.batch_get(nr_queries, keys, results);
+        forest.batch_get(static_cast<uint32_t>(nr_queries), keys, results);
 #ifdef DEBUG_ON
-        check_get_results(nr_queries, keys, results);
+        check_get_results(static_cast<uint32_t>(nr_queries), keys, results);
 #endif /* DEBUG_ON */
     }
 
