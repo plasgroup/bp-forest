@@ -403,6 +403,8 @@ inline void BPForest::batch_get(uint32_t nr_queries, const key_uint64_t keys[], 
 }
 inline void BPForest::postprocess_of_get(value_uint64_t result[])
 {
+    ScopedTimer timer{PostprocessTime};
+
     tmp_data.with(&TmpData::postprocess_of_get, result, [this] {
         parallel_run(&BPForest::postprocess_of_get_impl);
     });
