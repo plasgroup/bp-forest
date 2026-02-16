@@ -67,14 +67,14 @@ inline void DPUEmulator::execute()
                        nr_hot_delims = end_indices[nr_cold_lumps + nr_hot_lumps + 1];
         const unsigned nr_cold_results = nr_cold_delims - nr_cold_lumps, nr_hot_results = nr_hot_delims - nr_hot_lumps;
 
-        value_uint64_t* const result = new (&mram_2nd[RMQ_RESULT_OFFSET]) value_uint64_t[nr_cold_results + nr_hot_results];
+        value_uint64_t* const result = new (&mram_2nd[RESULT_OFFSET]) value_uint64_t[nr_cold_results + nr_hot_results];
         task_range_min(cold_tree, nr_cold_lumps, end_indices, delim_keys, result);
         task_range_min(hot_tree, nr_hot_lumps, end_indices + nr_cold_lumps + 1, delim_keys + nr_cold_delims, result + nr_cold_results);
     } break;
     case TASK_RANGE_COUNT: {
         const unsigned nr_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram[4]));
         const RangeCountQuery* const queries = std::launder(reinterpret_cast<RangeCountQuery*>(&mram[8]));
-        uint64_t* const result = new (&mram_2nd[RCQ_RESULT_OFFSET]) uint64_t[nr_queries];
+        uint64_t* const result = new (&mram_2nd[RESULT_OFFSET]) uint64_t[nr_queries];
         task_range_count(nr_queries, queries, result);
     } break;
     case TASK_INSERT: {
