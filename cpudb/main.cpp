@@ -169,6 +169,7 @@ void CPUDatabase::batch_range_minimum(uint64_t n,
                                       const KeyRange queries[],
                                       value_uint64_t results[])
 {
+    ScopedTimer sw(BatchTotalTime);
     parallel->run(0, n, [&](int tid, size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             const KeyRange &q = queries[i];
@@ -187,6 +188,7 @@ void CPUDatabase::batch_range_minimum_verify(uint64_t n,
                                           const KeyRange queries[],
                                           const value_uint64_t results[])
 {
+    ScopedTimer sw(BatchTotalTime);
     parallel->run(0, n, [&](int tid, size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             const KeyRange &q = queries[i];
@@ -211,6 +213,7 @@ void CPUDatabase::batch_range_sum(uint64_t n,
                                   const KeyRange queries[],
                                   value_uint64_t results[])
 {
+    ScopedTimer sw(BatchTotalTime);
     parallel->run(0, n, [&](int tid, size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             const KeyRange &q = queries[i];
@@ -229,6 +232,7 @@ void CPUDatabase::batch_range_sum_verify(size_t n,
                                       const KeyRange queries[],
                                       const value_uint64_t results[]) 
 {
+    ScopedTimer sw(BatchTotalTime);
     parallel->run(0, n, [&](int tid, size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             const KeyRange &q = queries[i];
@@ -260,6 +264,7 @@ void CPUDatabase::batch_get(uint64_t n,
                             const key_uint64_t keys[],
                             value_uint64_t results[])
 {
+    ScopedTimer sw(BatchTotalTime);
     parallel->run(0, n, [&](int tid, size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             auto it = index->find(keys[i]);
@@ -275,6 +280,7 @@ void CPUDatabase::batch_get_verify(size_t n,
                                 const key_uint64_t queries[],
                                 const value_uint64_t results[])
 {
+    ScopedTimer sw(BatchTotalTime);
     parallel->run(0, n, [&](int tid, size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             key_uint64_t q = queries[i];
@@ -302,6 +308,7 @@ void CPUDatabase::batch_range_count(uint64_t n,
                                     const RangeCountQuery queries[],
                                     value_uint64_t results[])
 {
+    ScopedTimer sw(BatchTotalTime);
     parallel->run(0, n, [&](int tid, size_t s, size_t e) {
         for (size_t i = s; i < e; i++) {
             const KeyRange &qr = queries[i].range;
@@ -338,9 +345,8 @@ int main(int argc, char* argv[])
     InitData init_data = (opt.pimtree_init_file.empty() ?
                           InitData(opt.nr_keys) : InitData(opt.pimtree_init_file));
     CPUDatabase* db;
-    std::chrono::nanoseconds DatabaseInitTime;
     {
-        StopWatch sw(DatabaseInitTime);
+        ScopedTimer sw(DatabaseInitTime);
         db = new CPUDatabase(init_data, opt.nthreads);
     }
     std::cout << "database initialized in " << (DatabaseInitTime.count() / 1000 / 1000) << " ms" << std::endl;
@@ -351,7 +357,8 @@ int main(int argc, char* argv[])
     benchmark->run(opt.nr_batches, db, [&](int idx_batch) {
         printf("%s,%d,%d,%d,%ld\n",
                opt.alpha.c_str(), db->get_parallelism(), idx_batch,
-               NUM_REQUESTS_PER_BATCH, QueryProcessTime.count());
+               NUM_REQUESTS_PER_BATCH, BatchTotalTime.count());
+        ElapsedTime::reset();
     });
 
     delete benchmark;

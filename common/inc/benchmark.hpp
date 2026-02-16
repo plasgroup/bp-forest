@@ -16,8 +16,6 @@
 #include <vector>
 
 
-inline std::chrono::nanoseconds QueryProcessTime;
-
 class Benchmark
 {
 protected:
@@ -189,10 +187,7 @@ public:
     void do_one_batch(int idx_batch, Database* db)
     {
         size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, keys, results);
-        {
-            StopWatch sw(QueryProcessTime);
-            db->batch_get(num_queries_batch, &keys[0], &results[0]);
-        }
+        db->batch_get(num_queries_batch, &keys[0], &results[0]);
         num_queries_in_last_batch = num_queries_batch;
     }
 
@@ -230,10 +225,7 @@ public:
     void do_one_batch(int idx_batch, Database* db)
     {
         size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer.get(), pairs);
-        {
-            StopWatch sw(QueryProcessTime);
-            db->batch_insert(num_queries_batch, &pairs[0]);
-        }
+        db->batch_insert(num_queries_batch, &pairs[0]);
         num_queries_in_last_batch = num_queries_batch;
     }
 
@@ -269,10 +261,7 @@ public:
     void do_one_batch(int idx_batch, Database* db)
     {
         size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer.get(), keys);
-        {
-            StopWatch sw(QueryProcessTime);
-            db->batch_delete(num_queries_batch, &keys[0]);
-        }
+        db->batch_delete(num_queries_batch, &keys[0]);
         num_queries_in_last_batch = num_queries_batch;
     }
 
@@ -337,10 +326,7 @@ public:
     void do_one_batch(int idx_batch, Database* db)
     {
         size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, ranges, results);
-        {
-            StopWatch sw(QueryProcessTime);
-            db->batch_range_minimum(num_queries_batch, &ranges[0], &results[0]);
-        }
+        db->batch_range_minimum(num_queries_batch, &ranges[0], &results[0]);
         num_queries_in_last_batch = num_queries_batch;
     }
 
@@ -377,10 +363,7 @@ public:
     virtual void do_one_batch(int idx_batch, Database* db)
     {
         size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, ranges, results);
-        {
-            StopWatch sw(QueryProcessTime);
-            db->batch_range_sum(num_queries_batch, &ranges[0], &results[0]);
-        }
+        db->batch_range_sum(num_queries_batch, &ranges[0], &results[0]);
         num_queries_in_last_batch = num_queries_batch;
     }
 
@@ -433,10 +416,7 @@ public:
     virtual void do_one_batch(int idx_batch, Database* db)
     {
         size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, queries, results);
-        {
-            StopWatch sw(QueryProcessTime);
-            db->batch_range_count(num_queries_batch, &queries[0], &results[0]);
-        }
+        db->batch_range_count(num_queries_batch, &queries[0], &results[0]);
         num_queries_in_last_batch = num_queries_batch;
     }
 

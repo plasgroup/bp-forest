@@ -3,7 +3,10 @@
 
 #include <chrono>
 #include <map>
+#include <ostream>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 class XferStatistics
@@ -83,37 +86,119 @@ extern XferStatistics xfer_statistics;
 #endif /* MEASURE_XFER_BYTES */
 
 
-template <class Func>
-inline std::chrono::duration<float> measure_time(Func&& func)
-{
-    using namespace std::chrono;
-    const auto begin_time = high_resolution_clock::now();
-    (std::forward<Func>(func))();
-    const auto end_time = high_resolution_clock::now();
-    return duration_cast<duration<float>>(end_time - begin_time);
-}
+struct ElapsedTime {
+    using Duration = std::chrono::nanoseconds;
+    using Instances = std::map<int, ElapsedTime*>;
 
-template <class Duration>
-struct StopWatch final {
-    Duration* const result;
+    Duration time;
+    const std::string label;
+    const Instances::iterator iter;
+
+    static Instances& instances()
+    {
+        static Instances impl;
+        return impl;
+    }
+
+    explicit ElapsedTime(std::string_view label, int order = 0)
+        : time{}, label{label}, iter{instances().insert({order, this}).first}
+    {
+    }
+    ~ElapsedTime()
+    {
+        instances().erase(iter);
+    }
+    auto count() const { return time.count(); }
+
+    static void reset()
+    {
+        for (auto& pair : instances()) {
+            auto& time = pair.second->time;
+            time = Duration::zero();
+        }
+    }
+    static std::ostream& print(std::ostream& ostr)
+    {
+        auto& map = instances();
+        auto iter = map.cbegin();
+        if (iter != map.cend()) {
+            ostr << iter->second->time.count();
+            iter++;
+        }
+        for (; iter != map.cend(); iter++) {
+            ostr << ',' << iter->second->time.count();
+        }
+        return ostr;
+    }
+    static std::ostream& print_labels(std::ostream& ostr)
+    {
+        auto& map = instances();
+        auto iter = map.cbegin();
+        if (iter != map.cend()) {
+            ostr << iter->second->label;
+            iter++;
+        }
+        for (; iter != map.cend(); iter++) {
+            ostr << ',' << iter->second->label;
+        }
+        return ostr;
+    }
+};
+
+struct ScopedTimer final {
+    ElapsedTime* const result;
+    const ElapsedTime::Duration prev;
     const std::chrono::high_resolution_clock::time_point begin;
 
-    StopWatch(Duration& dur) : result{&dur}, begin{std::chrono::high_resolution_clock::now()} {}
-    ~StopWatch()
+    ScopedTimer(ElapsedTime& dur) : result{&dur}, prev{dur.time}, begin{std::chrono::high_resolution_clock::now()} {}
+    ~ScopedTimer()
     {
-        *result = std::chrono::duration_cast<Duration>(std::chrono::high_resolution_clock::now() - begin);
+        result->time = prev + std::chrono::duration_cast<ElapsedTime::Duration>(std::chrono::high_resolution_clock::now() - begin);
     }
 };
 
 
-inline std::chrono::nanoseconds ForestInitTime, RebalancingTime, DataRetrieveTime, SerializeTime, PairsBufAllocTime, PairsRecvTime, PairsAlignTime, RefWorkloadPrepareTime, PrepareForPartitioningTime, PartitioningTime, PartitionApplyTime, RoutingTableMakeTime;
-inline std::chrono::nanoseconds BatchTotalTime, QueryRoutingTime, PostprocessTime;
+inline ElapsedTime
+    DatabaseInitTime{"init_db[ns]", 0},
+
+    RebalancingTime{"rebalance[ns]", 1000},  // 1000--1999
+
+    DataRetrieveTime{"retrive_data[ns]", 1100},  // 1100--1199
 #ifdef SYNCHRONOUS_DPU_EXEC
-inline std::chrono::nanoseconds CommandingSerializationTime, NrPairsRecvTime, ColdPairsSendTime, ColdTreesConstructTime, HotPairsSendTime, HotTreesConstructTime;
-inline std::chrono::nanoseconds QuerySendTime, QueryExecTime, QueryRecvTime;
-#else /* SYNCHRONOUS_DPU_EXEC */
-inline std::chrono::nanoseconds TreeConstructTime;
-inline std::chrono::nanoseconds QuerySendExecRecvTime;
+    CommandingSerializationTime{"cmd_serialization[ns]", 1110},
 #endif
+    SerializeTime{"serialize[ns]", 1120},
+#ifdef SYNCHRONOUS_DPU_EXEC
+    NrPairsRecvTime{"recv_nr_pairs[ns]", 1130},
+#endif
+    PairsBufAllocTime{"alloc_pairs_buf[ns]", 1140},
+    PairsRecvTime{"recv_pairs[ns]", 1150},
+
+    RefWorkloadPrepareTime{"prepare_ref_workload[ns]", 1200},
+    PrepareForPartitioningTime{"prepare_for_part[ns]", 1300},
+    PartitioningTime{"part[ns]", 1400},
+
+    PartitionApplyTime{"apply_part[ns]", 1500},  // 1500--1599
+#ifdef SYNCHRONOUS_DPU_EXEC
+    ColdPairsSendTime{"send_cold_pairs[ns]", 1510},
+    ColdTreesConstructTime{"const_cold_trees[ns]", 1520},
+    HotPairsSendTime{"send_hot_pairs[ns]", 1530},
+    HotTreesConstructTime{"const_hot_trees[ns]", 1540},
+#else
+    TreeConstructTime{"const_trees[ns]", 1510},
+#endif
+
+    RoutingTableMakeTime{"make_routing_table[ns]", 1600},
+
+    BatchTotalTime{"batch[ns]", 2000},  // 2000--2999
+    QueryRoutingTime{"route_qry[ns]", 2100},
+#ifdef SYNCHRONOUS_DPU_EXEC
+    QuerySendTime{"send_qry[ns]", 2210},
+    QueryExecTime{"exec_qry[ns]", 2220},
+    QueryRecvTime{"recv_qry[ns]", 2230},
+#else /* SYNCHRONOUS_DPU_EXEC */
+    QuerySendExecRecvTime{"send_exec_recv_qry[ns]", 2200},
+#endif
+    PostprocessTime{"postprocess[ns]", 2300};
 
 #endif /* __STATISTICS_HPP__ */

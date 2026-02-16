@@ -151,7 +151,7 @@ void BPForest::distribute_initial_data(const KVPair sorted_pairs[], const size_t
     combine_delims();
 
     {
-        StopWatch t{ForestInitTime};
+        ScopedTimer t{DatabaseInitTime};
 
         UPMEM_AsyncDuration async;
         gather_to_dpu(all_dpu, 0, TaskInitInput{&nr_pairs_in_each_dpus[0], &pairs_for_each_dpus[0]}, async);
@@ -232,7 +232,7 @@ inline void BPForest::apply_partitioning_of_initial_data(const KVPair sorted_pai
     nr_pairs_in_each_dpus[nr_cold_ranges - 1] = static_cast<uint32_t>(&sorted_pairs[nr_pairs] - cursor);
 
     {
-        StopWatch t{ForestInitTime};
+        ScopedTimer t{DatabaseInitTime};
 
         UPMEM_AsyncDuration async;
         gather_to_dpu(all_dpu, 0, TaskInitInput{&nr_pairs_in_each_dpus[0], &pairs_for_each_dpus[0]}, async);
@@ -249,7 +249,7 @@ inline void BPForest::apply_partitioning_of_initial_data(const KVPair sorted_pai
 
 inline void BPForest::combine_delims()
 {
-    StopWatch timer{RoutingTableMakeTime};
+    ScopedTimer timer{RoutingTableMakeTime};
 
     combined_delims.clear();
     combined_delims_dest.clear();
@@ -392,7 +392,7 @@ struct iterator_traits<GetQueryWithIndexIterator> {
 }  // namespace std
 inline void BPForest::batch_get(uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[])
 {
-    StopWatch timer{BatchTotalTime};
+    ScopedTimer timer{BatchTotalTime};
 
     constexpr auto func = &BPForest::route_single_point_query<key_uint64_t, value_uint64_t>;
     route_queries<func>(nr_queries, keys, result, get_queries);
@@ -428,7 +428,7 @@ inline void BPForest::postprocess_of_get_impl(unsigned tid)
 
 inline void BPForest::batch_insert(uint32_t nr_queries, const KVPair pairs[])
 {
-    StopWatch timer{BatchTotalTime};
+    ScopedTimer timer{BatchTotalTime};
 
     new_min_keys.clear();
     new_min_keys.resize(get_parallelism(), KEY_MAX);
@@ -444,7 +444,7 @@ inline void BPForest::batch_insert(uint32_t nr_queries, const KVPair pairs[])
 
 inline void BPForest::batch_delete(uint32_t nr_queries, const key_uint64_t keys[])
 {
-    StopWatch timer{BatchTotalTime};
+    ScopedTimer timer{BatchTotalTime};
 
     constexpr auto func = &BPForest::route_single_point_query<key_uint64_t, void>;
     route_queries<func>(nr_queries, keys, (void*){nullptr}, delete_queries);
@@ -455,7 +455,7 @@ inline void BPForest::batch_delete(uint32_t nr_queries, const key_uint64_t keys[
 
 inline void BPForest::batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t result[])
 {
-    StopWatch timer{BatchTotalTime};
+    ScopedTimer timer{BatchTotalTime};
 
     using std::get;
 
@@ -481,7 +481,7 @@ inline void BPForest::batch_range_minimum(size_t nr_queries, const KeyRange rang
     }
 
     do {
-        StopWatch timer{RebalancingTime};
+        ScopedTimer timer{RebalancingTime};
         if (param.balancing > 0 && !check_if_rmq_balance(nr_delim_keys, cold_range_to_delim_idx, hot_range_to_delim_idx, if_cold_begins_middle, if_hot_begins_middle, if_hot_ends_middle)) {
             if (nr_hot_ranges > 0) {
                 // Rebalancing when hot ranges exist has not been implemented.
@@ -1291,23 +1291,23 @@ void BPForest::execute_rmq_in_dpus(
 
 #ifdef SYNCHRONOUS_DPU_EXEC
     {
-        StopWatch timer{QuerySendTime};
+        ScopedTimer timer{QuerySendTime};
         UPMEM_AsyncDuration async;
         gather_to_dpu(all_dpu, 0, RMQSender{this, &nr_lumps[0], &lump_end_indices[0], cold_range_to_delim_idx, hot_range_to_delim_idx, if_cold_begins_middle, if_hot_begins_middle, if_hot_ends_middle}, async);
     }
     {
-        StopWatch timer{QueryExecTime};
+        ScopedTimer timer{QueryExecTime};
         UPMEM_AsyncDuration async;
         execute(all_dpu, async);
     }
     {
-        StopWatch timer{QueryRecvTime};
+        ScopedTimer timer{QueryRecvTime};
         UPMEM_AsyncDuration async;
         scatter_from_dpu(all_dpu, RESULT_OFFSET, RMQResultReceiver{this, &cold_ranges_to_minirange_idx[0], &hot_ranges_to_minirange_idx[0], &cold_to_be_agged[0], &hot_to_be_agged[0], &if_cold_begins_middle[0], &if_hot_begins_middle[0], &if_hot_ends_middle[0]}, async);
     }
 #else /* SYNCHRONOUS_DPU_EXEC */
     {
-        StopWatch timer{QuerySendExecRecvTime};
+        ScopedTimer timer{QuerySendExecRecvTime};
         UPMEM_AsyncDuration async;
 
         gather_to_dpu(all_dpu, 0, RMQSender{this, &nr_lumps[0], &lump_end_indices[0], cold_range_to_delim_idx, hot_range_to_delim_idx, if_cold_begins_middle, if_hot_begins_middle, if_hot_ends_middle}, async);
@@ -1355,7 +1355,7 @@ void BPForest::execute_rmq_in_dpus(
 
 inline void BPForest::batch_range_count(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[])
 {
-    StopWatch timer{BatchTotalTime};
+    ScopedTimer timer{BatchTotalTime};
 
     constexpr auto func = &BPForest::route_single_range_query<RangeCountQuery, uint64_t>;
     route_queries<func>(nr_queries, queries, result, rcqs);
@@ -1381,7 +1381,7 @@ inline std::vector<size_t> BPForest::get_nr_rcqs() const
 
 inline void BPForest::postprocess_of_rcq(uint32_t nr_queries, uint64_t result[])
 {
-    StopWatch timer{PostprocessTime};
+    ScopedTimer timer{PostprocessTime};
 
     const TmpDataForPostprocessOfRCQ tmp_data{nr_queries, result};
     any_tmp_data = &tmp_data;
@@ -1523,7 +1523,7 @@ struct BPForest::SerializedKVPairReceiver {
 };
 inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf) const
 {
-    StopWatch timer{DataRetrieveTime};
+    ScopedTimer timer{DataRetrieveTime};
 
     std::array<dpu_id_t, MAX_NR_DPUS> nr_extracted_hots;
     for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
@@ -1534,23 +1534,23 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf) const
     std::array<uint32_t, MAX_NR_DPUS> incision_indices;
 #ifdef SYNCHRONOUS_DPU_EXEC
     {
-        StopWatch timer{CommandingSerializationTime};
+        ScopedTimer timer{CommandingSerializationTime};
         UPMEM_AsyncDuration async;
         gather_to_dpu(all_dpu, 0, SerializationCommander{this, &nr_extracted_hots[0]}, async);
     }
     {
-        StopWatch timer{SerializeTime};
+        ScopedTimer timer{SerializeTime};
         UPMEM_AsyncDuration async;
         execute(all_dpu, async);
     }
     {
-        StopWatch timer{NrPairsRecvTime};
+        ScopedTimer timer{NrPairsRecvTime};
         UPMEM_AsyncDuration async;
         scatter_from_dpu(all_dpu, 0, SerializaionNrPairsReceiver{this, &nr_extracted_hots[0], &nr_pairs[0], &incision_indices[0]}, async);
     }
 #else
     {
-        StopWatch timer{SerializeTime};
+        ScopedTimer timer{SerializeTime};
         UPMEM_AsyncDuration async;
         gather_to_dpu(all_dpu, 0, SerializationCommander{this, &nr_extracted_hots[0]}, async);
         execute(all_dpu, async);
@@ -1569,7 +1569,7 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf) const
     std::array<uint32_t, MAX_NR_DPUS> hot_beginning;
     std::array<uint32_t, MAX_NR_DPUS> nr_hot_pairs;
     {
-        StopWatch timer{PairsBufAllocTime};
+        ScopedTimer timer{PairsBufAllocTime};
         for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
             const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
             if (idx_hot != INVALID_DPU_ID) {
@@ -1598,7 +1598,7 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf) const
     }
 
     {
-        StopWatch timer{PairsRecvTime};
+        ScopedTimer timer{PairsRecvTime};
         UPMEM_AsyncDuration async;
         scatter_from_dpu(all_dpu, sizeof(uint32_t) * 2 + sizeof(key_uint64_t) * NR_RANKS * MAX_NR_DPUS_IN_RANK,
             SerializedKVPairReceiver{this, &nr_pairs[0], &nr_extracted_hots[0], &cold_boundaries[0], &hot_beginning[0], &nr_hot_pairs[0], &buf[0]}, async);
@@ -1610,7 +1610,7 @@ template <typename Query>
 inline std::vector<std::pair<size_t /* nr pairs in cold */, size_t /* nr pairs in hot */>>
 BPForest::partition_data_with_reference_point_queries(size_t nr_queries, const Query queries[])
 {
-    StopWatch timer{RebalancingTime};
+    ScopedTimer timer{RebalancingTime};
 
 #ifdef EXTRACT_BY_INITIALIZATION
     data_size = retrieve_all_data(initial_data);
@@ -1627,7 +1627,7 @@ BPForest::partition_data_with_reference_point_queries(size_t nr_queries, const Q
     if (param.balancing > 0) {
         std::vector<std::pair<size_t, size_t>> result;
         {
-            StopWatch timer{RefWorkloadPrepareTime};
+            ScopedTimer timer{RefWorkloadPrepareTime};
 
             std::vector<key_uint64_t> delims;
             delims.reserve(nr_queries);
@@ -1640,7 +1640,7 @@ BPForest::partition_data_with_reference_point_queries(size_t nr_queries, const Q
             result = repartition(delims);
         }
 
-        RefWorkloadPrepareTime -= RebalancingTime;
+        RefWorkloadPrepareTime.time -= RebalancingTime.time;
 
         return result;
 
@@ -1676,7 +1676,7 @@ template <typename Query>
 inline std::vector<std::pair<size_t /* nr pairs in cold */, size_t /* nr pairs in hot */>>
 BPForest::partition_data_with_reference_range_queries(size_t nr_queries, const Query queries[])
 {
-    StopWatch timer{RebalancingTime};
+    ScopedTimer timer{RebalancingTime};
 
 #ifdef EXTRACT_BY_INITIALIZATION
     data_size = retrieve_all_data(initial_data);
@@ -1693,7 +1693,7 @@ BPForest::partition_data_with_reference_range_queries(size_t nr_queries, const Q
     if (param.balancing > 0) {
         std::vector<std::pair<size_t, size_t>> result;
         {
-            StopWatch timer{RefWorkloadPrepareTime};
+            ScopedTimer timer{RefWorkloadPrepareTime};
 
             std::vector<key_uint64_t> delims;
             delims.reserve(nr_queries * 2);
@@ -1707,7 +1707,7 @@ BPForest::partition_data_with_reference_range_queries(size_t nr_queries, const Q
             result = repartition(delims);
         }
 
-        RefWorkloadPrepareTime -= RebalancingTime;
+        RefWorkloadPrepareTime.time -= RebalancingTime.time;
 
         return result;
 
@@ -1746,7 +1746,7 @@ inline void BPForest::route_queries(
     uint32_t nr_queries, const Query queries[], Result results[],
     QueryData<Query, Result>& routed)
 {
-    StopWatch timer{QueryRoutingTime};
+    ScopedTimer timer{QueryRoutingTime};
 
     for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
         routed.cold[idx_cold].qrys.resize(get_parallelism());
@@ -2031,23 +2031,23 @@ inline void BPForest::execute_in_dpus(uint32_t task_no, QueryData<Query, Result>
 
 #ifdef SYNCHRONOUS_DPU_EXEC
     {
-        StopWatch timer{QuerySendTime};
+        ScopedTimer timer{QuerySendTime};
         UPMEM_AsyncDuration async;
         gather_to_dpu(all_dpu, 0, QuerySender{this, task_no, &query_data}, async);
     }
     {
-        StopWatch timer{QueryExecTime};
+        ScopedTimer timer{QueryExecTime};
         UPMEM_AsyncDuration async;
         execute(all_dpu, async);
     }
     if constexpr (!std::is_same_v<Result, void>) {
-        StopWatch timer{QueryRecvTime};
+        ScopedTimer timer{QueryRecvTime};
         UPMEM_AsyncDuration async;
         scatter_from_dpu(all_dpu, RESULT_OFFSET, ResultReceiver{this, &query_data}, async);
     }
 #else /* SYNCHRONOUS_DPU_EXEC */
     {
-        StopWatch timer{QuerySendExecRecvTime};
+        ScopedTimer timer{QuerySendExecRecvTime};
         UPMEM_AsyncDuration async;
         gather_to_dpu(all_dpu, 0, QuerySender{this, task_no, &query_data}, async);
         execute(all_dpu, async);
@@ -2129,14 +2129,14 @@ struct SummaryDummy {
 inline std::vector<std::pair<size_t /* nr pairs in cold */, size_t /* nr pairs in hot */>>
 BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
 {
-    StopWatch timer{RebalancingTime};
+    ScopedTimer timer{RebalancingTime};
 
     const size_t min_nr_qrys_in_hot = (sorted_qrys.size() + nr_cold_ranges - 1) / nr_cold_ranges;
     std::array<size_t, MAX_NR_DPUS + 1> idx_qry_begin;
     std::array<bool, MAX_NR_DPUS> base_rebalanced;
 
     {
-        StopWatch timer{PrepareForPartitioningTime};
+        ScopedTimer timer{PrepareForPartitioningTime};
 
 #ifdef EXTRACT_BY_INITIALIZATION
         for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
@@ -2172,7 +2172,7 @@ BPForest::repartition(const std::vector<key_uint64_t>& sorted_qrys)
     std::vector<std::pair<size_t /* cold */, size_t /* hot */>> nr_pairs(nr_cold_ranges);
 
     {
-        StopWatch timer{PartitioningTime};
+        ScopedTimer timer{PartitioningTime};
 
         for (dpu_id_t idx_base = 0; idx_base < nr_cold_ranges; idx_base++) {
             cold_to_hot[idx_base] = idx_new_hot;
@@ -2806,7 +2806,7 @@ struct BPForest::HotKVPairsSender {
 };
 inline void BPForest::extract_and_distribute_hot_ranges()
 {
-    StopWatch timer{PartitionApplyTime};
+    ScopedTimer timer{PartitionApplyTime};
 
     std::array<const KVPair*, MAX_NR_DPUS + 1> cold_boundaries;
     std::array<std::array<const KVPair*, 2>, MAX_NR_DPUS> hot_boundaries;
@@ -2867,13 +2867,13 @@ inline void BPForest::extract_and_distribute_hot_ranges()
 
 #ifdef SYNCHRONOUS_DPU_EXEC
     {
-        StopWatch timer{ColdPairsSendTime};
+        ScopedTimer timer{ColdPairsSendTime};
         UPMEM_AsyncDuration async;
         RebalancedColdKVPairsSender cold_sender{this, &cold_boundaries[0], &hot_boundaries[0], &cold_task_headers[0]};
         gather_to_dpu(all_dpu, 0, cold_sender, async);
     }
     {
-        StopWatch timer{ColdTreesConstructTime};
+        ScopedTimer timer{ColdTreesConstructTime};
         UPMEM_AsyncDuration async;
         execute(all_dpu, async);
     }
@@ -2884,13 +2884,13 @@ inline void BPForest::extract_and_distribute_hot_ranges()
     }
 #endif
     {
-        StopWatch timer{HotPairsSendTime};
+        ScopedTimer timer{HotPairsSendTime};
         UPMEM_AsyncDuration async;
         HotKVPairsSender hot_sender{this, &hot_boundaries[0], &hot_task_headers[0]};
         gather_to_dpu(all_dpu, 0, hot_sender, async);
     }
     {
-        StopWatch timer{HotTreesConstructTime};
+        ScopedTimer timer{HotTreesConstructTime};
         UPMEM_AsyncDuration async;
         execute(all_dpu, async);
     }
@@ -2902,7 +2902,7 @@ inline void BPForest::extract_and_distribute_hot_ranges()
 #endif
 #else /* SYNCHRONOUS_DPU_EXEC */
     {
-        StopWatch timer{TreeConstructTime};
+        ScopedTimer timer{TreeConstructTime};
         UPMEM_AsyncDuration async;
 
         RebalancedColdKVPairsSender cold_sender{this, &cold_boundaries[0], &hot_boundaries[0], &cold_task_headers[0]};
@@ -2914,9 +2914,8 @@ inline void BPForest::extract_and_distribute_hot_ranges()
         std::unique_ptr<LogBuffer> log = read_log(all_dpu);
         std::cout << log->get() << std::flush;
     }
-    auto tmp_time = TreeConstructTime;
     {
-        StopWatch timer{TreeConstructTime};
+        ScopedTimer timer{TreeConstructTime};
         UPMEM_AsyncDuration async;
 #endif
         HotKVPairsSender hot_sender{this, &hot_boundaries[0], &hot_task_headers[0]};
@@ -2924,7 +2923,6 @@ inline void BPForest::extract_and_distribute_hot_ranges()
         execute(all_dpu, async);
     }
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
-    TreeConstructTime += tmp_time;
     {
         std::unique_ptr<LogBuffer> log = read_log(all_dpu);
         std::cout << log->get() << std::flush;

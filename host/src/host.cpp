@@ -93,8 +93,6 @@ struct Option {
         a.add<dpu_id_t>("print-cold-memory-load", 0, "print number of KV pairs stored in cold ranges in each dpu", false, 0);
         a.add<dpu_id_t>("print-hot-memory-load", 0, "print number of KV pairs stored in hot ranges in each dpu", false, 0);
         a.add("print-perf", 'p', "print performance metrics");
-        a.add("print-init-time", 0, "print elapsed time for initialization of BPForest");
-        a.add("print-part-time", 0, "print elapsed time for hot/cold partitioning");
         a.add("verify", 'v', "verify the result");
         a.parse_check(argc, argv);
 
@@ -118,8 +116,6 @@ struct Option {
         print_cold_memory_load = a.get<dpu_id_t>("print-cold-memory-load");
         print_hot_memory_load = a.get<dpu_id_t>("print-hot-memory-load");
         print_perf = a.exist("print-perf");
-        print_init_time = a.exist("print-init-time");
-        print_part_time = a.exist("print-part-time");
         verify = a.exist("verify");
 
         if (!tmp_partition.empty()) {
@@ -166,7 +162,7 @@ struct Option {
     std::optional<std::string> dump_compute_load, dump_memory_load;
     dpu_id_t print_compute_load, print_memory_load;
     dpu_id_t print_cold_compute_load, print_cold_memory_load, print_hot_compute_load, print_hot_memory_load;
-    bool print_perf, print_init_time, print_part_time;
+    bool print_perf;
     bool verify = false;
 } opt;
 
@@ -353,11 +349,6 @@ int main(int argc, char* argv[])
             }
             db.print_nr_pairs(dump_memory_load_file, MAX_NR_DPUS);
         }
-
-        if (opt.print_part_time) {
-            std::cout << "#RebalancingTime[ns]: " << RebalancingTime.count() << std::endl;
-            std::cout << "#PartitioningTime[ns]: " << PartitioningTime.count() << std::endl;
-        }
     }
 
     if (opt.dump_partition) {
@@ -377,10 +368,6 @@ int main(int argc, char* argv[])
         db.print_params(dump_param_file);
     }
 
-    if (opt.print_init_time) {
-        std::cout << "#ForestInitTime[ns]: " << ForestInitTime.count() << std::endl;
-    }
-
     std::optional<std::ofstream> dump_compute_load_file;
     if (opt.dump_compute_load) {
         dump_compute_load_file.emplace(*opt.dump_compute_load);
@@ -392,25 +379,7 @@ int main(int argc, char* argv[])
 
     /* main routine */
     if (opt.print_perf) {
-        printf("NR_DPUS,batch_num,num_keys,rebalancing_time[ns],data_retrieve_time[ns]"
-#ifdef SYNCHRONOUS_DPU_EXEC
-               ",commnd_serialize_time[ns],serialize_time[ns],nrpairs_recv_time[ns]"
-#else
-               ",serialize_time[ns]"
-#endif
-               ",pairs_buf_alloc_time[ns],pairs_recv_time[ns],pairs_align_time[ns],ref_workload_time[ns],prepare_for_partitioning_time[ns],partitioning_time[ns],partition_apply_time[ns]"
-#ifdef SYNCHRONOUS_DPU_EXEC
-               ",cold_pairs_send_time[ns],cold_tree_const_time[ns],hot_pairs_send_time[ns],hot_tree_const_time[ns]"
-#else
-               ",tree_const_time[ns]"
-#endif
-               ",routing_table_make_time[ns],routing_time[ns]"
-#ifdef SYNCHRONOUS_DPU_EXEC
-               ",send_time[ns],exec_time[ns],recv_time[ns]"
-#else
-               ",send_exec_recv_time[ns]"
-#endif
-               ",postprocess_time[ns],batch_time[ns]\n");
+        std::cout << "NR_DPUS,batch_num,num_keys," << ElapsedTime::print_labels << std::endl;
     }
     if (opt.verify)
         benchmark->set_verify_db(&init_data);
@@ -435,29 +404,11 @@ int main(int argc, char* argv[])
 #endif
 
         if (opt.print_perf) {
-            std::cout << upmem_get_nr_dpus() << ',' << idx_batch << ','
-                      << long{NUM_REQUESTS_PER_BATCH} << ',' << RebalancingTime.count() << ',' << DataRetrieveTime.count() << ','
-#ifdef SYNCHRONOUS_DPU_EXEC
-                      << CommandingSerializationTime.count() << ',' << SerializeTime.count() << ',' << PairsBufAllocTime.count() << ',' << NrPairsRecvTime.count() << ','
-#else
-                      << SerializeTime.count() << ','
-#endif
-                      << PairsRecvTime.count() << ',' << PairsAlignTime.count() << ',' << RefWorkloadPrepareTime.count() << ',' << PrepareForPartitioningTime.count() << ',' << PartitioningTime.count() << ',' << PartitionApplyTime.count() << ','
-#ifdef SYNCHRONOUS_DPU_EXEC
-                      << ColdPairsSendTime.count() << ',' << ColdTreesConstructTime.count() << ',' << HotPairsSendTime.count() << ',' << HotTreesConstructTime.count() << ','
-#else
-                      << TreeConstructTime.count() << ','
-#endif
-                      << RoutingTableMakeTime.count() << ',' << QueryRoutingTime.count() << ','
-#ifdef SYNCHRONOUS_DPU_EXEC
-                      << QuerySendTime.count() << ',' << QueryExecTime.count() << ',' << QueryRecvTime.count() << ','
-#else
-                      << QuerySendExecRecvTime.count() << ','
-#endif
-                      << PostprocessTime.count() << ',' << BatchTotalTime.count() << std::endl;
+            std::cout << upmem_get_nr_dpus() << ',' << idx_batch << ',' << long{NUM_REQUESTS_PER_BATCH} << ','
+                      << ElapsedTime::print << std::endl;
         }
 
-        RebalancingTime = RebalancingTime.zero();
+        ElapsedTime::reset();
         benchmark->partition_with_one_batch(&db);
     });
 
