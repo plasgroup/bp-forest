@@ -912,12 +912,11 @@ static void INSERT_execute(Node* const root, uint8_t* const height, uint8_t* con
     }
 }
 static void INSERT_execute_batch(Node* const root, uint8_t* const height, uint8_t* const root_numKeys,
-    const uint16_t idx_qry_begin, const uint16_t idx_qry_end,
-    const uintptr_t qrys)
+    const uint16_t idx_qry_begin, const uint16_t idx_qry_end)
 {
     InsertWorkspace* const wks_me = &workspace.tree.insert[me()];
     wks_me->idx_qry_in_cache = TASK_INSERT_NR_CACHED_QRYS;  // to trigger the first fetch
-    wks_me->cursor_on_qrys = qrys + sizeof(KVPair) * idx_qry_begin;
+    wks_me->cursor_on_qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8 + sizeof(KVPair) * idx_qry_begin;
 
     for (unsigned idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
         const KVPair* const qry = INSERT_fetch_next_qry(wks_me);
@@ -930,20 +929,14 @@ void task_insert(void)
     if (me() < TASK_INSERT_NR_TASKLETS) {
         const uint16_t nr_cold_qrys = input_header.insert.nr_cold_qrys, nr_hot_qrys = input_header.insert.nr_hot_qrys;
 
-        static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8,
-                               cold_qrys = qrys;
-        const uintptr_t hot_qrys = cold_qrys + sizeof(KVPair) * nr_cold_qrys;
-
         INSERT_execute_batch(&cold_root, &cold_height, &cold_root_numKeys,
-            0, nr_cold_qrys,
-            cold_qrys);
+            0, nr_cold_qrys);
 #ifdef TASK_INSERT_CHECK
         check_tree_structure(&cold_root, cold_height, cold_root_numKeys);
 #endif
 
         INSERT_execute_batch(&hot_root, &hot_height, &hot_root_numKeys,
-            0, nr_hot_qrys,
-            hot_qrys);
+            nr_cold_qrys, nr_cold_qrys + nr_hot_qrys);
 #ifdef TASK_INSERT_CHECK
         check_tree_structure(&hot_root, hot_height, hot_root_numKeys);
 #endif
@@ -976,12 +969,11 @@ static key_uint64_t* DELETE_fetch_next_qry(DeleteWorkspace* wks)
     return &wks->qrys[wks->idx_qry_in_cache++];
 }
 static void DELETE_execute(Node* const root, const uint8_t height, const uint8_t root_numKeys,
-    const uint16_t idx_qry_begin, const uint16_t idx_qry_end,
-    const uintptr_t qrys)
+    const uint16_t idx_qry_begin, const uint16_t idx_qry_end)
 {
     DeleteWorkspace* const wks_me = &workspace.tree.delete[me()];
     wks_me->idx_qry_in_cache = TASK_INSERT_NR_CACHED_QRYS;  // to trigger the first fetch
-    wks_me->cursor_on_qrys = qrys + sizeof(key_uint64_t) * idx_qry_begin;
+    wks_me->cursor_on_qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8 + sizeof(key_uint64_t) * idx_qry_begin;
 
     if (height == 0) {
         for (unsigned idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
@@ -1019,10 +1011,6 @@ void task_delete(void)
     if (me() < TASK_DELETE_NR_TASKLETS) {
         const uint16_t nr_cold_qrys = input_header.delete.nr_cold_qrys, nr_hot_qrys = input_header.delete.nr_hot_qrys;
 
-        static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8,
-                               cold_qrys = qrys;
-        const uintptr_t hot_qrys = cold_qrys + sizeof(key_uint64_t) * nr_cold_qrys;
-
         const uint16_t nr_cold_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_DELETE_NR_TASKLETS(nr_cold_qrys),
                        nr_remainder_cold_qrys = nr_cold_qrys - nr_cold_qrys_per_tasklet * TASK_DELETE_NR_TASKLETS,
                        nr_cold_qrys_for_me = nr_cold_qrys_per_tasklet + (me() < nr_remainder_cold_qrys);
@@ -1032,12 +1020,12 @@ void task_delete(void)
         const uint16_t nr_hot_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_DELETE_NR_TASKLETS(nr_hot_qrys),
                        nr_remainder_hot_qrys = nr_hot_qrys - nr_hot_qrys_per_tasklet * TASK_DELETE_NR_TASKLETS,
                        nr_hot_qrys_for_me = nr_hot_qrys_per_tasklet + (me() < nr_remainder_hot_qrys);
-        const uint16_t idx_hot_qry_begin = (uint16_t)(nr_hot_qrys_per_tasklet * me() + (me() <= nr_remainder_hot_qrys ? me() : nr_remainder_hot_qrys)),
+        const uint16_t idx_hot_qry_begin = (uint16_t)(nr_hot_qrys_per_tasklet * me() + (me() <= nr_remainder_hot_qrys ? me() : nr_remainder_hot_qrys))
+                                           + nr_cold_qrys,
                        idx_hot_qry_end = idx_hot_qry_begin + nr_hot_qrys_for_me;
 
         DELETE_execute(&cold_root, cold_height, cold_root_numKeys,
-            idx_cold_qry_begin, idx_cold_qry_end,
-            cold_qrys);
+            idx_cold_qry_begin, idx_cold_qry_end);
 #ifdef TASK_DELETE_CHECK
         DELETE_barrier();
         if (me() == 0) {
@@ -1046,8 +1034,7 @@ void task_delete(void)
 #endif
 
         DELETE_execute(&hot_root, hot_height, hot_root_numKeys,
-            idx_hot_qry_begin, idx_hot_qry_end,
-            hot_qrys);
+            idx_hot_qry_begin, idx_hot_qry_end);
 #ifdef TASK_DELETE_CHECK
         DELETE_barrier();
         if (me() == 0) {
@@ -1060,28 +1047,33 @@ void task_delete(void)
 
 
 #if SUPPORT_GET
-static void GET_prepare_next_qry(key_uint64_t* qrys_cache, unsigned* idx_qry_in_cache, uintptr_t* cursor_on_qrys)
+static void GET_prepare_next_qry(key_uint64_t* qrys_cache, unsigned* idx_qry_in_cache, uintptr_t* cursor_on_qrys, uintptr_t* cursor_on_results)
 {
     if (*idx_qry_in_cache == TASK_GET_NR_CACHED_QRYS) {
-        mram_write(qrys_cache, (__mram_ptr void*)*cursor_on_qrys, sizeof(key_uint64_t) * TASK_GET_NR_CACHED_QRYS);
+        mram_write(qrys_cache, (__mram_ptr void*)*cursor_on_results, sizeof(value_uint64_t) * TASK_GET_NR_CACHED_QRYS);
+        *cursor_on_results += sizeof(value_uint64_t) * TASK_GET_NR_CACHED_QRYS;
+
         *cursor_on_qrys += sizeof(key_uint64_t) * TASK_GET_NR_CACHED_QRYS;
         mram_read((__mram_ptr void*)*cursor_on_qrys, qrys_cache, sizeof(key_uint64_t) * TASK_GET_NR_CACHED_QRYS);
         *idx_qry_in_cache = 0;
     }
 }
 static void GET_execute(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
-    const uint16_t idx_qry_begin, const uint16_t idx_qry_end,
-    const uintptr_t qrys)
+    const uint16_t idx_qry_begin, const uint16_t idx_qry_end)
 {
+    static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8;
+    static const uintptr_t results = (uintptr_t)DPU_MRAM_HEAP_POINTER + RESULT_OFFSET;
+
     GetWorkspace* const wks_me = &workspace.tree.get[me()];
 
     unsigned idx_qry = idx_qry_begin, idx_qry_in_cache = 0;
-    uintptr_t cursor_on_qrys = qrys + sizeof(key_uint64_t) * idx_qry;
+    uintptr_t cursor_on_qrys = qrys + sizeof(key_uint64_t) * idx_qry,
+              cursor_on_results = results + sizeof(value_uint64_t) * idx_qry;
     mram_read((__mram_ptr void*)(cursor_on_qrys), &wks_me->qrys[0], sizeof(key_uint64_t) * TASK_GET_NR_CACHED_QRYS);
 
     if (height == 0) {
         for (; idx_qry < idx_qry_end; idx_qry++) {
-            GET_prepare_next_qry(&wks_me->qrys[0], &idx_qry_in_cache, &cursor_on_qrys);
+            GET_prepare_next_qry(&wks_me->qrys[0], &idx_qry_in_cache, &cursor_on_qrys, &cursor_on_results);
             const key_uint64_t key = wks_me->qrys[idx_qry_in_cache];
 
             const uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, key);
@@ -1095,7 +1087,7 @@ static void GET_execute(const Node* const root, const uint8_t height, const uint
 
     } else {
         for (; idx_qry < idx_qry_end; idx_qry++) {
-            GET_prepare_next_qry(&wks_me->qrys[0], &idx_qry_in_cache, &cursor_on_qrys);
+            GET_prepare_next_qry(&wks_me->qrys[0], &idx_qry_in_cache, &cursor_on_qrys, &cursor_on_results);
             const key_uint64_t key = wks_me->qrys[idx_qry_in_cache];
 
             NodeLink link = root->inl.children[search_for_child_index(&root->inl.keys[0], root_numKeys, key)];
@@ -1117,17 +1109,13 @@ static void GET_execute(const Node* const root, const uint8_t height, const uint
         }
     }
     if (idx_qry_in_cache != 0) {
-        mram_write(&wks_me->qrys[0], (__mram_ptr void*)cursor_on_qrys, sizeof(value_uint64_t) * idx_qry_in_cache);
+        mram_write(&wks_me->qrys[0], (__mram_ptr void*)cursor_on_results, sizeof(value_uint64_t) * idx_qry_in_cache);
     }
 }
 void task_get(void)
 {
     if (me() < TASK_GET_NR_TASKLETS) {
         const uint16_t nr_cold_qrys = input_header.get.nr_cold_qrys, nr_hot_qrys = input_header.get.nr_hot_qrys;
-
-        static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8,
-                               cold_qrys = qrys;
-        const uintptr_t hot_qrys = cold_qrys + sizeof(key_uint64_t) * nr_cold_qrys;
 
         const uint16_t nr_cold_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_GET_NR_TASKLETS(nr_cold_qrys),
                        nr_remainder_cold_qrys = nr_cold_qrys - nr_cold_qrys_per_tasklet * TASK_GET_NR_TASKLETS,
@@ -1138,15 +1126,14 @@ void task_get(void)
         const uint16_t nr_hot_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_GET_NR_TASKLETS(nr_hot_qrys),
                        nr_remainder_hot_qrys = nr_hot_qrys - nr_hot_qrys_per_tasklet * TASK_GET_NR_TASKLETS,
                        nr_hot_qrys_for_me = nr_hot_qrys_per_tasklet + (me() < nr_remainder_hot_qrys);
-        const uint16_t idx_hot_qry_begin = (uint16_t)(nr_hot_qrys_per_tasklet * me() + (me() <= nr_remainder_hot_qrys ? me() : nr_remainder_hot_qrys)),
+        const uint16_t idx_hot_qry_begin = (uint16_t)(nr_hot_qrys_per_tasklet * me() + (me() <= nr_remainder_hot_qrys ? me() : nr_remainder_hot_qrys))
+                                           + nr_cold_qrys,
                        idx_hot_qry_end = idx_hot_qry_begin + nr_hot_qrys_for_me;
 
         GET_execute(&cold_root, cold_height, cold_root_numKeys,
-            idx_cold_qry_begin, idx_cold_qry_end,
-            cold_qrys);
+            idx_cold_qry_begin, idx_cold_qry_end);
         GET_execute(&hot_root, hot_height, hot_root_numKeys,
-            idx_hot_qry_begin, idx_hot_qry_end,
-            hot_qrys);
+            idx_hot_qry_begin, idx_hot_qry_end);
     }
 }
 #endif /* if SUPPORT_GET */
@@ -1334,7 +1321,7 @@ void task_range_min(void)
         const uintptr_t cold_delim_keys = (hot_lump_end_indices + sizeof(uint16_t) * (nr_hot_lumps + 1) + 7) / 8 * 8,
                         hot_delim_keys = cold_delim_keys + sizeof(key_uint64_t) * nr_cold_delims;
 
-        const uintptr_t cold_results = (uintptr_t)DPU_MRAM_HEAP_POINTER + RMQ_RESULT_OFFSET,
+        const uintptr_t cold_results = (uintptr_t)DPU_MRAM_HEAP_POINTER + RESULT_OFFSET,
                         hot_results = cold_results + sizeof(value_uint64_t) * nr_cold_results;
 
         const uint16_t nr_cold_delims_per_tasklet = (uint16_t)DIV_NR_DELIMS_BY_TASK_RANGE_MIN_NR_TASKLETS(nr_cold_delims),
@@ -1389,7 +1376,7 @@ static void RANGE_COUNT_push_result(uint64_t result, uint64_t* results_cache, un
 {
     results_cache[*idx_result_in_cache] = result;
     (*idx_result_in_cache)++;
-    if (*idx_result_in_cache == TASK_RANGE_COUNT_NR_CACHED_QRYS) {
+    if (*idx_result_in_cache == TASK_RANGE_COUNT_NR_CACHED_RESULTS) {
         mram_write(results_cache, (__mram_ptr void*)*cursor_on_results, sizeof(uint64_t) * TASK_RANGE_COUNT_NR_CACHED_RESULTS);
         *cursor_on_results += sizeof(uint64_t) * TASK_RANGE_COUNT_NR_CACHED_RESULTS;
         *idx_result_in_cache = 0;
@@ -1452,10 +1439,11 @@ static uint64_t RANGE_COUNT_impl(const Node* const root, const uint8_t height, c
         return count;
     }
 }
-static void RANGE_COUNT_execute(const uint16_t idx_qry_begin, const uint16_t idx_qry_end)
+static void RANGE_COUNT_execute(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
+    const uint16_t idx_qry_begin, const uint16_t idx_qry_end)
 {
     static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8;
-    static const uintptr_t results = (uintptr_t)DPU_MRAM_HEAP_POINTER + RCQ_RESULT_OFFSET;
+    static const uintptr_t results = (uintptr_t)DPU_MRAM_HEAP_POINTER + RESULT_OFFSET;
 
     RCQWorkspace* const wks_me = &workspace.tree.rcq[me()];
 
@@ -1468,8 +1456,7 @@ static void RANGE_COUNT_execute(const uint16_t idx_qry_begin, const uint16_t idx
 
     for (; idx_qry < idx_qry_end; idx_qry++) {
         const RangeCountQuery* const qry = RANGE_COUNT_pop_qry(&wks_me->qrys[0], &idx_qry_in_cache, &cursor_on_qrys);
-        const uint64_t count = RANGE_COUNT_impl(&cold_root, cold_height, cold_root_numKeys, qry)
-                               + RANGE_COUNT_impl(&hot_root, hot_height, hot_root_numKeys, qry);
+        const uint64_t count = RANGE_COUNT_impl(root, height, root_numKeys, qry);
         RANGE_COUNT_push_result(count, &wks_me->results[0], &idx_result_in_cache, &cursor_on_results);
     }
     RANGE_COUNT_flush_results_cache(&wks_me->results[0], &idx_result_in_cache, &cursor_on_results);
@@ -1477,15 +1464,25 @@ static void RANGE_COUNT_execute(const uint16_t idx_qry_begin, const uint16_t idx
 void task_range_count(void)
 {
     if (me() < TASK_RANGE_COUNT_NR_TASKLETS) {
-        const uint16_t nr_qrys = input_header.rcq.nr_cold_qrys;
+        const uint16_t nr_cold_qrys = input_header.rcq.nr_cold_qrys, nr_hot_qrys = input_header.rcq.nr_hot_qrys;
 
-        const uint16_t nr_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_RANGE_COUNT_NR_TASKLETS(nr_qrys),
-                       nr_remainder_qrys = nr_qrys - nr_qrys_per_tasklet * TASK_RANGE_COUNT_NR_TASKLETS,
-                       nr_qrys_for_me = nr_qrys_per_tasklet + (me() < nr_remainder_qrys);
-        const uint16_t idx_qry_begin = (uint16_t)(nr_qrys_per_tasklet * me() + (me() <= nr_remainder_qrys ? me() : nr_remainder_qrys)),
-                       idx_qry_end = idx_qry_begin + nr_qrys_for_me;
+        const uint16_t nr_cold_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_RANGE_COUNT_NR_TASKLETS(nr_cold_qrys),
+                       nr_remainder_cold_qrys = nr_cold_qrys - nr_cold_qrys_per_tasklet * TASK_RANGE_COUNT_NR_TASKLETS,
+                       nr_cold_qrys_for_me = nr_cold_qrys_per_tasklet + (me() < nr_remainder_cold_qrys);
+        const uint16_t idx_cold_qry_begin = (uint16_t)(nr_cold_qrys_per_tasklet * me() + (me() <= nr_remainder_cold_qrys ? me() : nr_remainder_cold_qrys)),
+                       idx_cold_qry_end = idx_cold_qry_begin + nr_cold_qrys_for_me;
 
-        RANGE_COUNT_execute(idx_qry_begin, idx_qry_end);
+        const uint16_t nr_hot_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_RANGE_COUNT_NR_TASKLETS(nr_hot_qrys),
+                       nr_remainder_hot_qrys = nr_hot_qrys - nr_hot_qrys_per_tasklet * TASK_RANGE_COUNT_NR_TASKLETS,
+                       nr_hot_qrys_for_me = nr_hot_qrys_per_tasklet + (me() < nr_remainder_hot_qrys);
+        const uint16_t idx_hot_qry_begin = (uint16_t)(nr_hot_qrys_per_tasklet * me() + (me() <= nr_remainder_hot_qrys ? me() : nr_remainder_hot_qrys))
+                                           + nr_cold_qrys,
+                       idx_hot_qry_end = idx_hot_qry_begin + nr_hot_qrys_for_me;
+
+        RANGE_COUNT_execute(&cold_root, cold_height, cold_root_numKeys,
+            idx_cold_qry_begin, idx_cold_qry_end);
+        RANGE_COUNT_execute(&hot_root, hot_height, hot_root_numKeys,
+            idx_hot_qry_begin, idx_hot_qry_end);
     }
 }
 #endif /* if SUPPORT_RANGE_COUNT */

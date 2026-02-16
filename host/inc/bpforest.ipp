@@ -254,11 +254,6 @@ inline void BPForest::combine_delims()
     combined_delims.clear();
     combined_delims_dest.clear();
 
-    std::vector<dpu_id_t> hot_to_dpuid(nr_hot_ranges, INVALID_DPU_ID);
-    for (dpu_id_t i = 0; i < nr_cold_ranges; i++)
-        if (dpu_to_hot_range[i] != INVALID_DPU_ID)
-            hot_to_dpuid[dpu_to_hot_range[i]] = i;
-
     size_t idx_hot = 0;
     key_uint64_t next_key = 0;
     for (size_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
@@ -270,7 +265,7 @@ inline void BPForest::combine_delims()
                 combined_delims_dest.push_back({static_cast<dpu_id_t>(idx_cold), false});
             }
             combined_delims.push_back(hot_delims[idx_hot]);
-            combined_delims_dest.push_back({hot_to_dpuid[idx_hot], true});
+            combined_delims_dest.push_back({static_cast<dpu_id_t>(idx_hot), true});
             next_key = hot_max_key[idx_hot] + 1;  // may wrap around
             idx_hot++;
         }
@@ -1308,7 +1303,7 @@ void BPForest::execute_rmq_in_dpus(
     {
         StopWatch timer{QueryRecvTime};
         UPMEM_AsyncDuration async;
-        scatter_from_dpu(all_dpu, RMQ_RESULT_OFFSET, RMQResultReceiver{this, &cold_ranges_to_minirange_idx[0], &hot_ranges_to_minirange_idx[0], &cold_to_be_agged[0], &hot_to_be_agged[0], &if_cold_begins_middle[0], &if_hot_begins_middle[0], &if_hot_ends_middle[0]}, async);
+        scatter_from_dpu(all_dpu, RESULT_OFFSET, RMQResultReceiver{this, &cold_ranges_to_minirange_idx[0], &hot_ranges_to_minirange_idx[0], &cold_to_be_agged[0], &hot_to_be_agged[0], &if_cold_begins_middle[0], &if_hot_begins_middle[0], &if_hot_ends_middle[0]}, async);
     }
 #else /* SYNCHRONOUS_DPU_EXEC */
     {
@@ -1317,7 +1312,7 @@ void BPForest::execute_rmq_in_dpus(
 
         gather_to_dpu(all_dpu, 0, RMQSender{this, &nr_lumps[0], &lump_end_indices[0], cold_range_to_delim_idx, hot_range_to_delim_idx, if_cold_begins_middle, if_hot_begins_middle, if_hot_ends_middle}, async);
         execute(all_dpu, async);
-        scatter_from_dpu(all_dpu, RMQ_RESULT_OFFSET, RMQResultReceiver{this, &cold_ranges_to_minirange_idx[0], &hot_ranges_to_minirange_idx[0], &cold_to_be_agged[0], &hot_to_be_agged[0], &if_cold_begins_middle[0], &if_hot_begins_middle[0], &if_hot_ends_middle[0]}, async);
+        scatter_from_dpu(all_dpu, RESULT_OFFSET, RMQResultReceiver{this, &cold_ranges_to_minirange_idx[0], &hot_ranges_to_minirange_idx[0], &cold_to_be_agged[0], &hot_to_be_agged[0], &if_cold_begins_middle[0], &if_hot_begins_middle[0], &if_hot_ends_middle[0]}, async);
     }
 #endif
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
@@ -1374,7 +1369,12 @@ inline std::vector<size_t> BPForest::get_nr_rcqs() const
     std::vector<size_t> results;
     results.reserve(nr_cold_ranges);
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_cold_ranges; idx_dpu++) {
-        results.push_back(rcqs.cold[idx_dpu].nr_qrys);
+        size_t nr_qrys = rcqs.cold[idx_dpu].nr_qrys;
+        const dpu_id_t idx_hot = dpu_to_hot_range[idx_dpu];
+        if (idx_hot != INVALID_DPU_ID) {
+            nr_qrys += rcqs.cold[idx_hot].nr_qrys;
+        }
+        results.push_back(nr_qrys);
     }
     return results;
 }
@@ -1406,6 +1406,13 @@ inline void BPForest::postprocess_of_rcq_impl(unsigned tid)
             result[rcqs.cold[idx_range].orig_idxs[tid][i]] += rcqs.cold[idx_range].results[tid][i];
         }
         rcqs.cold[idx_range].qrys[tid].clear();
+    }
+    for (dpu_id_t idx_hot = 0; idx_hot < nr_hot_ranges; idx_hot++) {
+        const size_t nr_queries_in_this_range = rcqs.hot[idx_hot].qrys[tid].size();
+        for (size_t i = 0; i < nr_queries_in_this_range; i++) {
+            result[rcqs.hot[idx_hot].orig_idxs[tid][i]] += rcqs.hot[idx_hot].results[tid][i];
+        }
+        rcqs.hot[idx_hot].qrys[tid].clear();
     }
 }
 
@@ -2008,11 +2015,15 @@ template <typename Query, typename Result>
 inline void BPForest::execute_in_dpus(uint32_t task_no, QueryData<Query, Result>& query_data)
 {
     if constexpr (!std::is_same_v<Result, void> && !std::is_same_v<Query, Result>) {
-        for (unsigned tid = 0; tid < get_parallelism(); tid++) {
-            for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
+        for (dpu_id_t idx_cold = 0; idx_cold < nr_cold_ranges; idx_cold++) {
+            query_data.cold[idx_cold].results.resize(get_parallelism());
+            for (unsigned tid = 0; tid < get_parallelism(); tid++) {
                 query_data.cold[idx_cold].results[tid].reserve(query_data.cold[idx_cold].qrys[tid].size());
             }
-            for (dpu_id_t idx_hot = 0; idx_hot < nr_hot_ranges; idx_hot++) {
+        }
+        for (dpu_id_t idx_hot = 0; idx_hot < nr_hot_ranges; idx_hot++) {
+            query_data.hot[idx_hot].results.resize(get_parallelism());
+            for (unsigned tid = 0; tid < get_parallelism(); tid++) {
                 query_data.hot[idx_hot].results[tid].reserve(query_data.hot[idx_hot].qrys[tid].size());
             }
         }
@@ -2032,7 +2043,7 @@ inline void BPForest::execute_in_dpus(uint32_t task_no, QueryData<Query, Result>
     if constexpr (!std::is_same_v<Result, void>) {
         StopWatch timer{QueryRecvTime};
         UPMEM_AsyncDuration async;
-        scatter_from_dpu(all_dpu, 8, ResultReceiver{this, &query_data}, async);
+        scatter_from_dpu(all_dpu, RESULT_OFFSET, ResultReceiver{this, &query_data}, async);
     }
 #else /* SYNCHRONOUS_DPU_EXEC */
     {
@@ -2041,7 +2052,7 @@ inline void BPForest::execute_in_dpus(uint32_t task_no, QueryData<Query, Result>
         gather_to_dpu(all_dpu, 0, QuerySender{this, task_no, &query_data}, async);
         execute(all_dpu, async);
         if constexpr (!std::is_same_v<Result, void>) {
-            scatter_from_dpu(all_dpu, 8, ResultReceiver{this, &query_data}, async);
+            scatter_from_dpu(all_dpu, RESULT_OFFSET, ResultReceiver{this, &query_data}, async);
         }
     }
 #endif
@@ -3132,9 +3143,8 @@ inline void BPForest::print_params(std::ostream& ostr) const
             "UPMEM_SIMULATOR: 0\n"
 #endif
             "MAX_NR_SUMMARY_CHUNKS: " EXPAND_STRINGIFY(MAX_NR_SUMMARY_CHUNKS) "\n"
-            "RMQ_RESULT_OFFSET: " EXPAND_STRINGIFY(RMQ_RESULT_OFFSET) "\n"
             "MAX_NR_RMQ_LUMPS: " EXPAND_STRINGIFY(MAX_NR_RMQ_LUMPS) "\n"
-            "RCQ_RESULT_OFFSET: " EXPAND_STRINGIFY(RCQ_RESULT_OFFSET) "\n"
+            "RESULT_OFFSET: " EXPAND_STRINGIFY(RESULT_OFFSET) "\n"
 #ifdef HOST_ONLY
             "HOST_ONLY: 1\n"
 #else

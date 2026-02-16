@@ -20,16 +20,12 @@
 #endif
 
 
-#ifndef RMQ_RESULT_OFFSET
-#define RMQ_RESULT_OFFSET 1179640
-#endif
-
 #ifndef MAX_NR_RMQ_LUMPS
 #define MAX_NR_RMQ_LUMPS 20000
 #endif
 
 
-#ifndef RCQ_RESULT_OFFSET
+#ifndef RESULT_OFFSET
 // 8 + 65535 * sizeof(RangeCountQuery) * 2
-#define RCQ_RESULT_OFFSET 3145688
+#define RESULT_OFFSET 3145688
 #endif
