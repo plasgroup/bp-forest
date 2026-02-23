@@ -41,12 +41,10 @@ constexpr dpu_id_t INVALID_DPU_ID = std::numeric_limits<dpu_id_t>::max();
 
 using block_id_t = uint32_t;
 
-#ifndef INVERSED_REBALANCING_NOISE_MARGIN
-#define INVERSED_REBALANCING_NOISE_MARGIN 5
+#ifndef KVPAIRS_CHUNK_SIZE
+#define KVPAIRS_CHUNK_SIZE 256
 #endif
-//! @brief With this value as x, rebalancing is performed
-//!        when the number of queries exceeds (1 + 1/x) times the original upper limit.
-constexpr unsigned InversedRebalancingNoiseMargin = INVERSED_REBALANCING_NOISE_MARGIN;
+constexpr uint32_t KVPairsChunkSize = KVPAIRS_CHUNK_SIZE;
 
 
 // #define TOUCH_QUERIES_IN_ADVANCE

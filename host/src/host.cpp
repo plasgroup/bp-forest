@@ -170,7 +170,7 @@ struct Option {
 class BPForestDatabase : public Database
 {
     BPForest forest;
-    std::vector<std::pair<size_t /* cold */, size_t /* hot */>> nr_pairs;
+    std::vector<std::pair<uint32_t /* cold */, uint32_t /* hot */>> nr_pairs;
 
 public:
     BPForestDatabase(const InitData& init_data, const std::vector<Partition>& partitioning, const BPForest::Param& param)
@@ -185,7 +185,7 @@ public:
     BPForestDatabase(const std::vector<KVPair>& init_data, const BPForest::Param& param)
         : forest(&init_data[0], init_data.size(), param) {}
 
-    void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t results[])
+    void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t results[]) override
     {
         forest.batch_get(static_cast<uint32_t>(nr_queries), keys, results);
 #ifdef DEBUG_ON
@@ -193,27 +193,25 @@ public:
 #endif /* DEBUG_ON */
     }
 
-    void batch_insert(size_t nr_queries, const KVPair pairs[])
+    void batch_insert(size_t nr_queries, const KVPair pairs[]) override
     {
         forest.batch_insert(static_cast<uint32_t>(nr_queries), pairs);
     }
 
-    void batch_delete(size_t nr_queries, const key_uint64_t keys[])
+    void batch_delete(size_t nr_queries, const key_uint64_t keys[]) override
     {
         forest.batch_delete(static_cast<uint32_t>(nr_queries), keys);
     }
 
-    void batch_range_minimum(size_t nr_queries, const KeyRange ranges[], value_uint64_t results[])
+    void batch_range_minimum(size_t, const KeyRange[], value_uint64_t[]) override
     {
-        forest.batch_range_minimum(nr_queries, ranges, results);
-#ifdef DEBUG_ON
-        check_range_min_results(nr_queries, ranges, results);
-#endif /* DEBUG_ON */
+        std::cerr << "batch_range_minimum is not implemented" << std::endl;
+        exit(1);
     }
 
     void batch_range_sum(uint64_t /* n */,
         const KeyRange /*queries */[],
-        value_uint64_t /* results */[])
+        value_uint64_t /* results */[]) override
     {
         std::cerr << "batch_range_sum is not implemented" << std::endl;
         exit(1);
@@ -221,38 +219,46 @@ public:
 
     void batch_range_count(uint64_t n,
         const RangeCountQuery queries[],
-        value_uint64_t results[])
+        value_uint64_t results[]) override
     {
         forest.batch_range_count(static_cast<uint32_t>(n), queries, results);
     };
 
-    void partition_with(uint64_t n, const key_uint64_t keys[])
+    void partition_with(uint64_t n, const key_uint64_t keys[], value_uint64_t values[]) override
     {
-        nr_pairs = forest.partition_data_with_reference_point_queries(n, keys);
+        nr_pairs = forest.partition_with_get_batch(static_cast<uint32_t>(n), keys, values);
     }
-    void partition_with(uint64_t n, const KeyRange queries[])
+    void partition_with(uint64_t n, const KVPair pairs[]) override
     {
-        nr_pairs = forest.partition_data_with_reference_range_queries(n, queries);
+        nr_pairs = forest.partition_with_insert_batch(static_cast<uint32_t>(n), pairs);
     }
-    void partition_with(uint64_t n, const RangeCountQuery queries[])
+    void partition_with(uint64_t n, const key_uint64_t keys[]) override
     {
-        nr_pairs = forest.partition_data_with_reference_range_queries(n, queries);
+        nr_pairs = forest.partition_with_delete_batch(static_cast<uint32_t>(n), keys);
+    }
+    void partition_with(uint64_t, const KeyRange[], uint64_t[]) override
+    {
+        std::cerr << "batch_range_minimum is not implemented" << std::endl;
+    }
+    void partition_with(uint64_t n, const RangeCountQuery queries[], uint64_t results[]) override
+    {
+        nr_pairs = forest.partition_with_range_count_batch(static_cast<uint32_t>(n), queries, results);
     }
 
-    int get_parallelism() const
+    int get_parallelism() const override
     {
         return static_cast<int>(upmem_get_nr_dpus());
     }
 
-    void print_nr_last_rcqs(std::ostream& ostr, dpu_id_t nr_dpus_to_print) const
+    void print_last_query_dist(std::ostream& ostr, dpu_id_t nr_dpus_to_print) const
     {
-        const std::vector<size_t> nr_rcqs = forest.get_nr_rcqs();
+        const std::vector<std::array<uint32_t, 2>> nr_rcqs = forest.last_query_dist();
         if (nr_dpus_to_print > 0) {
             for (dpu_id_t idx_dpu = 0; idx_dpu < nr_rcqs.size() && idx_dpu < nr_dpus_to_print; idx_dpu++) {
                 if (idx_dpu != 0) {
                     ostr << ",";
                 }
-                ostr << nr_rcqs[idx_dpu];
+                ostr << (nr_rcqs[idx_dpu][0] + nr_rcqs[idx_dpu][1]);
             }
             ostr << std::endl;
         }
@@ -300,7 +306,7 @@ public:
 
     std::vector<Partition> dump_partitions() const { return forest.dump_partitions(); }
 
-    void print_params(std::ofstream& dump_param_file)
+    void print_params(std::ofstream& dump_param_file) override
     {
         forest.print_params(dump_param_file);
     }
@@ -386,9 +392,9 @@ int main(int argc, char* argv[])
 
     benchmark->run(opt.nr_batches, &db, [&](int idx_batch) {
         if (opt.op_type == TASK_RANGE_COUNT) {
-            db.print_nr_last_rcqs(std::cout, opt.print_compute_load);
+            db.print_last_query_dist(std::cout, opt.print_compute_load);
             if (dump_compute_load_file) {
-                db.print_nr_last_rcqs(*dump_compute_load_file, MAX_NR_DPUS);
+                db.print_last_query_dist(*dump_compute_load_file, MAX_NR_DPUS);
             }
         }
 #ifdef HOST_ONLY
@@ -409,7 +415,6 @@ int main(int argc, char* argv[])
         }
 
         ElapsedTime::reset();
-        benchmark->partition_with_one_batch(&db);
     });
 
 #ifdef MEASURE_XFER_BYTES

@@ -18,8 +18,7 @@ public:
         }
     }
 
-    T& operator[](size_t i) { return buffer[i]; }
-    const T& operator[](size_t i) const { return buffer[i]; }
+    T& operator[](size_t i) const { return buffer[i]; }
 
     void reserve(size_t required)
     {

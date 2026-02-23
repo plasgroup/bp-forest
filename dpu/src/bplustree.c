@@ -136,13 +136,11 @@ static void TREE_CONSTRUCT_receive_lifted_links_from_junior(unsigned nr_children
 
 //! @sa /docs/tree_initialization.md
 //! @return number of the allocated nodes
-static unsigned construct_tree(uint8_t* root_numKeys, Node* root, uint8_t* height, key_uint64_t* min_key, NodePtr (*allocator)(unsigned))
+static unsigned construct_tree(const uintptr_t initial_pairs, const uint32_t nr_pairs,
+    uint8_t* root_numKeys, Node* root, uint8_t* height, key_uint64_t* min_key, NodePtr (*allocator)(unsigned))
 {
-    static const uintptr_t initial_pairs = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8;
-
     InitWorkspace* const wks = &workspace.tree.init[me()];
 
-    const unsigned nr_pairs = input_header.init.nr_pairs;
     if (nr_pairs == 0) {
         if (me() == 0) {
             *height = 0;
@@ -449,29 +447,46 @@ static void TREE_CONSTRUCT_barrier(void)
     }
 }
 
-static NodePtr INIT_allocator(unsigned idx_node)
+static NodePtr INIT_cold_allocator(unsigned idx_node)
 {
     return idx_node;
+}
+unsigned node_idx_shift;
+static NodePtr INIT_hot_allocator(unsigned idx_node)
+{
+    return idx_node + node_idx_shift;
 }
 void task_init(void)
 {
     _Static_assert(TREE_CONSTRUCT_NR_TASKLETS > 0, "TREE_CONSTRUCT_NR_TASKLETS > 0");
     if (me() < TREE_CONSTRUCT_NR_TASKLETS) {
-        const unsigned nr_allocated_nodes = construct_tree(&cold_root_numKeys, &cold_root, &cold_height, &cold_min_key, INIT_allocator);
+        static const uintptr_t cold_pairs = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader);
 
-        TREE_CONSTRUCT_barrier();
-
-        _Static_assert(TASK_INIT_ALLOC_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS, "TASK_INIT_ALLOC_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS");
-        Allocator_init(nr_allocated_nodes);
+        const unsigned nr_cold_nodes = construct_tree(
+            cold_pairs, input_header.init.nr_cold_pairs,
+            &cold_root_numKeys, &cold_root, &cold_height, &cold_min_key, INIT_cold_allocator);
 
         if (me() == 0) {
             hot_height = 0;
             hot_root_numKeys = 0;
+            node_idx_shift = nr_cold_nodes;
         }
+
+        const uintptr_t hot_pairs = cold_pairs + sizeof(KVPair) * input_header.init.nr_cold_pairs;
+        const unsigned nr_hot_nodes = construct_tree(
+            hot_pairs, input_header.init.nr_hot_pairs,
+            &hot_root_numKeys, &hot_root, &hot_height, &hot_min_key, INIT_hot_allocator);
+
+        TREE_CONSTRUCT_barrier();
+
+        _Static_assert(TASK_INIT_ALLOC_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS, "TASK_INIT_ALLOC_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS");
+        Allocator_init(nr_cold_nodes + nr_hot_nodes);
+
 #ifdef TASK_INIT_CHECK
         TREE_CONSTRUCT_barrier();
         if (me() == 0) {
             check_tree_structure(&cold_root, cold_height, cold_root_numKeys);
+            check_tree_structure(&hot_root, hot_height, hot_root_numKeys);
         }
 #endif
     }
@@ -912,11 +927,11 @@ static void INSERT_execute(Node* const root, uint8_t* const height, uint8_t* con
     }
 }
 static void INSERT_execute_batch(Node* const root, uint8_t* const height, uint8_t* const root_numKeys,
-    const uint16_t idx_qry_begin, const uint16_t idx_qry_end)
+    const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
 {
     InsertWorkspace* const wks_me = &workspace.tree.insert[me()];
     wks_me->idx_qry_in_cache = TASK_INSERT_NR_CACHED_QRYS;  // to trigger the first fetch
-    wks_me->cursor_on_qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8 + sizeof(KVPair) * idx_qry_begin;
+    wks_me->cursor_on_qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader) + sizeof(KVPair) * idx_qry_begin;
 
     for (unsigned idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
         const KVPair* const qry = INSERT_fetch_next_qry(wks_me);
@@ -927,7 +942,7 @@ void task_insert(void)
 {
     _Static_assert(TASK_INSERT_NR_TASKLETS == 1, "TASK_INSERT_NR_TASKLETS == 1");
     if (me() < TASK_INSERT_NR_TASKLETS) {
-        const uint16_t nr_cold_qrys = input_header.insert.nr_cold_qrys, nr_hot_qrys = input_header.insert.nr_hot_qrys;
+        const uint32_t nr_cold_qrys = input_header.qrys.nr_cold_qrys, nr_hot_qrys = input_header.qrys.nr_hot_qrys;
 
         INSERT_execute_batch(&cold_root, &cold_height, &cold_root_numKeys,
             0, nr_cold_qrys);
@@ -969,11 +984,11 @@ static key_uint64_t* DELETE_fetch_next_qry(DeleteWorkspace* wks)
     return &wks->qrys[wks->idx_qry_in_cache++];
 }
 static void DELETE_execute(Node* const root, const uint8_t height, const uint8_t root_numKeys,
-    const uint16_t idx_qry_begin, const uint16_t idx_qry_end)
+    const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
 {
     DeleteWorkspace* const wks_me = &workspace.tree.delete[me()];
     wks_me->idx_qry_in_cache = TASK_INSERT_NR_CACHED_QRYS;  // to trigger the first fetch
-    wks_me->cursor_on_qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8 + sizeof(key_uint64_t) * idx_qry_begin;
+    wks_me->cursor_on_qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader) + sizeof(key_uint64_t) * idx_qry_begin;
 
     if (height == 0) {
         for (unsigned idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
@@ -1009,18 +1024,18 @@ static void DELETE_execute(Node* const root, const uint8_t height, const uint8_t
 void task_delete(void)
 {
     if (me() < TASK_DELETE_NR_TASKLETS) {
-        const uint16_t nr_cold_qrys = input_header.delete.nr_cold_qrys, nr_hot_qrys = input_header.delete.nr_hot_qrys;
+        const uint32_t nr_cold_qrys = input_header.qrys.nr_cold_qrys, nr_hot_qrys = input_header.qrys.nr_hot_qrys;
 
-        const uint16_t nr_cold_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_DELETE_NR_TASKLETS(nr_cold_qrys),
+        const uint32_t nr_cold_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_DELETE_NR_TASKLETS(nr_cold_qrys),
                        nr_remainder_cold_qrys = nr_cold_qrys - nr_cold_qrys_per_tasklet * TASK_DELETE_NR_TASKLETS,
                        nr_cold_qrys_for_me = nr_cold_qrys_per_tasklet + (me() < nr_remainder_cold_qrys);
-        const uint16_t idx_cold_qry_begin = (uint16_t)(nr_cold_qrys_per_tasklet * me() + (me() <= nr_remainder_cold_qrys ? me() : nr_remainder_cold_qrys)),
+        const uint32_t idx_cold_qry_begin = nr_cold_qrys_per_tasklet * me() + (me() <= nr_remainder_cold_qrys ? me() : nr_remainder_cold_qrys),
                        idx_cold_qry_end = idx_cold_qry_begin + nr_cold_qrys_for_me;
 
-        const uint16_t nr_hot_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_DELETE_NR_TASKLETS(nr_hot_qrys),
+        const uint32_t nr_hot_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_DELETE_NR_TASKLETS(nr_hot_qrys),
                        nr_remainder_hot_qrys = nr_hot_qrys - nr_hot_qrys_per_tasklet * TASK_DELETE_NR_TASKLETS,
                        nr_hot_qrys_for_me = nr_hot_qrys_per_tasklet + (me() < nr_remainder_hot_qrys);
-        const uint16_t idx_hot_qry_begin = (uint16_t)(nr_hot_qrys_per_tasklet * me() + (me() <= nr_remainder_hot_qrys ? me() : nr_remainder_hot_qrys))
+        const uint32_t idx_hot_qry_begin = nr_hot_qrys_per_tasklet * me() + (me() <= nr_remainder_hot_qrys ? me() : nr_remainder_hot_qrys)
                                            + nr_cold_qrys,
                        idx_hot_qry_end = idx_hot_qry_begin + nr_hot_qrys_for_me;
 
@@ -1059,10 +1074,9 @@ static void GET_prepare_next_qry(key_uint64_t* qrys_cache, unsigned* idx_qry_in_
     }
 }
 static void GET_execute(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
-    const uint16_t idx_qry_begin, const uint16_t idx_qry_end)
+    const uintptr_t results, const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
 {
-    static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8;
-    static const uintptr_t results = (uintptr_t)DPU_MRAM_HEAP_POINTER + RESULT_OFFSET;
+    static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader);
 
     GetWorkspace* const wks_me = &workspace.tree.get[me()];
 
@@ -1115,25 +1129,26 @@ static void GET_execute(const Node* const root, const uint8_t height, const uint
 void task_get(void)
 {
     if (me() < TASK_GET_NR_TASKLETS) {
-        const uint16_t nr_cold_qrys = input_header.get.nr_cold_qrys, nr_hot_qrys = input_header.get.nr_hot_qrys;
+        const uint32_t nr_cold_qrys = input_header.qrys.nr_cold_qrys, nr_hot_qrys = input_header.qrys.nr_hot_qrys;
+        const uintptr_t results = (uintptr_t)DPU_MRAM_HEAP_POINTER + input_header.qrys.result_offset;
 
-        const uint16_t nr_cold_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_GET_NR_TASKLETS(nr_cold_qrys),
+        const uint32_t nr_cold_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_GET_NR_TASKLETS(nr_cold_qrys),
                        nr_remainder_cold_qrys = nr_cold_qrys - nr_cold_qrys_per_tasklet * TASK_GET_NR_TASKLETS,
                        nr_cold_qrys_for_me = nr_cold_qrys_per_tasklet + (me() < nr_remainder_cold_qrys);
-        const uint16_t idx_cold_qry_begin = (uint16_t)(nr_cold_qrys_per_tasklet * me() + (me() <= nr_remainder_cold_qrys ? me() : nr_remainder_cold_qrys)),
+        const uint32_t idx_cold_qry_begin = nr_cold_qrys_per_tasklet * me() + (me() <= nr_remainder_cold_qrys ? me() : nr_remainder_cold_qrys),
                        idx_cold_qry_end = idx_cold_qry_begin + nr_cold_qrys_for_me;
 
-        const uint16_t nr_hot_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_GET_NR_TASKLETS(nr_hot_qrys),
+        const uint32_t nr_hot_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_GET_NR_TASKLETS(nr_hot_qrys),
                        nr_remainder_hot_qrys = nr_hot_qrys - nr_hot_qrys_per_tasklet * TASK_GET_NR_TASKLETS,
                        nr_hot_qrys_for_me = nr_hot_qrys_per_tasklet + (me() < nr_remainder_hot_qrys);
-        const uint16_t idx_hot_qry_begin = (uint16_t)(nr_hot_qrys_per_tasklet * me() + (me() <= nr_remainder_hot_qrys ? me() : nr_remainder_hot_qrys))
+        const uint32_t idx_hot_qry_begin = nr_hot_qrys_per_tasklet * me() + (me() <= nr_remainder_hot_qrys ? me() : nr_remainder_hot_qrys)
                                            + nr_cold_qrys,
                        idx_hot_qry_end = idx_hot_qry_begin + nr_hot_qrys_for_me;
 
         GET_execute(&cold_root, cold_height, cold_root_numKeys,
-            idx_cold_qry_begin, idx_cold_qry_end);
+            results, idx_cold_qry_begin, idx_cold_qry_end);
         GET_execute(&hot_root, hot_height, hot_root_numKeys,
-            idx_hot_qry_begin, idx_hot_qry_end);
+            results, idx_hot_qry_begin, idx_hot_qry_end);
     }
 }
 #endif /* if SUPPORT_GET */
@@ -1440,10 +1455,9 @@ static uint64_t RANGE_COUNT_impl(const Node* const root, const uint8_t height, c
     }
 }
 static void RANGE_COUNT_execute(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
-    const uint16_t idx_qry_begin, const uint16_t idx_qry_end)
+    const uintptr_t results, const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
 {
-    static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8;
-    static const uintptr_t results = (uintptr_t)DPU_MRAM_HEAP_POINTER + RESULT_OFFSET;
+    static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader);
 
     RCQWorkspace* const wks_me = &workspace.tree.rcq[me()];
 
@@ -1464,648 +1478,29 @@ static void RANGE_COUNT_execute(const Node* const root, const uint8_t height, co
 void task_range_count(void)
 {
     if (me() < TASK_RANGE_COUNT_NR_TASKLETS) {
-        const uint16_t nr_cold_qrys = input_header.rcq.nr_cold_qrys, nr_hot_qrys = input_header.rcq.nr_hot_qrys;
+        const uint32_t nr_cold_qrys = input_header.qrys.nr_cold_qrys, nr_hot_qrys = input_header.qrys.nr_hot_qrys;
+        const uintptr_t results = (uintptr_t)DPU_MRAM_HEAP_POINTER + input_header.qrys.result_offset;
 
-        const uint16_t nr_cold_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_RANGE_COUNT_NR_TASKLETS(nr_cold_qrys),
+        const uint32_t nr_cold_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_RANGE_COUNT_NR_TASKLETS(nr_cold_qrys),
                        nr_remainder_cold_qrys = nr_cold_qrys - nr_cold_qrys_per_tasklet * TASK_RANGE_COUNT_NR_TASKLETS,
                        nr_cold_qrys_for_me = nr_cold_qrys_per_tasklet + (me() < nr_remainder_cold_qrys);
-        const uint16_t idx_cold_qry_begin = (uint16_t)(nr_cold_qrys_per_tasklet * me() + (me() <= nr_remainder_cold_qrys ? me() : nr_remainder_cold_qrys)),
+        const uint32_t idx_cold_qry_begin = nr_cold_qrys_per_tasklet * me() + (me() <= nr_remainder_cold_qrys ? me() : nr_remainder_cold_qrys),
                        idx_cold_qry_end = idx_cold_qry_begin + nr_cold_qrys_for_me;
 
-        const uint16_t nr_hot_qrys_per_tasklet = (uint16_t)DIV_NR_QRYS_BY_TASK_RANGE_COUNT_NR_TASKLETS(nr_hot_qrys),
+        const uint32_t nr_hot_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_RANGE_COUNT_NR_TASKLETS(nr_hot_qrys),
                        nr_remainder_hot_qrys = nr_hot_qrys - nr_hot_qrys_per_tasklet * TASK_RANGE_COUNT_NR_TASKLETS,
                        nr_hot_qrys_for_me = nr_hot_qrys_per_tasklet + (me() < nr_remainder_hot_qrys);
-        const uint16_t idx_hot_qry_begin = (uint16_t)(nr_hot_qrys_per_tasklet * me() + (me() <= nr_remainder_hot_qrys ? me() : nr_remainder_hot_qrys))
+        const uint32_t idx_hot_qry_begin = nr_hot_qrys_per_tasklet * me() + (me() <= nr_remainder_hot_qrys ? me() : nr_remainder_hot_qrys)
                                            + nr_cold_qrys,
                        idx_hot_qry_end = idx_hot_qry_begin + nr_hot_qrys_for_me;
 
         RANGE_COUNT_execute(&cold_root, cold_height, cold_root_numKeys,
-            idx_cold_qry_begin, idx_cold_qry_end);
+            results, idx_cold_qry_begin, idx_cold_qry_end);
         RANGE_COUNT_execute(&hot_root, hot_height, hot_root_numKeys,
-            idx_hot_qry_begin, idx_hot_qry_end);
+            results, idx_hot_qry_begin, idx_hot_qry_end);
     }
 }
 #endif /* if SUPPORT_RANGE_COUNT */
-
-
-//! @return index of child
-static uint8_t distribute_fewer_subtrees_than_tasklets(const uint8_t nr_subtrees, uint8_t* const nr_tasklets, uint8_t* const idx_tasklet)
-{
-    const uint8_t orig_nr_tasklets = *nr_tasklets,
-                  orig_idx_tasklet = *idx_tasklet;
-    const uint8_t nr_tasklets_per_child = orig_nr_tasklets / nr_subtrees,
-                  nr_remainder_tasklets = orig_nr_tasklets % nr_subtrees;
-
-    const uint8_t nr_tasklets_in_greater_chunks = (nr_tasklets_per_child + 1) * nr_remainder_tasklets;
-    if (orig_idx_tasklet < nr_tasklets_in_greater_chunks) {
-        const uint8_t idx_subtree = orig_idx_tasklet / (nr_tasklets_per_child + 1);
-        *idx_tasklet = orig_idx_tasklet % (nr_tasklets_per_child + 1);
-        *nr_tasklets = nr_tasklets_per_child + 1;
-        return idx_subtree;
-
-    } else {
-        const uint8_t idx_subtree = (orig_idx_tasklet - nr_remainder_tasklets) / nr_tasklets_per_child;
-        *idx_tasklet = (orig_idx_tasklet - nr_remainder_tasklets) % nr_tasklets_per_child;
-        *nr_tasklets = nr_tasklets_per_child;
-        return idx_subtree;
-    }
-}
-//! @return index of the beginning subtree
-static uint8_t distribute_more_or_equal_subtrees_than_tasklets(uint8_t* const nr_subtrees, const uint8_t nr_tasklets, const uint8_t idx_tasklet)
-{
-    const uint8_t orig_nr_subtrees = *nr_subtrees;
-
-    const uint8_t nr_subtrees_per_tasklet = orig_nr_subtrees / nr_tasklets,
-                  nr_remainder_subtrees = orig_nr_subtrees % nr_tasklets,
-                  nr_subtrees_for_me = nr_subtrees_per_tasklet + (idx_tasklet >= nr_tasklets - nr_remainder_subtrees);
-    const uint8_t tmp = nr_tasklets - nr_remainder_subtrees,
-                  idx_subtree_begin = (uint8_t)(nr_subtrees_per_tasklet * idx_tasklet + (idx_tasklet >= tmp ? idx_tasklet : tmp) - tmp);
-    *nr_subtrees = nr_subtrees_for_me;
-    return idx_subtree_begin;
-}
-
-void task_summarize(void)
-{
-    static SummarizeWorkspace* const wks = &workspace.tree.summarize;
-    static const uintptr_t result_blocks = (uintptr_t)DPU_MRAM_HEAP_POINTER + (6 + sizeof(uint16_t) * MAX_NR_SUMMARY_CHUNKS + 7) / 8 * 8;
-
-    if (cold_height == 0) {
-        if (me() == 0) {
-            wks->result_header.nr_pairs = cold_root_numKeys;
-            wks->result_header.nr_chunks = 1;
-            wks->result_header.chunk_end_indices[0] = 1;
-            mram_write(&wks->result_header, DPU_MRAM_HEAP_POINTER, 8);
-
-            SummaryBlock* const block0 = &wks->th[0].summary[0];
-            for (unsigned i = 0; i < 4; i++) {
-                block0->head_keys[i] = cold_min_key;
-                block0->nr_keys[i] = 0;
-            }
-            block0->nr_keys[3] = cold_root_numKeys;
-            mram_write(block0, (__mram_ptr SummaryBlock*)result_blocks, sizeof(SummaryBlock));
-        }
-
-    } else if (cold_height == 1) {
-        if (me() == 0) {
-            SummaryBlock* const blocks_cache = &wks->th[0].summary[0];
-            uint16_t idx_cached_summary = 0;
-
-            uint32_t nr_pairs = 0;
-            key_uint64_t min_key = cold_min_key;
-            for (; idx_cached_summary < (cold_root_numKeys + 1) % 4; idx_cached_summary++) {
-                blocks_cache[0].nr_keys[idx_cached_summary] = 0;
-                blocks_cache[0].head_keys[idx_cached_summary] = min_key;
-            }
-
-            uint16_t nr_blocks_in_mram = 0;
-            uintptr_t next_result_blocks = result_blocks;
-
-            for (uint8_t idx_leaf = 0; idx_leaf < cold_root_numKeys; idx_leaf++, idx_cached_summary++) {
-                if (idx_cached_summary == NR_SUMMARY_BLOCKS_PER_CHUNK * 4) {
-                    mram_write(blocks_cache, (__mram_ptr SummaryBlock*)next_result_blocks, sizeof(SummaryBlock) * NR_SUMMARY_BLOCKS_PER_CHUNK);
-                    idx_cached_summary = 0;
-                    nr_blocks_in_mram += NR_SUMMARY_BLOCKS_PER_CHUNK;
-                    next_result_blocks += sizeof(SummaryBlock) * NR_SUMMARY_BLOCKS_PER_CHUNK;
-                }
-
-                const uint8_t leaf_numKeys = cold_root.inl.children[idx_leaf].numKeys;
-                nr_pairs += leaf_numKeys;
-                blocks_cache[idx_cached_summary / 4].nr_keys[idx_cached_summary % 4] = leaf_numKeys;
-                blocks_cache[idx_cached_summary / 4].head_keys[idx_cached_summary % 4] = min_key;
-                min_key = cold_root.inl.keys[idx_leaf];
-            }
-            uint16_t idx_cached_block = idx_cached_summary / 4;
-            const uint8_t leaf_numKeys = cold_root.inl.children[cold_root_numKeys].numKeys;
-            nr_pairs += leaf_numKeys;
-            blocks_cache[idx_cached_block].nr_keys[3] = leaf_numKeys;
-            blocks_cache[idx_cached_block].head_keys[3] = min_key;
-            idx_cached_block++;
-
-            mram_write(blocks_cache, (__mram_ptr SummaryBlock*)next_result_blocks, sizeof(SummaryBlock) * idx_cached_block);
-            idx_cached_summary = 0;
-            nr_blocks_in_mram += idx_cached_block;
-
-            wks->result_header.nr_pairs = nr_pairs;
-            wks->result_header.nr_chunks = 1;
-            wks->result_header.chunk_end_indices[0] = nr_blocks_in_mram;
-            mram_write(&wks->result_header, DPU_MRAM_HEAP_POINTER, 8);
-        }
-    } else {
-        _Static_assert(TASK_SUMMARIZE_NR_TASKLETS > 0, "TASK_SUMMARIZE_NR_TASKLETS > 0");
-        if (me() < TASK_SUMMARIZE_NR_TASKLETS) {
-            if (me() == TASK_SUMMARIZE_NR_TASKLETS - 1) {
-                wks->nr_allocated_bytes = 0;
-                wks->result_header.nr_pairs = 0;
-                wks->result_header.nr_chunks = 0;
-                wks->nr_committed_blocks = 0;
-            } else {
-                wait_for_next_ready();
-            }
-            if (me() != 0) {
-                notify_prev_of_readiness();
-            }
-
-            TaskletLocalSummarizeWorkspace* const wks_me = &wks->th[me()];
-            // going to summarize [traversal_root, traversal_root + nr_subtrees),
-            // whose height is (height) and
-            //       minimum key is (min_key) and
-            //       delimiter keys between subtrees are [delim_key_begin, delim_key_begin + nr_subtrees - 1)
-            NodeLink* traversal_root;
-            uint8_t nr_subtrees = cold_root_numKeys + 1;
-            uint8_t height = cold_height - 1;
-            __dma_aligned key_uint64_t min_key = cold_min_key;
-            key_uint64_t* delim_key_begin;
-
-            {
-                uint8_t idx_tasklet = (uint8_t)me(), nr_tasklets = TASK_SUMMARIZE_NR_TASKLETS;
-                if (nr_subtrees >= nr_tasklets) {
-                    const uint8_t idx_subtree_begin = distribute_more_or_equal_subtrees_than_tasklets(&nr_subtrees, nr_tasklets, idx_tasklet);
-                    traversal_root = &cold_root.inl.children[idx_subtree_begin];
-                    if (idx_subtree_begin != 0) {
-                        min_key = cold_root.inl.keys[idx_subtree_begin - 1];
-                    }
-                    delim_key_begin = &cold_root.inl.keys[idx_subtree_begin];
-
-                } else /* nr_subtrees < nr_tasklets */ {
-                    const uint8_t idx_subtree_begin = distribute_fewer_subtrees_than_tasklets(nr_subtrees, &nr_tasklets, &idx_tasklet);
-                    nr_subtrees = 1;
-                    traversal_root = &cold_root.inl.children[idx_subtree_begin];
-                    if (idx_subtree_begin != 0) {
-                        min_key = cold_root.inl.keys[idx_subtree_begin - 1];
-                    }
-
-                    for (; nr_tasklets > 1; height--) {
-                        if (height == 1) {
-                            nr_subtrees = (idx_tasklet == 0);
-                            break;
-                        }
-                        const NodePtr subtree_root = traversal_root->ptr;
-                        nr_subtrees = traversal_root->numKeys + 1;
-                        if (traversal_root->numKeys + 1 >= nr_tasklets) {
-                            const uint8_t idx_subtree_begin = distribute_more_or_equal_subtrees_than_tasklets(&nr_subtrees, nr_tasklets, idx_tasklet),
-                                          idx_subtree_end = idx_subtree_begin + nr_subtrees;
-
-                            const uint8_t idx_copy_begin = idx_subtree_begin / 2 * 2,
-                                          idx_copy_end = (idx_subtree_end + 1) / 2 * 2;
-                            mram_read(&Deref(subtree_root).inl.children[idx_copy_begin],
-                                &wks_me->traversal_roots[0],
-                                sizeof(NodeLink) * (idx_copy_end - idx_copy_begin));
-                            traversal_root = &wks_me->traversal_roots[idx_subtree_begin % 2];
-                            height--;
-
-                            if (idx_subtree_begin != 0) {
-                                mram_read(&Deref(subtree_root).inl.keys[idx_subtree_begin - 1],
-                                    &wks_me->delims_of_traversal_roots[0],
-                                    sizeof(key_uint64_t) * nr_subtrees);
-                                min_key = wks_me->delims_of_traversal_roots[0];
-                                delim_key_begin = &wks_me->delims_of_traversal_roots[1];
-
-                            } else if (nr_subtrees != 1) {
-                                mram_read(&Deref(subtree_root).inl.keys[idx_subtree_begin],
-                                    &wks_me->delims_of_traversal_roots[0],
-                                    sizeof(key_uint64_t) * (nr_subtrees - 1));
-                                delim_key_begin = &wks_me->delims_of_traversal_roots[0];
-                            }
-                            break;
-
-                        } else {
-                            const uint8_t idx_subtree_begin = distribute_fewer_subtrees_than_tasklets(traversal_root->numKeys + 1, &nr_tasklets, &idx_tasklet);
-                            traversal_root = &wks_me->traversal_roots[idx_subtree_begin % 2];
-                            mram_read(&Deref(subtree_root).inl.children[idx_subtree_begin / 2 * 2],
-                                &wks_me->traversal_roots[0],
-                                sizeof(NodeLink) * 2);
-                            if (idx_subtree_begin != 0 && idx_tasklet == 0) {
-                                mram_read(&Deref(subtree_root).inl.keys[idx_subtree_begin - 1], &min_key, sizeof(key_uint64_t));
-                            }
-                        }
-                    }
-                }
-            }
-
-            uint16_t idx_summary_in_cache = 0;
-            uint32_t nr_pairs_from_me = 0;
-            uint16_t next_idx_in_chunk_linked_list = (uint16_t)me();
-            if (nr_subtrees != 0) {
-                for (uint8_t idx_subtree = 0;;) {
-                    // invariant: stack_height + height_of(cursor) == height
-                    // invariant: i + height_of(wks_me->stack[i]) == height
-                    uint8_t stack_height = 0;
-                    NodeLink cursor = *traversal_root;
-                    for (;;) {
-                        for (; stack_height < height - 1; stack_height++) {
-                            wks_me->stack[stack_height].node = cursor;
-                            wks_me->stack[stack_height].nr_visited_children = 0;
-                            mram_read(&Deref(cursor.ptr).inl.children[0], &wks_me->stack[stack_height].children_cache[0], sizeof(NodeLink) * 2);
-                            cursor = wks_me->stack[stack_height].children_cache[0];
-                        }
-
-                        {
-                            mram_read(&Deref(cursor.ptr).inl.children[0], &wks_me->children_cache[0], ((cursor.numKeys + 1) + 1) / 2 * 2 * sizeof(NodeLink));
-                            uint16_t nr_keys = 0;
-                            for (uint8_t idx_leaf = 0; idx_leaf <= cursor.numKeys; idx_leaf++) {
-                                nr_keys += wks_me->children_cache[idx_leaf].numKeys;
-                            }
-                            nr_pairs_from_me += nr_keys;
-                            wks_me->summary[idx_summary_in_cache / 4].nr_keys[idx_summary_in_cache % 4] = nr_keys;
-                        }
-                        wks_me->summary[idx_summary_in_cache / 4].head_keys[idx_summary_in_cache % 4] = min_key;
-                        idx_summary_in_cache++;
-
-                        if (idx_summary_in_cache == NR_SUMMARY_BLOCKS_PER_CHUNK * 4) {
-                            static const uint16_t written_bytes = NR_SUMMARY_BLOCKS_PER_CHUNK * sizeof(SummaryBlock);
-                            acquire_lock();
-                            const uint32_t orig_nr_allocated_bytes = wks->nr_allocated_bytes;
-                            wks->nr_allocated_bytes = orig_nr_allocated_bytes + written_bytes;
-                            const uint16_t orig_nr_chunks = wks->result_header.nr_chunks;
-                            wks->result_header.nr_chunks = orig_nr_chunks + 1;
-                            release_lock();
-
-                            mram_write(&wks_me->summary[0], (__mram_ptr SummaryBlock*)(result_blocks + orig_nr_allocated_bytes), written_bytes);
-                            idx_summary_in_cache = 0;
-
-                            next_idx_in_chunk_linked_list = (wks->chunk_linked_list[next_idx_in_chunk_linked_list]
-                                                             = orig_nr_chunks + TASK_SUMMARIZE_NR_TASKLETS);
-                        }
-
-                        bool finish = false;
-                        for (;; stack_height--) {
-                            if (stack_height == 0) {
-                                finish = true;
-                                break;
-                            }
-
-                            SummarizeStackElem* const stack_elem = &wks_me->stack[stack_height - 1];
-                            cursor = stack_elem->node;
-                            const uint8_t orig_nr_visited_children = stack_elem->nr_visited_children;
-                            if (orig_nr_visited_children != cursor.numKeys) {
-                                mram_read(&Deref(cursor.ptr).inl.keys[orig_nr_visited_children], &min_key, sizeof(key_uint64_t));
-                                stack_elem->nr_visited_children = orig_nr_visited_children + 1;
-
-                                if (orig_nr_visited_children % 2 == 0) {
-                                    cursor = stack_elem->children_cache[1];
-                                } else {
-                                    mram_read(&Deref(cursor.ptr).inl.children[orig_nr_visited_children + 1], &stack_elem->children_cache[0], sizeof(NodeLink) * 2);
-                                    cursor = stack_elem->children_cache[0];
-                                }
-                                break;
-                            }
-                        }
-                        if (finish) {
-                            break;
-                        }
-                    }
-
-
-                    //----------------------------------------
-                    idx_subtree++;
-                    if (idx_subtree == nr_subtrees) {
-                        break;
-                    }
-                    min_key = *delim_key_begin;
-                    delim_key_begin++;
-                    traversal_root++;
-                }
-
-                if (idx_summary_in_cache % 4 != 0) {
-                    const uint16_t idx_block = idx_summary_in_cache / 4;
-                    uint16_t idx_in_block = idx_summary_in_cache % 4 - 1;
-                    const uint16_t last_nr_keys = wks_me->summary[idx_block].nr_keys[idx_in_block];
-                    for (; idx_in_block < 4; idx_in_block++) {
-                        wks_me->summary[idx_block].nr_keys[idx_in_block] = 0;
-                        wks_me->summary[idx_block].head_keys[idx_in_block] = min_key;
-                    }
-                    wks_me->summary[idx_block].nr_keys[3] = last_nr_keys;
-
-                    // adjust to ensure that nr_trailing_blocks be a correct value
-                    idx_summary_in_cache += 3;
-                }
-            }
-            const uint16_t nr_trailing_blocks = idx_summary_in_cache / 4;
-
-            if (me() != 0) {
-                wait_for_prev_ready();
-            }
-            uint16_t nr_committed_blocks = wks->nr_committed_blocks;
-
-            for (uint16_t idx_in_chunk_linked_list = (uint16_t)me(); idx_in_chunk_linked_list != next_idx_in_chunk_linked_list;) {
-                idx_in_chunk_linked_list = wks->chunk_linked_list[idx_in_chunk_linked_list];
-                const uint16_t idx_chunk = idx_in_chunk_linked_list - TASK_SUMMARIZE_NR_TASKLETS;
-
-                nr_committed_blocks += NR_SUMMARY_BLOCKS_PER_CHUNK;
-                wks->result_header.chunk_end_indices[idx_chunk] = nr_committed_blocks;
-            }
-
-            if (nr_trailing_blocks != 0) {
-                const uint16_t written_bytes = nr_trailing_blocks * sizeof(SummaryBlock);
-                acquire_lock();
-                const uint32_t orig_nr_allocated_bytes = wks->nr_allocated_bytes;
-                wks->nr_allocated_bytes = orig_nr_allocated_bytes + written_bytes;
-                const uint16_t orig_nr_chunks = wks->result_header.nr_chunks;
-                wks->result_header.nr_chunks = orig_nr_chunks + 1;
-                release_lock();
-
-                mram_write(&wks_me->summary[0], (__mram_ptr SummaryBlock*)(result_blocks + orig_nr_allocated_bytes), written_bytes);
-
-                nr_committed_blocks += nr_trailing_blocks;
-                wks->result_header.chunk_end_indices[orig_nr_chunks] = nr_committed_blocks;
-            }
-
-            wks->result_header.nr_pairs += nr_pairs_from_me;
-            if (me() != TASK_SUMMARIZE_NR_TASKLETS - 1) {
-                wks->nr_committed_blocks = nr_committed_blocks;
-                notify_next_of_readiness();
-            } else {
-                uint32_t result_header_size = (6 + sizeof(uint16_t) * wks->result_header.nr_chunks + 7) / 8 * 8;
-                uintptr_t result_header_src = (uintptr_t)(&wks->result_header), result_header_dest = (uintptr_t)DPU_MRAM_HEAP_POINTER;
-                for (; result_header_size >= 2048; result_header_size -= 2048, result_header_src += 2048, result_header_dest += 2048) {
-                    mram_write((const void*)result_header_src, (__mram_ptr void*)result_header_dest, 2048);
-                }
-                if (result_header_size != 0) {
-                    mram_write((const void*)result_header_src, (__mram_ptr void*)result_header_dest, result_header_size);
-                }
-            }
-        }
-    }
-}
-
-
-static void EXTRACT_nodes(void)
-{
-    static ExtractWorkspace* const wks = &workspace.tree.extract;
-    {
-        uint32_t nr_ranges = input_header.extract.nr_ranges;
-        uintptr_t mram_src = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8, wram_dst = (uintptr_t)(&wks->hot_ranges[0]);
-        for (; nr_ranges > 2048 / sizeof(KeyRange); nr_ranges -= 2048 / sizeof(KeyRange), mram_src += 2048, wram_dst += 2048) {
-            mram_read((__mram_ptr KeyRange*)mram_src, (KeyRange*)wram_dst, 2048);
-        }
-        mram_read((__mram_ptr KeyRange*)mram_src, (KeyRange*)wram_dst, sizeof(KeyRange) * nr_ranges);
-    }
-
-    static const uintptr_t result_nr_pairs = (uintptr_t)DPU_MRAM_HEAP_POINTER;
-    const uintptr_t result_pairs = result_nr_pairs + (NR_RANKS * MAX_NR_DPUS_IN_RANK * sizeof(uint32_t) + 7) / 8 * 8;
-
-    if (me() == 0) {
-        if (cold_height == 0) {
-            wks->nr_pairs_cache[0] = cold_root_numKeys;
-            mram_write(&wks->nr_pairs_cache[0], (__mram_ptr uint32_t*)result_nr_pairs, 8);
-
-            for (uint8_t i = 0; i < cold_root_numKeys; i++) {
-                wks->kvpair = (KVPair){cold_root.lf.keys[0], cold_root.lf.values[0]};
-                mram_write(&wks->kvpair, (__mram_ptr KVPair*)(result_pairs + sizeof(KVPair) * i), sizeof(KVPair));
-            }
-
-            cold_root_numKeys = 0;
-
-        } else {
-            uint32_t idx_hot = 0, idx_pair = 0;
-            for (; idx_hot < input_header.extract.nr_ranges; idx_hot++) {
-                const KeyRange range = wks->hot_ranges[idx_hot];
-                uint32_t nr_pairs = 0;
-
-                uint16_t nr_passed_children_of_root = search_for_child_index(&cold_root.inl.keys[0], cold_root_numKeys, range.begin);
-                const uint16_t initial_nr_passed_children_of_root = nr_passed_children_of_root;
-
-                NodeLink cursor = cold_root.inl.children[nr_passed_children_of_root];
-                __dma_aligned key_uint64_t next_key = UINT64_MAX;
-
-                uint8_t stack_height = 0;
-                for (; stack_height < cold_height - 1; stack_height++) {
-                    wks->stack[stack_height].node = cursor;
-
-                    mram_read(&Deref(cursor.ptr).inl.keys[0], &wks->node_cache.inl.keys[0], sizeof(key_uint64_t) * cursor.numKeys);
-                    const uint16_t idx_child = search_for_child_index(&wks->node_cache.inl.keys[0], cursor.numKeys, range.begin);
-
-                    wks->stack[stack_height].nr_passed_children = idx_child;
-                    mram_read(&Deref(cursor.ptr).inl.children[idx_child / 2 * 2], &wks->stack[stack_height].children_cache[0], sizeof(NodeLink) * 2);
-                    cursor = wks->stack[stack_height].children_cache[idx_child % 2];
-                }
-                {
-                    uintptr_t copy_src = (uintptr_t)(&wks->stack[0]), copy_dest = (uintptr_t)(&wks->initial_stack[0]),
-                              copy_src_end = ((uintptr_t)(&wks->stack[cold_height - 1]) + 7) / 8 * 8;
-                    for (; copy_src < copy_src_end; copy_src += 8, copy_dest += 8) {
-                        uint64_t buf;
-                        memcpy(&buf, (const void*)copy_src, 8);
-                        memcpy((void*)copy_dest, &buf, 8);
-                    }
-                }
-
-                mram_read(&Deref(cursor.ptr), &wks->node_cache, sizeof(LeafNode));
-
-                for (;;) {
-                    nr_pairs += cursor.numKeys;
-                    for (uint8_t i = 0; i < cursor.numKeys; i++, idx_pair++) {
-                        wks->kvpair = (KVPair){wks->node_cache.lf.keys[i], wks->node_cache.lf.values[i]};
-                        mram_write(&wks->kvpair, (__mram_ptr KVPair*)(result_pairs + sizeof(KVPair) * idx_pair), sizeof(KVPair));
-                    }
-
-                    Free_node(cursor.ptr);
-
-                    for (;;) {
-                        if (stack_height == 0) {
-                            const uint16_t orig_nr_passed_children_of_root = nr_passed_children_of_root;
-                            nr_passed_children_of_root++;
-                            if (orig_nr_passed_children_of_root == cold_root_numKeys) {
-                                goto end_of_hot_range;
-                            }
-                            next_key = cold_root.inl.keys[orig_nr_passed_children_of_root];
-                            if (range.end < next_key) {
-                                goto end_of_hot_range;
-                            }
-                            cursor = cold_root.inl.children[nr_passed_children_of_root];
-                            break;
-                        }
-                        ExtractStackElem* const stack_elem = &wks->stack[stack_height - 1];
-                        const uint16_t orig_nr_passed_children = stack_elem->nr_passed_children;
-                        stack_elem->nr_passed_children++;
-                        if (orig_nr_passed_children != stack_elem->node.numKeys) {
-                            mram_read(&Deref(stack_elem->node.ptr).inl.keys[orig_nr_passed_children], &next_key, sizeof(key_uint64_t));
-                            if (range.end < next_key) {
-                                goto end_of_hot_range;
-                            }
-
-                            if (stack_elem->nr_passed_children % 2 == 0) {
-                                mram_read(&Deref(stack_elem->node.ptr).inl.children[stack_elem->nr_passed_children], &stack_elem->children_cache[0], sizeof(NodeLink) * 2);
-                                cursor = stack_elem->children_cache[0];
-                            } else {
-                                cursor = stack_elem->children_cache[1];
-                            }
-                            break;
-                        } else {
-                            stack_height--;
-                            const NodeLink touched = stack_elem->node, initial = wks->initial_stack[stack_height].node;
-                            if (!(initial.ptr == touched.ptr && initial.numKeys == touched.numKeys)) {
-                                Free_node(touched.ptr);
-                            }
-                        }
-                    }
-                    for (; stack_height < cold_height - 1; stack_height++) {
-                        wks->stack[stack_height].node = cursor;
-                        wks->stack[stack_height].nr_passed_children = 0;
-                        mram_read(&Deref(cursor.ptr).inl.children[0], &wks->stack[stack_height].children_cache[0], sizeof(NodeLink) * 2);
-                        cursor = wks->stack[stack_height].children_cache[0];
-                    }
-
-                    mram_read(&Deref(cursor.ptr), &wks->node_cache, offsetof(LeafNode, left));
-                }
-
-            end_of_hot_range:
-                if (wks->node_cache.lf.left != NODE_NULLPTR) {
-                    mram_write(&wks->node_cache.lf.right, &Deref(wks->node_cache.lf.left).lf.right, 8);
-                }
-                if (!(wks->node_cache.lf.right.ptr == NODELINK_NULLPTR.ptr && wks->node_cache.lf.right.numKeys == NODELINK_NULLPTR.numKeys)) {
-                    mram_write(&wks->node_cache.lf.left, &Deref(wks->node_cache.lf.right.ptr).lf.left, 8);
-                }
-
-                if (idx_hot % 2 == 0) {
-                    wks->nr_pairs_cache[0] = nr_pairs;
-                } else {
-                    wks->nr_pairs_cache[1] = nr_pairs;
-                    mram_write(&wks->nr_pairs_cache[0], (__mram_ptr uint32_t*)(result_nr_pairs + sizeof(uint32_t) * idx_hot - 4), sizeof(uint32_t) * 2);
-                }
-
-                for (; stack_height != 0; stack_height--) {
-                    ExtractStackElem* const stack_elem = &wks->stack[stack_height - 1];
-                    const NodeLink left_cut = wks->initial_stack[stack_height - 1].node, right_cut = stack_elem->node;
-                    if (left_cut.ptr == right_cut.ptr && left_cut.numKeys == right_cut.numKeys) {
-                        break;
-                    }
-
-                    mram_read(&Deref(right_cut.ptr), &wks->node_cache, sizeof(Node));
-                    const uint16_t idx_src_begin = stack_elem->nr_passed_children,
-                                   nr_keys = stack_elem->node.numKeys - idx_src_begin;
-                    for (uint8_t idx_dest = 0;; idx_dest++) {
-                        wks->node_cache.inl.children[idx_dest] = wks->node_cache.inl.children[idx_src_begin + idx_dest];
-                        if (idx_dest == nr_keys) {
-                            break;
-                        }
-                        wks->node_cache.inl.keys[idx_dest] = wks->node_cache.inl.keys[idx_src_begin + idx_dest];
-                    }
-                    mram_write(&wks->node_cache, &Deref(right_cut.ptr), sizeof(Node));
-
-                    const NodeLink new_link = {right_cut.ptr, nr_keys};
-                    if (stack_height == 1) {
-                        cold_root.inl.children[nr_passed_children_of_root] = new_link;
-                    } else {
-                        ExtractStackElem* const parent_stack_elem = &wks->stack[stack_height - 2];
-                        const uint16_t idx_as_child = parent_stack_elem->nr_passed_children;
-                        parent_stack_elem->children_cache[idx_as_child % 2] = new_link;
-                        mram_write(&parent_stack_elem->children_cache[0], &Deref(parent_stack_elem->node.ptr).inl.children[idx_as_child / 2 * 2], sizeof(NodeLink) * 2);
-                    }
-                }
-
-                bool is_child_alive = false;
-                for (uint8_t initial_stack_height = cold_height - 1; initial_stack_height != stack_height; initial_stack_height--) {
-                    ExtractStackElem* const stack_elem = &wks->initial_stack[initial_stack_height - 1];
-                    const uint16_t nr_alive_children = stack_elem->nr_passed_children + is_child_alive;
-                    if (nr_alive_children == 0) {
-                        Free_node(stack_elem->node.ptr);
-                    } else {
-                        is_child_alive = true;
-                        const NodeLink new_link = {stack_elem->node.ptr, nr_alive_children - 1};
-                        if (initial_stack_height == 0) {
-                            cold_root.inl.children[initial_nr_passed_children_of_root] = new_link;
-                        } else {
-                            ExtractStackElem* const parent_stack_elem = &wks->initial_stack[initial_stack_height - 2];
-                            const uint16_t idx_as_child = parent_stack_elem->nr_passed_children;
-                            parent_stack_elem->children_cache[idx_as_child % 2] = new_link;
-                            mram_write(&parent_stack_elem->children_cache[0], &Deref(parent_stack_elem->node.ptr).inl.children[idx_as_child / 2 * 2], sizeof(NodeLink) * 2);
-                        }
-                    }
-                }
-
-                if (stack_height == 0) {
-                    const uint16_t nr_left_alive_children = initial_nr_passed_children_of_root + is_child_alive,
-                                   idx_right_alive_children_begin = nr_passed_children_of_root,
-                                   nr_right_alive_children = cold_root_numKeys + 1 - idx_right_alive_children_begin,
-                                   nr_alive_children = nr_left_alive_children + nr_right_alive_children;
-                    if (nr_alive_children == 0) {
-                        cold_height = 0;
-                        cold_root_numKeys = 0;
-                    } else {
-                        if (nr_right_alive_children != 0) {
-                            if (nr_left_alive_children == 0) {
-                                cold_min_key = next_key;
-                            } else {
-                                cold_root.inl.keys[nr_left_alive_children - 1] = next_key;
-                            }
-                            const uint16_t move_offset = idx_right_alive_children_begin - nr_left_alive_children;
-                            for (uint16_t idx_dest = nr_left_alive_children, idx_src = idx_right_alive_children_begin;; idx_dest++, idx_src++) {
-                                cold_root.inl.children[idx_src - move_offset] = cold_root.inl.children[idx_src];
-                                if (idx_src == cold_root_numKeys) {
-                                    break;
-                                }
-                                cold_root.inl.keys[idx_src - move_offset] = cold_root.inl.keys[idx_src];
-                            }
-                        }
-                        cold_root_numKeys = (uint8_t)(nr_alive_children - 1);
-                    }
-                } else {
-                    ExtractStackElem* const initial_stack_elem = &wks->initial_stack[stack_height - 1];
-                    ExtractStackElem* const stack_elem = &wks->stack[stack_height - 1];
-                    mram_read(&Deref(stack_elem->node.ptr), &wks->node_cache, sizeof(Node));
-
-                    const uint16_t nr_left_alive_children = initial_stack_elem->nr_passed_children + is_child_alive,
-                                   idx_right_alive_children_begin = stack_elem->nr_passed_children,
-                                   nr_right_alive_children = stack_elem->node.numKeys + 1 - idx_right_alive_children_begin,
-                                   nr_alive_children = nr_left_alive_children + nr_right_alive_children;
-                    const NodeLink new_link = {stack_elem->node.ptr, nr_alive_children - 1};
-                    if (stack_height == 1) {
-                        cold_root.inl.children[nr_passed_children_of_root] = new_link;
-                    } else {
-                        ExtractStackElem* const parent_stack_elem = &wks->stack[stack_height - 2];
-                        const uint16_t idx_as_child = parent_stack_elem->nr_passed_children;
-                        parent_stack_elem->children_cache[idx_as_child % 2] = new_link;
-                        mram_write(&parent_stack_elem->children_cache[0], &Deref(parent_stack_elem->node.ptr).inl.children[idx_as_child / 2 * 2], sizeof(NodeLink) * 2);
-                    }
-                    if (nr_left_alive_children == 0) {
-                        for (;;) {
-                            stack_height--;
-                            if (stack_height != 0) {
-                                ExtractStackElem* const ancestor_stack_elem = &wks->stack[stack_height - 1];
-                                if (ancestor_stack_elem->nr_passed_children == 0) {
-                                    continue;
-                                }
-                                mram_write(&next_key, &Deref(ancestor_stack_elem->node.ptr).inl.keys[ancestor_stack_elem->nr_passed_children - 1], sizeof(key_uint64_t));
-                            } else {
-                                if (nr_passed_children_of_root == 0) {
-                                    cold_min_key = next_key;
-                                } else {
-                                    cold_root.inl.keys[nr_passed_children_of_root - 1] = next_key;
-                                }
-                            }
-                            break;
-                        }
-                    } else {
-                        wks->node_cache.inl.keys[nr_left_alive_children - 1] = next_key;
-                    }
-                    const uint16_t move_offset = idx_right_alive_children_begin - nr_left_alive_children;
-                    for (uint16_t idx_dest = nr_left_alive_children, idx_src = idx_right_alive_children_begin;; idx_dest++, idx_src++) {
-                        wks->node_cache.inl.children[idx_src - move_offset] = wks->node_cache.inl.children[idx_src];
-                        if (idx_src == stack_elem->node.numKeys) {
-                            break;
-                        }
-                        wks->node_cache.inl.keys[idx_src - move_offset] = wks->node_cache.inl.keys[idx_src];
-                    }
-                    mram_write(&wks->node_cache, &Deref(stack_elem->node.ptr), sizeof(Node));
-                }
-            }
-            if (idx_hot % 2 != 0) {
-                mram_write(&wks->nr_pairs_cache[0], (__mram_ptr uint32_t*)(result_nr_pairs + sizeof(uint32_t) * idx_hot - 4), sizeof(uint32_t) * 2);
-            }
-        }
-    }
-}
-
-void task_extract(void)
-{
-    EXTRACT_nodes();
-
-#ifdef TASK_EXTRACT_CHECK
-    if (me() == 0) {
-        check_tree_structure(&cold_root, cold_height, cold_root_numKeys);
-    }
-#endif
-}
 
 
 static void SERIALIZE_init_pair_cache(SerializeWorkspace* wks, uintptr_t result_pairs)
@@ -2246,19 +1641,20 @@ void task_serialize(void)
 {
     _Static_assert(TASK_SERIALIZE_NR_TASKLETS == 1, "TASK_SERIALIZE_NR_TASKLETS == 1");
     if (me() < TASK_SERIALIZE_NR_TASKLETS) {
-        static const uintptr_t result_nr_pairs = (uintptr_t)DPU_MRAM_HEAP_POINTER,
-                               input_delims = result_nr_pairs + sizeof(uint32_t) * 2, result_incisions = input_delims,
-                               result_pairs = result_incisions + sizeof(key_uint64_t) * NR_RANKS * MAX_NR_DPUS_IN_RANK;
-        const unsigned nr_delims = input_header.serialize.nr_delims;
+        static const uintptr_t input_delims = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader), result_incisions = input_delims,
+                               result_nr_pairs = input_delims - sizeof(uint32_t) * 2;
+        const unsigned nr_delims = input_header.serialize.nr_delims,
+                       max_nr_delims = input_header.serialize.max_nr_delims;
+        const uintptr_t result_pairs = result_incisions + sizeof(key_uint64_t) * max_nr_delims;
 
         uint32_t nr_pairs[2];
 
         nr_pairs[0] = SERIALIZE_execute(cold_root_numKeys, &cold_root, cold_height,
             result_pairs, nr_delims, input_delims, result_incisions);
         nr_pairs[1] = SERIALIZE_execute(hot_root_numKeys, &hot_root, hot_height,
-            result_pairs + sizeof(KVPair) * nr_pairs[0], 0, 0, 0);
+            result_pairs + sizeof(KVPair) * nr_pairs[0], 0, input_delims, result_incisions);
 
-        mram_write(&nr_pairs[0], (__mram_ptr void*)DPU_MRAM_HEAP_POINTER, sizeof(uint32_t) * 2);
+        mram_write(&nr_pairs[0], (__mram_ptr void*)result_nr_pairs, sizeof(uint32_t) * 2);
     }
 }
 
@@ -2272,7 +1668,8 @@ void task_construct_hot(void)
 {
     _Static_assert(TREE_CONSTRUCT_NR_TASKLETS > 0, "TREE_CONSTRUCT_NR_TASKLETS > 0");
     if (me() < TREE_CONSTRUCT_NR_TASKLETS) {
-        construct_tree(&hot_root_numKeys, &hot_root, &hot_height, &hot_min_key, CONSTRUCT_HOT_allocator);
+        static const uintptr_t pairs = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8;
+        construct_tree(pairs, input_header.construct_hot.nr_pairs, &hot_root_numKeys, &hot_root, &hot_height, &hot_min_key, CONSTRUCT_HOT_allocator);
 
 #ifdef TASK_CONSTRUCT_HOT_CHECK
         TREE_CONSTRUCT_barrier();

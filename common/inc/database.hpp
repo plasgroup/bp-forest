@@ -47,9 +47,11 @@ public:
         value_uint64_t results[])
         = 0;
 
+    virtual void partition_with(uint64_t /* n */, const key_uint64_t /* keys */[], value_uint64_t /* values */[]) {}
+    virtual void partition_with(uint64_t /* n */, const KVPair /* pairs */[]) {}
     virtual void partition_with(uint64_t /* n */, const key_uint64_t /* keys */[]) {}
-    virtual void partition_with(uint64_t /* n */, const KeyRange /* queries */[]) {}
-    virtual void partition_with(uint64_t /* n */, const RangeCountQuery /* queries */[]) {}
+    virtual void partition_with(uint64_t /* n */, const KeyRange /* queries */[], uint64_t /* results */[]) {}
+    virtual void partition_with(uint64_t /* n */, const RangeCountQuery /* queries */[], uint64_t /* results */[]) {}
 
     virtual int get_parallelism() const = 0;
 

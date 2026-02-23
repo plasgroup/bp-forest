@@ -56,12 +56,6 @@ int main()
         task_range_count();
         break;
 #endif
-    case TASK_SUMMARIZE:
-        task_summarize();
-        break;
-    case TASK_EXTRACT:
-        task_extract();
-        break;
     case TASK_SERIALIZE:
         task_serialize();
         break;

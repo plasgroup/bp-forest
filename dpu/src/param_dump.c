@@ -15,7 +15,6 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
 #endif
                                      "MAX_NR_SUMMARY_CHUNKS: " EXPAND_STRINGIFY(MAX_NR_SUMMARY_CHUNKS) "\n"
                                      "MAX_NR_RMQ_LUMPS: " EXPAND_STRINGIFY(MAX_NR_RMQ_LUMPS) "\n"
-                                     "RESULT_OFFSET: " EXPAND_STRINGIFY(RESULT_OFFSET) "\n"
                                      "NR_TASKLETS: " EXPAND_STRINGIFY(NR_TASKLETS) "\n"
 #ifdef PRINT_DEBUG
                                      "PRINT_DEBUG: 1\n"

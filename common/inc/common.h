@@ -69,6 +69,19 @@ enum TaskID : uint32_t {
 
 
 #ifdef __cplusplus
+inline bool operator<(const KVPair& lhs, const KVPair& rhs)
+{
+    return lhs.key < rhs.key;
+}
+inline bool compare_kvpair_key(const KVPair& lhs, key_uint64_t rhs_key)
+{
+    return lhs.key < rhs_key;
+}
+inline bool compare_key_kvpair(key_uint64_t lhs_key, const KVPair& rhs)
+{
+    return lhs_key < rhs.key;
+}
+
 }  // extern "C"
 #endif  // ifdef __cplusplus
 
