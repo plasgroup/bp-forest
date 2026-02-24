@@ -138,6 +138,11 @@ public:
     ChunkedPairsRange(const ChunkedPairsRange&) = default;
     ChunkedPairsRange& operator=(const ChunkedPairsRange&) = default;
 };
+struct NewHotRange {
+    PairsRange pairs_range;
+    KeyRange key_range;
+    uint32_t load;
+};
 
 using LinkedPairsRange = LinkedElement<PairsRange>;
 using LinkedChunkedPairsRange = LinkedElement<ChunkedPairsRange>;

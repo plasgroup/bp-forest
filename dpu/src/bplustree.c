@@ -467,10 +467,9 @@ void task_init(void)
             &cold_root_numKeys, &cold_root, &cold_height, &cold_min_key, INIT_cold_allocator);
 
         if (me() == 0) {
-            hot_height = 0;
-            hot_root_numKeys = 0;
             node_idx_shift = nr_cold_nodes;
         }
+        TREE_CONSTRUCT_barrier();
 
         const uintptr_t hot_pairs = cold_pairs + sizeof(KVPair) * input_header.init.nr_cold_pairs;
         const unsigned nr_hot_nodes = construct_tree(
@@ -493,7 +492,6 @@ void task_init(void)
 }
 
 
-#if SUPPORT_INSERT
 static KVPair* INSERT_fetch_next_qry(InsertWorkspace* wks)
 {
     if (wks->idx_qry_in_cache == TASK_INSERT_NR_CACHED_QRYS) {
@@ -938,6 +936,7 @@ static void INSERT_execute_batch(Node* const root, uint8_t* const height, uint8_
         INSERT_execute(root, height, root_numKeys, qry);
     }
 }
+#if SUPPORT_INSERT
 void task_insert(void)
 {
     _Static_assert(TASK_INSERT_NR_TASKLETS == 1, "TASK_INSERT_NR_TASKLETS == 1");
@@ -1647,31 +1646,139 @@ void task_serialize(void)
                        max_nr_delims = input_header.serialize.max_nr_delims;
         const uintptr_t result_pairs = result_incisions + sizeof(key_uint64_t) * max_nr_delims;
 
-        uint32_t nr_pairs[2];
+        uint32_t nr_pairs[2] = {0, 0};
 
-        nr_pairs[0] = SERIALIZE_execute(cold_root_numKeys, &cold_root, cold_height,
-            result_pairs, nr_delims, input_delims, result_incisions);
-        nr_pairs[1] = SERIALIZE_execute(hot_root_numKeys, &hot_root, hot_height,
-            result_pairs + sizeof(KVPair) * nr_pairs[0], 0, input_delims, result_incisions);
+        if (input_header.serialize.do_cold) {
+            nr_pairs[0] = SERIALIZE_execute(cold_root_numKeys, &cold_root, cold_height,
+                result_pairs, nr_delims, input_delims, result_incisions);
+        }
+        if (input_header.serialize.do_hot) {
+            nr_pairs[1] = SERIALIZE_execute(hot_root_numKeys, &hot_root, hot_height,
+                result_pairs + sizeof(KVPair) * nr_pairs[0], 0, input_delims, result_incisions);
+        }
 
         mram_write(&nr_pairs[0], (__mram_ptr void*)result_nr_pairs, sizeof(uint32_t) * 2);
     }
 }
 
 
-static NodePtr CONSTRUCT_HOT_allocator(unsigned idx_node)
+static void tree_clear(uint8_t* const p_root_numKeys, const Node* const root, uint8_t* const p_height)
+{
+    static ClearTreeWorkspace* const wks = &workspace.tree.clear;
+
+    _Static_assert(TREE_CLEAR_NR_TASKLETS == 1, "TREE_CLEAR_NR_TASKLETS == 1");
+    if (me() < TREE_CLEAR_NR_TASKLETS) {
+        const uint8_t root_numKeys = *p_root_numKeys, height = *p_height;
+
+        if (height == 0) {
+        } else if (height == 1) {
+            for (uint8_t idx_leaf = 0; idx_leaf <= root_numKeys; idx_leaf++) {
+                Free_node(root->inl.children[idx_leaf].ptr);
+            }
+        } else {
+            for (uint8_t idx_child = 0; idx_child <= root_numKeys; idx_child++) {
+                uint8_t stack_height = 0;
+                NodeLink cursor = root->inl.children[idx_child];
+
+                for (;;) {
+                    for (; stack_height + 2 < height; stack_height++) {
+                        ClearTreeStackElem* stack_new_elem = &wks->stack[stack_height];
+                        stack_new_elem->node = cursor;
+                        stack_new_elem->nr_visited_children = 0;
+                        mram_read(&Deref(cursor.ptr).inl.children[0], &stack_new_elem->children_cache[0], sizeof(NodeLink) * 2);
+                        cursor = stack_new_elem->children_cache[0];
+                    }
+                    // here, cursor points to a parent of a leaf
+
+                    mram_read(&Deref(cursor.ptr).inl.children[0], &wks->children_cache[0], ((cursor.numKeys + 1) + 1) / 2 * 2 * sizeof(NodeLink));
+                    for (uint8_t idx_leaf = 0; idx_leaf <= cursor.numKeys; idx_leaf++) {
+                        Free_node(wks->children_cache[0].ptr);
+                    }
+
+                    for (;; stack_height--) {
+                        Free_node(cursor.ptr);
+
+                        if (stack_height == 0) {
+                            goto finish_one_child_of_root;
+                        }
+
+                        ClearTreeStackElem* const stack_top = &wks->stack[stack_height - 1];
+                        cursor = stack_top->node;
+                        const uint8_t orig_nr_visited_children = stack_top->nr_visited_children;
+
+                        if (orig_nr_visited_children != cursor.numKeys) {
+                            stack_top->nr_visited_children = orig_nr_visited_children + 1;
+
+                            if (orig_nr_visited_children % 2 == 0) {
+                                cursor = stack_top->children_cache[1];
+                            } else {
+                                mram_read(&Deref(cursor.ptr).inl.children[orig_nr_visited_children + 1], &stack_top->children_cache[0], sizeof(NodeLink) * 2);
+                                cursor = stack_top->children_cache[0];
+                            }
+                            break;
+                        }
+                    }
+                }
+            finish_one_child_of_root:;
+            }
+        }
+
+        *p_root_numKeys = *p_height = 0;
+    }
+}
+static NodePtr MOVE_HOT_allocator(unsigned idx_node)
 {
     (void)idx_node;
     return Allocate_node();
 }
-void task_construct_hot(void)
+void task_move_hot(void)
 {
+    if (input_header.move_hot.renew_cold && input_header.move_hot.renew_hot) {
+        return task_init();
+    }
+
+    if (input_header.move_hot.renew_cold) {
+        tree_clear(&cold_root_numKeys, &cold_root, &cold_height);
+    }
+    if (input_header.move_hot.renew_hot) {
+        tree_clear(&hot_root_numKeys, &hot_root, &hot_height);
+    }
+
     _Static_assert(TREE_CONSTRUCT_NR_TASKLETS > 0, "TREE_CONSTRUCT_NR_TASKLETS > 0");
     if (me() < TREE_CONSTRUCT_NR_TASKLETS) {
-        static const uintptr_t pairs = (uintptr_t)DPU_MRAM_HEAP_POINTER + 8;
-        construct_tree(pairs, input_header.construct_hot.nr_pairs, &hot_root_numKeys, &hot_root, &hot_height, &hot_min_key, CONSTRUCT_HOT_allocator);
+        if (input_header.move_hot.renew_cold || input_header.move_hot.renew_hot) {
+            TREE_CONSTRUCT_barrier();
+        }
 
-#ifdef TASK_CONSTRUCT_HOT_CHECK
+        static const uintptr_t cold_pairs = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader);
+
+        if (input_header.move_hot.nr_cold_pairs > 0) {
+            if (input_header.move_hot.renew_cold) {
+                construct_tree(cold_pairs, input_header.init.nr_cold_pairs,
+                    &cold_root_numKeys, &cold_root, &cold_height, &cold_min_key, MOVE_HOT_allocator);
+            } else {
+                INSERT_execute_batch(&cold_root, &cold_height, &cold_root_numKeys,
+                    0, input_header.move_hot.nr_cold_pairs);
+            }
+
+            _Static_assert(TREE_CONSTRUCT_NR_TASKLETS >= TASK_INSERT_NR_TASKLETS, "TREE_CONSTRUCT_NR_TASKLETS >= TASK_INSERT_NR_TASKLETS");
+            TREE_CONSTRUCT_barrier();
+        }
+
+        if (input_header.move_hot.nr_hot_pairs > 0) {
+            if (input_header.move_hot.renew_hot) {
+                const uintptr_t hot_pairs = cold_pairs + sizeof(KVPair) * input_header.move_hot.nr_cold_pairs;
+
+                construct_tree(hot_pairs, input_header.init.nr_hot_pairs,
+                    &hot_root_numKeys, &hot_root, &hot_height, &hot_min_key, MOVE_HOT_allocator);
+            } else {
+                INSERT_execute_batch(&hot_root, &hot_height, &hot_root_numKeys,
+                    input_header.move_hot.nr_cold_pairs, input_header.move_hot.nr_hot_pairs);
+            }
+        }
+
+#ifdef TASK_MOVE_HOT_CHECK
+        _Static_assert(TREE_CONSTRUCT_NR_TASKLETS >= TASK_INSERT_NR_TASKLETS, "TREE_CONSTRUCT_NR_TASKLETS >= TASK_INSERT_NR_TASKLETS");
         TREE_CONSTRUCT_barrier();
         if (me() == 0) {
             check_tree_structure(&cold_root, cold_height, cold_root_numKeys);

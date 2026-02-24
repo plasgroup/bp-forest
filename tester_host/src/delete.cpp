@@ -105,7 +105,7 @@ struct InitHeader {
     uint32_t nr_pairs;
 };
 struct ConstructHotHeader {
-    uint32_t task_no = TASK_CONSTRUCT_HOT;
+    uint32_t task_no = TASK_MOVE_HOT;
     uint32_t nr_pairs;
 };
 struct NopHeader {
@@ -139,7 +139,7 @@ int main(int argc, char* argv[])
         DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 8, &init_pairs[0], init_qrys.length * sizeof(KVPair), DPU_XFER_DEFAULT));
         DPU_ASSERT(dpu_launch(dpu_hdr.all_dpu, DPU_SYNCHRONOUS));
 
-        const ConstructHotHeader hot_header{TASK_CONSTRUCT_HOT, static_cast<uint32_t>(init_qrys.length)};
+        const ConstructHotHeader hot_header{TASK_MOVE_HOT, static_cast<uint32_t>(init_qrys.length)};
         DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 0, &hot_header, 8, DPU_XFER_DEFAULT));
         DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 8, &init_pairs[0], init_qrys.length * sizeof(KVPair), DPU_XFER_DEFAULT));
         DPU_ASSERT(dpu_launch(dpu_hdr.all_dpu, DPU_SYNCHRONOUS));

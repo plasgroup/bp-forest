@@ -195,11 +195,21 @@ typedef struct {
     uintptr_t cursor_on_incisions;
 } SerializeWorkspace;
 
+typedef struct {
+    __dma_aligned NodeLink children_cache[2];
+    NodeLink node;
+    uint8_t nr_visited_children;
+} ClearTreeStackElem;
+typedef struct {
+    __dma_aligned NodeLink children_cache[MAX_NR_CHILDREN];
+    ClearTreeStackElem stack[MAX_HEIGHT - 2];
+} ClearTreeWorkspace;
+
 typedef union {
     InitWorkspace init[TREE_CONSTRUCT_NR_TASKLETS];
     SummarizeWorkspace summarize;
     SerializeWorkspace serialize[TASK_SERIALIZE_NR_TASKLETS];
-    ExtractWorkspace extract;
+    ClearTreeWorkspace clear;
     GetWorkspace get[TASK_GET_NR_TASKLETS];
     InsertWorkspace insert[TASK_INSERT_NR_TASKLETS];
     DeleteWorkspace delete[TASK_DELETE_NR_TASKLETS];

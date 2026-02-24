@@ -14,6 +14,7 @@
 #include "log_buffer.hpp"
 #include "overload.hpp"
 #include "pairs_range.hpp"
+#include "raii.hpp"
 #include "sg_block_info.hpp"
 #include "statistics.hpp"
 #include "upmem.hpp"
@@ -237,9 +238,7 @@ inline void BPForest::distribute_data_based_on_partitions(const KVPair sorted_pa
 {
     const KVPair* cursor = &sorted_pairs[0];
 
-    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-        hot_ranges[idx_dpu] = PairsRange{cursor, cursor};
-    }
+    std::fill(&hot_ranges[0], &hot_ranges[nr_base_parts], PairsRange{nullptr, nullptr});
 
     dpu_id_t idx_base = 0, cold_count = 0;
     uint32_t nr_cold_pairs_in_this_base = 0;
@@ -731,6 +730,16 @@ inline void BPForest::batch_get(uint32_t nr_queries, const key_uint64_t keys[], 
     ScopedTimer timer{BatchTotalTime};
 
     route_queries(nr_queries, keys, results, get_queries);
+
+    if (param.balancing > 0) {
+        const bool success = incremental_repartition(nr_queries, keys, get_queries);
+        route_queries(nr_queries, keys, results, get_queries);  // TODO: re-routing in incremental_repartition
+
+        if (!success) {
+            full_repartition(nr_queries, keys, results, get_queries);
+        }
+    }
+
     execute_in_dpus(TASK_GET, get_queries);
     postprocess_of_get(results);
     get_queries.clear();
@@ -799,6 +808,8 @@ inline void BPForest::batch_delete(uint32_t nr_queries, const key_uint64_t keys[
     route_queries(nr_queries, keys, (void*){nullptr}, delete_queries);
     execute_in_dpus(TASK_DELETE, delete_queries);
     delete_queries.clear();
+
+    // TODO: When the first data of each partition is deleted, shift the partition boundary to the next key
 }
 
 inline void BPForest::batch_range_count(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[])
@@ -874,7 +885,7 @@ struct SerializationCommander {
     SerializationCommander(const InputHeader* input_headers, const key_uint64_t* hot_delim_keys, const dpu_id_t* base_to_nr_hot_psum)
         : input_headers{input_headers}, hot_delim_keys{hot_delim_keys}, base_to_nr_hot_psum{base_to_nr_hot_psum} {}
 
-    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
+    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index) const
     {
         switch (block_index) {
         case 0:
@@ -905,7 +916,7 @@ struct SerializaionNrPairsReceiver {
     SerializaionNrPairsReceiver(const dpu_id_t* base_to_nr_hot_psum, CachelineAligned<std::array<uint32_t, 2>>* nr_pairs, uint32_t* incision_indices)
         : base_to_nr_hot_psum{base_to_nr_hot_psum}, nr_pairs{nr_pairs}, incision_indices{incision_indices} {}
 
-    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
+    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index) const
     {
         if (block_index == 0) {
             out->addr = static_cast<uint8_t*>(static_cast<void*>(&nr_pairs[dpu_index].get()[0]));
@@ -927,12 +938,13 @@ struct SerializaionNrPairsReceiver {
         return sizeof(uint32_t) * (2 + nr_extracted);
     }
 };
+template <typename PairsRangeLike>
 struct SerializedKVPairReceiver {
-    const KVPairsCommunicator<PairsRange> pairs_comm;
+    const KVPairsCommunicator<PairsRangeLike> pairs_comm;
     const CachelineAligned<std::array<uint32_t, 2>>* const nr_pairs;
 
     SerializedKVPairReceiver(const SerializedKVPairReceiver&) = default;
-    SerializedKVPairReceiver(const LinkedList<PairsRange>* cold_ranges_lists, const PairsRange* hot_ranges, const CachelineAligned<std::array<uint32_t, 2>>* nr_pairs)
+    SerializedKVPairReceiver(const LinkedList<PairsRangeLike>* cold_ranges_lists, const PairsRange* hot_ranges, const CachelineAligned<std::array<uint32_t, 2>>* nr_pairs)
         : pairs_comm{cold_ranges_lists, hot_ranges}, nr_pairs{nr_pairs} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index) const
@@ -978,6 +990,7 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
             input.task_no = TASK_SERIALIZE;
             input.serialize.nr_delims = nr_extracted_hots[idx_dpu];
             input.serialize.max_nr_delims = nr_base_parts;
+            input.serialize.do_cold = input.serialize.do_hot = true;
         }
     }
 
@@ -995,7 +1008,7 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
     {
         ScopedTimer timer{NrPairsRecvTime};
         UPMEM_AsyncDuration async;
-        scatter_from_dpu(all_dpu, sizeof(InputHeader) - sizeof(uint32_t[2]), SerializaionNrPairsReceiver{&base_to_nr_hot_psum[0], &nr_pairs[0], &incision_indices[0]}, async);
+        scatter_from_dpu(all_dpu, sizeof(InputHeader) - sizeof(uint32_t[2]), SerializaionNrPairsReceiver{&base_to_nr_hot_psum[0], &nr_pairs_recv_buf[0], &incision_indices[0]}, async);
     }
 #else
     {
@@ -1014,7 +1027,7 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
 #endif
 
     const uint32_t total_nr_pairs = std::accumulate(
-        &nr_pairs[0], &nr_pairs[nr_base_parts], uint32_t{0},
+        &nr_pairs_recv_buf[0], &nr_pairs_recv_buf[nr_base_parts], uint32_t{0},
         [](uint32_t tmp, std::array<uint32_t, 2>& nr_pairs) { return tmp + nr_pairs[0] + nr_pairs[1]; });
     {
         ScopedTimer timer{PairsBufAllocTime};
@@ -1024,9 +1037,7 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
     {
         KVPair* cursor = &buf[0];
 
-        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-            hot_ranges[idx_dpu] = PairsRange{cursor, cursor};
-        }
+        std::fill(&hot_ranges[0], &hot_ranges[nr_base_parts], PairsRange{nullptr, nullptr});
 
         dpu_id_t idx_base = 0, cold_count = 0, hot_count = 0;
         uint32_t nr_cold_pairs_in_this_base = 0;
@@ -1036,10 +1047,10 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
 
             std::visit(overload(
                            [&](const BasePartitionDelim&) {
-                               const uint32_t nr_cold_pairs = nr_pairs[idx_base].get()[0] - nr_cold_pairs_in_this_base;
+                               const uint32_t nr_cold_pairs = nr_pairs_recv_buf[idx_base].get()[0] - nr_cold_pairs_in_this_base;
                                if (nr_cold_pairs > 0) {
                                    LinkedPairsRange& cold_range = cold_ranges[cold_count++];
-                                   cold_range = LinkedPairsRange{cursor, cursor += nr_cold_pairs};
+                                   cold_range = PairsRange{cursor, cursor += nr_cold_pairs};
                                    cold_ranges_lists[idx_base].push_back(cold_range);
                                }
 
@@ -1048,16 +1059,16 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
                            },
                            [&](const HotPartitionDelim& delim) {
                                const uint32_t incision_pos = incision_indices[hot_count],
-                                              nr_cold_pairs = nr_cold_pairs_in_this_base - incision_pos;
+                                              nr_cold_pairs = incision_pos - nr_cold_pairs_in_this_base;
                                if (nr_cold_pairs > 0) {
                                    LinkedPairsRange& cold_range = cold_ranges[cold_count++];
-                                   cold_range = LinkedPairsRange{cursor, cursor += nr_cold_pairs};
+                                   cold_range = PairsRange{cursor, cursor += nr_cold_pairs};
                                    cold_ranges_lists[idx_base].push_back(cold_range);
 
                                    nr_cold_pairs_in_this_base = incision_pos;
                                }
 
-                               const uint32_t nr_hot_pairs = nr_pairs[delim.dpu].get()[1];
+                               const uint32_t nr_hot_pairs = nr_pairs_recv_buf[delim.dpu].get()[1];
                                hot_ranges[delim.dpu] = PairsRange{cursor, cursor += nr_hot_pairs};
 
                                hot_count++;
@@ -1066,10 +1077,10 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
         }
 
         // last cold range
-        const uint32_t nr_cold_pairs = nr_pairs[idx_base].get()[0] - nr_cold_pairs_in_this_base;
+        const uint32_t nr_cold_pairs = nr_pairs_recv_buf[idx_base].get()[0] - nr_cold_pairs_in_this_base;
         if (nr_cold_pairs > 0) {
             LinkedPairsRange& cold_range = cold_ranges[cold_count++];
-            cold_range = LinkedPairsRange{cursor, cursor += nr_cold_pairs};
+            cold_range = PairsRange{cursor, cursor += nr_cold_pairs};
             cold_ranges_lists[idx_base].push_back(cold_range);
         }
     }
@@ -1078,7 +1089,7 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
         ScopedTimer timer{PairsRecvTime};
         UPMEM_AsyncDuration async;
         scatter_from_dpu(all_dpu, sizeof(InputHeader) + sizeof(key_uint64_t) * nr_base_parts,
-            SerializedKVPairReceiver{&cold_ranges_lists[0], &hot_ranges[0], &nr_pairs[0]}, async);
+            SerializedKVPairReceiver<PairsRange>{&cold_ranges_lists[0], &hot_ranges[0], &nr_pairs_recv_buf[0]}, async);
     }
 
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
@@ -1144,7 +1155,7 @@ find_relatively_hot_ranges(const LinkedList<ChunkedPairsRange>::iterator begin_r
                     hot_range = PairsRange{chunk->begin(), hot_range.end()};
                     load += chunk->load();
                 }
-                hot_hook({hot_range, load});
+                hot_hook(*range, hot_range, load);
             }
 
             if (range == argmax_left_range) {
@@ -1337,13 +1348,19 @@ BPForest::full_repartition(uint32_t nr_queries, const Query queries[], Result* r
     }
     std::fill(hot_delims.begin(), hot_delims.end(), DelimIter{});
 
+    const RAII raii{[&] {
+        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+            chunked_cold_ranges_lists[idx_dpu].clear();
+        }
+    }};
+
     for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
         LinkedChunkedPairsRange& range = chunked_cold_ranges[idx_base];
         range = ChunkedPairsRange{{&data_buf[nr_pairs * idx_base / nr_base_parts], &data_buf[nr_pairs * (idx_base + 1) / nr_base_parts]}};
         chunked_cold_ranges_lists[idx_base].push_back(range);
 
         std::set<PartitionDelim>::node_type node = delims.extract(cold_delims[idx_base]);
-        node.value().first = range.begin()->begin()->key;
+        node.value().first = range.PairsRange::begin()->key;
         delims.insert(cold_delims[idx_base + 1], std::move(node));
     }
     dpu_id_t cold_count = nr_base_parts, hot_count = 0;
@@ -1352,13 +1369,19 @@ BPForest::full_repartition(uint32_t nr_queries, const Query queries[], Result* r
     route_queries(nr_queries, queries, results, routed);
 
     for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
-        if (routed.cold[idx_base].nr_qrys <= nr_queries * param.rebalance_threshold / static_cast<double>(nr_base_parts)) {
-            cold_loads[idx_base] = {idx_base, routed.cold[idx_base].nr_qrys * (IsPointQuery<Query> ? 1 : 2)};
+        LinkedChunkedPairsRange& base = chunked_cold_ranges[idx_base];
+
+        uint32_t cold_npairs = static_cast<uint32_t>(base.npairs());
+        const uint32_t hot_npairs = (cold_npairs + param.balancing - 1) / param.balancing,
+                       hot_nqrys = (nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
+
+        if (IsPointQuery<Query> && routed.cold[idx_base].nr_qrys < hot_nqrys) {
+            result[idx_base].first = cold_npairs;
+            cold_loads[idx_base] = {idx_base, routed.cold[idx_base].nr_qrys};
             continue;
         }
 
         LinkedList<ChunkedPairsRange>& list = chunked_cold_ranges_lists[idx_base];
-        LinkedChunkedPairsRange& base = chunked_cold_ranges[idx_base];
         const LinkedList<ChunkedPairsRange>::iterator iter_base = list.begin();
         assert(&base == &*iter_base);
 
@@ -1369,8 +1392,7 @@ BPForest::full_repartition(uint32_t nr_queries, const Query queries[], Result* r
         }
         base.set_load_ary(&chunk2load[0]);
 
-        uint32_t cold_npairs = static_cast<uint32_t>(base.npairs()),
-                 cold_load = 0;
+        uint32_t cold_load = 0;
 
         const DataChunkIterator left = ++base.begin(), right = base.end();
         if constexpr (IsPointQuery<Query>) {
@@ -1384,8 +1406,8 @@ BPForest::full_repartition(uint32_t nr_queries, const Query queries[], Result* r
             }
             cold_load = routed.cold[idx_base].nr_qrys;
         } else {
-            const key_uint64_t base_min = base.begin().begin()->key,
-                               base_max = idx_base + 1 == nr_base_parts ? KEY_MAX : base.end().end()->key;
+            const key_uint64_t base_min = base.PairsRange::begin()->key,
+                               base_max = idx_base + 1 == nr_base_parts ? KEY_MAX : base.PairsRange::end()->key;
             for (const auto& idx_vec : routed.cold[idx_base].orig_idxs) {
                 for (const auto orig_idx : idx_vec) {
                     const KeyRange& range = RangeQueryToRange<Query>{}(queries[orig_idx]);
@@ -1401,9 +1423,6 @@ BPForest::full_repartition(uint32_t nr_queries, const Query queries[], Result* r
             }
         }
 
-        const uint32_t hot_npairs = (cold_npairs + param.balancing - 1) / param.balancing,
-                       hot_nqrys = (nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
-
         find_absolutely_hot_ranges(&base, &base + 1, hot_npairs, hot_nqrys,
             [&](ChunkedPairsRange& part, DataChunkIterator begin, DataChunkIterator end, uint32_t load) {
                 if (part.begin() != begin) {
@@ -1413,10 +1432,13 @@ BPForest::full_repartition(uint32_t nr_queries, const Query queries[], Result* r
                 }
                 part = ChunkedPairsRange{end, part.end()};
 
-                std::pair<PairsRange, uint32_t>& new_hot = new_hots[hot_count++];
-                new_hot = {PairsRange{begin.begin(), end.begin()}, load};
+                NewHotRange& new_hot = new_hots[hot_count++];
+                new_hot.pairs_range = {begin.begin(), end.begin()};
+                new_hot.key_range = {new_hot.pairs_range.begin()->key,
+                    (new_hot.pairs_range.end() == &data_buf[nr_pairs] ? KEY_MAX : new_hot.pairs_range.end()->key - 1)};
+                new_hot.load = load;
 
-                cold_npairs -= new_hot.first.npairs();
+                cold_npairs -= new_hot.pairs_range.npairs();
                 cold_load -= load;
             });
         if (base.npairs() == 0) {
@@ -1429,12 +1451,15 @@ BPForest::full_repartition(uint32_t nr_queries, const Query queries[], Result* r
                 const std::array<std::pair<LinkedList<ChunkedPairsRange>::iterator, DataChunkIterator>, 2>
                     carved_cold_range
                     = find_relatively_hot_ranges(list.begin(), list.end(), hot_npairs, nr_relative_hots,
-                        [&](const std::pair<PairsRange, uint32_t /* load */>& range_load) {
-                            std::pair<PairsRange, uint32_t>& new_hot = new_hots[hot_count++];
-                            new_hot = range_load;
+                        [&](const ChunkedPairsRange&, const PairsRange& range, uint32_t load) {
+                            NewHotRange& new_hot = new_hots[hot_count++];
+                            new_hot.pairs_range = range;
+                            new_hot.key_range = {range.begin()->key,
+                                (range.end() == &data_buf[nr_pairs] ? KEY_MAX : range.end()->key - 1)};
+                            new_hot.load = load;
 
-                            cold_npairs -= new_hot.first.npairs();
-                            cold_load -= new_hot.second;
+                            cold_npairs -= new_hot.pairs_range.npairs();
+                            cold_load -= new_hot.load;
                         });
 
                 const LinkedList<ChunkedPairsRange>::iterator left_range = carved_cold_range[0].first, right_range = carved_cold_range[1].first;
@@ -1480,31 +1505,465 @@ BPForest::full_repartition(uint32_t nr_queries, const Query queries[], Result* r
         cold_loads[idx_base] = {idx_base, cold_load};
     }
 
+    std::fill(&hot_ranges[0], &hot_ranges[nr_base_parts], PairsRange{nullptr, nullptr});
     if (hot_count > 0) {
         std::partial_sort(&cold_loads[0], &cold_loads[hot_count], &cold_loads[nr_base_parts], [](auto& lhs, auto& rhs) { return lhs.second < rhs.second; });
-        std::sort(&new_hots[0], &new_hots[hot_count], [](auto& lhs, auto& rhs) { return lhs.second > rhs.second; });
+        std::sort(&new_hots[0], &new_hots[hot_count], [](auto& lhs, auto& rhs) { return lhs.load > rhs.load; });
 
         for (dpu_id_t idx_hot = 0; idx_hot < hot_count; idx_hot++) {
             const dpu_id_t idx_dpu = cold_loads[idx_hot].first;
-            const PairsRange& range = new_hots[idx_hot].first;
-            const key_uint64_t max_key = (range.end() == &data_buf[nr_pairs] ? KEY_MAX : range.end()->key);
-            delims.emplace(range.begin()->key, HotPartitionDelim{max_key, idx_dpu});
-            result[idx_dpu].second = static_cast<uint32_t>(range.npairs());
+            const PairsRange& pairs_range = new_hots[idx_hot].pairs_range;
+            const KeyRange& key_range = new_hots[idx_hot].key_range;
+
+            hot_ranges[idx_dpu] = pairs_range;
+            result[idx_dpu].second = static_cast<uint32_t>(pairs_range.npairs());
+            delims.emplace(key_range.begin, HotPartitionDelim{key_range.end, idx_dpu});
         }
     }
 
     combine_delims();
 
     initialize_in_dpu(&result[0], &cold_ranges_lists[0], &hot_ranges[0]);
-    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-        chunked_cold_ranges_lists[idx_dpu].clear();
-    }
 
-    combine_delims();
     route_queries(nr_queries, queries, results, routed);
 
     return result;
 }
+
+template <class Communicator>
+struct TaskNoneFilter {
+    const InputHeader* const input_headers;
+    const Communicator comm;
+
+    TaskNoneFilter(const TaskNoneFilter&) = default;
+    template <typename... Args>
+    explicit TaskNoneFilter(const InputHeader* input_headers, Args&&... args)
+        : input_headers{input_headers}, comm{std::forward<Args>(args)...}
+    {
+    }
+
+    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index) const
+    {
+        if (input_headers[dpu_index].task_no == TASK_NONE) {
+            return false;
+        }
+        return comm(out, dpu_index, block_index);
+    }
+    size_t bytes_for_dpu(dpu_id_t dpu) const
+    {
+        return (input_headers[dpu].task_no == TASK_NONE ? 0 : comm.bytes_for_dpu(dpu));
+    }
+};
+template <typename PairsRangeLike>
+struct UpdatedPartitionsSender {
+    const InputHeader* const input_headers;
+    const KVPairsCommunicator<PairsRangeLike> pairs_comm;
+
+    UpdatedPartitionsSender(const UpdatedPartitionsSender&) = default;
+    UpdatedPartitionsSender(const InputHeader* input_headers, const LinkedList<PairsRangeLike>* cold_ranges_lists, const PairsRange* hot_ranges)
+        : input_headers{input_headers}, pairs_comm{cold_ranges_lists, hot_ranges} {}
+
+    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
+    {
+        switch (block_index) {
+        case 0:
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<InputHeader*>(&input_headers[dpu_index])));
+            out->length = sizeof(InputHeader);
+            return true;
+
+        default:
+            block_index--;
+            return pairs_comm(out, dpu_index, block_index);
+        }
+    }
+    size_t bytes_for_dpu(dpu_id_t dpu) const
+    {
+        return sizeof(InputHeader) + sizeof(KVPair) * (input_headers[dpu].move_hot.nr_cold_pairs + input_headers[dpu].move_hot.nr_hot_pairs);
+    }
+};
+template <typename Query, typename Result>
+inline bool BPForest::incremental_repartition(uint32_t nr_queries, const Query queries[], QueryData<Query, Result>& routed)
+{
+    {
+        dpu_id_t cold_count = 0, incision_count = 0;
+        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+            InputHeader input = input_headers[idx_dpu];
+            const dpu_id_t orig_incision_count = (base_to_nr_hot_psum[idx_dpu] = incision_count);
+
+            if (routed.cold[idx_dpu].nr_qrys < param.rebalance_threshold * nr_queries / nr_base_parts) {
+                input.task_no = TASK_NONE;
+                continue;
+            }
+
+            for (DelimIter iter = cold_delims[idx_dpu]; iter != cold_delims[idx_dpu + 1]; iter++) {
+                const key_uint64_t key = iter->first;
+                const auto& delim = iter->second;
+                const DelimIter next = std::next(iter);
+
+                std::visit(overload(
+                               [&](const BasePartitionDelim&) {
+                                   if (next == delims.cend()) {
+                                       cold_key_ranges[cold_count++] = {key, KEY_MAX};
+                                   } else if (next->first != key) {
+                                       cold_key_ranges[cold_count++] = {key, next->first - 1};
+                                   }
+                               },
+                               [&](const HotPartitionDelim& delim) {
+                                   if (next == delims.cend()) {
+                                       if (delim.max_key != KEY_MAX) {
+                                           hot_delim_keys[incision_count++] = key;
+                                           cold_key_ranges[cold_count++] = {delim.max_key + 1, KEY_MAX};
+                                       }
+                                   } else if (next->first != delim.max_key + 1) {
+                                       hot_delim_keys[incision_count++] = key;
+                                       cold_key_ranges[cold_count++] = {delim.max_key + 1, next->first};
+                                   }
+                               }),
+                    delim);
+            }
+
+            input.task_no = TASK_SERIALIZE;
+            input.serialize.nr_delims = incision_count - orig_incision_count;
+            input.serialize.max_nr_delims = nr_base_parts;
+            input.serialize.do_cold = true;
+            input.serialize.do_hot = false;
+        }
+        base_to_nr_hot_psum[nr_base_parts] = incision_count;
+    }
+
+#ifdef SYNCHRONOUS_DPU_EXEC
+    {
+        ScopedTimer timer{CommandingSerializationTime};
+        UPMEM_AsyncDuration async;
+        gather_to_dpu(all_dpu, 0, SerializationCommander{&input_headers[0], &hot_delim_keys[0], &base_to_nr_hot_psum[0]}, async);
+    }
+    {
+        ScopedTimer timer{SerializeTime};
+        UPMEM_AsyncDuration async;
+        execute(all_dpu, async);
+    }
+    {
+        ScopedTimer timer{NrPairsRecvTime};
+        UPMEM_AsyncDuration async;
+        scatter_from_dpu(all_dpu, sizeof(InputHeader) - sizeof(uint32_t[2]), TaskNoneFilter<SerializaionNrPairsReceiver>{&input_headers[0], &base_to_nr_hot_psum[0], &nr_pairs_recv_buf[0], &incision_indices[0]}, async);
+    }
+#else
+    {
+        ScopedTimer timer{SerializeTime};
+        UPMEM_AsyncDuration async;
+        gather_to_dpu(all_dpu, 0, SerializationCommander{&input_headers[0], &hot_delim_keys[0], &base_to_nr_hot_psum[0]}, async);
+        execute(all_dpu, async);
+        scatter_from_dpu(all_dpu, sizeof(InputHeader) - sizeof(uint32_t[2]), TaskNoneFilter<SerializaionNrPairsReceiver>{&input_headers[0], &base_to_nr_hot_psum[0], &nr_pairs_recv_buf[0], &incision_indices[0]}, async);
+    }
+#endif
+#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+    {
+        std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+        std::cout << log->get() << std::flush;
+    }
+#endif
+
+    const uint32_t total_nr_pairs = [&] {
+        uint32_t total_nr_pairs = 0;
+        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+            if (input_headers[idx_dpu].task_no == TASK_SERIALIZE) {
+                total_nr_pairs += nr_pairs_recv_buf[idx_dpu].get()[0];
+            }
+        }
+        return total_nr_pairs;
+    }();
+    {
+        ScopedTimer timer{PairsBufAllocTime};
+        data_buf.reserve(total_nr_pairs);
+    }
+
+    const RAII raii{[&] {
+        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+            chunked_cold_ranges_lists[idx_dpu].clear();
+        }
+    }};
+
+    dpu_id_t cold_count = 0;
+    {
+        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+            hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};
+        }
+
+        KVPair* cursor = &data_buf[0];
+
+        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+            if (input_headers[idx_dpu].task_no == TASK_NONE) {
+                continue;
+            }
+            LinkedList<ChunkedPairsRange>& list = chunked_cold_ranges_lists[idx_dpu];
+
+            uint32_t nr_cold_pairs_from_this_dpu = 0;
+            for (dpu_id_t incision_idx = base_to_nr_hot_psum[idx_dpu]; incision_idx < base_to_nr_hot_psum[idx_dpu + 1]; incision_idx++) {
+                const uint32_t incision_pos = incision_indices[incision_idx],
+                               nr_cold_pairs = incision_pos - nr_cold_pairs_from_this_dpu;
+                assert(nr_cold_pairs > 0);
+
+                LinkedChunkedPairsRange& cold_range = chunked_cold_ranges[cold_count++];
+                cold_range = ChunkedPairsRange{{cursor, cursor += nr_cold_pairs}};
+                list.push_back(cold_range);
+
+                nr_cold_pairs_from_this_dpu = incision_pos;
+            }
+            const uint32_t nr_cold_pairs = nr_pairs_recv_buf[idx_dpu].get()[0] - nr_cold_pairs_from_this_dpu;
+            if (nr_cold_pairs > 0) {
+                LinkedChunkedPairsRange& cold_range = chunked_cold_ranges[cold_count++];
+                cold_range = ChunkedPairsRange{{cursor, cursor += nr_cold_pairs}};
+                list.push_back(cold_range);
+            }
+        }
+    }
+
+    {
+        ScopedTimer timer{PairsRecvTime};
+        UPMEM_AsyncDuration async;
+        scatter_from_dpu(all_dpu, sizeof(InputHeader) + sizeof(key_uint64_t) * nr_base_parts,
+            TaskNoneFilter<SerializedKVPairReceiver<ChunkedPairsRange>>{&input_headers[0], &chunked_cold_ranges_lists[0], &hot_ranges[0], &nr_pairs_recv_buf[0]}, async);
+    }
+
+    const dpu_id_t nr_existing_hots = static_cast<dpu_id_t>(delims.size()) - nr_base_parts;
+    dpu_id_t hot_count = 0;
+
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+        if (input_headers[idx_dpu].task_no == TASK_NONE) {
+            cold_npairs_list[idx_dpu] = 0;
+            cold_loads[idx_dpu] = {idx_dpu, routed.cold[idx_dpu].nr_qrys * (IsPointQuery<Query> ? 1 : 2)};
+            continue;
+        }
+
+        LinkedList<ChunkedPairsRange>& list = chunked_cold_ranges_lists[idx_dpu];
+
+        {
+            size_t nr_chunks = 0;
+            for (const ChunkedPairsRange& range : list) {
+                nr_chunks += range.nchunks();
+            }
+            chunk2load.reserve(nr_chunks);
+            for (uint32_t i = 0; i < nr_chunks; i++) {
+                chunk2load[i] = 0;
+            }
+
+            uint32_t* cursor = &chunk2load[0];
+            for (ChunkedPairsRange& range : list) {
+                range.set_load_ary(cursor);
+                cursor += range.nchunks();
+            }
+        }
+
+        LinkedChunkedPairsRange* const begin_part = &static_cast<LinkedChunkedPairsRange&>(*list.begin());
+        LinkedChunkedPairsRange* const end_part = &static_cast<LinkedChunkedPairsRange&>(*std::prev(list.end())) + 1;
+        const dpu_id_t nr_parts = static_cast<dpu_id_t>(end_part - begin_part);
+
+        uint32_t cold_load = 0;
+
+        if constexpr (IsPointQuery<Query>) {
+            for (const auto& qry_vec : routed.cold[idx_dpu].qrys) {
+                for (const auto& qry : qry_vec) {
+                    const key_uint64_t key = PointQueryToKey<Query>{}(qry);
+                    const LinkedChunkedPairsRange* one_after_target_part = std::upper_bound(begin_part, end_part, key,
+                        [](key_uint64_t key, const PairsRange& range) { return key < range.begin()->key; });
+                    const ChunkedPairsRange& part = one_after_target_part[-1];
+
+                    DataChunkIterator one_after_target_chunk = std::upper_bound(part.begin(), part.end(), key,
+                        [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
+                    (--one_after_target_chunk)->load()++;
+                    cold_load++;
+                }
+            }
+            cold_load = routed.cold[idx_dpu].nr_qrys;
+
+        } else {
+            // prepare delimiter keys separating a cold range and a hot range
+            //     (-inf, begin_delim[0]): out
+            //     [begin_delim[0], begin_delim[1]): begin_part[0]
+            //     [begin_delim[1], begin_delim[2]): out
+            //     [begin_delim[2], begin_delim[3]): begin_part[1]
+            //         ...
+            const key_uint64_t* const begin_delim = &hot_delim_keys[0];
+            const key_uint64_t* end_delim = &hot_delim_keys[nr_parts * 2];
+            hot_delim_keys.reserve(nr_parts * 2);
+            for (dpu_id_t idx_part = 0; idx_part < nr_parts; idx_part++) {
+                const dpu_id_t idx_in_ary = static_cast<dpu_id_t>(begin_part - &chunked_cold_ranges[0]);
+                const KeyRange& range = cold_key_ranges[idx_in_ary];
+
+                hot_delim_keys[idx_part * 2] = range.begin;
+                if (range.end == KEY_MAX) {
+                    end_delim--;
+                } else {
+                    hot_delim_keys[idx_part * 2 + 1] = range.end + 1;
+                }
+            }
+
+            for (const auto& idx_vec : routed.cold[idx_dpu].orig_idxs) {
+                for (const auto orig_idx : idx_vec) {
+                    const KeyRange& range = RangeQueryToRange<Query>{}(queries[orig_idx]);
+                    for (const auto key : {range.begin, range.end}) {
+                        const key_uint64_t* one_after_target_range = std::upper_bound(begin_delim, end_delim, key);
+                        const dpu_id_t idx_range_plus_1 = static_cast<dpu_id_t>(one_after_target_range - begin_delim);
+
+                        if (idx_range_plus_1 % 2 == 1) {
+                            const ChunkedPairsRange& part = begin_part[idx_range_plus_1 / 2];
+                            DataChunkIterator one_after_target_chunk = std::upper_bound(part.begin(), part.end(), key,
+                                [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
+                            (--one_after_target_chunk)->load()++;
+                            cold_load++;
+                        }
+                    }
+                }
+            }
+        }
+
+        uint32_t cold_npairs = static_cast<uint32_t>(std::prev(list.end())->PairsRange::end() - list.begin()->PairsRange::begin());
+        const uint32_t hot_npairs = (cold_npairs + param.balancing - 1) / param.balancing;  // TODO: too small?
+        const uint32_t hot_nqrys = (nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
+
+        LinkedList<ChunkedPairsRange>::iterator iter_cold = list.begin();
+        find_absolutely_hot_ranges(begin_part, end_part, hot_npairs, hot_nqrys,
+            [&](LinkedChunkedPairsRange& part, DataChunkIterator begin, DataChunkIterator end, uint32_t load) {
+                const dpu_id_t idx_in_ary = static_cast<dpu_id_t>(&part - &chunked_cold_ranges[0]);
+                while (&*iter_cold != &part) {
+                    ++iter_cold;
+                }
+
+                if (part.begin() != begin) {
+                    LinkedChunkedPairsRange& new_cold = chunked_cold_ranges[cold_count++];
+                    new_cold = ChunkedPairsRange{part.begin(), begin};
+                    list.insert(iter_cold, new_cold);
+                }
+                part = ChunkedPairsRange{end, part.end()};
+
+                NewHotRange& new_hot = new_hots[hot_count++];
+                new_hot.pairs_range = {begin.begin(), end.begin()};
+                new_hot.key_range = {new_hot.pairs_range.begin()->key,
+                    (new_hot.pairs_range.end() == part.PairsRange::end() ? cold_key_ranges[idx_in_ary].end
+                                                                         : new_hot.pairs_range.end()->key - 1)};
+                new_hot.load = load;
+
+                cold_npairs -= new_hot.pairs_range.npairs();
+                cold_load -= load;
+            });
+        for (iter_cold = list.begin(); iter_cold != list.end();) {
+            const auto orig_iter = iter_cold++;
+            if (orig_iter->npairs() == 0) {
+                list.erase(orig_iter);
+            }
+        }
+
+        if (list.begin() != list.end()) {
+            const uint32_t nr_relative_hots = cold_load / hot_nqrys;
+            if (nr_relative_hots != 0) {
+                const std::array<std::pair<LinkedList<ChunkedPairsRange>::iterator, DataChunkIterator>, 2>
+                    carved_cold_range
+                    = find_relatively_hot_ranges(list.begin(), list.end(), hot_npairs, nr_relative_hots,
+                        [&](const LinkedChunkedPairsRange& part, const PairsRange& range, uint32_t load) {
+                            const dpu_id_t idx_in_ary = static_cast<dpu_id_t>(&part - &chunked_cold_ranges[0]);
+
+                            NewHotRange& new_hot = new_hots[hot_count++];
+                            new_hot.pairs_range = range;
+                            new_hot.key_range = {range.begin()->key,
+                                (range.end() == part.PairsRange::end() ? cold_key_ranges[idx_in_ary].end
+                                                                       : range.end()->key - 1)};
+                            new_hot.load = load;
+
+                            cold_npairs -= new_hot.pairs_range.npairs();
+                            cold_load -= new_hot.load;
+                        });
+
+                const LinkedList<ChunkedPairsRange>::iterator left_range = carved_cold_range[0].first, right_range = carved_cold_range[1].first;
+                const DataChunkIterator left = carved_cold_range[0].second, right = carved_cold_range[1].second;
+
+                if (left_range == right_range) {
+                    if (right != left_range->end()) {
+                        if (left != left_range->begin()) {
+                            LinkedChunkedPairsRange& new_cold = chunked_cold_ranges[cold_count++];
+                            new_cold = ChunkedPairsRange{left_range->begin(), left};
+                            list.insert(left_range, new_cold);
+                        }
+
+                        *left_range = ChunkedPairsRange{right, left_range->end()};
+                    } else {
+                        if (left != left_range->begin()) {
+                            *left_range = ChunkedPairsRange{left_range->begin(), left};
+                        } else {
+                            list.erase(left_range);
+                        }
+                    }
+
+                } else {
+                    for (LinkedList<ChunkedPairsRange>::iterator range = std::next(left_range); range != right_range; ++range) {
+                        list.erase(range);
+                    }
+
+                    if (right != right_range->end()) {
+                        *right_range = ChunkedPairsRange{right, right_range->end()};
+                    } else {
+                        list.erase(right_range);
+                    }
+                    if (left != left_range->begin()) {
+                        *left_range = ChunkedPairsRange{left_range->begin(), left};
+                    } else {
+                        list.erase(left_range);
+                    }
+                }
+            }
+        }
+
+        cold_npairs_list[idx_dpu] = cold_npairs;
+        cold_loads[idx_dpu] = {idx_dpu, cold_load};
+
+        if (nr_existing_hots + hot_count > nr_base_parts) {
+            return false;  // failure due to too many hot partitions
+        }
+    }
+
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+        if (hot_delims[idx_dpu] != DelimIter{}) {
+            cold_loads[idx_dpu].second = std::numeric_limits<uint32_t>::max();
+        }
+    }
+    std::partial_sort(&cold_loads[0], &cold_loads[hot_count], &cold_loads[nr_base_parts], [](auto& lhs, auto& rhs) { return lhs.second < rhs.second; });
+    std::sort(&new_hots[0], &new_hots[hot_count], [](auto& lhs, auto& rhs) { return lhs.load > rhs.load; });
+
+    for (dpu_id_t idx_hot = 0; idx_hot < hot_count; idx_hot++) {
+        const dpu_id_t idx_dpu = cold_loads[idx_hot].first;
+        ASSERT(hot_delims[idx_dpu] == DelimIter{});
+        const PairsRange& pairs_range = new_hots[idx_hot].pairs_range;
+        const KeyRange& key_range = new_hots[idx_hot].key_range;
+
+        hot_ranges[idx_dpu] = pairs_range;
+        delims.emplace(key_range.begin, HotPartitionDelim{key_range.end, idx_dpu});
+    }
+
+    combine_delims();
+
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+        InputHeader& input_header = input_headers[idx_dpu];
+
+        input_header.move_hot.nr_cold_pairs = cold_npairs_list[idx_dpu];
+        input_header.move_hot.nr_hot_pairs = static_cast<uint32_t>(hot_ranges[idx_dpu].npairs());
+        input_header.move_hot.renew_cold = (input_header.task_no == TASK_SERIALIZE);
+        input_header.move_hot.renew_hot = (input_header.move_hot.nr_hot_pairs > 0);
+
+        input_header.task_no = TASK_MOVE_HOT;
+    }
+
+    {
+        ScopedTimer t{DatabaseInitTime};
+
+        UPMEM_AsyncDuration async;
+        gather_to_dpu(all_dpu, 0, UpdatedPartitionsSender{&input_headers[0], &chunked_cold_ranges_lists[0], &hot_ranges[0]}, async);
+        execute(all_dpu, async);
+    }
+
+    // TODO: re-routing
+
+    return true;
+}
+
 
 inline std::vector<std::pair<uint32_t, uint32_t>>
 BPForest::partition_with_get_batch(uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[])
@@ -1534,6 +1993,7 @@ BPForest::partition_with_range_count_batch(uint32_t nr_queries, const RangeCount
     rcqs.clear();
     return npairs;
 }
+
 
 inline void BPForest::print_params(std::ostream& ostr) const
 {

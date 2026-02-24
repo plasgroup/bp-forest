@@ -55,10 +55,11 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
                                      "TASK_SERIALIZE_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_SERIALIZE_NR_TASKLETS) "\n"
                                      "TASK_SERIALIZE_NR_CACHED_KVPAIRS: " EXPAND_STRINGIFY(TASK_SERIALIZE_NR_CACHED_KVPAIRS) "\n"
                                      "TASK_SERIALIZE_NR_CACHED_DELIMS: " EXPAND_STRINGIFY(TASK_SERIALIZE_NR_CACHED_DELIMS) "\n"
-#ifdef TASK_CONSTRUCT_HOT_CHECK
-                                     "TASK_CONSTRUCT_HOT_CHECK: 1\n"
+                                     "TREE_CLEAR_NR_TASKLETS: " EXPAND_STRINGIFY(TREE_CLEAR_NR_TASKLETS) "\n"
+#ifdef TASK_MOVE_HOT_CHECK
+                                     "TASK_MOVE_HOT_CHECK: 1\n"
 #else
-                                     "TASK_CONSTRUCT_HOT_CHECK: 0\n"
+                                     "TASK_MOVE_HOT_CHECK: 0\n"
 #endif
                                      "TASK_GET_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_GET_NR_TASKLETS) "\n"
                                      "TASK_GET_NR_CACHED_QRYS: " EXPAND_STRINGIFY(TASK_GET_NR_CACHED_QRYS) "\n"

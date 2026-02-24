@@ -8,4 +8,4 @@ void task_delete(void);
 void task_range_min(void);
 void task_range_count(void);
 void task_serialize(void);
-void task_construct_hot(void);
+void task_move_hot(void);

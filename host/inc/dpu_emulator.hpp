@@ -48,7 +48,7 @@ private:
     std::pair<uint32_t /* nr_pairs */, uint16_t /* nr_blocks */> task_summarize(SummaryBlock summary_blocks[]);
     void task_extract(unsigned nr_ranges, const KeyRange ranges[],
         uint32_t nr_pairs[], KVPair pairs[]);
-    void task_construct_hot(unsigned nr_pairs, const KVPair pairs[]);
+    void task_move_hot(unsigned nr_pairs, const KVPair pairs[]);
     uint32_t /* nr_pairs */ task_flatten_hot(KVPair pairs[]);
     void task_restore(unsigned nr_ranges, const uint32_t nr_pairs[], const KVPair pairs[]);
 

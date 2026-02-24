@@ -59,8 +59,8 @@ int main()
     case TASK_SERIALIZE:
         task_serialize();
         break;
-    case TASK_CONSTRUCT_HOT:
-        task_construct_hot();
+    case TASK_MOVE_HOT:
+        task_move_hot();
         break;
     case TASK_NONE:
         break;

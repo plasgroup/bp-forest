@@ -174,24 +174,29 @@ private:
     // for insert queries
     const ExtendableBuffer<CachelineAligned<key_uint64_t>> new_min_keys{get_parallelism()};
 
+    // retrieved data from DPU
+    ExtendableBuffer<KVPair> data_buf;
+
+    // for commanding serialization of data
     const ExtendableBuffer<dpu_id_t> base_to_nr_hot_psum{nr_base_parts + 1};
     const ExtendableBuffer<dpu_id_t> nr_extracted_hots{nr_base_parts};
-    const ExtendableBuffer<key_uint64_t> hot_delim_keys{nr_base_parts};
+    ExtendableBuffer<key_uint64_t> hot_delim_keys{nr_base_parts};
+    // for receiving nr. of pairs for each range
     const ExtendableBuffer<uint32_t> incision_indices{nr_base_parts};
-    const ExtendableBuffer<CachelineAligned<std::array<uint32_t, 2>>> nr_pairs{nr_base_parts};
+    const ExtendableBuffer<CachelineAligned<std::array<uint32_t, 2>>> nr_pairs_recv_buf{nr_base_parts};
 
+    // for communicating serialized data
     const ExtendableBuffer<LinkedList<PairsRange>> cold_ranges_lists{nr_base_parts};
     const ExtendableBuffer<LinkedPairsRange> cold_ranges{nr_base_parts * 2};
     const ExtendableBuffer<PairsRange> hot_ranges{nr_base_parts};
 
-    // retrieved data from DPU
-    ExtendableBuffer<KVPair> data_buf;
-
     // used in rebalancing
     const ExtendableBuffer<LinkedList<ChunkedPairsRange>> chunked_cold_ranges_lists{nr_base_parts};
     const ExtendableBuffer<LinkedChunkedPairsRange> chunked_cold_ranges{nr_base_parts * 2};
+    const ExtendableBuffer<KeyRange> cold_key_ranges{nr_base_parts * 2};
     const ExtendableBuffer<std::pair<dpu_id_t, uint32_t /* load */>> cold_loads{nr_base_parts};
-    const ExtendableBuffer<std::pair<PairsRange, uint32_t /* load */>> new_hots{nr_base_parts};
+    const ExtendableBuffer<uint32_t /* npairs */> cold_npairs_list{nr_base_parts};
+    const ExtendableBuffer<NewHotRange> new_hots{nr_base_parts};
     ExtendableBuffer<uint32_t> chunk2load;
 
     // pass intermediate data to parallel workers
@@ -247,6 +252,8 @@ private:
     template <typename Query, typename Result>
     std::vector<std::pair<uint32_t /* nr pairs in cold */, uint32_t /* nr pairs in hot */>>
     full_repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed);
+    template <typename Query, typename Result>
+    bool /* success */ incremental_repartition(uint32_t nr_queries, const Query queries[], QueryData<Query, Result>& routed);
 };
 
 

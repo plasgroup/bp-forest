@@ -107,10 +107,10 @@ inline void DPUEmulator::execute()
         KVPair* const pairs = std::launder(reinterpret_cast<KVPair*>(&mram_2nd[(MAX_NR_DPUS * sizeof(uint32_t) + 7) / 8 * 8]));
         task_extract(nr_ranges, ranges, nr_pairs, pairs);
     } break;
-    case TASK_CONSTRUCT_HOT: {
+    case TASK_MOVE_HOT: {
         const unsigned nr_pairs = *std::launder(reinterpret_cast<uint32_t*>(&mram[4]));
         const KVPair* const pairs = std::launder(reinterpret_cast<KVPair*>(&mram[8]));
-        task_construct_hot(nr_pairs, pairs);
+        task_move_hot(nr_pairs, pairs);
     } break;
     case TASK_FLATTEN_HOT: {
         uint32_t* const nr_pairs = new (&mram_2nd[0]) uint32_t;
@@ -426,7 +426,7 @@ inline void DPUEmulator::task_extract(const unsigned nr_ranges, const KeyRange r
         nr_pairs[idx_range] = nr_pairs_in_this_range;
     }
 }
-inline void DPUEmulator::task_construct_hot(unsigned nr_pairs, const KVPair pairs[])
+inline void DPUEmulator::task_move_hot(unsigned nr_pairs, const KVPair pairs[])
 {
     Tree{KVPairToStdPair{pairs}, KVPairToStdPair{pairs + nr_pairs}}.swap(hot_tree);
 }

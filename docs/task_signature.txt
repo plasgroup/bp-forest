@@ -45,7 +45,7 @@ TASK_SERIALIZE
     cold range の切れ目 (hot range) のキー配列を受け取る
     cold range の切れ目が cold のKVペア配列の何番目にあるかを教える
     cold/hot それぞれのKVペア配列
-TASK_CONSTRUCT_HOT
+TASK_MOVE_HOT
     (uint32_t, (Key, Value)[]) -> ()
 TASK_FLATTEN_HOT
     () -> (uint32_t, (Key, Value)[])

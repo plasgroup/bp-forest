@@ -6,6 +6,7 @@
 extern "C" {
 #endif
 
+#include <stdbool.h>
 #include <stdint.h>
 
 
@@ -17,8 +18,9 @@ typedef struct __dma_aligned InputHeader {
             uint32_t nr_cold_pairs, nr_hot_pairs;
         } init;
         struct {
-            uint32_t nr_pairs;
-        } construct_hot;
+            uint32_t nr_cold_pairs, nr_hot_pairs;
+            bool renew_cold, renew_hot;
+        } move_hot;
         struct {
             uint32_t nr_cold_qrys, nr_hot_qrys, result_offset;
         } qrys;
@@ -30,6 +32,7 @@ typedef struct __dma_aligned InputHeader {
         } extract, restore;
         struct {
             uint32_t nr_delims, max_nr_delims;
+            bool do_cold, do_hot;
         } serialize;
     };
 } InputHeader;
