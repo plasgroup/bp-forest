@@ -163,7 +163,7 @@ inline ElapsedTime
 
     RebalancingTime{"rebalance[ns]", 1000},  // 1000--1999
 
-    DataRetrieveTime{"retrive_data[ns]", 1100},  // 1100--1199
+    DataRetrieveTime{"retrieve_data[ns]", 1100},  // 1100--1199
 #ifdef SYNCHRONOUS_DPU_EXEC
     CommandingSerializationTime{"cmd_serialization[ns]", 1110},
 #endif

@@ -55,10 +55,10 @@ template <class T>
 struct LinkedElement : T, LinkedNodeHeader {
     LinkedElement() = default;
     template <typename... Args>
-    LinkedElement(Args&&... args) : T{std::forward<Args>(args)...}, LinkedNodeHeader{nullptr}
+    explicit LinkedElement(Args&&... args) : T{std::forward<Args>(args)...}, LinkedNodeHeader{nullptr}
     {
     }
-    LinkedElement& operator=(const LinkedElement& other)
+    LinkedElement& operator=(const T& other)
     {
         static_cast<T&>(*this) = other;
         return *this;

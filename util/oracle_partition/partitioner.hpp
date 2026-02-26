@@ -73,12 +73,9 @@ struct partition_t {
         return *this;
     }
 
-    int64_t first_key(const std::vector<int64_t>& keys, int64_t min) const
+    int64_t first_key(const std::vector<int64_t>& keys, int64_t) const
     {
-        if (begin_idx == 0)
-            return min;
-        else
-            return keys[begin_idx];
+        return keys[begin_idx];
     }
 
     int64_t last_key(const std::vector<int64_t>& keys, int64_t max) const

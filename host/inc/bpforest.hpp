@@ -105,9 +105,9 @@ struct BPForestParameter {
         case 0:
             return std::numeric_limits<double>::infinity();
         case 1:
-            return 2.0;
+            return 1.0;
         default:
-            return 2 * (balancing + 1) / 3.0;
+            return 1.0 * (balancing + 1) / 3.0;
         }
     }();
 };

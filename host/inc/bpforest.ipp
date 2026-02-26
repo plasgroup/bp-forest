@@ -323,7 +323,7 @@ struct KVPairsCommunicator {
             if (block_index == 0) {
                 const PairsRange& range = *cold_iter;
                 out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<KVPair*>(range.begin())));
-                out->length = sizeof(KVPair) * static_cast<uint32_t>(range.end() - range.begin());
+                out->length = sizeof(KVPair) * static_cast<uint32_t>(range.npairs());
                 return true;
             }
             block_index--;
@@ -332,7 +332,7 @@ struct KVPairsCommunicator {
         const PairsRange& hot_range = hot_ranges[dpu_index];
         if (block_index == 0 && hot_range.npairs() > 0) {
             out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<KVPair*>(hot_range.begin())));
-            out->length = sizeof(KVPair) * static_cast<uint32_t>(hot_range.end() - hot_range.begin());
+            out->length = sizeof(KVPair) * static_cast<uint32_t>(hot_range.npairs());
             return true;
         }
 
@@ -383,11 +383,18 @@ inline void BPForest::initialize_in_dpu(const std::pair<uint32_t, uint32_t> nr_p
 template <typename PairsRangeLike>
 inline void BPForest::initialize_in_dpu(const InputHeader input_headers[], const LinkedList<PairsRangeLike> colds[], const PairsRange hots[])
 {
-    ScopedTimer t{DatabaseInitTime};
+    {
+        ScopedTimer t{DatabaseInitTime};
 
-    UPMEM_AsyncDuration async;
-    gather_to_dpu(all_dpu, 0, SerializedKVPairSender{input_headers, colds, hots}, async);
-    execute(all_dpu, async);
+        UPMEM_AsyncDuration async;
+        gather_to_dpu(all_dpu, 0, SerializedKVPairSender{input_headers, colds, hots}, async);
+        execute(all_dpu, async);
+    }
+
+#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+    std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+    std::cout << log->get() << std::flush;
+#endif
 }
 
 inline void BPForest::combine_delims()
@@ -1016,7 +1023,7 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
         UPMEM_AsyncDuration async;
         gather_to_dpu(all_dpu, 0, SerializationCommander{&input_headers[0], &hot_delim_keys[0], &base_to_nr_hot_psum[0]}, async);
         execute(all_dpu, async);
-        scatter_from_dpu(all_dpu, sizeof(InputHeader) - sizeof(uint32_t[2]), SerializaionNrPairsReceiver{&base_to_nr_hot_psum[0], &nr_pairs[0], &incision_indices[0]}, async);
+        scatter_from_dpu(all_dpu, sizeof(InputHeader) - sizeof(uint32_t[2]), SerializaionNrPairsReceiver{&base_to_nr_hot_psum[0], &nr_pairs_recv_buf[0], &incision_indices[0]}, async);
     }
 #endif
 #if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
@@ -1034,6 +1041,11 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
         buf.reserve(total_nr_pairs);
     }
 
+    const RAII raii{[&] {
+        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+            cold_ranges_lists[idx_dpu].clear();
+        }
+    }};
     {
         KVPair* cursor = &buf[0];
 
@@ -1090,10 +1102,6 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
         UPMEM_AsyncDuration async;
         scatter_from_dpu(all_dpu, sizeof(InputHeader) + sizeof(key_uint64_t) * nr_base_parts,
             SerializedKVPairReceiver<PairsRange>{&cold_ranges_lists[0], &hot_ranges[0], &nr_pairs_recv_buf[0]}, async);
-    }
-
-    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-        cold_ranges_lists[idx_dpu].clear();
     }
 
     return total_nr_pairs;
@@ -1181,7 +1189,7 @@ find_relatively_hot_ranges(const LinkedList<ChunkedPairsRange>::iterator begin_r
     uint32_t right_window_offcut = hot_npairs * nr_hots;  // length of the window on right_range
 
     // push the right end outward per cold range
-    while (right_range != end_range && right_range->npairs() > right_window_offcut) {
+    while (right_range != end_range && right_range->npairs() <= right_window_offcut) {
         const dpu_id_t nr_hots_in_this_range = (static_cast<dpu_id_t>(right_range->npairs()) + hot_npairs - 1) / hot_npairs;
         right_window_offcut -= nr_hots_in_this_range * hot_npairs;
 
@@ -1207,6 +1215,7 @@ find_relatively_hot_ranges(const LinkedList<ChunkedPairsRange>::iterator begin_r
         --right_range;
         right = right_range->end();
         right_npairs_offcut = static_cast<uint32_t>(right_range->npairs());
+        right_window_offcut = (right_npairs_offcut + hot_npairs - 1) / hot_npairs * hot_npairs;
 
     } else {
         right = right_range->begin();
@@ -1262,7 +1271,7 @@ find_relatively_hot_ranges(const LinkedList<ChunkedPairsRange>::iterator begin_r
 
         } else {
             if (right == right_range->end()) {  // the right edge is extending to the next cold range
-                if (right_range++ == end_range) {
+                if (++right_range == end_range) {
                     return carve_out_hot_ranges();
                 }
 
@@ -1332,7 +1341,7 @@ find_relatively_hot_ranges(const LinkedList<ChunkedPairsRange>::iterator begin_r
 }
 template <typename Query, typename Result>
 inline std::vector<std::pair<uint32_t /* nr pairs in cold */, uint32_t /* nr pairs in hot */>>
-BPForest::full_repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed)
+BPForest::full_repartition(const uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed)
 {
     ScopedTimer timer{RebalancingTime};
 
@@ -1340,12 +1349,6 @@ BPForest::full_repartition(uint32_t nr_queries, const Query queries[], Result* r
     const size_t nr_pairs = retrieve_all_data(data_buf);
 
     delims.clear();
-    for (DelimIter& hot_delim : hot_delims) {
-        if (hot_delim != DelimIter{}) {
-            delims.erase(hot_delim);
-            hot_delim = DelimIter{};
-        }
-    }
     std::fill(hot_delims.begin(), hot_delims.end(), DelimIter{});
 
     const RAII raii{[&] {
@@ -1359,13 +1362,12 @@ BPForest::full_repartition(uint32_t nr_queries, const Query queries[], Result* r
         range = ChunkedPairsRange{{&data_buf[nr_pairs * idx_base / nr_base_parts], &data_buf[nr_pairs * (idx_base + 1) / nr_base_parts]}};
         chunked_cold_ranges_lists[idx_base].push_back(range);
 
-        std::set<PartitionDelim>::node_type node = delims.extract(cold_delims[idx_base]);
-        node.value().first = range.PairsRange::begin()->key;
-        delims.insert(cold_delims[idx_base + 1], std::move(node));
+        cold_delims[idx_base] = delims.emplace_hint(delims.cend(), range.PairsRange::begin()->key, BasePartitionDelim{idx_base});
     }
     dpu_id_t cold_count = nr_base_parts, hot_count = 0;
 
     combine_delims();
+    routed.clear();
     route_queries(nr_queries, queries, results, routed);
 
     for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
@@ -1517,13 +1519,13 @@ BPForest::full_repartition(uint32_t nr_queries, const Query queries[], Result* r
 
             hot_ranges[idx_dpu] = pairs_range;
             result[idx_dpu].second = static_cast<uint32_t>(pairs_range.npairs());
-            delims.emplace(key_range.begin, HotPartitionDelim{key_range.end, idx_dpu});
+            hot_delims[idx_dpu] = delims.emplace(key_range.begin, HotPartitionDelim{key_range.end, idx_dpu}).first;
         }
     }
 
     combine_delims();
 
-    initialize_in_dpu(&result[0], &cold_ranges_lists[0], &hot_ranges[0]);
+    initialize_in_dpu(&result[0], &chunked_cold_ranges_lists[0], &hot_ranges[0]);
 
     route_queries(nr_queries, queries, results, routed);
 
@@ -1584,10 +1586,12 @@ struct UpdatedPartitionsSender {
 template <typename Query, typename Result>
 inline bool BPForest::incremental_repartition(uint32_t nr_queries, const Query queries[], QueryData<Query, Result>& routed)
 {
+    ScopedTimer timer{RebalancingTime};
+
     {
         dpu_id_t cold_count = 0, incision_count = 0;
         for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-            InputHeader input = input_headers[idx_dpu];
+            InputHeader& input = input_headers[idx_dpu];
             const dpu_id_t orig_incision_count = (base_to_nr_hot_psum[idx_dpu] = incision_count);
 
             if (routed.cold[idx_dpu].nr_qrys < param.rebalance_threshold * nr_queries / nr_base_parts) {
@@ -1629,6 +1633,10 @@ inline bool BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             input.serialize.do_hot = false;
         }
         base_to_nr_hot_psum[nr_base_parts] = incision_count;
+
+        if (cold_count == 0) {
+            return true;
+        }
     }
 
 #ifdef SYNCHRONOUS_DPU_EXEC
@@ -1830,11 +1838,16 @@ inline bool BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 }
 
                 if (part.begin() != begin) {
-                    LinkedChunkedPairsRange& new_cold = chunked_cold_ranges[cold_count++];
+                    cold_key_ranges[cold_count] = {part.PairsRange::begin()->key, begin->begin()->key};
+                    LinkedChunkedPairsRange& new_cold = chunked_cold_ranges[cold_count];
                     new_cold = ChunkedPairsRange{part.begin(), begin};
+                    cold_count++;
                     list.insert(iter_cold, new_cold);
                 }
-                part = ChunkedPairsRange{end, part.end()};
+                if (end != part.end()) {
+                    part = ChunkedPairsRange{end, part.end()};
+                    cold_key_ranges[idx_in_ary].begin = end->begin()->key;
+                }
 
                 NewHotRange& new_hot = new_hots[hot_count++];
                 new_hot.pairs_range = {begin.begin(), end.begin()};
@@ -1859,8 +1872,8 @@ inline bool BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 const std::array<std::pair<LinkedList<ChunkedPairsRange>::iterator, DataChunkIterator>, 2>
                     carved_cold_range
                     = find_relatively_hot_ranges(list.begin(), list.end(), hot_npairs, nr_relative_hots,
-                        [&](const LinkedChunkedPairsRange& part, const PairsRange& range, uint32_t load) {
-                            const dpu_id_t idx_in_ary = static_cast<dpu_id_t>(&part - &chunked_cold_ranges[0]);
+                        [&](const ChunkedPairsRange& part, const PairsRange& range, uint32_t load) {
+                            const dpu_id_t idx_in_ary = static_cast<dpu_id_t>(&static_cast<const LinkedChunkedPairsRange&>(part) - &chunked_cold_ranges[0]);
 
                             NewHotRange& new_hot = new_hots[hot_count++];
                             new_hot.pairs_range = range;
@@ -1935,7 +1948,7 @@ inline bool BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         const KeyRange& key_range = new_hots[idx_hot].key_range;
 
         hot_ranges[idx_dpu] = pairs_range;
-        delims.emplace(key_range.begin, HotPartitionDelim{key_range.end, idx_dpu});
+        hot_delims[idx_dpu] = delims.emplace(key_range.begin, HotPartitionDelim{key_range.end, idx_dpu}).first;
     }
 
     combine_delims();
@@ -1958,6 +1971,12 @@ inline bool BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         gather_to_dpu(all_dpu, 0, UpdatedPartitionsSender{&input_headers[0], &chunked_cold_ranges_lists[0], &hot_ranges[0]}, async);
         execute(all_dpu, async);
     }
+#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+    {
+        std::unique_ptr<LogBuffer> log = read_log(all_dpu);
+        std::cout << log->get() << std::flush;
+    }
+#endif
 
     // TODO: re-routing
 

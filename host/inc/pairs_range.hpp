@@ -67,9 +67,9 @@ public:
     DataChunkIterator& operator--()
     {
         const uintptr_t offset_in_part = reinterpret_cast<uintptr_t>(cursor) - reinterpret_cast<uintptr_t>(part_begin),
-                        addr = offset_in_part - ChunkSizeInBytes,
-                        aligned = (addr + ChunkSizeInBytes - 1) / ChunkSizeInBytes * ChunkSizeInBytes;  // Handling when cursor == part_end
-        cursor = reinterpret_cast<const KVPair*>(aligned);
+                        new_offset = offset_in_part - ChunkSizeInBytes,
+                        aligned = (new_offset + ChunkSizeInBytes - 1) / ChunkSizeInBytes * ChunkSizeInBytes;  // Handling when cursor == part_end
+        cursor = reinterpret_cast<const KVPair*>(aligned + reinterpret_cast<uintptr_t>(part_begin));
         --p_load;
         return *this;
     }

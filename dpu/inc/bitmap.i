@@ -10,6 +10,7 @@
 #include "workspace.h"
 
 #include <attributes.h>
+#include <built_ins.h>
 #include <defs.h>
 #include <mram.h>
 
@@ -217,4 +218,27 @@ static int bitmap_find_and_set_first_zero(bitmap_word_ptr bitmap, unsigned next,
     if (id >= 0)
         return id;
     return -1;
+}
+
+__attribute__((unused)) static uint32_t bitmap_count_ones(bitmap_word_ptr bitmap, unsigned size)
+{
+    uint32_t result = 0;
+    const unsigned nr_words = (size + BITS_IN_BMPWD - 1) / BITS_IN_BMPWD;
+    for (unsigned i = 0; i < nr_words; i++) {
+        __dma_aligned bitmap_word_t word;
+#ifdef BITMAP_IN_MRAM
+        mram_read(&bitmap[i], &word, sizeof(bitmap_word_t));
+#else
+        word = bitmap[i];
+#endif
+        const uint32_t upper = (uint32_t)(word / (UINT64_C(1) << 32)),
+                       lower = (uint32_t)upper;
+
+        uint32_t tmp;
+        __builtin_cao_rr(tmp, upper);
+        result += tmp;
+        __builtin_cao_rr(tmp, lower);
+        result += tmp;
+    }
+    return result;
 }

@@ -484,7 +484,9 @@ void task_init(void)
 #ifdef TASK_INIT_CHECK
         TREE_CONSTRUCT_barrier();
         if (me() == 0) {
+            printf("check cold tree:\n");
             check_tree_structure(&cold_root, cold_height, cold_root_numKeys);
+            printf("check hot tree:\n");
             check_tree_structure(&hot_root, hot_height, hot_root_numKeys);
         }
 #endif
@@ -1692,7 +1694,7 @@ static void tree_clear(uint8_t* const p_root_numKeys, const Node* const root, ui
 
                     mram_read(&Deref(cursor.ptr).inl.children[0], &wks->children_cache[0], ((cursor.numKeys + 1) + 1) / 2 * 2 * sizeof(NodeLink));
                     for (uint8_t idx_leaf = 0; idx_leaf <= cursor.numKeys; idx_leaf++) {
-                        Free_node(wks->children_cache[0].ptr);
+                        Free_node(wks->children_cache[idx_leaf].ptr);
                     }
 
                     for (;; stack_height--) {
@@ -1754,7 +1756,7 @@ void task_move_hot(void)
 
         if (input_header.move_hot.nr_cold_pairs > 0) {
             if (input_header.move_hot.renew_cold) {
-                construct_tree(cold_pairs, input_header.init.nr_cold_pairs,
+                construct_tree(cold_pairs, input_header.move_hot.nr_cold_pairs,
                     &cold_root_numKeys, &cold_root, &cold_height, &cold_min_key, MOVE_HOT_allocator);
             } else {
                 INSERT_execute_batch(&cold_root, &cold_height, &cold_root_numKeys,
@@ -1769,7 +1771,7 @@ void task_move_hot(void)
             if (input_header.move_hot.renew_hot) {
                 const uintptr_t hot_pairs = cold_pairs + sizeof(KVPair) * input_header.move_hot.nr_cold_pairs;
 
-                construct_tree(hot_pairs, input_header.init.nr_hot_pairs,
+                construct_tree(hot_pairs, input_header.move_hot.nr_hot_pairs,
                     &hot_root_numKeys, &hot_root, &hot_height, &hot_min_key, MOVE_HOT_allocator);
             } else {
                 INSERT_execute_batch(&hot_root, &hot_height, &hot_root_numKeys,
