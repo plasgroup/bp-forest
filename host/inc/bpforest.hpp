@@ -123,13 +123,13 @@ struct BPForest : ParallelManager<BPForest> {
     void batch_delete(uint32_t nr_queries, const key_uint64_t pairs[]);
     void batch_range_count(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
     void batch_scan(size_t nr_queries, const KeyRange ranges[], BatchScanResult& result);
+    std::vector<std::array<uint32_t, 2>> get_nr_pairs() const;
     std::vector<std::array<uint32_t, 2>> last_query_dist() const;
 
-    using DataDistribution = std::vector<std::pair<uint32_t /* cold */, uint32_t /* hot */>>;
-    DataDistribution partition_with_get_batch(uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
-    DataDistribution partition_with_insert_batch(uint32_t nr_queries, const KVPair pairs[]);
-    DataDistribution partition_with_delete_batch(uint32_t nr_queries, const key_uint64_t pairs[]);
-    DataDistribution partition_with_range_count_batch(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
+    void partition_with_get_batch(uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
+    void partition_with_insert_batch(uint32_t nr_queries, const KVPair pairs[]);
+    void partition_with_delete_batch(uint32_t nr_queries, const key_uint64_t pairs[]);
+    void partition_with_range_count_batch(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
 
     void print_params(std::ostream&) const;
     std::vector<Partition> dump_partitions() const;
@@ -145,6 +145,7 @@ private:
         return result;
     }(),
                            hot_delims = std::vector<DelimIter>(nr_base_parts);
+    const ExtendableBuffer<CachelineAligned<std::array<uint32_t, 2>>> nr_pairs{nr_base_parts};
 
     std::vector<key_uint64_t> combined_delims = [this] {
         std::vector<key_uint64_t> result;
@@ -183,7 +184,6 @@ private:
     ExtendableBuffer<key_uint64_t> hot_delim_keys{nr_base_parts};
     // for receiving nr. of pairs for each range
     const ExtendableBuffer<uint32_t> incision_indices{nr_base_parts};
-    const ExtendableBuffer<CachelineAligned<std::array<uint32_t, 2>>> nr_pairs_recv_buf{nr_base_parts};
 
     // for communicating serialized data
     const ExtendableBuffer<LinkedList<PairsRange>> cold_ranges_lists{nr_base_parts};
@@ -206,7 +206,7 @@ private:
     void load_partitioning(const std::vector<Partition>& partitioning);
     void distribute_data_based_on_partitions(const KVPair sorted_pairs[], size_t nr_pairs);
     template <typename PairsRangeLike>
-    void initialize_in_dpu(const std::pair<uint32_t, uint32_t> nr_pairs[], const LinkedList<PairsRangeLike> colds[], const PairsRange hots[]);
+    void initialize_in_dpu(const CachelineAligned<std::array<uint32_t, 2>> nr_pairs[], const LinkedList<PairsRangeLike> colds[], const PairsRange hots[]);
     template <typename PairsRangeLike>
     void initialize_in_dpu(const InputHeader input_headers[], const LinkedList<PairsRangeLike> colds[], const PairsRange hots[]);
 
@@ -240,6 +240,8 @@ private:
 
     template <typename Query, typename Result>
     void execute_in_dpus(TaskID task_no, QueryData<Query, Result>&);
+    template <typename Query, typename Result, typename Func>
+    void execute_in_dpus(TaskID task_no, QueryData<Query, Result>&, Func&&);
 
     void postprocess_of_get(value_uint64_t result[]);
     void postprocess_of_get_impl(unsigned tid);
@@ -250,8 +252,7 @@ private:
 
     size_t retrieve_all_data(ExtendableBuffer<KVPair>& buf);
     template <typename Query, typename Result>
-    std::vector<std::pair<uint32_t /* nr pairs in cold */, uint32_t /* nr pairs in hot */>>
-    full_repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed);
+    void full_repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed);
     template <typename Query, typename Result>
     bool /* success */ incremental_repartition(uint32_t nr_queries, const Query queries[], QueryData<Query, Result>& routed);
 };

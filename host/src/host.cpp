@@ -170,7 +170,6 @@ struct Option {
 class BPForestDatabase : public Database
 {
     BPForest forest;
-    std::vector<std::pair<uint32_t /* cold */, uint32_t /* hot */>> nr_pairs;
 
 public:
     BPForestDatabase(const InitData& init_data, const std::vector<Partition>& partitioning, const BPForest::Param& param)
@@ -226,15 +225,15 @@ public:
 
     void partition_with(uint64_t n, const key_uint64_t keys[], value_uint64_t values[]) override
     {
-        nr_pairs = forest.partition_with_get_batch(static_cast<uint32_t>(n), keys, values);
+        forest.partition_with_get_batch(static_cast<uint32_t>(n), keys, values);
     }
     void partition_with(uint64_t n, const KVPair pairs[]) override
     {
-        nr_pairs = forest.partition_with_insert_batch(static_cast<uint32_t>(n), pairs);
+        forest.partition_with_insert_batch(static_cast<uint32_t>(n), pairs);
     }
     void partition_with(uint64_t n, const key_uint64_t keys[]) override
     {
-        nr_pairs = forest.partition_with_delete_batch(static_cast<uint32_t>(n), keys);
+        forest.partition_with_delete_batch(static_cast<uint32_t>(n), keys);
     }
     void partition_with(uint64_t, const KeyRange[], uint64_t[]) override
     {
@@ -242,7 +241,7 @@ public:
     }
     void partition_with(uint64_t n, const RangeCountQuery queries[], uint64_t results[]) override
     {
-        nr_pairs = forest.partition_with_range_count_batch(static_cast<uint32_t>(n), queries, results);
+        forest.partition_with_range_count_batch(static_cast<uint32_t>(n), queries, results);
     }
 
     int get_parallelism() const override
@@ -267,12 +266,13 @@ public:
     // avaiable after `partition_with`
     void print_nr_pairs(std::ostream& ostr, dpu_id_t nr_dpus_to_print) const
     {
+        const std::vector<std::array<uint32_t, 2>> nr_pairs = forest.get_nr_pairs();
         if (nr_dpus_to_print > 0) {
             for (dpu_id_t idx_dpu = 0; idx_dpu < nr_pairs.size() && idx_dpu < nr_dpus_to_print; idx_dpu++) {
                 if (idx_dpu != 0) {
                     ostr << ",";
                 }
-                ostr << nr_pairs[idx_dpu].first + nr_pairs[idx_dpu].second;
+                ostr << nr_pairs[idx_dpu][0] + nr_pairs[idx_dpu][1];
             }
             ostr << std::endl;
         }
@@ -280,12 +280,13 @@ public:
     // avaiable after `partition_with`
     void print_nr_cold_pairs(std::ostream& ostr, dpu_id_t nr_dpus_to_print) const
     {
+        const std::vector<std::array<uint32_t, 2>> nr_pairs = forest.get_nr_pairs();
         if (nr_dpus_to_print > 0) {
             for (dpu_id_t idx_dpu = 0; idx_dpu < nr_pairs.size() && idx_dpu < nr_dpus_to_print; idx_dpu++) {
                 if (idx_dpu != 0) {
                     ostr << ",";
                 }
-                ostr << nr_pairs[idx_dpu].first;
+                ostr << nr_pairs[idx_dpu][0];
             }
             ostr << std::endl;
         }
@@ -293,12 +294,13 @@ public:
     // avaiable after `partition_with`
     void print_nr_hot_pairs(std::ostream& ostr, dpu_id_t nr_dpus_to_print) const
     {
+        const std::vector<std::array<uint32_t, 2>> nr_pairs = forest.get_nr_pairs();
         if (nr_dpus_to_print > 0) {
             for (dpu_id_t idx_dpu = 0; idx_dpu < nr_pairs.size() && idx_dpu < nr_dpus_to_print; idx_dpu++) {
                 if (idx_dpu != 0) {
                     ostr << ",";
                 }
-                ostr << nr_pairs[idx_dpu].second;
+                ostr << nr_pairs[idx_dpu][1];
             }
             ostr << std::endl;
         }
