@@ -1759,11 +1759,13 @@ void task_move_hot(void)
                 construct_tree(cold_pairs, input_header.move_hot.nr_cold_pairs,
                     &cold_root_numKeys, &cold_root, &cold_height, &cold_min_key, MOVE_HOT_allocator);
             } else {
-                INSERT_execute_batch(&cold_root, &cold_height, &cold_root_numKeys,
-                    0, input_header.move_hot.nr_cold_pairs);
+                _Static_assert(TASK_INSERT_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS, "TASK_INSERT_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS");
+                if (me() < TASK_INSERT_NR_TASKLETS) {
+                    INSERT_execute_batch(&cold_root, &cold_height, &cold_root_numKeys,
+                        0, input_header.move_hot.nr_cold_pairs);
+                }
             }
 
-            _Static_assert(TREE_CONSTRUCT_NR_TASKLETS >= TASK_INSERT_NR_TASKLETS, "TREE_CONSTRUCT_NR_TASKLETS >= TASK_INSERT_NR_TASKLETS");
             TREE_CONSTRUCT_barrier();
         }
 
@@ -1774,8 +1776,11 @@ void task_move_hot(void)
                 construct_tree(hot_pairs, input_header.move_hot.nr_hot_pairs,
                     &hot_root_numKeys, &hot_root, &hot_height, &hot_min_key, MOVE_HOT_allocator);
             } else {
-                INSERT_execute_batch(&hot_root, &hot_height, &hot_root_numKeys,
-                    input_header.move_hot.nr_cold_pairs, input_header.move_hot.nr_hot_pairs);
+                _Static_assert(TASK_INSERT_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS, "TASK_INSERT_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS");
+                if (me() < TASK_INSERT_NR_TASKLETS) {
+                    INSERT_execute_batch(&hot_root, &hot_height, &hot_root_numKeys,
+                        input_header.move_hot.nr_cold_pairs, input_header.move_hot.nr_hot_pairs);
+                }
             }
         }
 

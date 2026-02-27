@@ -58,6 +58,10 @@ struct LinkedElement : T, LinkedNodeHeader {
     explicit LinkedElement(Args&&... args) : T{std::forward<Args>(args)...}, LinkedNodeHeader{nullptr}
     {
     }
+
+    LinkedElement(const LinkedElement& other) = delete;
+    LinkedElement& operator=(const LinkedElement& other) = delete;
+
     LinkedElement& operator=(const T& other)
     {
         static_cast<T&>(*this) = other;

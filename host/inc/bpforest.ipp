@@ -819,13 +819,23 @@ inline void BPForest::batch_delete(uint32_t nr_queries, const key_uint64_t keys[
     // TODO: When the first data of each partition is deleted, shift the partition boundary to the next key
 }
 
-inline void BPForest::batch_range_count(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[])
+inline void BPForest::batch_range_count(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t results[])
 {
     ScopedTimer timer{BatchTotalTime};
 
-    route_queries(nr_queries, queries, result, rcqs);
+    route_queries(nr_queries, queries, results, rcqs);
+
+    if (param.balancing > 0) {
+        const bool success = incremental_repartition(nr_queries, queries, rcqs);
+        route_queries(nr_queries, queries, results, rcqs);  // TODO: re-routing in incremental_repartition
+
+        if (!success) {
+            full_repartition(nr_queries, queries, results, rcqs);
+        }
+    }
+
     execute_in_dpus(TASK_RANGE_COUNT, rcqs);
-    postprocess_of_rcq(nr_queries, result);
+    postprocess_of_rcq(nr_queries, results);
     rcqs.clear();
 }
 inline void BPForest::postprocess_of_rcq(uint32_t nr_queries, uint64_t result[])
@@ -1599,31 +1609,25 @@ inline bool BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 continue;
             }
 
-            for (DelimIter iter = cold_delims[idx_dpu]; iter != cold_delims[idx_dpu + 1]; iter++) {
-                const key_uint64_t key = iter->first;
-                const auto& delim = iter->second;
-                const DelimIter next = std::next(iter);
+            DelimIter iter = cold_delims[idx_dpu];
+            key_uint64_t begin_key = iter->first;
+            for (iter++; iter != cold_delims[idx_dpu + 1]; iter++) {
+                const key_uint64_t delim_key = iter->first;
+                const auto& delim = std::get<HotPartitionDelim>(iter->second);
 
-                std::visit(overload(
-                               [&](const BasePartitionDelim&) {
-                                   if (next == delims.cend()) {
-                                       cold_key_ranges[cold_count++] = {key, KEY_MAX};
-                                   } else if (next->first != key) {
-                                       cold_key_ranges[cold_count++] = {key, next->first - 1};
-                                   }
-                               },
-                               [&](const HotPartitionDelim& delim) {
-                                   if (next == delims.cend()) {
-                                       if (delim.max_key != KEY_MAX) {
-                                           hot_delim_keys[incision_count++] = key;
-                                           cold_key_ranges[cold_count++] = {delim.max_key + 1, KEY_MAX};
-                                       }
-                                   } else if (next->first != delim.max_key + 1) {
-                                       hot_delim_keys[incision_count++] = key;
-                                       cold_key_ranges[cold_count++] = {delim.max_key + 1, next->first};
-                                   }
-                               }),
-                    delim);
+                if (begin_key != delim_key) {
+                    cold_key_ranges[cold_count++] = {begin_key, delim_key - 1};
+                    hot_delim_keys[incision_count++] = delim_key;
+                }
+                begin_key = delim.max_key + 1;
+            }
+            if (begin_key != KEY_MAX + 1) {
+                const key_uint64_t max_key = iter == delims.cend() ? KEY_MAX : iter->first - 1;
+                if (begin_key <= max_key) {
+                    cold_key_ranges[cold_count++] = {begin_key, max_key};
+                } else {
+                    incision_count--;
+                }
             }
 
             input.task_no = TASK_SERIALIZE;
@@ -1795,7 +1799,7 @@ inline bool BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             const key_uint64_t* end_delim = &hot_delim_keys[nr_parts * 2];
             hot_delim_keys.reserve(nr_parts * 2);
             for (dpu_id_t idx_part = 0; idx_part < nr_parts; idx_part++) {
-                const dpu_id_t idx_in_ary = static_cast<dpu_id_t>(begin_part - &chunked_cold_ranges[0]);
+                const dpu_id_t idx_in_ary = static_cast<dpu_id_t>(&begin_part[idx_part] - &chunked_cold_ranges[0]);
                 const KeyRange& range = cold_key_ranges[idx_in_ary];
 
                 hot_delim_keys[idx_part * 2] = range.begin;
@@ -1826,8 +1830,14 @@ inline bool BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         }
 
         uint32_t cold_npairs = static_cast<uint32_t>(std::prev(list.end())->PairsRange::end() - list.begin()->PairsRange::begin());
-        const uint32_t hot_npairs = (cold_npairs + param.balancing - 1) / param.balancing;  // TODO: too small?
+        const uint32_t hot_npairs = (cold_npairs + param.balancing - 1) / param.balancing;  // TODO: too small because cold_npairs < base_npairs?
         const uint32_t hot_nqrys = (nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
+        if (cold_load < hot_nqrys) {
+            cold_npairs_list[idx_dpu] = 0;
+            list.clear();
+            cold_loads[idx_dpu] = {idx_dpu, cold_load};
+            continue;
+        }
 
         LinkedList<ChunkedPairsRange>::iterator iter_cold = list.begin();
         find_absolutely_hot_ranges(begin_part, end_part, hot_npairs, hot_nqrys,
@@ -1955,10 +1965,9 @@ inline bool BPForest::incremental_repartition(uint32_t nr_queries, const Query q
 
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
         InputHeader& input_header = input_headers[idx_dpu];
-
         input_header.move_hot.nr_cold_pairs = cold_npairs_list[idx_dpu];
         input_header.move_hot.nr_hot_pairs = static_cast<uint32_t>(hot_ranges[idx_dpu].npairs());
-        input_header.move_hot.renew_cold = (input_header.task_no == TASK_SERIALIZE);
+        input_header.move_hot.renew_cold = (input_header.move_hot.nr_cold_pairs > 0);
         input_header.move_hot.renew_hot = (input_header.move_hot.nr_hot_pairs > 0);
 
         input_header.task_no = TASK_MOVE_HOT;
