@@ -187,6 +187,47 @@ public:
 
 
 template <class UIntType>
+struct DoubleZipfDistribution {
+    using result_type = UIntType;
+
+private:
+    const UIntType peak_pos, shorter_side_len;
+    const bool peak_in_lower_part;
+
+    ZipfDistribution<UIntType> zipf;
+    std::bernoulli_distribution coin;
+
+public:
+    DoubleZipfDistribution(size_t nr_elems, size_t peak_pos, double skew)
+        : peak_pos{peak_pos}, shorter_side_len{std::min(peak_pos + 1u, nr_elems - peak_pos)},
+          peak_in_lower_part{peak_pos < nr_elems / 2},
+          zipf{nr_elems - shorter_side_len + 1u, skew}
+    {
+        assert(peak_pos < nr_elems);
+    }
+
+    template <class URBG>
+    constexpr result_type operator()(URBG& g)
+    {
+        for (;;) {
+            const auto zipf_result = zipf(g);
+            if (zipf_result == 0) {
+                if (coin(g)) {
+                    return peak_pos;
+                }
+            } else if (zipf_result < shorter_side_len) {
+                return (coin(g) ? peak_pos + zipf_result : peak_pos - zipf_result);
+            } else {
+                if (coin(g)) {
+                    return (peak_in_lower_part ? peak_pos + zipf_result : peak_pos - zipf_result);
+                }
+            }
+        }
+    }
+};
+
+
+template <class UIntType>
 struct DegenerateDistribution {
     using result_type = UIntType;
 
@@ -314,8 +355,7 @@ struct CMDOpt {
     bool noinit;
 
     double zipf_skewness;
-    std::optional<uint64_t> spike_pos;
-    double spike_ratio{};
+    std::optional<uint64_t> zipf_peak;
     std::optional<std::array<int64_t, 2>> amp_range;
     double amp_ratio{};
     bool scramble;
@@ -326,14 +366,13 @@ struct CMDOpt {
     {
         cmdline::parser parser;
         parser.add<std::string>("file_prefix", 'f', "prefix of the output workload file (including directory path)", true);
-        parser.add<size_t>("npairs", 'p', "num of generated key-value pairs", false, 100000000);
+        parser.add<size_t>("npairs", 'n', "num of generated key-value pairs", false, 100000000);
         parser.add<size_t>("nqueries", 'q', "num of generated operations", false, 20000000);
         parser.add<std::string>("ops", 'o', "kind of generated operations; either of get, insert, delete, pred, scan", true, "", cmdline::oneof<std::string>("get", "insert", "delete", "pred", "scan"));
         parser.add<uint64_t>("scan_width", 'w', "expected num of key-value pairs in each scan", false, 100);
         parser.add<std::string>("zipf_skewness", 'z', "zipfian skewness parameter (often called theta)", false, "0.99");
         parser.add<uint64_t>("zipf_nr_cands", 'c', "size of candidates of the zipfian dist.", false, 2500);
-        parser.add<std::optional<uint64_t>>("spike_pos", 0, "add a spike of hotness to the slice with the specified index (must be in [0, zipf_nr_cands))", false);
-        parser.add<std::string>("spike_ratio", 0, "height of spike (must be in [0.0, 1.0])", false, "");
+        parser.add<std::optional<uint64_t>>("zipf_peak", 'p', "shift peak of zipf distribution", false);
         parser.add<std::optional<std::array<int64_t, 2>>>("amp_range", 0, "amplify the (inclusive) key range specified as \"xx,xx\"", false);
         parser.add<std::string>("amp_ratio", 0, "amplification ratio (must be positive)", false, "1.0");
         parser.add("scramble", 's', "whether scramble or not");
@@ -350,8 +389,7 @@ struct CMDOpt {
         scan_width = parser.get<uint64_t>("scan_width");
         const std::string zipf_skewness_str = parser.get<std::string>("zipf_skewness");
         zipf_nr_cands = parser.get<uint64_t>("zipf_nr_cands");
-        spike_pos = parser.get<std::optional<uint64_t>>("spike_pos");
-        const std::string spike_ratio_str = parser.get<std::string>("spike_ratio");
+        zipf_peak = parser.get<std::optional<uint64_t>>("zipf_peak");
         amp_range = parser.get<std::optional<std::array<int64_t, 2>>>("amp_range");
         const std::string amp_ratio_str = parser.get<std::string>("amp_ratio");
         scramble = parser.exist("scramble");
@@ -360,17 +398,14 @@ struct CMDOpt {
         showinfo = parser.exist("showinfo");
         noinit = parser.exist("noinit");
 
-        if (spike_pos) {
-            if (*spike_pos >= zipf_nr_cands) {
-                std::cerr << "spike_pos must be in [0, zipf_nr_cands)" << std::endl;
-                throw cmdline::cmdline_error{""};
-            }
-            spike_ratio = std::stod(spike_ratio_str);
-            if (spike_ratio < 0.0 || spike_ratio > 1.0) {
-                std::cerr << "spike_ratio must be in [0.0, 1.0]" << std::endl;
-                throw cmdline::cmdline_error{""};
-            }
+        if (zipf_peak && *zipf_peak == 0) {
+            zipf_peak.reset();
         }
+        if (zipf_peak && scramble) {
+            std::cerr << "non-zero zipf_peak and scramble options are mutually exclusive" << std::endl;
+            throw cmdline::cmdline_error{""};
+        }
+
         if (amp_range) {
             if ((*amp_range)[0] > (*amp_range)[1]) {
                 std::cerr << "amp_range is invalid" << std::endl;
@@ -395,8 +430,8 @@ struct CMDOpt {
                      << "_slice" << zipf_nr_cands
                      << (scramble ? "_scramble" : "_ordered")
                      << "_skew" << zipf_skewness_str;
-        if (spike_pos) {
-            ostr_queries << "_hotspike" << spike_ratio_str << "_at" << *spike_pos;
+        if (zipf_peak) {
+            ostr_queries << "_peak" << *zipf_peak;
         }
         if (amp_range) {
             ostr_queries << "_amp" << amp_ratio_str << "_in" << (*amp_range)[0] << "_" << (*amp_range)[1];
@@ -431,12 +466,9 @@ struct CMDOpt {
 template <typename Func>
 void create_slice_dict(const CMDOpt& opt, Func&& func)
 {
-    if (opt.spike_pos) {
-        MixtureDistribution<DegenerateDistribution<size_t>, ZipfDistribution<size_t>> mix_dist(
-            {opt.spike_ratio, 1.0 - opt.spike_ratio},
-            DegenerateDistribution<size_t>{*opt.spike_pos},
-            ZipfDistribution<size_t>{opt.zipf_nr_cands, opt.zipf_skewness});
-        std::forward<Func>(func)(mix_dist);
+    if (opt.zipf_peak) {
+        DoubleZipfDistribution<size_t> double_zipf_dist{opt.zipf_nr_cands, *opt.zipf_peak, opt.zipf_skewness};
+        std::forward<Func>(func)(double_zipf_dist);
     } else {
         ZipfDistribution<size_t> zipf_dist{opt.zipf_nr_cands, opt.zipf_skewness};
         std::forward<Func>(func)(zipf_dist);
