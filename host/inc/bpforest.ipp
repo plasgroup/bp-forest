@@ -452,6 +452,8 @@ inline void BPForest::route_queries(
 {
     ScopedTimer timer{QueryRoutingTime};
 
+    routed.clear();
+
     using TmpData = TmpDataForRouteQueries<Query, Result>;
     const TmpData tmp_data{nr_queries, queries, &routed, results};
     any_tmp_data = &tmp_data;
@@ -767,7 +769,6 @@ inline void BPForest::batch_get(uint32_t nr_queries, const key_uint64_t keys[], 
 
     execute_in_dpus(TASK_GET, get_queries);
     postprocess_of_get(results);
-    get_queries.clear();
 }
 inline void BPForest::postprocess_of_get(value_uint64_t results[])
 {
@@ -830,7 +831,6 @@ inline void BPForest::batch_insert(uint32_t nr_queries, const KVPair pairs[])
         }
         return false;
     });
-    insert_queries.clear();
 }
 
 inline void BPForest::batch_delete(uint32_t nr_queries, const key_uint64_t keys[])
@@ -846,7 +846,6 @@ inline void BPForest::batch_delete(uint32_t nr_queries, const key_uint64_t keys[
         }
         return false;
     });
-    delete_queries.clear();
 
     // TODO: When the first data of each partition is deleted, shift the partition boundary to the next key
 }
@@ -868,7 +867,6 @@ inline void BPForest::batch_range_count(uint32_t nr_queries, const RangeCountQue
 
     execute_in_dpus(TASK_RANGE_COUNT, rcqs);
     postprocess_of_rcq(nr_queries, results);
-    rcqs.clear();
 }
 inline void BPForest::postprocess_of_rcq(uint32_t nr_queries, uint64_t result[])
 {
@@ -1409,7 +1407,6 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
     dpu_id_t cold_count = nr_base_parts, hot_count = 0;
 
     combine_delims();
-    routed.clear();
     route_queries(nr_queries, queries, results, routed);
 
     for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
@@ -2040,22 +2037,18 @@ inline bool BPForest::incremental_repartition(uint32_t nr_queries, const Query q
 inline void BPForest::partition_with_get_batch(uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[])
 {
     full_repartition(nr_queries, keys, result, get_queries);
-    get_queries.clear();
 }
 inline void BPForest::partition_with_insert_batch(uint32_t nr_queries, const KVPair pairs[])
 {
     full_repartition(nr_queries, pairs, (void*){nullptr}, insert_queries);
-    insert_queries.clear();
 }
 inline void BPForest::partition_with_delete_batch(uint32_t nr_queries, const key_uint64_t keys[])
 {
     full_repartition(nr_queries, keys, (void*){nullptr}, delete_queries);
-    delete_queries.clear();
 }
 inline void BPForest::partition_with_range_count_batch(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[])
 {
     full_repartition(nr_queries, queries, result, rcqs);
-    rcqs.clear();
 }
 
 
