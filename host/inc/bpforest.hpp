@@ -254,7 +254,7 @@ private:
     template <typename Query, typename Result>
     void full_repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed);
     template <typename Query, typename Result>
-    bool /* success */ incremental_repartition(uint32_t nr_queries, const Query queries[], QueryData<Query, Result>& routed);
+    void incremental_repartition(uint32_t nr_queries, const Query queries[], Result results[], QueryData<Query, Result>& routed);
 };
 
 

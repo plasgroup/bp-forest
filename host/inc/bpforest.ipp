@@ -759,12 +759,7 @@ inline void BPForest::batch_get(uint32_t nr_queries, const key_uint64_t keys[], 
     route_queries(nr_queries, keys, results, get_queries);
 
     if (param.balancing > 0) {
-        const bool success = incremental_repartition(nr_queries, keys, get_queries);
-        route_queries(nr_queries, keys, results, get_queries);  // TODO: re-routing in incremental_repartition
-
-        if (!success) {
-            full_repartition(nr_queries, keys, results, get_queries);
-        }
+        incremental_repartition(nr_queries, keys, results, get_queries);
     }
 
     execute_in_dpus(TASK_GET, get_queries);
@@ -857,12 +852,7 @@ inline void BPForest::batch_range_count(uint32_t nr_queries, const RangeCountQue
     route_queries(nr_queries, queries, results, rcqs);
 
     if (param.balancing > 0) {
-        const bool success = incremental_repartition(nr_queries, queries, rcqs);
-        route_queries(nr_queries, queries, results, rcqs);  // TODO: re-routing in incremental_repartition
-
-        if (!success) {
-            full_repartition(nr_queries, queries, results, rcqs);
-        }
+        incremental_repartition(nr_queries, queries, results, rcqs);
     }
 
     execute_in_dpus(TASK_RANGE_COUNT, rcqs);
@@ -1625,7 +1615,7 @@ struct UpdatedPartitionsSender {
     }
 };
 template <typename Query, typename Result>
-inline bool BPForest::incremental_repartition(uint32_t nr_queries, const Query queries[], QueryData<Query, Result>& routed)
+inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query queries[], Result results[], QueryData<Query, Result>& routed)
 {
     ScopedTimer timer{RebalancingTime};
 
@@ -1670,7 +1660,7 @@ inline bool BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         base_to_nr_hot_psum[nr_base_parts] = incision_count;
 
         if (cold_count == 0) {
-            return true;
+            return;
         }
     }
 
@@ -1979,7 +1969,8 @@ inline bool BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         cold_loads[idx_dpu] = {idx_dpu, cold_load};
 
         if (nr_existing_hots + hot_count > nr_base_parts) {
-            return false;  // failure due to too many hot partitions
+            // failure due to too many hot partitions
+            return full_repartition(nr_queries, queries, results, routed);
         }
     }
 
@@ -2032,9 +2023,8 @@ inline bool BPForest::incremental_repartition(uint32_t nr_queries, const Query q
     }
 #endif
 
-    // TODO: re-routing
-
-    return true;
+    // TODO: efficient re-routing
+    route_queries(nr_queries, queries, results, routed);
 }
 
 
