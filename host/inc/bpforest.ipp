@@ -919,12 +919,16 @@ inline std::vector<std::array<uint32_t, 2>> BPForest::last_query_dist() const
         switch (last_qry_type) {
         case TASK_GET:
             results[idx_dpu] = {get_queries.cold[idx_dpu].nr_qrys, get_queries.hot[idx_dpu].nr_qrys};
+            break;
         case TASK_INSERT:
             results[idx_dpu] = {insert_queries.cold[idx_dpu].nr_qrys, insert_queries.hot[idx_dpu].nr_qrys};
+            break;
         case TASK_DELETE:
             results[idx_dpu] = {delete_queries.cold[idx_dpu].nr_qrys, delete_queries.hot[idx_dpu].nr_qrys};
+            break;
         case TASK_RANGE_COUNT:
             results[idx_dpu] = {rcqs.cold[idx_dpu].nr_qrys, rcqs.hot[idx_dpu].nr_qrys};
+            break;
         default:;
         }
     }

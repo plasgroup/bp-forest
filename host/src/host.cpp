@@ -251,13 +251,13 @@ public:
 
     void print_last_query_dist(std::ostream& ostr, dpu_id_t nr_dpus_to_print) const
     {
-        const std::vector<std::array<uint32_t, 2>> nr_rcqs = forest.last_query_dist();
+        const std::vector<std::array<uint32_t, 2>> nr_qrys = forest.last_query_dist();
         if (nr_dpus_to_print > 0) {
-            for (dpu_id_t idx_dpu = 0; idx_dpu < nr_rcqs.size() && idx_dpu < nr_dpus_to_print; idx_dpu++) {
+            for (dpu_id_t idx_dpu = 0; idx_dpu < nr_qrys.size() && idx_dpu < nr_dpus_to_print; idx_dpu++) {
                 if (idx_dpu != 0) {
                     ostr << ",";
                 }
-                ostr << (nr_rcqs[idx_dpu][0] + nr_rcqs[idx_dpu][1]);
+                ostr << (nr_qrys[idx_dpu][0] + nr_qrys[idx_dpu][1]);
             }
             ostr << std::endl;
         }
@@ -393,11 +393,9 @@ int main(int argc, char* argv[])
         benchmark->set_verify_db(&init_data);
 
     benchmark->run(opt.nr_batches, &db, [&](int idx_batch) {
-        if (opt.op_type == TASK_RANGE_COUNT) {
-            db.print_last_query_dist(std::cout, opt.print_compute_load);
-            if (dump_compute_load_file) {
-                db.print_last_query_dist(*dump_compute_load_file, MAX_NR_DPUS);
-            }
+        db.print_last_query_dist(std::cout, opt.print_compute_load);
+        if (dump_compute_load_file) {
+            db.print_last_query_dist(*dump_compute_load_file, MAX_NR_DPUS);
         }
 #ifdef HOST_ONLY
         else if (opt.op_type == TASK_RANGE_MIN) {
