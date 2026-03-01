@@ -35,6 +35,7 @@
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <optional>
 #include <ostream>
 #include <stdexcept>
 #include <tuple>
@@ -1710,7 +1711,7 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         data_buf.reserve(total_nr_pairs);
     }
 
-    const RAII raii{[&] {
+    RAII raii{[&] {
         for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
             chunked_cold_ranges_lists[idx_dpu].clear();
         }
@@ -1969,8 +1970,8 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         cold_loads[idx_dpu] = {idx_dpu, cold_load};
 
         if (nr_existing_hots + hot_count > nr_base_parts) {
-            // failure due to too many hot partitions
-            return full_repartition(nr_queries, queries, results, routed);
+            raii.finalize();
+            return full_repartition(nr_queries, queries, results, routed);  // failure due to too many hot partitions
         }
     }
 
