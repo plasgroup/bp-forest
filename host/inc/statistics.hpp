@@ -161,7 +161,8 @@ struct ScopedTimer final {
 inline ElapsedTime
     DatabaseInitTime{"init_db[ns]", 0},
 
-    RebalancingTime{"rebalance[ns]", 1000},  // 1000--1999
+    IncrementalRebalancingTime{"inc_rebalance[ns]", 1000},  // 1000--1999
+    FullRebalancingTime{"full_rebalance[ns]", 1001},  // 1000--1999
 
     DataRetrieveTime{"retrieve_data[ns]", 1100},  // 1100--1199
 #ifdef SYNCHRONOUS_DPU_EXEC
@@ -174,21 +175,20 @@ inline ElapsedTime
     PairsBufAllocTime{"alloc_pairs_buf[ns]", 1140},
     PairsRecvTime{"recv_pairs[ns]", 1150},
 
-    RefWorkloadPrepareTime{"prepare_ref_workload[ns]", 1200},
-    PrepareForPartitioningTime{"prepare_for_part[ns]", 1300},
-    PartitioningTime{"part[ns]", 1400},
+    LoadEstimateTime{"estimate_load[ns]", 1200},
 
-    PartitionApplyTime{"apply_part[ns]", 1500},  // 1500--1599
+    AbsHotFindTime{"abs_hot[ns]", 1410},
+    RelHotFindTime{"rel_hot[ns]", 1420},
+
+    // PartitionApplyTime{"apply_part[ns]", 1500},  // 1500--1599
 #ifdef SYNCHRONOUS_DPU_EXEC
-    ColdPairsSendTime{"send_cold_pairs[ns]", 1510},
-    ColdTreesConstructTime{"const_cold_trees[ns]", 1520},
-    HotPairsSendTime{"send_hot_pairs[ns]", 1530},
-    HotTreesConstructTime{"const_hot_trees[ns]", 1540},
-#else
-    TreeConstructTime{"const_trees[ns]", 1510},
+    PairsSendTime{"send_pairs[ns]", 1510},
 #endif
+    TreeConstructTime{"const_trees[ns]", 1520},
 
     RoutingTableMakeTime{"make_routing_table[ns]", 1600},
+
+    ReroutingTime{"reroute_qry[ns]", 1700},
 
     BatchTotalTime{"batch[ns]", 2000},  // 2000--2999
     QueryRoutingTime{"route_qry[ns]", 2100},

@@ -36,6 +36,7 @@
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <tuple>
 #include <vector>
 
 #define ANSI_COLOR_RED "\x1b[31m"
@@ -69,6 +70,30 @@ XferStatistics xfer_statistics;
 #endif /* MEASURE_XFER_BYTES */
 
 
+namespace cmdline
+{
+template <typename T>
+struct default_reader<std::optional<T>> {
+    std::optional<T> operator()(const std::string& str)
+    {
+        return default_reader<T>{}(str);
+    }
+};
+namespace detail
+{
+template <typename T>
+class lexical_cast_t<std::string, std::optional<T>, false>
+{
+public:
+    static std::string cast(const std::optional<T>& opt)
+    {
+        return opt ? lexical_cast<std::string>(*opt) : "(nullopt)";
+    }
+};
+}  // namespace detail
+}  // namespace cmdline
+
+
 struct Option {
     void parse(int argc, char* argv[])
     {
@@ -79,16 +104,20 @@ struct Option {
         a.add<unsigned>("balancing-param", 'a', "the tunable parameter for compute/memory load balancing in B+-Forest", false, 1);
         a.add("one-scan", '1', "perform only a single scan to find hot spots");
         a.add("naive-init", 0, "adopt naive way to send KV pairs");
-        a.add<std::string>("partition", 0, "load pre-calculated partitioning", false);
-        a.add<std::string>("dump-partition", 0, "store partitioning", false);
+        a.add<std::optional<std::string>>("partition", 0, "load pre-calculated partitioning", false);
+        a.add<std::optional<std::string>>("dump-partition", 0, "store partitioning", false);
         a.add<unsigned>("nr-host-threads", 't', "num of threads used in pre/post-processing in B+-Forest", false, 0);
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
         a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq, count", false, "get");
-        a.add<std::string>("dump-compute-load", 0, "print number of queries sent for each dpu to a file", false);
+        a.add<std::optional<std::string>>("dump-compute-load", 0, "print number of queries sent for each dpu to a file", false);
+        a.add<std::optional<std::string>>("dump-cold-compute-load", 0, "print number of queries sent for cold partitions in each dpu to a file", false);
+        a.add<std::optional<std::string>>("dump-hot-compute-load", 0, "print number of queries sent for hot partitions in each dpu to a file", false);
         a.add<dpu_id_t>("print-compute-load", 'c', "print number of queries sent for each dpu", false, 0);
         a.add<dpu_id_t>("print-cold-compute-load", 0, "print number of queries sent for cold ranges in each dpu", false, 0);
         a.add<dpu_id_t>("print-hot-compute-load", 0, "print number of queries sent for hot ranges in each dpu", false, 0);
-        a.add<std::string>("dump-memory-load", 0, "print number of KV pairs stored in each dpu to a file", false);
+        a.add<std::optional<std::string>>("dump-memory-load", 0, "print number of KV pairs stored in each dpu to a file", false);
+        a.add<std::optional<std::string>>("dump-cold-memory-load", 0, "print number of cold KV pairs stored in each dpu to a file", false);
+        a.add<std::optional<std::string>>("dump-hot-memory-load", 0, "print number of hot KV pairs stored in each dpu to a file", false);
         a.add<dpu_id_t>("print-memory-load", 'm', "print number of KV pairs stored in each dpu", false, 0);
         a.add<dpu_id_t>("print-cold-memory-load", 0, "print number of KV pairs stored in cold ranges in each dpu", false, 0);
         a.add<dpu_id_t>("print-hot-memory-load", 0, "print number of KV pairs stored in hot ranges in each dpu", false, 0);
@@ -102,34 +131,25 @@ struct Option {
         balancing_param = a.get<unsigned>("balancing-param");
         one_scan = a.exist("one-scan");
         naive_init = a.exist("naive-init");
-        std::string tmp_partition = a.get<std::string>("partition");
-        std::string tmp_dump_partition = a.get<std::string>("dump-partition");
+        partition = a.get<std::optional<std::string>>("partition");
+        dump_partition = a.get<std::optional<std::string>>("dump-partition");
         nr_host_threads = a.get<unsigned>("nr-host-threads");
         nr_batches = a.get<int>("num_batches");
         std::string ops = a.get<std::string>("ops");
-        std::string tmp_dump_compute_load = a.get<std::string>("dump-compute-load");
+        dump_compute_load = a.get<std::optional<std::string>>("dump-compute-load");
+        dump_cold_compute_load = a.get<std::optional<std::string>>("dump-cold-compute-load");
+        dump_hot_compute_load = a.get<std::optional<std::string>>("dump-hot-compute-load");
         print_compute_load = a.get<dpu_id_t>("print-compute-load");
         print_cold_compute_load = a.get<dpu_id_t>("print-cold-compute-load");
         print_hot_compute_load = a.get<dpu_id_t>("print-hot-compute-load");
-        std::string tmp_dump_memory_load = a.get<std::string>("dump-memory-load");
+        dump_memory_load = a.get<std::optional<std::string>>("dump-memory-load");
+        dump_cold_memory_load = a.get<std::optional<std::string>>("dump-cold-memory-load");
+        dump_hot_memory_load = a.get<std::optional<std::string>>("dump-hot-memory-load");
         print_memory_load = a.get<dpu_id_t>("print-memory-load");
         print_cold_memory_load = a.get<dpu_id_t>("print-cold-memory-load");
         print_hot_memory_load = a.get<dpu_id_t>("print-hot-memory-load");
         print_perf = a.exist("print-perf");
         verify = a.exist("verify");
-
-        if (!tmp_partition.empty()) {
-            partition.emplace(std::move(tmp_partition));
-        }
-        if (!tmp_dump_partition.empty()) {
-            dump_partition.emplace(std::move(tmp_dump_partition));
-        }
-        if (!tmp_dump_compute_load.empty()) {
-            dump_compute_load.emplace(std::move(tmp_dump_compute_load));
-        }
-        if (!tmp_dump_memory_load.empty()) {
-            dump_memory_load.emplace(std::move(tmp_dump_memory_load));
-        }
 
         if (ops == "get")
             op_type = TASK_GET;
@@ -159,7 +179,8 @@ struct Option {
     std::string init_file;
     int nr_batches;
     TaskID op_type;
-    std::optional<std::string> dump_compute_load, dump_memory_load;
+    std::optional<std::string> dump_compute_load, dump_cold_compute_load, dump_hot_compute_load,
+        dump_memory_load, dump_cold_memory_load, dump_hot_memory_load;
     dpu_id_t print_compute_load, print_memory_load;
     dpu_id_t print_cold_compute_load, print_cold_memory_load, print_hot_compute_load, print_hot_memory_load;
     bool print_perf;
@@ -262,6 +283,32 @@ public:
             ostr << std::endl;
         }
     }
+    void print_last_cold_query_dist(std::ostream& ostr, dpu_id_t nr_dpus_to_print) const
+    {
+        const std::vector<std::array<uint32_t, 2>> nr_qrys = forest.last_query_dist();
+        if (nr_dpus_to_print > 0) {
+            for (dpu_id_t idx_dpu = 0; idx_dpu < nr_qrys.size() && idx_dpu < nr_dpus_to_print; idx_dpu++) {
+                if (idx_dpu != 0) {
+                    ostr << ",";
+                }
+                ostr << nr_qrys[idx_dpu][0];
+            }
+            ostr << std::endl;
+        }
+    }
+    void print_last_hot_query_dist(std::ostream& ostr, dpu_id_t nr_dpus_to_print) const
+    {
+        const std::vector<std::array<uint32_t, 2>> nr_qrys = forest.last_query_dist();
+        if (nr_dpus_to_print > 0) {
+            for (dpu_id_t idx_dpu = 0; idx_dpu < nr_qrys.size() && idx_dpu < nr_dpus_to_print; idx_dpu++) {
+                if (idx_dpu != 0) {
+                    ostr << ",";
+                }
+                ostr << nr_qrys[idx_dpu][1];
+            }
+            ostr << std::endl;
+        }
+    }
 
     // avaiable after `partition_with`
     void print_nr_pairs(std::ostream& ostr, dpu_id_t nr_dpus_to_print) const
@@ -346,16 +393,20 @@ int main(int argc, char* argv[])
     if (!opt.partition) {
         benchmark->partition_with_one_batch(&db);
 
-        db.print_nr_pairs(std::cout, opt.print_memory_load);
-        db.print_nr_cold_pairs(std::cout, opt.print_cold_memory_load);
-        db.print_nr_hot_pairs(std::cout, opt.print_hot_memory_load);
-        if (opt.dump_memory_load) {
-            std::ofstream dump_memory_load_file(*opt.dump_memory_load);
-            if (!dump_memory_load_file) {
-                std::cerr << "cannot open file: " << *opt.dump_memory_load << std::endl;
-                std::quick_exit(1);
+        for (auto& [func, opt_print, file_name] : {
+                 std::make_tuple(&BPForestDatabase::print_nr_pairs, std::ref(opt.print_memory_load), std::ref(opt.dump_memory_load)),
+                 std::make_tuple(&BPForestDatabase::print_nr_cold_pairs, std::ref(opt.print_cold_memory_load), std::ref(opt.dump_cold_memory_load)),
+                 std::make_tuple(&BPForestDatabase::print_nr_hot_pairs, std::ref(opt.print_hot_memory_load), std::ref(opt.dump_hot_memory_load))}) {
+
+            (db.*func)(std::cout, opt_print);
+            if (file_name) {
+                std::ofstream file(*file_name);
+                if (!file) {
+                    std::cerr << "cannot open file: " << *file_name << std::endl;
+                    std::quick_exit(1);
+                }
+                (db.*func)(file, MAX_NR_DPUS);
             }
-            db.print_nr_pairs(dump_memory_load_file, MAX_NR_DPUS);
         }
     }
 
@@ -376,12 +427,17 @@ int main(int argc, char* argv[])
         db.print_params(dump_param_file);
     }
 
-    std::optional<std::ofstream> dump_compute_load_file;
-    if (opt.dump_compute_load) {
-        dump_compute_load_file.emplace(*opt.dump_compute_load);
-        if (!*dump_compute_load_file) {
-            std::cerr << "cannot open file: " << *opt.dump_compute_load << std::endl;
-            std::quick_exit(1);
+    std::optional<std::ofstream> dump_compute_load_file, dump_cold_compute_load_file, dump_hot_compute_load_file;
+    for (auto& [name, stream] : {
+             std::tie(opt.dump_compute_load, dump_compute_load_file),
+             std::tie(opt.dump_cold_compute_load, dump_cold_compute_load_file),
+             std::tie(opt.dump_hot_compute_load, dump_hot_compute_load_file)}) {
+        if (name) {
+            stream.emplace(*name);
+            if (!*stream) {
+                std::cerr << "cannot open file: " << *name << std::endl;
+                std::quick_exit(1);
+            }
         }
     }
 
@@ -393,21 +449,16 @@ int main(int argc, char* argv[])
         benchmark->set_verify_db(&init_data);
 
     benchmark->run(opt.nr_batches, &db, [&](int idx_batch) {
-        db.print_last_query_dist(std::cout, opt.print_compute_load);
-        if (dump_compute_load_file) {
-            db.print_last_query_dist(*dump_compute_load_file, MAX_NR_DPUS);
+        for (auto& [func, opt_print, file] : {
+                 std::make_tuple(&BPForestDatabase::print_last_query_dist, std::ref(opt.print_compute_load), std::ref(dump_compute_load_file)),
+                 std::make_tuple(&BPForestDatabase::print_last_cold_query_dist, std::ref(opt.print_cold_compute_load), std::ref(dump_cold_compute_load_file)),
+                 std::make_tuple(&BPForestDatabase::print_last_hot_query_dist, std::ref(opt.print_hot_compute_load), std::ref(dump_hot_compute_load_file))}) {
+
+            (db.*func)(std::cout, opt_print);
+            if (file) {
+                (db.*func)(*file, MAX_NR_DPUS);
+            }
         }
-#ifdef HOST_ONLY
-        else if (opt.op_type == TASK_RANGE_MIN) {
-            (*emulator).print_nr_RMQ_delims_in_last_batch(std::cout, opt.print_compute_load);
-            (*emulator).print_nr_cold_RMQ_delims_in_last_batch(std::cout, opt.print_cold_compute_load);
-            (*emulator).print_nr_hot_RMQ_delims_in_last_batch(std::cout, opt.print_hot_compute_load);
-        } else {
-            (*emulator).print_nr_queries_in_last_batch(std::cout, opt.print_compute_load);
-            (*emulator).print_nr_cold_queries_in_last_batch(std::cout, opt.print_cold_compute_load);
-            (*emulator).print_nr_hot_queries_in_last_batch(std::cout, opt.print_hot_compute_load);
-        }
-#endif
 
         if (opt.print_perf) {
             std::cout << upmem_get_nr_dpus() << ',' << idx_batch << ',' << long{NUM_REQUESTS_PER_BATCH} << ','
