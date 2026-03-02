@@ -1628,6 +1628,7 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
 
             if (routed.cold[idx_dpu].nr_qrys < param.rebalance_threshold * nr_queries / nr_base_parts) {
                 input.task_no = TASK_NONE;
+                input.serialize.nr_delims = 0;
                 continue;
             }
 
