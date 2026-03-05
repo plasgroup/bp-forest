@@ -14,8 +14,6 @@
 #include "workload_buffer.hpp"
 #include "workload_types.h"
 
-#include <cereal/archives/binary.hpp>
-
 #include <cmdline.h>
 
 #include <ios>
@@ -38,32 +36,6 @@
 #include <optional>
 #include <tuple>
 #include <vector>
-
-#define ANSI_COLOR_RED "\x1b[31m"
-#define ANSI_COLOR_GREEN "\x1b[32m"
-#define ANSI_COLOR_RESET "\x1b[0m"
-
-/* for stats */
-uint64_t total_cycles_insert;
-float preprocess_time1;
-float preprocess_time2;
-float preprocess_time;
-float migration_time;
-float migration_plan_time;
-float send_time;
-float execution_time;
-float receive_result_time = 0;
-float batch_time = 0;
-float total_preprocess_time = 0;
-float total_preprocess_time1 = 0;
-float total_preprocess_time2 = 0;
-float total_migration_plan_time = 0;
-float total_migration_time = 0;
-float total_send_time = 0;
-float total_execution_time = 0;
-float total_receive_result_time = 0;
-float total_batch_time = 0;
-float init_time = 0;
 
 #ifdef MEASURE_XFER_BYTES
 XferStatistics xfer_statistics;
@@ -94,6 +66,24 @@ public:
 }  // namespace cmdline
 
 
+struct BPForestOption {
+    void add_options(cmdline::parser& a) {
+        a.add<unsigned>("balancing-param", 'a', "the tunable parameter for compute/memory load balancing in B+-Forest", false, 1);
+        a.add<bool>("incremental", 0, "whether to enable incremental rebalancing", false, true);
+        a.add<double>("high-watermark", 0, "rebalance when the load on cold partitions exceeds (this value) times the expected load", false, 1.05);
+        a.add<unsigned>("nr-host-threads", 't', "num of threads used in pre/post-processing in B+-Forest", false, 0);
+    }
+    void set_options(cmdline::parser& a) {
+        param.balancing = a.get<unsigned>("balancing-param");
+        param.enable_incremental = a.get<bool>("incremental");
+        param.high_watermark_ratio = a.get<double>("high-watermark");
+        param.nr_host_threads = a.get<unsigned>("nr-host-threads");
+
+        ASSERT(param.high_watermark_ratio > 1);
+    }
+
+    BPForest::Param param;
+};
 struct Option {
     void parse(int argc, char* argv[])
     {
@@ -101,12 +91,9 @@ struct Option {
         a.add<std::string>("dump-params", 0, "file path to output parameters");
         a.add<std::string>("workload_file", 'w', "file path to PIM-Tree workload file", true);
         a.add<std::string>("init_file", 'i', "file path to PIM-Tree init file", true);
-        a.add<unsigned>("balancing-param", 'a', "the tunable parameter for compute/memory load balancing in B+-Forest", false, 1);
-        a.add("one-scan", '1', "perform only a single scan to find hot spots");
-        a.add("naive-init", 0, "adopt naive way to send KV pairs");
+        bpforest.add_options(a);
         a.add<std::optional<std::string>>("partition", 0, "load pre-calculated partitioning", false);
         a.add<std::optional<std::string>>("dump-partition", 0, "store partitioning", false);
-        a.add<unsigned>("nr-host-threads", 't', "num of threads used in pre/post-processing in B+-Forest", false, 0);
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
         a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq, count", false, "get");
         a.add<std::optional<std::string>>("dump-compute-load", 0, "print number of queries sent for each dpu to a file", false);
@@ -128,12 +115,9 @@ struct Option {
         dump_param_file = a.get<std::string>("dump-params");
         workload_file = a.get<std::string>("workload_file");
         init_file = a.get<std::string>("init_file");
-        balancing_param = a.get<unsigned>("balancing-param");
-        one_scan = a.exist("one-scan");
-        naive_init = a.exist("naive-init");
+        bpforest.set_options(a);
         partition = a.get<std::optional<std::string>>("partition");
         dump_partition = a.get<std::optional<std::string>>("dump-partition");
-        nr_host_threads = a.get<unsigned>("nr-host-threads");
         nr_batches = a.get<int>("num_batches");
         std::string ops = a.get<std::string>("ops");
         dump_compute_load = a.get<std::optional<std::string>>("dump-compute-load");
@@ -169,12 +153,11 @@ struct Option {
         }
     }
 
+    BPForestOption bpforest;
     std::string dump_param_file;
     unsigned balancing_param;
-    bool one_scan, naive_init;
     std::optional<std::string> partition;
     std::optional<std::string> dump_partition;
-    unsigned nr_host_threads;
     std::string workload_file;
     std::string init_file;
     int nr_batches;
@@ -387,8 +370,8 @@ int main(int argc, char* argv[])
     }
 
     InitData init_data{opt.init_file};
-    BPForestDatabase db = partitions ? BPForestDatabase{init_data, *partitions, BPForest::Param{opt.balancing_param, opt.one_scan, opt.naive_init, opt.nr_host_threads}}
-                                     : BPForestDatabase{init_data, BPForest::Param{opt.balancing_param, opt.one_scan, opt.naive_init, opt.nr_host_threads}};
+    BPForestDatabase db = partitions ? BPForestDatabase{init_data, *partitions, opt.bpforest.param}
+                                     : BPForestDatabase{init_data, opt.bpforest.param};
 
     if (!opt.partition) {
         benchmark->partition_with_one_batch(&db);

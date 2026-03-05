@@ -1,6 +1,8 @@
+import argparse
 import random
 import math
 import bisect
+import os
 
 
 class InputStream:
@@ -33,10 +35,9 @@ class InputStream:
         start = self.start
         end = start + chunk_size
 
-        data = memoryview(buf)[start:end]
+        data = buf[start:end]
         self.start = end
 
-        # memmove最小化
         if self.start > buffer_size:
             del buf[:self.start]
             self.start = 0
@@ -62,8 +63,8 @@ class WeightedIndex:
             raise ValueError("weights must not be empty")
 
         for i, w in enumerate(weights):
-            if not math.isfinite(w) or w <= 0:
-                raise ValueError(f"weights[{i}] must be finite and > 0")
+            if not math.isfinite(w) or w < 0:
+                raise ValueError(f"weights[{i}] must be finite and >= 0")
 
         total = float(sum(weights))
         if total <= 0:
@@ -151,19 +152,41 @@ def mix_streams(
         remaining -= block
 
 
-def main(seed):
-    inputs = [
-        InputStream(open("a.bin", "rb")),
-        InputStream(open("b.bin", "rb")),
+def main(workload_dir, seed):
+    base = InputStream(open(os.path.join(workload_dir, "get30000000_item500000000_slice16384_ordered_skew1.0.data"), "rb"))
+    added = [
+        InputStream(open(os.path.join(workload_dir, "get30000000_item500000000_slice16384_ordered_skew1.0_peak16000.data"), "rb")),
+        InputStream(open(os.path.join(workload_dir, "get30000000_item500000000_slice16384_ordered_skew1.0_peak11200.data"), "rb")),
+        InputStream(open(os.path.join(workload_dir, "get30000000_item500000000_slice16384_ordered_skew1.0_peak6400.data"), "rb")),
+        InputStream(open(os.path.join(workload_dir, "get30000000_item500000000_slice16384_ordered_skew1.0_peak1600.data"), "rb")),
     ]
+    inputs = [base, *added]
 
-    weights = WeightedIndex([1, 2])
     rng = RandomGenerator(seed)
-    output = OutputStream(open("out.bin", "wb"))
 
-    mix_streams(inputs, weights, rng, output, 1_000_000, 24)
+    output = OutputStream(open(os.path.join(workload_dir, "get30000000_item500000000_slice16384_ordered_skew1.0_peaks.data"), "wb"))
+
+    weights = [1., 0., 0., 0., 0.]
+
+    for i_batch in range(30):
+        if i_batch == 10:
+            weights[1] = 1.0
+        elif i_batch == 15:
+            weights[2] = 1.0
+        elif i_batch == 20:
+            weights[3] = 1.0
+        elif i_batch == 25:
+            weights[4] = 1.0
+
+        for i in range(1, 5):
+            weights[i] *= 0.6
+
+        mix_streams(inputs, WeightedIndex(weights), rng, output, 24_000_000, 24)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-r", "--rand_seed", type=int, default=1_000_000)
-    main(parser.rand_seed)
+    parser.add_argument("workload_dir")
+    parser.add_argument("--rand_seed", "-r", type=int, default=1_000_000)
+    args = parser.parse_args()
+
+    main(args.workload_dir, args.rand_seed)

@@ -97,19 +97,9 @@ using PartitionDelim = std::pair<key_uint64_t, std::variant<BasePartitionDelim, 
 
 struct BPForestParameter {
     unsigned balancing = 1;
-    bool one_scan = false;
-    bool naive_init = false;
+    bool enable_incremental = true;
+    double high_watermark_ratio = 1.05;
     unsigned nr_host_threads = 0;
-    double rebalance_threshold = [this] {
-        switch (balancing) {
-        case 0:
-            return std::numeric_limits<double>::infinity();
-        case 1:
-            return 1.0;
-        default:
-            return 1.0 * (balancing + 1) / 3.0;
-        }
-    }();
 };
 struct BPForest : ParallelManager<BPForest> {
     using Param = BPForestParameter;
