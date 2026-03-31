@@ -397,10 +397,10 @@ int main(int argc, char* argv[])
     BPForestDatabase db = partitions ? BPForestDatabase{init_data, *partitions, opt.bpforest.param}
                                      : BPForestDatabase{init_data, opt.bpforest.param};
     Benchmark* benchmark = std::visit(overload(
-                                          [](double query_rate) {
+                                          [](double& query_rate) {
                                               return make_benchmark<PoissonArrival>(opt, query_rate);
                                           },
-                                          [](size_t batch_size) {
+                                          [](size_t& batch_size) {
                                               return make_benchmark<ConstSizedBatch>(opt, batch_size);
                                           }),
         opt.query_rate);
