@@ -1,4 +1,5 @@
 #include "assert.hpp"
+#include "common.h"
 #include "database.hpp"
 #include "extendable_buffer.hpp"
 #include "piecewise_constant_workload.hpp"
@@ -10,431 +11,430 @@
 #include <cereal/archives/binary.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <random>
 #include <vector>
 
+
+inline void assign_query(key_uint64_t& to, operation& from)
+{
+    if (from.type == get_t)
+        to = key_int64_to_uint64(from.tsk.g.key);
+    if (from.type == remove_t)
+        to = key_int64_to_uint64(from.tsk.r.key);
+}
+inline void assign_query(KVPair& to, operation& from)
+{
+    if (from.type == insert_t)
+        to = {key_int64_to_uint64(from.tsk.i.key), value_int64_to_uint64(from.tsk.i.value)};
+}
+inline void assign_query(KeyRange& to, operation& from)
+{
+    if (from.type == scan_t) {
+        to = {
+            key_int64_to_uint64(from.tsk.s.lkey),
+            key_int64_to_uint64(from.tsk.s.rkey)};
+    }
+}
+inline void assign_query(RangeCountQuery& to, operation& from)
+{
+    if (from.type == scan_t) {
+        KeyRange range = {
+            key_int64_to_uint64(from.tsk.s.lkey),
+            key_int64_to_uint64(from.tsk.s.rkey)};
+        value_uint64_t needle = range.begin & 0xff;
+        to = {range, needle};
+    }
+}
+template <typename T>
+inline WorkloadBuffer<T> load_pimtree_workload(const std::string& workload_file)
+{
+    pimtree_queries qs = make_pimtree_queries(workload_file);
+    std::vector<T> workload(qs.length);
+    for (size_t i = 0; i < qs.length; i++) {
+        // assign_query adds the query if the query is of the desired
+        // type for the workload type. The mapping is:
+        //   key_uint64_t -> get_t
+        //   KeyRange -> scan_t
+        //   std::pair<KeyRange, std::array<char, 8>>> -> scan_t
+        assign_query(workload[i], qs.ops[i]);
+    }
+    return WorkloadBuffer{std::move(workload)};
+}
+
+template <typename T>
+inline void compare_results(size_t n, const T* results, const T* oracle_results)
+{
+    const auto [p_lhs, p_rhs] = std::mismatch(&results[0], &results[n], &oracle_results[0]);
+    if (p_lhs != &results[n]) {
+        std::cerr << "verification failed at " << (p_lhs - &results[0]) << "-th query: " << *p_lhs << " != " << *p_rhs << std::endl;
+        std::exit(1);
+    }
+}
 
 class Benchmark
 {
 protected:
     Database* verify_db = nullptr;
+    size_t last_batch_size_ = 0;
 
-    void load_workload(std::string workload_file,
-        PiecewiseConstantWorkload* workload)
-    {
-        std::cout << "loading workload from " << workload_file << std::endl;
-        /* load workload file */
-        std::ifstream file_input(workload_file, std::ios_base::binary);
-        if (!file_input) {
-            std::cerr << "cannot open file: " << workload_file << std::endl;
-            exit(1);
-        }
-        cereal::BinaryInputArchive iarchive(file_input);
-        iarchive(*workload);
-        std::cout << "done" << std::endl;
-    }
+    //! @return success
+    virtual bool do_one_batch(Database* db) = 0;
+    virtual void do_verify() = 0;
 
 public:
     void run(int nr_batches, Database* db, std::function<void(int)> after_batch)
     {
-        for (int idx_batch = 0; idx_batch < nr_batches; idx_batch++) {
-            do_one_batch(idx_batch, db);
-            after_batch(idx_batch);
-            if (verify_db != nullptr && idx_batch <= 0)
-                verify();
+        if (verify_db != nullptr) {
+            for (int idx_batch = 0; idx_batch < nr_batches; idx_batch++) {
+                if (!do_one_batch(db)) {
+                    break;
+                }
+                do_verify();
+                after_batch(idx_batch);
+            }
+        } else {
+            for (int idx_batch = 0; idx_batch < nr_batches; idx_batch++) {
+                if (!do_one_batch(db)) {
+                    break;
+                }
+                after_batch(idx_batch);
+            }
         }
     }
     virtual ~Benchmark() {}
-    virtual void do_one_batch(int idx_batch, Database* db) = 0;
 
-    virtual void partition_with_one_batch(Database* db) = 0;
-
-    void push_back_query(std::vector<key_uint64_t>& workload, operation& query)
-    {
-        if (query.type == get_t)
-            workload.push_back(key_int64_to_uint64(query.tsk.g.key));
-        if (query.type == remove_t)
-            workload.push_back(key_int64_to_uint64(query.tsk.r.key));
-    }
-    void push_back_query(std::vector<KVPair>& workload, operation& query)
-    {
-        if (query.type == insert_t)
-            workload.push_back({key_int64_to_uint64(query.tsk.i.key), value_int64_to_uint64(query.tsk.i.value)});
-    }
-    void push_back_query(std::vector<KeyRange>& workload, operation& query)
-    {
-        if (query.type == scan_t) {
-            KeyRange range = {
-                key_int64_to_uint64(query.tsk.s.lkey),
-                key_int64_to_uint64(query.tsk.s.rkey)};
-            workload.push_back(range);
-        }
-    }
-    void push_back_query(std::vector<RangeCountQuery>& workload, operation& query)
-    {
-        if (query.type == scan_t) {
-            KeyRange range = {
-                key_int64_to_uint64(query.tsk.s.lkey),
-                key_int64_to_uint64(query.tsk.s.rkey)};
-            value_uint64_t needle = range.begin & 0xff;
-            workload.push_back({range, needle});
-        }
-    }
-    template <typename T>
-    WorkloadBuffer<T>* load_pimtree_workload(const std::string& workload_file)
-    {
-        pimtree_queries qs = make_pimtree_queries(workload_file);
-        std::vector<T> workload;
-        for (size_t i = 0; i < qs.length; i++) {
-            // push_back_query adds the query if the query is of the desired
-            // type for the workload type. The mapping is:
-            //   key_uint64_t -> get_t
-            //   KeyRange -> scan_t
-            //   std::pair<KeyRange, std::array<char, 8>>> -> scan_t
-            push_back_query(workload, qs.ops[i]);
-        }
-        std::cout << "load workload from " << workload_file << ". size = " << workload.size() << std::endl;
-        return new WorkloadBuffer<T>(std::move(workload));
-    }
-
-private:
-    template <typename T>
-    size_t prepare_buffer_impl(int idx_batch, WorkloadBuffer<T>* workload_buffer, std::pair<T*, size_t>(WorkloadBuffer<T>::*take_or_peek)(size_t), ExtendableBuffer<T>& queries)
-    {
-        const auto tmp_input = (workload_buffer->*take_or_peek)(NUM_REQUESTS_PER_BATCH);
-        const auto batch_queries = tmp_input.first;
-        const auto num_queries_batch = tmp_input.second;
-        if (num_queries_batch != NUM_REQUESTS_PER_BATCH) {
-            std::cerr << "run out of workload in batch " << idx_batch << std::endl;
-            exit(1);
-        }
-        queries.reserve(num_queries_batch);
-        for (size_t idx_query = 0; idx_query < num_queries_batch; idx_query++)
-            queries[idx_query] = batch_queries[idx_query];
-        return num_queries_batch;
-    }
-
-public:
-    template <typename T>
-    size_t prepare_buffer(int idx_batch, WorkloadBuffer<T>* workload_buffer, ExtendableBuffer<T>& queries)
-    {
-        return prepare_buffer_impl(idx_batch, workload_buffer, &WorkloadBuffer<T>::take, queries);
-    }
-    template <typename T, typename R>
-    size_t prepare_buffer(int idx_batch, WorkloadBuffer<T>* workload_buffer, ExtendableBuffer<T>& queries, ExtendableBuffer<R>& results)
-    {
-        const auto num_queries_batch = prepare_buffer(idx_batch, workload_buffer, queries);
-        results.reserve(num_queries_batch);
-        return num_queries_batch;
-    }
-
-    template <typename T>
-    size_t prepare_buffer_wo_comsuming_query(int idx_batch, WorkloadBuffer<T>* workload_buffer, ExtendableBuffer<T>& queries)
-    {
-        return prepare_buffer_impl(idx_batch, workload_buffer, &WorkloadBuffer<T>::peek, queries);
-    }
-    template <typename T, typename R>
-    size_t prepare_buffer_wo_comsuming_query(int idx_batch, WorkloadBuffer<T>* workload_buffer, ExtendableBuffer<T>& queries, ExtendableBuffer<R>& results)
-    {
-        const auto num_queries_batch = prepare_buffer_wo_comsuming_query(idx_batch, workload_buffer, queries);
-        results.reserve(num_queries_batch);
-        return num_queries_batch;
-    }
+    virtual void partition_with_next_batch(Database*) = 0;
 
     void set_verify_db(Database* db)
     {
         verify_db = db;
     }
 
-    template <typename T>
-    void do_verify(size_t n, const T* results, std::function<void(T*)> do_verify_batch)
-    {
-        T* verify_results = new T[n];
-        do_verify_batch(verify_results);
-        if (memcmp(&results[0], verify_results, n * sizeof(T)) != 0) {
-            std::cerr << "verification failed" << std::endl;
-            exit(1);
-        }
-        delete[] verify_results;
-    }
-
-    virtual void verify() = 0;
+    size_t last_batch_size() { return last_batch_size_; }
 };
 
 
 class GetBenchmark : public Benchmark
 {
-    WorkloadBuffer<key_uint64_t>* workload_buffer = nullptr;  // only used when not using pimtree workload
-    ExtendableBuffer<value_uint64_t> results;
-    ExtendableBuffer<key_uint64_t> keys;
-    size_t num_queries_in_last_batch = 0;
+    WorkloadBuffer<key_uint64_t> workload_buf;
+    ExtendableBuffer<value_uint64_t> results, oracle_results;
+
+    key_uint64_t* last_queries;
 
 public:
-    GetBenchmark(const std::string& workload_file,
-        bool is_pimtree_workload)
+    explicit GetBenchmark(const std::string& workload_file)
+        : workload_buf{load_pimtree_workload<key_uint64_t>(workload_file)}
     {
-        if (is_pimtree_workload)
-            workload_buffer = load_pimtree_workload<key_uint64_t>(workload_file);
-        else {
-            PiecewiseConstantWorkload workload;
-            load_workload(workload_file, &workload);
-            workload_buffer = new WorkloadBuffer<key_uint64_t>(std::move(workload.data));
+    }
+
+protected:
+    bool do_one_batch_impl(Database* db, const size_t batch_size)
+    {
+        const auto [queries, size] = workload_buf.take(batch_size);
+        if (size == batch_size) {
+            results.reserve(batch_size);
+            db->batch_get(batch_size, queries, &results[0]);
+
+            last_queries = queries;
+            last_batch_size_ = batch_size;
+            return true;
+        } else {
+            return false;
         }
     }
 
-    ~GetBenchmark()
+    void do_verify() override
     {
-        delete workload_buffer;
+        oracle_results.reserve(last_batch_size_);
+        verify_db->batch_get(last_batch_size_, last_queries, &oracle_results[0]);
+        compare_results(last_batch_size_, &results[0], &oracle_results[0]);
     }
 
-    void do_one_batch(int idx_batch, Database* db)
+    void partition_with_next_batch_impl(Database* db, const size_t batch_size)
     {
-        size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, keys, results);
-        db->batch_get(num_queries_batch, &keys[0], &results[0]);
-        num_queries_in_last_batch = num_queries_batch;
-    }
-
-    void partition_with_one_batch(Database* db)
-    {
-        size_t num_queries_batch = prepare_buffer_wo_comsuming_query(-1, workload_buffer, keys, results);
-        db->partition_with(num_queries_batch, &keys[0], &results[0]);
-    }
-
-    void verify()
-    {
-        do_verify<value_uint64_t>(
-            num_queries_in_last_batch, &results[0],
-            [&](value_uint64_t* verify_results) {
-                verify_db->batch_get(num_queries_in_last_batch,
-                    &keys[0], verify_results);
-            });
+        const auto [queries, size] = workload_buf.peek(batch_size);
+        results.reserve(size);
+        db->partition_with(size, queries, &results[0]);
     }
 };
 
 class InsertBenchmark : public Benchmark
 {
-    std::unique_ptr<WorkloadBuffer<KVPair>> workload_buffer;
-    ExtendableBuffer<KVPair> pairs;
-    size_t num_queries_in_last_batch = 0;
+    WorkloadBuffer<KVPair> workload_buf;
+
+    KVPair* last_queries;
 
 public:
-    InsertBenchmark(const std::string& workload_file,
-        bool is_pimtree_workload)
-        : workload_buffer{load_pimtree_workload<KVPair>(workload_file)}
+    InsertBenchmark(const std::string& workload_file)
+        : workload_buf{load_pimtree_workload<KVPair>(workload_file)}
     {
-        ASSERT(is_pimtree_workload);
     }
 
-    void do_one_batch(int idx_batch, Database* db)
+protected:
+    bool do_one_batch_impl(Database* db, const size_t batch_size)
     {
-        size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer.get(), pairs);
-        db->batch_insert(num_queries_batch, &pairs[0]);
-        num_queries_in_last_batch = num_queries_batch;
+        const auto [queries, size] = workload_buf.take(batch_size);
+        if (size == batch_size) {
+            db->batch_insert(batch_size, queries);
+
+            last_queries = queries;
+            last_batch_size_ = batch_size;
+            return true;
+        } else {
+            return false;
+        }
     }
 
-    void partition_with_one_batch(Database* db)
+    void do_verify() override
     {
-        size_t num_queries_batch = prepare_buffer_wo_comsuming_query(-1, workload_buffer.get(), pairs);
-        db->partition_with(num_queries_batch, &pairs[0]);
+        verify_db->batch_insert(last_batch_size_, last_queries);
     }
 
-    void verify()
+    void partition_with_next_batch_impl(Database* db, const size_t batch_size)
     {
-        verify_db->batch_insert(num_queries_in_last_batch, &pairs[0]);
+        const auto [queries, size] = workload_buf.peek(batch_size);
+        db->partition_with(size, queries);
     }
 };
 
 class DeleteBenchmark : public Benchmark
 {
-    std::unique_ptr<WorkloadBuffer<key_uint64_t>> workload_buffer;
-    ExtendableBuffer<key_uint64_t> keys;
-    size_t num_queries_in_last_batch = 0;
+    WorkloadBuffer<key_uint64_t> workload_buf;
+
+    key_uint64_t* last_queries;
 
 public:
-    DeleteBenchmark(const std::string& workload_file,
-        bool is_pimtree_workload)
-        : workload_buffer{load_pimtree_workload<key_uint64_t>(workload_file)}
+    DeleteBenchmark(const std::string& workload_file)
+        : workload_buf{load_pimtree_workload<key_uint64_t>(workload_file)}
     {
-        ASSERT(is_pimtree_workload);
     }
 
-    void do_one_batch(int idx_batch, Database* db)
+protected:
+    bool do_one_batch_impl(Database* db, const size_t batch_size)
     {
-        size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer.get(), keys);
-        db->batch_delete(num_queries_batch, &keys[0]);
-        num_queries_in_last_batch = num_queries_batch;
+        const auto [queries, size] = workload_buf.take(batch_size);
+        if (size == batch_size) {
+            db->batch_delete(batch_size, queries);
+
+            last_queries = queries;
+            last_batch_size_ = batch_size;
+            return true;
+        } else {
+            return false;
+        }
+    }
+    bool do_one_batch(Database* db) override
+    {
+        return do_one_batch_impl(db, NUM_REQUESTS_PER_BATCH);
     }
 
-    void partition_with_one_batch(Database* db)
+    void do_verify() override
     {
-        size_t num_queries_batch = prepare_buffer_wo_comsuming_query(-1, workload_buffer.get(), keys);
-        db->partition_with(num_queries_batch, &keys[0]);
+        verify_db->batch_delete(last_batch_size_, last_queries);
     }
 
-    void verify()
+    void partition_with_next_batch_impl(Database* db, const size_t batch_size)
     {
-        verify_db->batch_delete(num_queries_in_last_batch, &keys[0]);
+        const auto [queries, size] = workload_buf.peek(batch_size);
+        db->partition_with(size, queries);
     }
 };
 
 class RangeBenchmark : public Benchmark
 {
 protected:
-    WorkloadBuffer<KeyRange>* workload_buffer = nullptr;  // only used when not using pimtree workload
+    WorkloadBuffer<KeyRange> workload_buf;
 
 public:
-    // nr_keys is only used when not using pimtree workload
-    RangeBenchmark(const std::string& workload_file,
-        bool is_pimtree_workload, size_t nr_keys)
+    explicit RangeBenchmark(const std::string& workload_file)
+        : workload_buf{load_pimtree_workload<KeyRange>(workload_file)}
     {
-        if (is_pimtree_workload)
-            workload_buffer = load_pimtree_workload<KeyRange>(workload_file);
-        else {
-            PiecewiseConstantWorkload pworkload;
-            load_workload(workload_file, &pworkload);
-
-            key_uint64_t key_interval = init_key_interval(nr_keys);
-            size_t range_length = key_interval * 100 - 1;
-            std::vector<KeyRange> workload;
-            workload.reserve(pworkload.data.size());
-            for (const auto& p : pworkload.data)
-                workload.push_back({p, p + range_length});
-            workload_buffer = new WorkloadBuffer<KeyRange>(std::move(workload));
-        }
-    }
-
-    virtual ~RangeBenchmark()
-    {
-        delete workload_buffer;
     }
 };
 
 class RMQBenchmark : public RangeBenchmark
 {
-    ExtendableBuffer<value_uint64_t> results;
-    ExtendableBuffer<KeyRange> ranges;
-    size_t num_queries_in_last_batch = 0;
+    ExtendableBuffer<value_uint64_t> results, oracle_results;
+
+    KeyRange* last_queries;
 
 public:
-    RMQBenchmark(const std::string& workload_file, bool is_pimtree_workload, size_t nr_keys)
-        : RangeBenchmark(workload_file, is_pimtree_workload, nr_keys)
+    using RangeBenchmark::RangeBenchmark;
+
+    bool do_one_batch_impl(Database* db, const size_t batch_size)
     {
+        const auto [queries, size] = workload_buf.take(batch_size);
+        if (size == batch_size) {
+            results.reserve(batch_size);
+            db->batch_range_minimum(batch_size, queries, &results[0]);
+
+            last_queries = queries;
+            last_batch_size_ = batch_size;
+            return true;
+        } else {
+            return false;
+        }
     }
 
-    ~RMQBenchmark() {}
-
-    void do_one_batch(int idx_batch, Database* db)
+    void do_verify() override
     {
-        size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, ranges, results);
-        db->batch_range_minimum(num_queries_batch, &ranges[0], &results[0]);
-        num_queries_in_last_batch = num_queries_batch;
+        oracle_results.reserve(last_batch_size_);
+        verify_db->batch_range_minimum(last_batch_size_, last_queries, &oracle_results[0]);
+        compare_results(last_batch_size_, &results[0], &oracle_results[0]);
     }
 
-    void partition_with_one_batch(Database* db)
+    void partition_with_next_batch_impl(Database* db, const size_t batch_size)
     {
-        size_t num_queries_batch = prepare_buffer_wo_comsuming_query(-1, workload_buffer, ranges, results);
-        db->partition_with(num_queries_batch, &ranges[0], &results[0]);
-    }
-
-    void verify()
-    {
-        do_verify<value_uint64_t>(
-            num_queries_in_last_batch, &results[0],
-            [&](value_uint64_t* verify_results) {
-                verify_db->batch_range_minimum(num_queries_in_last_batch,
-                    &ranges[0], verify_results);
-            });
+        const auto [queries, size] = workload_buf.peek(batch_size);
+        results.reserve(size);
+        db->partition_with(size, queries, &results[0]);
     }
 };
 
 class RangeSumBenchmark : public RangeBenchmark
 {
-    ExtendableBuffer<value_uint64_t> results;
-    ExtendableBuffer<KeyRange> ranges;
-    size_t num_queries_in_last_batch = 0;
+    ExtendableBuffer<value_uint64_t> results, oracle_results;
+
+    KeyRange* last_queries;
 
 public:
-    RangeSumBenchmark(const std::string& workload_file,
-        bool is_pimtree_workload, size_t nr_keys)
-        : RangeBenchmark(workload_file, is_pimtree_workload, nr_keys) {}
+    using RangeBenchmark::RangeBenchmark;
 
-    virtual ~RangeSumBenchmark() {}
-
-    virtual void do_one_batch(int idx_batch, Database* db)
+    bool do_one_batch_impl(Database* db, const size_t batch_size)
     {
-        size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, ranges, results);
-        db->batch_range_sum(num_queries_batch, &ranges[0], &results[0]);
-        num_queries_in_last_batch = num_queries_batch;
+        const auto [queries, size] = workload_buf.take(batch_size);
+        if (size == batch_size) {
+            results.reserve(batch_size);
+            db->batch_range_sum(batch_size, queries, &results[0]);
+
+            last_queries = queries;
+            last_batch_size_ = batch_size;
+            return true;
+        } else {
+            return false;
+        }
     }
 
-    void verify()
+    void do_verify() override
     {
-        do_verify<value_uint64_t>(
-            num_queries_in_last_batch, &results[0],
-            [&](value_uint64_t* verify_results) {
-                verify_db->batch_range_sum(num_queries_in_last_batch,
-                    &ranges[0], verify_results);
-            });
+        oracle_results.reserve(last_batch_size_);
+        verify_db->batch_range_sum(last_batch_size_, last_queries, &oracle_results[0]);
+        compare_results(last_batch_size_, &results[0], &oracle_results[0]);
+    }
+
+    void partition_with_next_batch_impl(Database* db, const size_t batch_size)
+    {
+        const auto [queries, size] = workload_buf.peek(batch_size);
+        results.reserve(size);
+        db->partition_with(size, queries, &results[0]);
     }
 };
 
 class RangeCountBenchmark : public Benchmark
 {
-    WorkloadBuffer<RangeCountQuery>* workload_buffer;
-    ExtendableBuffer<value_uint64_t> results;
-    ExtendableBuffer<RangeCountQuery> queries;
-    size_t num_queries_in_last_batch = 0;
+    WorkloadBuffer<RangeCountQuery> workload_buf;
+    ExtendableBuffer<value_uint64_t> results, oracle_results;
+
+    RangeCountQuery* last_queries;
 
 public:
-    RangeCountBenchmark(const std::string& workload_file,
-        bool is_pimtree_workload, size_t nr_keys)
+    explicit RangeCountBenchmark(const std::string& workload_file)
+        : workload_buf{load_pimtree_workload<RangeCountQuery>(workload_file)}
     {
-        if (is_pimtree_workload)
-            workload_buffer = load_pimtree_workload<RangeCountQuery>(workload_file);
-        else {
-            PiecewiseConstantWorkload pworkload;
-            load_workload(workload_file, &pworkload);
-            key_uint64_t key_interval = init_key_interval(nr_keys);
-            size_t range_length = key_interval * 100 - 1;
-            std::vector<RangeCountQuery> workload;
-            workload.reserve(pworkload.data.size());
-            for (size_t i = 0; i < pworkload.data.size(); i++) {
-                const auto& p = pworkload.data[i];
-                KeyRange range = {p, p + range_length};
-                value_uint64_t needle = p & 0xff;
-                workload.push_back({range, needle});
-            }
-            workload_buffer = new WorkloadBuffer<RangeCountQuery>(std::move(workload));
+    }
+
+protected:
+    bool do_one_batch_impl(Database* db, const size_t batch_size)
+    {
+        const auto [queries, size] = workload_buf.take(batch_size);
+        if (size == batch_size) {
+            results.reserve(batch_size);
+            db->batch_range_count(batch_size, &queries[0], &results[0]);
+
+            last_queries = queries;
+            last_batch_size_ = batch_size;
+            return true;
+        } else {
+            return false;
         }
     }
 
-    virtual ~RangeCountBenchmark()
+    void do_verify() override
     {
-        delete workload_buffer;
+        oracle_results.reserve(last_batch_size_);
+        verify_db->batch_range_count(last_batch_size_, last_queries, &oracle_results[0]);
+        compare_results(last_batch_size_, &results[0], &oracle_results[0]);
     }
 
-    virtual void do_one_batch(int idx_batch, Database* db)
+    void partition_with_next_batch_impl(Database* db, const size_t batch_size)
     {
-        size_t num_queries_batch = prepare_buffer(idx_batch, workload_buffer, queries, results);
-        db->batch_range_count(num_queries_batch, &queries[0], &results[0]);
-        num_queries_in_last_batch = num_queries_batch;
+        const auto [queries, size] = workload_buf.peek(batch_size);
+        results.reserve(size);
+        db->partition_with(size, queries, &results[0]);
+    }
+};
+
+template <class Benchmark>
+class ConstSizedBatch : public Benchmark
+{
+    size_t batch_size;
+
+public:
+    ConstSizedBatch(size_t batch_size, const std::string& workload_file) : Benchmark{workload_file}, batch_size{batch_size} {}
+
+protected:
+    bool do_one_batch(Database* db) override
+    {
+        return Benchmark::do_one_batch_impl(db, batch_size);
     }
 
-    void partition_with_one_batch(Database* db)
+    void partition_with_next_batch(Database* db) override
     {
-        size_t num_queries_batch = prepare_buffer_wo_comsuming_query(-1, workload_buffer, queries, results);
-        db->partition_with(num_queries_batch, &queries[0], &results[0]);
+        Benchmark::partition_with_next_batch_impl(db, batch_size);
+    }
+};
+
+template <class Benchmark>
+class PoissonArrival : public Benchmark
+{
+    double query_rate;
+
+    using Clock = std::chrono::high_resolution_clock;
+    Clock::time_point prev_time;
+
+    std::mt19937_64 gen;
+
+public:
+    template <typename... Args>
+    PoissonArrival(std::mt19937_64&& rand, double query_rate, Args&&... args) : Benchmark{std::forward<Args>(args)...}, query_rate{query_rate}, prev_time{Clock::now()}, gen{std::move(rand)}
+    {
+    }
+    template <typename... Args>
+    PoissonArrival(double query_rate, Args&&... args) : PoissonArrival{std::mt19937_64{}, query_rate, std::forward<Args>(args)...}
+    {
     }
 
-    void verify()
+    virtual bool do_one_batch(Database* db) override
     {
-        do_verify<value_uint64_t>(
-            num_queries_in_last_batch, &results[0],
-            [&](value_uint64_t* verify_results) {
-                verify_db->batch_range_count(num_queries_in_last_batch,
-                    &queries[0], verify_results);
-            });
+        const Clock::time_point now = Clock::now();
+        const double avg_nqrys = query_rate * std::chrono::duration_cast<std::chrono::duration<double>>(now - prev_time).count();
+        const size_t batch_size = std::poisson_distribution<size_t>{avg_nqrys}(gen);
+        prev_time = std::move(now);
+        return Benchmark::do_one_batch_impl(db, batch_size);
+    }
+
+    void partition_with_next_batch(Database* db) override
+    {
+        const Clock::time_point now = Clock::now();
+        const double avg_nqrys = query_rate * std::chrono::duration_cast<std::chrono::duration<double>>(now - prev_time).count();
+        const size_t batch_size = std::poisson_distribution<size_t>{avg_nqrys}(gen);
+
+        Benchmark::partition_with_next_batch_impl(db, batch_size);
     }
 };

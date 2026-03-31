@@ -7,18 +7,17 @@
 
 template <typename T>
 struct WorkloadBuffer {
-    std::vector<T> buffer;
-
     WorkloadBuffer() = default;
-    WorkloadBuffer(std::vector<T> b) : buffer{std::move(b)} {}
-    WorkloadBuffer& operator=(std::vector<T>&& b)
+    explicit WorkloadBuffer(std::vector<T>&& b) : buffer{std::move(b)} {}
+
+    WorkloadBuffer(const WorkloadBuffer&) = default;
+    WorkloadBuffer(WorkloadBuffer&& other) : buffer{std::move(other.buffer)}, consumed{other.consumed}
     {
-        buffer = std::move(b);
-        consumed = 0;
-        return *this;
+        other.consumed = 0;
     }
 
 private:
+    std::vector<T> buffer;
     size_t consumed = 0;
 
 public:

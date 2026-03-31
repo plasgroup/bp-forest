@@ -5,6 +5,7 @@
 #include "database.hpp"
 #include "extendable_buffer.hpp"
 #include "host_params.hpp"
+#include "overload.hpp"
 #include "partition.hpp"
 #include "piecewise_constant_workload.hpp"
 #include "pimtree_query.hpp"
@@ -14,6 +15,7 @@
 #include "workload_buffer.hpp"
 #include "workload_types.h"
 
+#include <chrono>
 #include <cmdline.h>
 
 #include <ios>
@@ -67,13 +69,15 @@ public:
 
 
 struct BPForestOption {
-    void add_options(cmdline::parser& a) {
+    void add_options(cmdline::parser& a)
+    {
         a.add<unsigned>("balancing-param", 'a', "the tunable parameter for compute/memory load balancing in B+-Forest", false, 1);
         a.add<bool>("incremental", 0, "whether to enable incremental rebalancing", false, true);
         a.add<double>("high-watermark", 0, "rebalance when the load on cold partitions exceeds (this value) times the expected load", false, 1.05);
         a.add<unsigned>("nr-host-threads", 't', "num of threads used in pre/post-processing in B+-Forest", false, 0);
     }
-    void set_options(cmdline::parser& a) {
+    void set_options(cmdline::parser& a)
+    {
         param.balancing = a.get<unsigned>("balancing-param");
         param.enable_incremental = a.get<bool>("incremental");
         param.high_watermark_ratio = a.get<double>("high-watermark");
@@ -94,6 +98,8 @@ struct Option {
         bpforest.add_options(a);
         a.add<std::optional<std::string>>("partition", 0, "load pre-calculated partitioning", false);
         a.add<std::optional<std::string>>("dump-partition", 0, "store partitioning", false);
+        a.add<std::optional<size_t>>("batch-size", 0, "set batch size to a fixed value", false);
+        a.add<std::optional<double>>("query-rate", 0, "set average query rate (op/s)", false);
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
         a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq, count", false, "get");
         a.add<std::optional<std::string>>("dump-compute-load", 0, "print number of queries sent for each dpu to a file", false);
@@ -118,8 +124,10 @@ struct Option {
         bpforest.set_options(a);
         partition = a.get<std::optional<std::string>>("partition");
         dump_partition = a.get<std::optional<std::string>>("dump-partition");
+        const auto batch_size_opt = a.get<std::optional<size_t>>("batch-size");
+        const auto query_rate_opt = a.get<std::optional<double>>("query-rate");
         nr_batches = a.get<int>("num_batches");
-        std::string ops = a.get<std::string>("ops");
+        const std::string ops = a.get<std::string>("ops");
         dump_compute_load = a.get<std::optional<std::string>>("dump-compute-load");
         dump_cold_compute_load = a.get<std::optional<std::string>>("dump-cold-compute-load");
         dump_hot_compute_load = a.get<std::optional<std::string>>("dump-hot-compute-load");
@@ -134,6 +142,21 @@ struct Option {
         print_hot_memory_load = a.get<dpu_id_t>("print-hot-memory-load");
         print_perf = a.exist("print-perf");
         verify = a.exist("verify");
+
+        if (batch_size_opt) {
+            if (query_rate_opt) {
+                std::cerr << "must not set both batch-size and query-rate" << std::endl;
+                std::exit(1);
+            } else {
+                query_rate = *batch_size_opt;
+            }
+        } else {
+            if (query_rate_opt) {
+                query_rate = *query_rate_opt;
+            } else {
+                query_rate = size_t{NUM_REQUESTS_PER_BATCH};
+            }
+        }
 
         if (ops == "get")
             op_type = TASK_GET;
@@ -158,6 +181,7 @@ struct Option {
     unsigned balancing_param;
     std::optional<std::string> partition;
     std::optional<std::string> dump_partition;
+    std::variant<size_t /* const batch size */, double /* possion query rate */> query_rate;
     std::string workload_file;
     std::string init_file;
     int nr_batches;
@@ -293,7 +317,6 @@ public:
         }
     }
 
-    // avaiable after `partition_with`
     void print_nr_pairs(std::ostream& ostr, dpu_id_t nr_dpus_to_print) const
     {
         const std::vector<std::array<uint32_t, 2>> nr_pairs = forest.get_nr_pairs();
@@ -307,7 +330,6 @@ public:
             ostr << std::endl;
         }
     }
-    // avaiable after `partition_with`
     void print_nr_cold_pairs(std::ostream& ostr, dpu_id_t nr_dpus_to_print) const
     {
         const std::vector<std::array<uint32_t, 2>> nr_pairs = forest.get_nr_pairs();
@@ -321,7 +343,6 @@ public:
             ostr << std::endl;
         }
     }
-    // avaiable after `partition_with`
     void print_nr_hot_pairs(std::ostream& ostr, dpu_id_t nr_dpus_to_print) const
     {
         const std::vector<std::array<uint32_t, 2>> nr_pairs = forest.get_nr_pairs();
@@ -344,25 +365,28 @@ public:
     }
 };
 
-int main(int argc, char* argv[])
+template <template <class> class QueryRateKind, typename T>
+Benchmark* make_benchmark(const Option& opt, T query_rate)
 {
-    opt.parse(argc, argv);
-
-    Benchmark* benchmark;
     if (opt.op_type == TASK_GET)
-        benchmark = new GetBenchmark(opt.workload_file, true);
+        return new QueryRateKind<GetBenchmark>(query_rate, opt.workload_file);
     else if (opt.op_type == TASK_INSERT)
-        benchmark = new InsertBenchmark(opt.workload_file, true);
+        return new QueryRateKind<InsertBenchmark>(query_rate, opt.workload_file);
     else if (opt.op_type == TASK_DELETE)
-        benchmark = new DeleteBenchmark(opt.workload_file, true);
+        return new QueryRateKind<DeleteBenchmark>(query_rate, opt.workload_file);
     else if (opt.op_type == TASK_RANGE_MIN)
-        benchmark = new RMQBenchmark(opt.workload_file, true, NUM_INIT_REQS);
+        return new QueryRateKind<RMQBenchmark>(query_rate, opt.workload_file);
     else if (opt.op_type == TASK_RANGE_COUNT)
-        benchmark = new RangeCountBenchmark(opt.workload_file, true, NUM_INIT_REQS);
+        return new QueryRateKind<RangeCountBenchmark>(query_rate, opt.workload_file);
     else {
         std::cerr << "unsupported task type: " << opt.op_type << std::endl;
         exit(1);
     }
+}
+
+int main(int argc, char* argv[])
+{
+    opt.parse(argc, argv);
 
     std::optional<std::vector<Partition>> partitions;
     if (opt.partition) {
@@ -372,9 +396,17 @@ int main(int argc, char* argv[])
     InitData init_data{opt.init_file};
     BPForestDatabase db = partitions ? BPForestDatabase{init_data, *partitions, opt.bpforest.param}
                                      : BPForestDatabase{init_data, opt.bpforest.param};
+    Benchmark* benchmark = std::visit(overload(
+                                          [](double query_rate) {
+                                              return make_benchmark<PoissonArrival>(opt, query_rate);
+                                          },
+                                          [](size_t batch_size) {
+                                              return make_benchmark<ConstSizedBatch>(opt, batch_size);
+                                          }),
+        opt.query_rate);
 
-    if (!opt.partition) {
-        benchmark->partition_with_one_batch(&db);
+    if (false && !opt.partition) {
+        benchmark->partition_with_next_batch(&db);
 
         for (auto& [func, opt_print, file_name] : {
                  std::make_tuple(&BPForestDatabase::print_nr_pairs, std::ref(opt.print_memory_load), std::ref(opt.dump_memory_load)),
@@ -426,11 +458,12 @@ int main(int argc, char* argv[])
 
     /* main routine */
     if (opt.print_perf) {
-        std::cout << "NR_DPUS,batch_num,num_keys," << ElapsedTime::print_labels << std::endl;
+        std::cout << "time,NR_DPUS,batch_num,num_keys," << ElapsedTime::print_labels << std::endl;
     }
     if (opt.verify)
         benchmark->set_verify_db(&init_data);
 
+    auto time = std::chrono::high_resolution_clock::now().time_since_epoch().count();
     benchmark->run(opt.nr_batches, &db, [&](int idx_batch) {
         for (auto& [func, opt_print, file] : {
                  std::make_tuple(&BPForestDatabase::print_last_query_dist, std::ref(opt.print_compute_load), std::ref(dump_compute_load_file)),
@@ -444,11 +477,12 @@ int main(int argc, char* argv[])
         }
 
         if (opt.print_perf) {
-            std::cout << upmem_get_nr_dpus() << ',' << idx_batch << ',' << long{NUM_REQUESTS_PER_BATCH} << ','
+            std::cout << time << ',' << upmem_get_nr_dpus() << ',' << idx_batch << ',' << benchmark->last_batch_size() << ','
                       << ElapsedTime::print << std::endl;
         }
 
         ElapsedTime::reset();
+        time = std::chrono::high_resolution_clock::now().time_since_epoch().count();
     });
 
 #ifdef MEASURE_XFER_BYTES
