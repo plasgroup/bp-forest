@@ -33,10 +33,6 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
                                      "BITMAP_IN_MRAM: 0\n"
 #endif
                                      "SIZEOF_NODE: " EXPAND_STRINGIFY(SIZEOF_NODE) "\n"
-#ifdef USE_RBTREE
-                                     "USE_RBTREE: 1\n"
-#else
-                                     "USE_RBTREE: 0\n"
                                      "TREE_CONSTRUCT_NR_TASKLETS: " EXPAND_STRINGIFY(TREE_CONSTRUCT_NR_TASKLETS) "\n"
                                      "TREE_CONSTRUCT_NR_CACHED_KVPAIRS: " EXPAND_STRINGIFY(TREE_CONSTRUCT_NR_CACHED_KVPAIRS) "\n"
                                      "TREE_CONSTRUCT_NR_CACHED_INPUT_LIFT: " EXPAND_STRINGIFY(TREE_CONSTRUCT_NR_CACHED_INPUT_LIFT) "\n"
@@ -82,7 +78,6 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
                                      "TASK_RANGE_COUNT_PREFIX_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_RANGE_COUNT_PREFIX_NR_TASKLETS) "\n"
                                      "TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS: " EXPAND_STRINGIFY(TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS) "\n"
                                      "TASK_RANGE_COUNT_PREFIX_NR_CACHED_RESULTS: " EXPAND_STRINGIFY(TASK_RANGE_COUNT_PREFIX_NR_CACHED_RESULTS) "\n"
-#endif /* USE_RBTREE */
                                      "TASK_INIT_BITMAP_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_INIT_BITMAP_NR_TASKLETS) "\n"
                                      "TASK_INIT_NR_CACHED_WORDS: " EXPAND_STRINGIFY(TASK_INIT_NR_CACHED_WORDS) "\n"
 #undef STRINGIFY

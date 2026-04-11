@@ -21,12 +21,6 @@
 // #define BITMAP_IN_MRAM
 
 
-#ifdef USE_RBTREE
-#define SIZEOF_NODE 24
-
-
-#else /* USE_RBTREE */
-
 #ifndef SIZEOF_NODE
 #define SIZEOF_NODE 256
 #endif
@@ -156,7 +150,6 @@ _Static_assert(TASK_SUMMARIZE_NR_TASKLETS <= NR_TASKLETS, "TASK_SUMMARIZE_NR_TAS
 #define TASK_RANGE_COUNT_PREFIX_NR_CACHED_RESULTS 1
 #endif
 
-#endif /* USE_RBTREE */
 
 
 #ifndef TASK_INIT_BITMAP_NR_TASKLETS

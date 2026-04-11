@@ -48,8 +48,6 @@ B+-Forest is based on many B+-trees and aims to handle data skew by extracting a
     * Size of the MRAM region for placing the tree nodes (in bytes)
   * BITMAP_IN_MRAM
     * defined if to place the node allocator's bitmap in MRAM, undefined if in WRAM
-  * USE_RBTREE
-    * (deprecated)
   * SIZEOF_NODE
     * size of each tree node in bytes
   * TREE_CONSTRUCT_NR_TASKLETS
