@@ -1440,7 +1440,7 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
 
     if (param.balancing > 0) {
         const uint32_t hot_load = (nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts,
-                       cold_load_goal = nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
+                       cold_endpoint_cnt_goal = nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
 
         for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
             LinkedChunkedPairsRange& base = chunked_cold_ranges[idx_base];
@@ -1448,7 +1448,7 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
             uint32_t cold_npairs = static_cast<uint32_t>(base.npairs());
             const uint32_t hot_npairs = (cold_npairs + param.balancing - 1) / param.balancing;
 
-            if (IsPointQuery<Query> && routed.cold[idx_base].nr_qrys <= cold_load_goal) {
+            if (IsPointQuery<Query> && routed.cold[idx_base].nr_qrys <= cold_endpoint_cnt_goal) {
                 nr_pairs[idx_base].get() = {cold_npairs, 0};
                 cold_loads[idx_base] = {idx_base, routed.cold[idx_base].nr_qrys};
                 continue;
@@ -1458,7 +1458,11 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
             const LinkedList<ChunkedPairsRange>::iterator iter_base = list.begin();
             assert(&base == &*iter_base);
 
-            uint32_t cold_load = 0;
+            // Counts, for each original range query, how many of its two endpoints (begin/end)
+            // fall inside this base's cold key range. This is a different metric from
+            // `routed.cold[d].nr_qrys` (which counts routed fragments after splitting at
+            // combined-delim boundaries); do not mix the two.
+            uint32_t cold_endpoint_cnt = 0;
             {
                 ScopedTimer t{LoadEstimateTime};
                 const size_t nr_chunks = base.nchunks();
@@ -1478,7 +1482,7 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
                             (--one_after_target_chunk)->load()++;
                         }
                     }
-                    cold_load = routed.cold[idx_base].nr_qrys;
+                    cold_endpoint_cnt = routed.cold[idx_base].nr_qrys;
                 } else {
                     const key_uint64_t base_min = base.PairsRange::begin()->key,
                                        base_max = idx_base + 1 == nr_base_parts ? KEY_MAX : base.PairsRange::end()->key;
@@ -1486,11 +1490,11 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
                         for (const auto orig_idx : idx_vec) {
                             const KeyRange& range = RangeQueryToRange<Query>{}(queries[orig_idx]);
                             for (const auto key : {range.begin, range.end}) {
-                                if (base_min <= key || key <= base_max) {
+                                if (base_min <= key && key <= base_max) {
                                     DataChunkIterator one_after_target_chunk = std::upper_bound(left, right, key,
                                         [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
                                     (--one_after_target_chunk)->load()++;
-                                    cold_load++;
+                                    cold_endpoint_cnt++;
                                 }
                             }
                         }
@@ -1498,7 +1502,7 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
                 }
             }
 
-            if (cold_load > cold_load_goal) {
+            if (cold_endpoint_cnt > cold_endpoint_cnt_goal) {
                 ScopedTimer timer{AbsHotFindTime};
 
                 find_absolutely_hot_ranges(&base, &base + 1, hot_npairs, hot_load,
@@ -1517,17 +1521,17 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
                         new_hot.load = load;
 
                         cold_npairs -= new_hot.pairs_range.npairs();
-                        cold_load -= load;
+                        cold_endpoint_cnt -= load;
 
-                        return cold_load > cold_load_goal;
+                        return cold_endpoint_cnt > cold_endpoint_cnt_goal;
                     });
                 if (base.npairs() == 0) {
                     list.erase(iter_base);
                 }
             }
 
-            if (cold_load > cold_load_goal) {
-                const uint32_t nr_relative_hots = cold_load / hot_load;
+            if (cold_endpoint_cnt > cold_endpoint_cnt_goal) {
+                const uint32_t nr_relative_hots = cold_endpoint_cnt / hot_load;
                 ScopedTimer timer{RelHotFindTime};
 
                 const std::array<std::pair<LinkedList<ChunkedPairsRange>::iterator, DataChunkIterator>, 2>
@@ -1541,9 +1545,9 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
                             new_hot.load = load;
 
                             cold_npairs -= new_hot.pairs_range.npairs();
-                            cold_load -= new_hot.load;
+                            cold_endpoint_cnt -= new_hot.load;
 
-                            return cold_load > cold_load_goal;
+                            return cold_endpoint_cnt > cold_endpoint_cnt_goal;
                         });
 
                 const LinkedList<ChunkedPairsRange>::iterator left_range = carved_cold_range[0].first, right_range = carved_cold_range[1].first;
@@ -1567,8 +1571,8 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
                     }
 
                 } else {
-                    for (LinkedList<ChunkedPairsRange>::iterator range = std::next(left_range); range != right_range; ++range) {
-                        list.erase(range);
+                    for (LinkedList<ChunkedPairsRange>::iterator range = std::next(left_range); range != right_range;) {
+                        range = list.erase(range);
                     }
 
                     if (right != right_range->end()) {
@@ -1585,7 +1589,7 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
             }
 
             nr_pairs[idx_base].get() = {cold_npairs, 0};
-            cold_loads[idx_base] = {idx_base, cold_load};
+            cold_loads[idx_base] = {idx_base, cold_endpoint_cnt};
         }
 
         std::fill(&hot_ranges[0], &hot_ranges[nr_base_parts], PairsRange{nullptr, nullptr});
@@ -1682,19 +1686,26 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
     }};
 
 
-    dpu_id_t cold_count = 0;  // # of meaningful entries in chunked_cold_ranges
+    dpu_id_t cold_range_pool_count = 0;  // # of meaningful entries in chunked_cold_ranges
     {
         ScopedTimer timer{DataRetrieveTime};
 
         {
-            const uint32_t cold_nqrys_goal = nr_queries * std::max(3u, param.balancing + 1) / 3 / nr_base_parts,
-                           cold_nqrys_threshold = cold_nqrys_goal * param.high_watermark_ratio;
-            dpu_id_t cold_count = 0, incision_count = 0;
+            // `routed.cold[d].nr_qrys` counts routed fragments: when one original range query straddles
+            // a hot range, it is split at combined-delim boundaries and each cold fragment is counted
+            // here separately. This is not the same metric used later in load estimation (which counts
+            // original endpoints falling into the base range), so the two thresholds are not directly
+            // comparable. Skipping DPUs below this threshold may drop some that the later load-based
+            // check would have kept; the `high_watermark_ratio` slack deliberately broadens this skip
+            // to reduce the set of rebalanced DPUs.
+            const uint32_t cold_partial_cnt_goal = nr_queries * std::max(3u, param.balancing + 1) / 3 / nr_base_parts,
+                           cold_partial_cnt_threshold = cold_partial_cnt_goal * param.high_watermark_ratio;
+            dpu_id_t serialized_cold_count = 0, incision_count = 0;
             for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
                 InputHeader& input = input_headers[idx_dpu];
                 const dpu_id_t orig_incision_count = (base_to_nr_hot_psum[idx_dpu] = incision_count);
 
-                if (routed.cold[idx_dpu].nr_qrys <= cold_nqrys_threshold) {
+                if (routed.cold[idx_dpu].nr_qrys <= cold_partial_cnt_threshold) {
                     input.task_no = TASK_NONE;
                     input.serialize.nr_delims = 0;
                     continue;
@@ -1710,7 +1721,7 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                     const auto& delim = std::get<HotPartitionDelim>(iter->second);
 
                     if (begin_key != delim_key) {
-                        cold_key_ranges[cold_count++] = {begin_key, delim_key - 1};
+                        cold_key_ranges[serialized_cold_count++] = {begin_key, delim_key - 1};
                         hot_delim_keys[incision_count++] = delim_key;
                     }
                     begin_key = delim.max_key + 1;
@@ -1718,7 +1729,7 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 if (begin_key != KEY_MAX + 1) {
                     const key_uint64_t max_key = iter == delims.cend() ? KEY_MAX : iter->first - 1;
                     if (begin_key <= max_key) {
-                        cold_key_ranges[cold_count++] = {begin_key, max_key};
+                        cold_key_ranges[serialized_cold_count++] = {begin_key, max_key};
                     } else {
                         incision_count--;
                     }
@@ -1732,7 +1743,7 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             }
             base_to_nr_hot_psum[nr_base_parts] = incision_count;
 
-            if (cold_count == 0) {
+            if (serialized_cold_count == 0) {
                 return;
             }
         }
@@ -1801,7 +1812,7 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                                    nr_cold_pairs = incision_pos - nr_cold_pairs_from_this_dpu;
                     assert(nr_cold_pairs > 0);
 
-                    LinkedChunkedPairsRange& cold_range = chunked_cold_ranges[cold_count++];
+                    LinkedChunkedPairsRange& cold_range = chunked_cold_ranges[cold_range_pool_count++];
                     cold_range = ChunkedPairsRange{{cursor, cursor += nr_cold_pairs}};
                     list.push_back(cold_range);
 
@@ -1809,7 +1820,7 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 }
                 const uint32_t nr_cold_pairs = nr_pairs[idx_dpu].get()[0] - nr_cold_pairs_from_this_dpu;
                 if (nr_cold_pairs > 0) {
-                    LinkedChunkedPairsRange& cold_range = chunked_cold_ranges[cold_count++];
+                    LinkedChunkedPairsRange& cold_range = chunked_cold_ranges[cold_range_pool_count++];
                     cold_range = ChunkedPairsRange{{cursor, cursor += nr_cold_pairs}};
                     list.push_back(cold_range);
                 }
@@ -1826,7 +1837,7 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
 
     const dpu_id_t nr_existing_hots = static_cast<dpu_id_t>(delims.size()) - nr_base_parts;
     const uint32_t hot_load = (nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts,
-                   cold_load_goal = nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
+                   cold_endpoint_cnt_goal = nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
     dpu_id_t hot_count = 0;
 
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
@@ -1837,10 +1848,20 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         }
 
         LinkedList<ChunkedPairsRange>& list = chunked_cold_ranges_lists[idx_dpu];
+        assert(!list.empty());
         LinkedChunkedPairsRange* const begin_part = &static_cast<LinkedChunkedPairsRange&>(*list.begin());
         LinkedChunkedPairsRange* const end_part = &static_cast<LinkedChunkedPairsRange&>(*std::prev(list.end())) + 1;
+        // The cold ranges belonging to this DPU are stored contiguously in the
+        // `chunked_cold_ranges` pool; `upper_bound` / `idx_in_ary` below rely on this.
+        assert(begin_part < end_part);
+        assert(static_cast<size_t>(end_part - begin_part)
+               == static_cast<size_t>(std::distance(list.begin(), list.end())));
 
-        uint32_t cold_load = 0;
+        // Counts, for each original range query, how many of its two endpoints (begin/end)
+        // fall inside the remaining cold subranges of this DPU. This is a different metric
+        // from `routed.cold[d].nr_qrys` (which counts routed fragments after splitting at
+        // combined-delim boundaries); do not mix the two.
+        uint32_t cold_endpoint_cnt = 0;
 
         {
             ScopedTimer timer{LoadEstimateTime};
@@ -1871,10 +1892,9 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                         DataChunkIterator one_after_target_chunk = std::upper_bound(part.begin(), part.end(), key,
                             [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
                         (--one_after_target_chunk)->load()++;
-                        cold_load++;
                     }
                 }
-                cold_load = routed.cold[idx_dpu].nr_qrys;
+                cold_endpoint_cnt = routed.cold[idx_dpu].nr_qrys;
 
             } else {
                 // prepare delimiter keys separating a cold range and a hot range
@@ -1900,7 +1920,13 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 }
 
                 for (const auto& idx_vec : routed.cold[idx_dpu].orig_idxs) {
+                    uint32_t prev_orig_idx = std::numeric_limits<uint32_t>::max();
                     for (const auto orig_idx : idx_vec) {
+                        if (orig_idx == prev_orig_idx) {
+                            continue;
+                        }
+                        prev_orig_idx = orig_idx;
+
                         const KeyRange& range = RangeQueryToRange<Query>{}(queries[orig_idx]);
                         for (const auto key : {range.begin, range.end}) {
                             const key_uint64_t* one_after_target_range = std::upper_bound(begin_delim, end_delim, key);
@@ -1911,7 +1937,7 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                                 DataChunkIterator one_after_target_chunk = std::upper_bound(part.begin(), part.end(), key,
                                     [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
                                 (--one_after_target_chunk)->load()++;
-                                cold_load++;
+                                cold_endpoint_cnt++;
                             }
                         }
                     }
@@ -1929,11 +1955,11 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             return base_npairs;
         }();
         const uint32_t hot_npairs = (base_npairs + param.balancing - 1) / param.balancing;
-        if (cold_load <= cold_load_goal) {
+        if (cold_endpoint_cnt <= cold_endpoint_cnt_goal) {
             input_headers[idx_dpu].task_no = TASK_NONE;
             cold_npairs_list[idx_dpu] = 0;
             list.clear();
-            cold_loads[idx_dpu] = {idx_dpu, cold_load};
+            cold_loads[idx_dpu] = {idx_dpu, cold_endpoint_cnt};
             continue;
         }
 
@@ -1949,16 +1975,16 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                     }
 
                     if (part.begin() != begin) {
-                        cold_key_ranges[cold_count] = {part.PairsRange::begin()->key, begin->begin()->key};
-                        LinkedChunkedPairsRange& new_cold = chunked_cold_ranges[cold_count];
+                        cold_key_ranges[cold_range_pool_count] = {part.PairsRange::begin()->key, begin->begin()->key - 1};
+                        LinkedChunkedPairsRange& new_cold = chunked_cold_ranges[cold_range_pool_count];
                         new_cold = ChunkedPairsRange{part.begin(), begin};
-                        cold_count++;
+                        cold_range_pool_count++;
                         list.insert(iter_cold, new_cold);
                     }
                     if (end != part.end()) {
-                        part = ChunkedPairsRange{end, part.end()};
                         cold_key_ranges[idx_in_ary].begin = end->begin()->key;
                     }
+                    part = ChunkedPairsRange{end, part.end()};
 
                     NewHotRange& new_hot = new_hots[hot_count++];
                     new_hot.pairs_range = {begin.begin(), end.begin()};
@@ -1968,9 +1994,9 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                     new_hot.load = load;
 
                     cold_npairs -= new_hot.pairs_range.npairs();
-                    cold_load -= load;
+                    cold_endpoint_cnt -= load;
 
-                    return cold_load > cold_load_goal;
+                    return cold_endpoint_cnt > cold_endpoint_cnt_goal;
                 });
             for (iter_cold = list.begin(); iter_cold != list.end();) {
                 const auto orig_iter = iter_cold++;
@@ -1980,8 +2006,8 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             }
         }
 
-        if (cold_load > cold_load_goal) {
-            const uint32_t nr_relative_hots = cold_load / hot_load;
+        if (cold_endpoint_cnt > cold_endpoint_cnt_goal) {
+            const uint32_t nr_relative_hots = cold_endpoint_cnt / hot_load;
             ScopedTimer timer{RelHotFindTime};
 
             const std::array<std::pair<LinkedList<ChunkedPairsRange>::iterator, DataChunkIterator>, 2>
@@ -1998,9 +2024,9 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                         new_hot.load = load;
 
                         cold_npairs -= new_hot.pairs_range.npairs();
-                        cold_load -= new_hot.load;
+                        cold_endpoint_cnt -= new_hot.load;
 
-                        return cold_load > cold_load_goal;
+                        return cold_endpoint_cnt > cold_endpoint_cnt_goal;
                     });
 
             const LinkedList<ChunkedPairsRange>::iterator left_range = carved_cold_range[0].first, right_range = carved_cold_range[1].first;
@@ -2009,7 +2035,7 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             if (left_range == right_range) {
                 if (right != left_range->end()) {
                     if (left != left_range->begin()) {
-                        LinkedChunkedPairsRange& new_cold = chunked_cold_ranges[cold_count++];
+                        LinkedChunkedPairsRange& new_cold = chunked_cold_ranges[cold_range_pool_count++];
                         new_cold = ChunkedPairsRange{left_range->begin(), left};
                         list.insert(left_range, new_cold);
                     }
@@ -2024,8 +2050,8 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 }
 
             } else {
-                for (LinkedList<ChunkedPairsRange>::iterator range = std::next(left_range); range != right_range; ++range) {
-                    list.erase(range);
+                for (LinkedList<ChunkedPairsRange>::iterator range = std::next(left_range); range != right_range;) {
+                    range = list.erase(range);
                 }
 
                 if (right != right_range->end()) {
@@ -2042,7 +2068,7 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         }
 
         cold_npairs_list[idx_dpu] = cold_npairs;
-        cold_loads[idx_dpu] = {idx_dpu, cold_load};
+        cold_loads[idx_dpu] = {idx_dpu, cold_endpoint_cnt};
 
         if (nr_existing_hots + hot_count > nr_base_parts) {
             raii.finalize();
