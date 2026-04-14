@@ -25,10 +25,10 @@ foreach(build_version IN LISTS targets)
 
     target_link_libraries(host_app_${build_version}
         common_${build_version}
-        assert
+        host_params
+        util
         workload_mgmt
         parallel_manager
-        extendable_buffer
         cmdline
         cereal
         Threads::Threads

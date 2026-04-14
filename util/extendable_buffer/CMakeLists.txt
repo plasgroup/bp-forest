@@ -1,3 +1,0 @@
-add_library(extendable_buffer INTERFACE)
-target_include_directories(extendable_buffer INTERFACE ${CMAKE_CURRENT_LIST_DIR}/inc)
-target_compile_features(extendable_buffer INTERFACE cxx_std_17)

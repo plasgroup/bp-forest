@@ -27,10 +27,8 @@ foreach(build_version IN LISTS targets)
 
             target_link_libraries(${tester_name}_${build_version}
                 common_${build_version}
-                assert
-                log_buffer
                 workload_mgmt
-                extendable_buffer
+                util
                 cmdline
                 cereal
             )

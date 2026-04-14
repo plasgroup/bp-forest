@@ -6,7 +6,7 @@
 #include "common.h"
 #include "database.hpp"
 #include "benchmark.hpp"
-#include "host/inc/host_params.hpp"
+#include "host_params.hpp"
 #include "extendable_buffer.hpp"
 #include "host/inc/statistics.hpp"
 #include "pimtree_query.hpp"

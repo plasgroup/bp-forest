@@ -41,6 +41,7 @@ private:
 
 public:
     uint32_t& load() const { return *p_load; }
+    uint32_t* load_ptr() const { return p_load; }
     const KVPair* begin() const { return cursor; }
     const KVPair* end() const { return (++DataChunkIterator{*this}).begin(); }
     size_t npairs() const { return static_cast<size_t>(end() - begin()); }
@@ -134,7 +135,7 @@ public:
 
     ChunkedPairsRange() = default;
     ChunkedPairsRange(const PairsRange& range, uint32_t* load = nullptr) : PairsRange{range}, p_load{load} {}
-    ChunkedPairsRange(const DataChunkIterator& begin, const DataChunkIterator& end) : PairsRange{begin->begin(), end->begin()}, p_load{&begin->load()} {}
+    ChunkedPairsRange(const DataChunkIterator& begin, const DataChunkIterator& end) : PairsRange{begin->begin(), end->begin()}, p_load{begin.load_ptr()} {}
     ChunkedPairsRange(const ChunkedPairsRange&) = default;
     ChunkedPairsRange& operator=(const ChunkedPairsRange&) = default;
 };

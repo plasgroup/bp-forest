@@ -1,0 +1,9 @@
+add_executable(eval_load_dist
+    main.cpp
+)
+target_link_libraries(eval_load_dist
+    common_base
+    workload_mgmt
+    load_dist_evaluator
+    cmdline
+)

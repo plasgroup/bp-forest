@@ -1,0 +1,10 @@
+add_executable(eval_rebalancing
+    src/main.cpp
+)
+target_link_libraries(eval_rebalancing
+    common_base
+    workload_mgmt
+    host_params
+    util
+    cmdline
+)

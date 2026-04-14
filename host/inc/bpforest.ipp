@@ -1171,7 +1171,7 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
 }
 
 
-template <typename HotHook /* bool(part, begin_chunk, end_chunk, nr_pairs, load) */>
+template <typename HotHook /* bool(part, begin_chunk, end_chunk, load) */>
 inline void find_absolutely_hot_ranges(LinkedChunkedPairsRange* const begin_part, LinkedChunkedPairsRange* const end_part,
     uint32_t hot_npairs, uint32_t hot_nqrys,
     HotHook&& hot_hook)
@@ -1352,25 +1352,15 @@ find_relatively_hot_ranges(const LinkedList<ChunkedPairsRange>::iterator begin_r
             nqrys_in_window += right->load();
             ++right;
 
-            if (right_npairs_offcut >= right_window_offcut + hot_npairs
-                || right_npairs_offcut - right_range->begin()->npairs() >= right_window_offcut) {
-
-                uint32_t left_window_offcut_to_shrink;
-                if (right_npairs_offcut >= right_window_offcut + hot_npairs) {  // handle rare cases where a single chunk covers the size of multiple hot ranges
-                    const uint32_t new_right_window_offcut = right_npairs_offcut / hot_npairs * hot_npairs;
-                    left_window_offcut_to_shrink = new_right_window_offcut - right_window_offcut;
-                    right_window_offcut = new_right_window_offcut;
-
-                } else {
-                    left_window_offcut_to_shrink = hot_npairs;
-                    right_window_offcut += hot_npairs;
-
-                    // minimize the margin within the window as much as possible
-                    while (right != right_range->end() && right_npairs_offcut + right->npairs() < right_window_offcut) {
-                        right_npairs_offcut += right->npairs();
-                        nqrys_in_window += right->load();
-                        ++right;
-                    }
+            if (right_npairs_offcut > right_window_offcut) {
+                const uint32_t new_right_window_offcut = (right_npairs_offcut + hot_npairs - 1) / hot_npairs * hot_npairs;
+                uint32_t left_window_offcut_to_shrink = new_right_window_offcut - right_window_offcut;
+                right_window_offcut = new_right_window_offcut;
+                // minimize the margin within the window as much as possible
+                while (right != right_range->end() && right_npairs_offcut + right->npairs() < right_window_offcut) {
+                    right_npairs_offcut += right->npairs();
+                    nqrys_in_window += right->load();
+                    ++right;
                 }
 
                 // pull the left end inward per cold range

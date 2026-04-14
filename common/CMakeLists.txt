@@ -2,7 +2,7 @@ add_library(common_base INTERFACE)
 target_include_directories(common_base INTERFACE ${CMAKE_CURRENT_LIST_DIR}/inc)
 target_compile_features(common_base INTERFACE cxx_std_17 c_std_11)
 target_compile_definitions(common_base INTERFACE $<$<CONFIG:Debug>:PRINT_DEBUG>)
-target_link_libraries(common_base INTERFACE extendable_buffer)
+target_link_libraries(common_base INTERFACE util)
 
 
 foreach(build_version IN LISTS targets)
