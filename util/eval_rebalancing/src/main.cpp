@@ -303,12 +303,12 @@ public:
     DataChunkIterator& operator+=(difference_type d)
     {
         const uintptr_t offset_in_part = reinterpret_cast<uintptr_t>(cursor) - reinterpret_cast<uintptr_t>(part_begin),
-                        shifted = offset_in_part + static_cast<uintptr_t>(ChunkSizeInBytes * d),
+                        shifted = offset_in_part + ChunkSizeInBytes * static_cast<uintptr_t>(d),
                         aligned = (shifted + ChunkSizeInBytes - 1) / ChunkSizeInBytes * ChunkSizeInBytes,
                         addr = reinterpret_cast<uintptr_t>(part_begin) + aligned,
                         clamped = std::min<uintptr_t>(addr, reinterpret_cast<uintptr_t>(part_end));
         cursor = reinterpret_cast<const KVPair*>(clamped);
-        p_load += d;
+        p_load += static_cast<uint32_t>(d);
         return *this;
     }
     DataChunkIterator& operator-=(difference_type d) { return (*this) += (-d); }
@@ -325,26 +325,26 @@ public:
         return tmp;
     }
 
-    friend bool operator==(const DataChunkIterator& lhs, const DataChunkIterator& rhs) { return lhs.cursor == rhs.cursor; }
-    friend bool operator!=(const DataChunkIterator& lhs, const DataChunkIterator& rhs) { return !(lhs == rhs); }
-    friend difference_type operator-(const DataChunkIterator& lhs, const DataChunkIterator& rhs) { return lhs.p_load - rhs.p_load; }
-    friend DataChunkIterator operator+(const DataChunkIterator& it, difference_type d)
+    [[maybe_unused]] friend bool operator==(const DataChunkIterator& lhs, const DataChunkIterator& rhs) { return lhs.cursor == rhs.cursor; }
+    [[maybe_unused]] friend bool operator!=(const DataChunkIterator& lhs, const DataChunkIterator& rhs) { return !(lhs == rhs); }
+    [[maybe_unused]] friend difference_type operator-(const DataChunkIterator& lhs, const DataChunkIterator& rhs) { return lhs.p_load - rhs.p_load; }
+    [[maybe_unused]] friend DataChunkIterator operator+(const DataChunkIterator& it, difference_type d)
     {
         DataChunkIterator tmp{it};
         tmp += d;
         return tmp;
     }
-    friend DataChunkIterator operator+(difference_type d, const DataChunkIterator& it) { return it + d; }
-    friend DataChunkIterator operator-(const DataChunkIterator& it, difference_type d)
+    [[maybe_unused]] friend DataChunkIterator operator+(difference_type d, const DataChunkIterator& it) { return it + d; }
+    [[maybe_unused]] friend DataChunkIterator operator-(const DataChunkIterator& it, difference_type d)
     {
         DataChunkIterator tmp{it};
         tmp -= d;
         return tmp;
     }
-    friend bool operator<(const DataChunkIterator& lhs, const DataChunkIterator& rhs) { return (rhs - lhs) > 0; }
-    friend bool operator>(const DataChunkIterator& lhs, const DataChunkIterator& rhs) { return rhs < lhs; }
-    friend bool operator<=(const DataChunkIterator& lhs, const DataChunkIterator& rhs) { return !(lhs > rhs); }
-    friend bool operator>=(const DataChunkIterator& lhs, const DataChunkIterator& rhs) { return !(lhs < rhs); }
+    [[maybe_unused]] friend bool operator<(const DataChunkIterator& lhs, const DataChunkIterator& rhs) { return (rhs - lhs) > 0; }
+    [[maybe_unused]] friend bool operator>(const DataChunkIterator& lhs, const DataChunkIterator& rhs) { return rhs < lhs; }
+    [[maybe_unused]] friend bool operator<=(const DataChunkIterator& lhs, const DataChunkIterator& rhs) { return !(lhs > rhs); }
+    [[maybe_unused]] friend bool operator>=(const DataChunkIterator& lhs, const DataChunkIterator& rhs) { return !(lhs < rhs); }
 };
 
 struct ChunkedPairsRange : PairsRange {
@@ -970,7 +970,7 @@ Dur full_repartition(Partitioning& parts, DistributedData& data, const Query qry
         return Dur{0};
     }
 
-    std::partial_sort(cold_loads.begin(), cold_loads.begin() + new_hots.size(), cold_loads.end(),
+    std::partial_sort(cold_loads.begin(), cold_loads.begin() + static_cast<std::ptrdiff_t>(new_hots.size()), cold_loads.end(),
         [](const auto& lhs, const auto& rhs) { return lhs.second < rhs.second; });
     std::sort(new_hots.begin(), new_hots.end(), [](const auto& lhs, const auto& rhs) { return lhs.hot.load > rhs.hot.load; });
 
@@ -1102,7 +1102,7 @@ struct QueryHandler<operation> {
         for (const auto& per_dpu : counts) {
             uint64_t cost = 0;
             for (int op = 0; op <= remove_t; ++op) {
-                cost += per_dpu[op] * op_weight(static_cast<operation_t>(op));
+                cost += per_dpu[static_cast<size_t>(op)] * op_weight(static_cast<operation_t>(op));
             }
             max_cost = std::max(max_cost, cost);
         }
@@ -1173,7 +1173,7 @@ inline std::vector<KVPair> load_kv_data(const std::string& path)
 
     std::vector<operation> ops(size / sizeof(operation));
     if (!ops.empty()) {
-        ifs.read(reinterpret_cast<char*>(ops.data()), size);
+        ifs.read(reinterpret_cast<char*>(ops.data()), static_cast<std::streamsize>(size));
         if (!ifs) {
             throw std::runtime_error("failed to read data file: " + path);
         }
@@ -1427,7 +1427,7 @@ Dur rebalancing(Partitioning& parts, DistributedData& data, const Query qrys[], 
             cold_loads[idx_dpu].second = std::numeric_limits<uint32_t>::max();
         }
     }
-    std::partial_sort(cold_loads.begin(), cold_loads.begin() + new_hots.size(), cold_loads.end(),
+    std::partial_sort(cold_loads.begin(), cold_loads.begin() + static_cast<std::ptrdiff_t>(new_hots.size()), cold_loads.end(),
         [](const auto& lhs, const auto& rhs) { return lhs.second < rhs.second; });
     std::sort(new_hots.begin(), new_hots.end(), [](const auto& lhs, const auto& rhs) { return lhs.hot.load > rhs.hot.load; });
 
@@ -1465,7 +1465,7 @@ int main(int argc, char* argv[])
     Partitioning parts = equal_data_partitions(opt.ndpus, data_pairs.data(), data_pairs.size());
     DistributedData data = apply_partitioning(parts, data_pairs.data(), data_pairs.size());
     const pimtree_queries queries = make_pimtree_queries(opt.workload_file);
-    QueryHandler<operation> hdr{opt.commutative};
+    QueryHandler<operation> hdr{opt.commutative, {}, 0};
 
     std::mt19937_64 gen;
     Dur virtual_clock{0};
