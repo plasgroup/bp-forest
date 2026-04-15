@@ -1,0 +1,540 @@
+/// @file full_repartition_naive.hpp
+/// @brief bpforest.ipp:1401-1610 の `BPForest::full_repartition` を、
+///        同一シグネチャ・同一意味論のまま最も愚直に書き直した参照実装。
+///        参照用であり、ビルド対象ではない。
+///
+/// 剥がした最適化 (= 愚直化の内容):
+///   (a) クエリの chunk 位置特定を `std::upper_bound` ではなく
+///       chunk 列の線形走査で行う (bpforest.ipp:1470, 1484)。
+///   (b) 欠番。以前は「hot_hook 内の `cold_endpoint_cnt > goal` 判定
+///       を廃止する」と書いていたが、これは誤り — この判定は
+///       Algorithm 2/3 のロジックそのものであり、`return true` を
+///       返し続けると carve される hot 数・位置・最終パーティションが
+///       変わってしまう。愚直版でも段間 (bpforest.ipp:1495, 1523) と
+///       hot_hook 内 (bpforest.ipp:1516, 1540) の両方の
+///       `cold_endpoint_cnt > cold_endpoint_cnt_goal` 判定を維持する。
+///   (c) cold 範囲列を `LinkedList<ChunkedPairsRange>` ではなく
+///       `std::list<ChunkedPairsRange>` で持つ。
+///       find_* の呼び出し時だけ、その場限りのスコープで LinkedList に
+///       橋渡しする (下の bridge helper 参照)。これにより
+///       `chunked_cold_ranges` プール (dpu_id_t 決め打ちインデックス
+///       `idx_in_ary`) の管理や、intrusive link を意識したノード確保が
+///       呼び出し側から消える。
+///   (d) carve のたびに `*left_range = ...` / splice で部分更新する
+///       (bpforest.ipp:1500-1506, 1543-1578) のではなく、`new_hots_local`
+///       に記録された hot 区間列から cold list を一から build-from-scratch
+///       で組み立て直す。
+///   (e) BPForest 側の「一時データ用」メンバ (`data_buf`, `chunk2load`,
+///        `chunked_cold_ranges[,_lists]`, `new_hots`, `cold_loads`,
+///        `input_headers` 等) を使わず、ローカル変数で完結させる。
+///       `delims` / `cold_delims` / `hot_delims` / `nr_pairs` は
+///       呼び出し間で持ち越す「状態」なのでメンバのまま更新する。
+///
+/// 保っている意味論 (= 最適化版と同じもの):
+///   - `hot_load`, `cold_endpoint_cnt_goal`, `hot_npairs` の計算式
+///   - find_absolutely → find_relatively の 2 段構えの適用順と入力
+///   - `cold_endpoint_cnt` の scalar 追跡 (carve 時に `load` を引き算)
+///   - 選出した hot を load 降順で低負荷 DPU に割り当てる matching
+///   - 最終的な delims / hot_delims / nr_pairs の内容
+///   - `initialize_in_dpu` 呼び出しで再構築される DPU 側の状態
+///   - 末尾の `route_queries` 再実行
+
+#pragma once
+
+#include "bpforest.hpp"
+#include "linked_list.hpp"
+#include "pairs_range.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <list>
+#include <utility>
+#include <vector>
+
+
+// ─────────────────────────────────────────────────────────────
+// helper (a): key を含む chunk を線形走査で特定
+// ─────────────────────────────────────────────────────────────
+//
+// 最適化版 (bpforest.ipp:1470, 1484):
+//     upper_bound(left, right, key, [](k, ch){ return k < ch.begin()->key; });
+//     --one_after_target_chunk;
+//
+// part 内で `chunk.begin()->key <= key` を満たす最後の chunk を返す。
+inline DataChunkIterator find_chunk_containing_key_naive(
+    const ChunkedPairsRange& part, key_uint64_t key)
+{
+    DataChunkIterator target = part.begin();
+    for (DataChunkIterator it = part.begin(); it != part.end(); ++it) {
+        if (it->begin()->key <= key) {
+            target = it;
+        } else {
+            break;
+        }
+    }
+    return target;
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// helper: base partition 単位で chunk load を集計する (愚直版)
+// ─────────────────────────────────────────────────────────────
+//
+// 最適化版 (bpforest.ipp:1456-1493) と同等。upper_bound を
+// find_chunk_containing_key_naive に差し替えただけ。
+// 呼び出し時点で `base` は単一の ChunkedPairsRange (= base partition
+// 全体) であり、その `set_load_ary` 済みの chunk 負荷配列をインクリ
+// メントする。
+//
+// 戻り値: この base partition の cold 側にある query endpoint の総数
+//         (= cold_endpoint_cnt の初期値)。
+template <typename Query, typename Result>
+inline uint32_t estimate_chunk_load_naive(
+    const Query queries[],
+    const QueryData<Query, Result>& routed,
+    dpu_id_t idx_base, dpu_id_t nr_base_parts,
+    const ChunkedPairsRange& base)
+{
+    if constexpr (IsPointQuery<Query>) {
+        for (const auto& qry_vec : routed.cold[idx_base].qrys) {
+            for (const auto& qry : qry_vec) {
+                const key_uint64_t key = PointQueryToKey<Query>{}(qry);
+                find_chunk_containing_key_naive(base, key)->load()++;
+            }
+        }
+        return routed.cold[idx_base].nr_qrys;
+    } else {
+        uint32_t cnt = 0;
+        const key_uint64_t base_min = base.PairsRange::begin()->key;
+        const key_uint64_t base_max
+            = (idx_base + 1 == nr_base_parts)
+                ? KEY_MAX
+                : base.PairsRange::end()->key;
+        for (const auto& idx_vec : routed.cold[idx_base].orig_idxs) {
+            for (const auto orig_idx : idx_vec) {
+                const KeyRange& range = RangeQueryToRange<Query>{}(queries[orig_idx]);
+                for (const auto key : {range.begin, range.end}) {
+                    if (base_min <= key && key <= base_max) {
+                        find_chunk_containing_key_naive(base, key)->load()++;
+                        cnt++;
+                    }
+                }
+            }
+        }
+        return cnt;
+    }
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// bridge: 単一 ChunkedPairsRange → find_absolutely_hot_ranges
+// ─────────────────────────────────────────────────────────────
+//
+// 最適化版は
+//     find_absolutely_hot_ranges(&base, &base + 1, ...);
+// と単一要素の `LinkedChunkedPairsRange*` 範囲で呼ぶ。愚直版でも
+// これに倣い、スタック上に 1 要素の temporary `LinkedChunkedPairsRange`
+// を置いて渡す。
+//
+// hot_hook 内での `*part` 書き換え (最適化版 bpforest.ipp:1505) は
+// find_absolutely_hot_ranges の内部 loop の進行に影響しない
+// (loop は冒頭で捕捉した `end_chunk` と `right` だけを見る)。
+// 従って愚直版の hot_hook は tmp を書き換えず、hot 区間と load を
+// 外側にコピーするだけでよい。
+template <typename HotHook>
+inline void find_absolutely_hot_ranges_on_range_naive(
+    const ChunkedPairsRange& range,
+    uint32_t hot_npairs, uint32_t hot_nqrys,
+    HotHook&& hot_hook)
+{
+    LinkedChunkedPairsRange tmp;
+    tmp = range;  // LinkedElement::operator=(const T&) で T 部分だけコピー
+    find_absolutely_hot_ranges(&tmp, &tmp + 1, hot_npairs, hot_nqrys,
+        std::forward<HotHook>(hot_hook));
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// bridge: std::list<ChunkedPairsRange> → find_absolutely_hot_ranges
+//         (複数 cold 片を一括で処理)
+// ─────────────────────────────────────────────────────────────
+//
+// 最適化版 (bpforest.ipp:1960) の
+//     find_absolutely_hot_ranges(begin_part, end_part, ...);
+// に対応する、複数 cold 片を 1 回の呼び出しでまとめて処理する bridge。
+// full_repartition では cold は 1 片なので使わないが、
+// incremental_repartition では cold が複数片あり、かつ最適化版と意味論
+// を揃えるには複数片を 1 回で渡す必要がある (find_absolutely_hot_ranges
+// は callback が false を返すと全 part を横断して return する
+// = 片ごとに分けて呼ぶと余計な carve が発生する)。
+//
+// hot_hook シグネチャ:
+//   bool(size_t piece_idx, ChunkedPairsRange& part,
+//        DataChunkIterator chunk_begin, DataChunkIterator chunk_end,
+//        uint32_t load)
+// piece_idx は呼び出し時の cold_list 内 0-based 位置。
+//
+// アドレス安定性: `std::vector<LinkedChunkedPairsRange> pool(n)` は
+// n 要素を一括構築する (再確保しない) ので、pool.data() の個々の要素
+// アドレスは関数スコープ内で安定。
+template <typename HotHook>
+inline void find_absolutely_hot_ranges_on_list_naive(
+    const std::list<ChunkedPairsRange>& cold_list,
+    uint32_t hot_npairs, uint32_t hot_nqrys,
+    HotHook&& hot_hook)
+{
+    if (cold_list.empty()) return;
+    std::vector<LinkedChunkedPairsRange> pool(cold_list.size());
+    size_t i = 0;
+    for (const ChunkedPairsRange& r : cold_list) {
+        pool[i] = r;
+        ++i;
+    }
+    find_absolutely_hot_ranges(
+        pool.data(), pool.data() + pool.size(), hot_npairs, hot_nqrys,
+        [&pool, &hot_hook](ChunkedPairsRange& part,
+            DataChunkIterator chunk_begin, DataChunkIterator chunk_end,
+            uint32_t load) {
+            const size_t piece_idx = static_cast<size_t>(
+                static_cast<LinkedChunkedPairsRange*>(&part) - pool.data());
+            return hot_hook(piece_idx, part, chunk_begin, chunk_end, load);
+        });
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// bridge: std::list<ChunkedPairsRange> → find_relatively_hot_ranges
+// ─────────────────────────────────────────────────────────────
+//
+// 最適化版は
+//     find_relatively_hot_ranges(list.begin(), list.end(), ...);
+// と `LinkedList<ChunkedPairsRange>::iterator` 範囲で呼ぶ。愚直版は
+// 普段の cold list を std::list で持つため、呼び出し直前にその場で
+// LinkedChunkedPairsRange プールを確保して `LinkedList` を組み立て直す。
+//
+// hot_hook シグネチャ:
+//   bool(size_t piece_idx, const ChunkedPairsRange& part,
+//        const PairsRange& range, uint32_t load)
+// piece_idx は呼び出し時の cold_list 内 0-based 位置。
+// full_repartition 側は piece_idx を使わない (単一 cold 片なので常に 0)
+// が、incremental_repartition 側は hot.key_range.end を per-piece の
+// `cold_key_ranges` から取るために必要。
+//
+// アドレス安定性: `std::vector<LinkedChunkedPairsRange> pool(n)` は
+// n 要素を一括直接構築する (再確保しない) ので、各要素のアドレスは
+// 関数スコープ内で安定であり intrusive な next/prev ポインタが
+// 壊れない。
+//
+// 戻り値は discard する: 最適化版は carve 済 cold 境界の iterator 組
+// を返し、それを元に部分 splice で cold list を更新する
+// (bpforest.ipp:1543-1578)。愚直版は hot_hook で記録された hot 区間列
+// から cold list を一から再構築するので、境界 iterator は不要。
+template <typename HotHook>
+inline void find_relatively_hot_ranges_on_list_naive(
+    const std::list<ChunkedPairsRange>& cold_list,
+    uint32_t hot_npairs, dpu_id_t nr_hots,
+    HotHook&& hot_hook)
+{
+    if (cold_list.empty() || nr_hots == 0) return;
+
+    std::vector<LinkedChunkedPairsRange> pool(cold_list.size());
+    LinkedList<ChunkedPairsRange> llist;
+    size_t i = 0;
+    for (const ChunkedPairsRange& r : cold_list) {
+        pool[i] = r;
+        llist.push_back(pool[i]);
+        ++i;
+    }
+    (void)find_relatively_hot_ranges(
+        llist.begin(), llist.end(), hot_npairs, nr_hots,
+        [&pool, &hot_hook](const ChunkedPairsRange& part,
+            const PairsRange& range, uint32_t load) {
+            const size_t piece_idx = static_cast<size_t>(
+                static_cast<const LinkedChunkedPairsRange*>(&part) - pool.data());
+            return hot_hook(piece_idx, part, range, load);
+        });
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// helper: base partition の cold list を hot 区間列から build-from-
+//         scratch で組み立て直す
+// ─────────────────────────────────────────────────────────────
+//
+// 前提:
+//   - `sorted_hots` は start ポインタ昇順で、全て [base_begin, base_end)
+//     に収まっている。
+//   - 各 hot は chunk 境界に alignment されている
+//     (hot.begin() は base_begin からの chunk 境界、hot.end() も
+//      chunk 境界 or base_end)。find_absolutely/find_relatively は
+//      `DataChunkIterator` から hot 区間を作るので、この alignment は
+//      自動的に守られる。
+//
+// 各 cold piece の `p_load` は base ごとに 1 本の chunk load 配列
+// (`base_load_array`) のスライスを指すように設定する。これにより
+// 最初の estimate_chunk_load_naive で populate した load 値を carve
+// 後の piece からそのまま読み出せる。
+inline void rebuild_cold_list_from_hots_naive(
+    std::list<ChunkedPairsRange>& cold_list,
+    uint32_t* base_load_array,
+    const KVPair* base_begin, const KVPair* base_end,
+    const std::vector<PairsRange>& sorted_hots)
+{
+    cold_list.clear();
+
+    const auto push_piece = [&](const KVPair* pb, const KVPair* pe) {
+        if (pb >= pe) return;
+        ChunkedPairsRange piece{PairsRange{pb, pe}};
+        const size_t chunk_offset
+            = static_cast<size_t>(pb - base_begin) / KVPairsChunkSize;
+        piece.set_load_ary(base_load_array + chunk_offset);
+        cold_list.push_back(piece);
+    };
+
+    const KVPair* cursor = base_begin;
+    for (const PairsRange& hot : sorted_hots) {
+        push_piece(cursor, hot.begin());
+        cursor = hot.end();
+    }
+    push_piece(cursor, base_end);
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// Main: full_repartition の愚直版
+// ─────────────────────────────────────────────────────────────
+template <typename Query, typename Result>
+inline void BPForest::full_repartition_naive(
+    const uint32_t nr_queries, const Query queries[],
+    Result* results, QueryData<Query, Result>& routed)
+{
+    // ── 1. 全 DPU から KV ペアを回収 ─────────────────────
+    std::vector<KVPair> local_data_buf;
+    const size_t nr_total_pairs = retrieve_all_data_into(local_data_buf);
+    const KVPair* const data_end = local_data_buf.data() + nr_total_pairs;
+
+    // ── 2. delim / hot_delim を全クリア ─────────────────
+    delims.clear();
+    std::fill(hot_delims.begin(), hot_delims.end(), DelimIter{});
+
+    // ── 3. 各 base partition の cold list と chunk load 配列を
+    //       ローカルに確保 (愚直化 (c), (e)) ──
+    //
+    // - cold_lists[idx_base] は `std::list<ChunkedPairsRange>`。
+    //   初期状態は「base 全体を覆う 1 要素」。
+    // - chunk_loads[idx_base] は base ごとに 1 本 (全長
+    //   = nchunks_of_full_base)。最適化版の chunk2load と同じ配置で、
+    //   carve 後の cold piece はこの配列の chunk offset スライスを指す。
+    // - base_begins/ends は後段の rebuild で必要になる KVPair*境界。
+    std::vector<std::list<ChunkedPairsRange>> cold_lists(nr_base_parts);
+    std::vector<std::vector<uint32_t>> chunk_loads(nr_base_parts);
+    std::vector<const KVPair*> base_begins(nr_base_parts), base_ends(nr_base_parts);
+
+    for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
+        const KVPair* const pb
+            = local_data_buf.data() + nr_total_pairs * idx_base / nr_base_parts;
+        const KVPair* const pe
+            = local_data_buf.data() + nr_total_pairs * (idx_base + 1) / nr_base_parts;
+        base_begins[idx_base] = pb;
+        base_ends[idx_base] = pe;
+
+        ChunkedPairsRange piece{PairsRange{pb, pe}};
+        chunk_loads[idx_base].assign(piece.nchunks(), 0u);
+        piece.set_load_ary(chunk_loads[idx_base].data());
+        cold_lists[idx_base].push_back(piece);
+
+        cold_delims[idx_base] = delims.emplace_hint(
+            delims.cend(), pb->key, BasePartitionDelim{idx_base});
+    }
+
+    // ── 4. 初回ルーティング ─────────────────────────────
+    combine_delims();
+    route_queries(nr_queries, queries, results, routed);
+
+    // balancing off: cold 一本で確定
+    std::vector<std::array<uint32_t, 2>> nr_pairs_local(nr_base_parts, {0, 0});
+    std::vector<PairsRange> hot_ranges_local(nr_base_parts, PairsRange{nullptr, nullptr});
+
+    if (param.balancing == 0) {
+        for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
+            nr_pairs_local[idx_base]
+                = {static_cast<uint32_t>(cold_lists[idx_base].front().npairs()), 0};
+        }
+        initialize_in_dpu_naive(nr_pairs_local, cold_lists, hot_ranges_local);
+        return;
+    }
+
+    // ── 5. 閾値定数 (最適化版 L1432-1433 と同式) ────────
+    constexpr uint32_t W = IsPointQuery<Query> ? 1 : 2;
+    const uint32_t hot_load
+        = (nr_queries * W + nr_base_parts - 1) / nr_base_parts;
+    const uint32_t cold_endpoint_cnt_goal
+        = nr_queries * W * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
+
+    std::vector<NewHotRange> new_hots_local;
+    new_hots_local.reserve(nr_base_parts);
+    std::vector<std::pair<dpu_id_t, uint32_t>> cold_loads_local(nr_base_parts);
+    std::vector<uint32_t> cold_npairs_after(nr_base_parts);
+
+    // ── 6. base ごとに hot を切り出す ────────────────────
+    for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
+        const KVPair* const pb = base_begins[idx_base];
+        const KVPair* const pe = base_ends[idx_base];
+        auto& cold_list = cold_lists[idx_base];
+        uint32_t* const load_ary = chunk_loads[idx_base].data();
+
+        uint32_t cold_npairs = static_cast<uint32_t>(pe - pb);
+        const uint32_t hot_npairs
+            = (cold_npairs + param.balancing - 1) / param.balancing;
+
+        // 6a. chunk load を populate し、初期 cold_endpoint_cnt を得る。
+        //     この時点で cold_list は「base 全体を覆う 1 要素」なので、
+        //     front() への populate がそのまま base 全体への populate。
+        uint32_t cold_endpoint_cnt = estimate_chunk_load_naive(
+            queries, routed, idx_base, nr_base_parts, cold_list.front());
+
+        // 6b. Absolute hot 段 — 段間ゲート (bpforest.ipp:1495) と
+        //     hot_hook 内ゲート (bpforest.ipp:1516) の両方を保持する。
+        const size_t abs_start = new_hots_local.size();
+        if (cold_endpoint_cnt > cold_endpoint_cnt_goal) {
+            find_absolutely_hot_ranges_on_range_naive(
+                cold_list.front(), hot_npairs, hot_load,
+                [&](ChunkedPairsRange&, DataChunkIterator chunk_begin,
+                    DataChunkIterator chunk_end, uint32_t load) {
+                    NewHotRange hot;
+                    hot.pairs_range = {chunk_begin.begin(), chunk_end.begin()};
+                    hot.key_range = {hot.pairs_range.begin()->key,
+                        (hot.pairs_range.end() == data_end
+                                ? KEY_MAX
+                                : hot.pairs_range.end()->key - 1)};
+                    hot.load = load;
+                    new_hots_local.push_back(hot);
+                    cold_npairs -= static_cast<uint32_t>(hot.pairs_range.npairs());
+                    cold_endpoint_cnt -= load;
+                    return cold_endpoint_cnt > cold_endpoint_cnt_goal;
+                });
+        }
+
+        // 6c. cold list を rebuild (愚直化 (d))。
+        //   - この base で carve 済みの hot 区間を集めて昇順にソート
+        //   - [pb, pe) から hot 区間を引き算して cold piece を emit
+        //   - 各 piece は base 単位の load 配列の chunk offset を指す
+        {
+            std::vector<PairsRange> hots_in_base;
+            hots_in_base.reserve(new_hots_local.size() - abs_start);
+            for (size_t i = abs_start; i < new_hots_local.size(); i++) {
+                hots_in_base.push_back(new_hots_local[i].pairs_range);
+            }
+            std::sort(hots_in_base.begin(), hots_in_base.end(),
+                [](const PairsRange& a, const PairsRange& b) {
+                    return a.begin() < b.begin();
+                });
+            rebuild_cold_list_from_hots_naive(
+                cold_list, load_ary, pb, pe, hots_in_base);
+        }
+
+        // 6d. Relative hot 段 (cold_endpoint_cnt が goal を超えるときだけ)。
+        if (cold_endpoint_cnt > cold_endpoint_cnt_goal && !cold_list.empty()) {
+            const uint32_t nr_relative_hots = cold_endpoint_cnt / hot_load;
+
+            find_relatively_hot_ranges_on_list_naive(
+                cold_list, hot_npairs, nr_relative_hots,
+                [&](size_t /*piece_idx*/, const ChunkedPairsRange&,
+                    const PairsRange& range, uint32_t load) {
+                    NewHotRange hot;
+                    hot.pairs_range = range;
+                    hot.key_range = {range.begin()->key,
+                        (range.end() == data_end
+                                ? KEY_MAX
+                                : range.end()->key - 1)};
+                    hot.load = load;
+                    new_hots_local.push_back(hot);
+                    cold_npairs -= static_cast<uint32_t>(hot.pairs_range.npairs());
+                    cold_endpoint_cnt -= load;
+                    return cold_endpoint_cnt > cold_endpoint_cnt_goal;
+                });
+
+            // 6e. 全 hot (absolute + relative) から cold list を再 rebuild。
+            std::vector<PairsRange> hots_in_base;
+            hots_in_base.reserve(new_hots_local.size() - abs_start);
+            for (size_t i = abs_start; i < new_hots_local.size(); i++) {
+                hots_in_base.push_back(new_hots_local[i].pairs_range);
+            }
+            std::sort(hots_in_base.begin(), hots_in_base.end(),
+                [](const PairsRange& a, const PairsRange& b) {
+                    return a.begin() < b.begin();
+                });
+            rebuild_cold_list_from_hots_naive(
+                cold_list, load_ary, pb, pe, hots_in_base);
+        }
+
+        cold_npairs_after[idx_base] = cold_npairs;
+        cold_loads_local[idx_base] = {idx_base, cold_endpoint_cnt};
+    }
+
+    // ── 7. hot を低負荷 DPU に割り当て (最適化版 L1585-1606) ──
+    for (dpu_id_t idx = 0; idx < nr_base_parts; idx++) {
+        nr_pairs_local[idx] = {cold_npairs_after[idx], 0};
+    }
+
+    const dpu_id_t hot_count = static_cast<dpu_id_t>(new_hots_local.size());
+    if (hot_count > 0) {
+        std::partial_sort(cold_loads_local.begin(),
+            cold_loads_local.begin() + hot_count, cold_loads_local.end(),
+            [](auto& l, auto& r) { return l.second < r.second; });
+        std::sort(new_hots_local.begin(), new_hots_local.end(),
+            [](auto& l, auto& r) { return l.load > r.load; });
+
+        for (dpu_id_t idx_hot = 0; idx_hot < hot_count; idx_hot++) {
+            const dpu_id_t idx_dpu = cold_loads_local[idx_hot].first;
+            const NewHotRange& nh = new_hots_local[idx_hot];
+
+            hot_ranges_local[idx_dpu] = nh.pairs_range;
+            nr_pairs_local[idx_dpu][1] = static_cast<uint32_t>(nh.pairs_range.npairs());
+            hot_delims[idx_dpu] = delims.emplace(
+                nh.key_range.begin,
+                HotPartitionDelim{nh.key_range.end, idx_dpu}).first;
+        }
+
+        combine_delims();
+        route_queries(nr_queries, queries, results, routed);
+    }
+
+    // ── 8. DPU 側の B+ tree を再構築 ─────────────────────
+    initialize_in_dpu_naive(nr_pairs_local, cold_lists, hot_ranges_local);
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// 参考: 最適化版との対応表 (bpforest.ipp の行番号)
+// ─────────────────────────────────────────────────────────────
+//  愚直版ステップ                         | 最適化版 (bpforest.ipp)
+// ────────────────────────────────────────┼──────────────────────────
+//  1 retrieve_all_data                    | L1405
+//  2 delims / hot_delims クリア           | L1407-1408
+//  3 cold_lists / chunk_loads 初期化      | L1410-1422
+//                                         | (`chunked_cold_ranges` プール,
+//                                         |  `chunk2load` をローカルに)
+//  4 初回 route_queries                   | L1425-1429
+//  5 閾値定数                             | L1431-1433
+//  6a chunk load populate                 | L1455-1493
+//    └─ (a) 線形 chunk 特定               | L1470, L1484 を置換
+//  6b Absolute hot 段                     | L1495-1521
+//    ├─ 段間ゲート (保持)                 | L1495 の条件式
+//    ├─ bridge (c) 単一要素               | L1498 の `&base, &base + 1`
+//    └─ hot_hook 内ゲート (保持)          | L1516 の return 条件
+//  6c cold list rebuild (abs 後)          | L1500-1506, 1518-1520 を置換
+//                                         | 愚直化 (d)
+//  6d Relative hot 段                     | L1523-1541
+//    ├─ 段間ゲート (保持)                 | L1523 の条件式
+//    ├─ bridge (c) std::list → LinkedList | L1529 の iter 形を置換
+//    └─ hot_hook 内ゲート (保持)          | L1540 の return 条件
+//  6e cold list rebuild (abs + rel 後)    | L1543-1578 を置換 (愚直化 (d))
+//  7  hot → DPU マッチング                | L1585-1606
+//  8  initialize_in_dpu                   | L1609
+//
+// 意味論: hot 集合 / delims / hot_delims / nr_pairs / DPU 側 B+ tree
+//         いずれも最適化版と一致する (ソート tie-break の違いを除けば)。
+//         `cold_endpoint_cnt` の scalar 追跡も最適化版と同じ値を取る
+//         (段ごとに `-= load` を累積するため)。
