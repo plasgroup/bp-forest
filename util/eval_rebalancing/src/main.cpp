@@ -24,17 +24,44 @@
 #include <map>
 #include <memory>
 #include <numeric>
+#include <optional>
+#include <random>
 #include <string>
 #include <tuple>
 #include <unordered_set>
 #include <utility>
+#include <variant>
 #include <vector>
+
+
+namespace cmdline
+{
+template <typename T>
+struct default_reader<std::optional<T>> {
+    std::optional<T> operator()(const std::string& str)
+    {
+        return default_reader<T>{}(str);
+    }
+};
+namespace detail
+{
+template <typename T>
+class lexical_cast_t<std::string, std::optional<T>, false>
+{
+public:
+    static std::string cast(const std::optional<T>& opt)
+    {
+        return opt ? lexical_cast<std::string>(*opt) : "(nullopt)";
+    }
+};
+}  // namespace detail
+}  // namespace cmdline
 
 
 struct CMDOpt {
     std::string data_file;
     std::string workload_file;
-    size_t batch_size{};
+    std::variant<size_t /* fixed batch size */, double /* Poisson query rate (op/s) */> batch_spec;
     unsigned ndpus{};
     unsigned balancing = 10;
     double high_watermark_ratio = 1.05;
@@ -47,7 +74,8 @@ struct CMDOpt {
         cmdline::parser parser;
         parser.add<std::string>("data", 'd', "insert_t operations binary file path (sorted by key)", true);
         parser.add<std::string>("workload", 'w', "PIM-Tree workload file path", true);
-        parser.add<size_t>("batch-size", 'b', "number of queries per batch", true);
+        parser.add<std::optional<size_t>>("batch-size", 'b', "fixed queries per batch", false);
+        parser.add<std::optional<double>>("query-rate", 0, "average query arrival rate (op/s), Poisson sampled", false);
         parser.add<unsigned>("ndpus", 'n', "number of base DPUs", true);
         parser.add<unsigned>("balancing", 0, "balancing factor", false, 10);
         parser.add<double>("hwm-ratio", 0, "high watermark ratio", false, 1.05);
@@ -56,11 +84,25 @@ struct CMDOpt {
 
         data_file = parser.get<std::string>("data");
         workload_file = parser.get<std::string>("workload");
-        batch_size = parser.get<size_t>("batch-size");
         ndpus = parser.get<unsigned>("ndpus");
         balancing = parser.get<unsigned>("balancing");
         high_watermark_ratio = parser.get<double>("hwm-ratio");
         commutative = parser.exist("commutative");
+
+        const auto bs = parser.get<std::optional<size_t>>("batch-size");
+        const auto qr = parser.get<std::optional<double>>("query-rate");
+        if (bs && qr) {
+            std::cerr << "must not set both --batch-size and --query-rate" << std::endl;
+            std::exit(1);
+        }
+        if (bs) {
+            batch_spec = *bs;
+        } else if (qr) {
+            batch_spec = *qr;
+        } else {
+            std::cerr << "must set either --batch-size or --query-rate" << std::endl;
+            std::exit(1);
+        }
     }
 } opt;
 
@@ -1075,7 +1117,6 @@ struct QueryHandler<operation> {
     template <typename DelimIter, typename Func>
     void locate_loaded(const operation& op, DelimIter begin, DelimIter end, Func&& func) const
     {
-        const auto in_range = [&](const DelimIter it) { return it != begin && it != end; };
         const auto locate_upper = [&](const Key key) -> DelimIter {
             auto it = std::upper_bound(begin, end, Delim{key, DelimType::Hot},
                 [](const Delim& lhs, const auto& rhs) { return lhs < rhs.first; });
@@ -1426,8 +1467,29 @@ int main(int argc, char* argv[])
     const pimtree_queries queries = make_pimtree_queries(opt.workload_file);
     QueryHandler<operation> hdr{opt.commutative};
 
-    for (size_t batch_idx = 0, offset = 0; offset < queries.length; ++batch_idx, offset += opt.batch_size) {
-        const size_t current_batch_size = std::min(opt.batch_size, queries.length - offset);
+    std::mt19937_64 gen;
+    Dur virtual_clock{0};
+    Dur virtual_clock_at_last_sample{0};
+
+    auto next_batch_size = [&](size_t remaining) -> size_t {
+        return std::visit(overload(
+                              [&](const size_t& fixed) -> size_t {
+                                  return std::min(fixed, remaining);
+                              },
+                              [&](const double& rate) -> size_t {
+                                  const Dur elapsed = virtual_clock - virtual_clock_at_last_sample;
+                                  const double elapsed_sec = std::chrono::duration_cast<std::chrono::duration<double>>(elapsed).count();
+                                  const double mean = rate * elapsed_sec;
+                                  const size_t sampled = std::poisson_distribution<size_t>{mean}(gen);
+                                  virtual_clock_at_last_sample = virtual_clock;
+                                  return std::min(sampled, remaining);
+                              }),
+            opt.batch_spec);
+    };
+
+    for (size_t batch_idx = 0, offset = 0; offset < queries.length; ++batch_idx) {
+        const Dur inject_time = virtual_clock;
+        const size_t current_batch_size = next_batch_size(queries.length - offset);
         const operation* batch_queries = &queries.ops[offset];
 
         hdr.on_batch_begin();
@@ -1436,6 +1498,7 @@ int main(int argc, char* argv[])
 
         const Dur batch_time = hdr.estimate_batch_time(routed);
         const Dur rebalance_time = rebalancing(parts, data, batch_queries, current_batch_size, routed, hdr);
+        virtual_clock += batch_time + rebalance_time;
         const uint64_t total_load = hdr.total_load_in_batch();
 
         std::vector<size_t> cold_load(parts.ndpus()), hot_load(parts.ndpus()), total(parts.ndpus());
@@ -1451,11 +1514,15 @@ int main(int argc, char* argv[])
         const double imbalance = avg_load == 0.0 ? 0.0 : static_cast<double>(max_load) / avg_load;
 
         std::cout << "Batch " << batch_idx
-                  << ": imbalance=" << imbalance
+                  << " inject_time[ns]=" << inject_time.count()
+                  << " batch_size=" << current_batch_size
+                  << " imbalance=" << imbalance
                   << " est_batch[ns]=" << batch_time.count()
                   << " est_rebalance[ns]=" << rebalance_time.count()
                   << " total_load=" << total_load
                   << std::endl;
+
+        offset += current_batch_size;
     }
 
     return 0;
