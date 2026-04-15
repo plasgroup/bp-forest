@@ -1,5 +1,6 @@
 #define NR_RANKS 10
 
+#include "collect_all_data.hpp"
 #include "filesystem.hpp"
 #include "assert.hpp"
 #include "common.h"
@@ -64,8 +65,6 @@ struct CMDOpt {
 } opt;
 
 
-using Key = key_uint64_t;
-using Value = value_uint64_t;
 using Dur = std::chrono::nanoseconds;
 
 enum class DelimType {
@@ -106,9 +105,6 @@ struct Partitioning {
     }
 };
 
-struct DistributedData {
-    std::vector<std::map<Key, Value>> cold, hot;
-};
 template <typename Query>
 struct RoutedQueries {
     struct PerDpu {
@@ -196,21 +192,6 @@ inline bool ranges_overlap(Key l1, Key r1, Key l2, Key r2)
 {
     return l1 <= r2 && l2 <= r1;
 }
-inline std::vector<KVPair> collect_all_data(const DistributedData& data)
-{
-    std::vector<KVPair> all;
-    for (size_t i = 0; i < data.cold.size(); ++i) {
-        for (const auto& [key, value] : data.cold[i]) {
-            all.push_back(KVPair{key, value});
-        }
-        for (const auto& [key, value] : data.hot[i]) {
-            all.push_back(KVPair{key, value});
-        }
-    }
-    std::sort(all.begin(), all.end(), [](const KVPair& lhs, const KVPair& rhs) { return lhs.key < rhs.key; });
-    return all;
-}
-
 // ── KVPair 連続領域への非所有ビュー群 ──
 // host/inc/pairs_range.hpp と同 semantics (docs/pairs-range.md が仕様書)。
 // eval_rebalancing は linked_list.hpp を include しないため pairs_range.hpp 本体は
@@ -631,6 +612,12 @@ struct BaseColdState {
     std::vector<KeyRange> cold_key_ranges;
     std::vector<Delim> cold_start_delims;
     std::map<Delim, size_t> start_to_part_idx;
+    // Per-`parts` entry の delim 側右境界キー (closed interval の end)。
+    // ChunkedPairsRange 自身は data 側の KVPair ポインタしか持たないため、
+    // hot range が cold partition 終端に達した時に使うべき "partition の
+    // 実際の右端キー" を別途保持する。std::list のアドレスは stable なので、
+    // list 要素の &*it をキーにすればよい。insert/erase で同期させる。
+    std::map<const ChunkedPairsRange*, Key> part_end_keys;
     uint32_t cold_load = 0;
     uint32_t cold_npairs = 0;
     uint32_t base_npairs = 0;
@@ -723,6 +710,9 @@ void build_overloaded_base_state(const Partitioning& parts, const DistributedDat
         state.parts.emplace_back(PairsRange{b, e}, load_ptr);
         load_offset += state.parts.back().nchunks();
         state.start_to_part_idx.emplace(state.cold_start_delims[i], i);
+        // 初期 parts の delim 側右端キーは cold_key_ranges の end (= partition
+        // の元々の右境界) と一致する。以降 insert/erase でこの map を同期する。
+        state.part_end_keys.emplace(&state.parts.back(), state.cold_key_ranges[i].end);
     }
 
     state.base_npairs = state.cold_npairs;
@@ -733,8 +723,18 @@ void build_overloaded_base_state(const Partitioning& parts, const DistributedDat
         state.base_npairs += static_cast<uint32_t>(data.hot[it->second.dpu].size());
     }
 
+    // 非可換 scan が同一 base 内の複数 cold piece (= 既存 hot で分割された
+    // 断片) を跨ぐと、同じ orig_idx が orig_idxs に連続して現れる。
+    // locate_loaded は base 全体に対して endpoint count を加算するため、
+    // 重複呼び出しは naive incremental (incremental_repartition_naive.hpp:358)
+    // と同様、直前値スキップで除去する。
+    size_t prev_orig_idx = std::numeric_limits<size_t>::max();
     for (size_t k = 0; k < routed.cold[idx_dpu].orig_idxs.size(); ++k) {
         const size_t orig_idx = routed.cold[idx_dpu].orig_idxs[k];
+        if (orig_idx == prev_orig_idx) {
+            continue;
+        }
+        prev_orig_idx = orig_idx;
         hdr.locate_loaded(qrys[orig_idx], state.base_begin, state.base_end, [&](auto delim_it, const uintmax_t load) {
             if (delim_it->first.type == DelimType::Hot) {
                 return;
@@ -809,12 +809,17 @@ Dur full_repartition(Partitioning& parts, DistributedData& data, const Query qry
         find_absolutely_hot_ranges(state.parts.begin(), state.parts.end(), hot_npairs, hot_load,
             [&](auto part_it, DataChunkIterator begin, DataChunkIterator end, uint32_t load) {
                 const bool end_at_range_end = (end == part_it->end());
+                // part_it (list 要素) の delim 側右境界キー。end_at_range_end の
+                // 時はここから hot.key_range.end を拾う — 直前の chunk 末データ
+                // キーではなく cold partition 本来の終端を使うことで、データが
+                // 存在しない右側キー空間も hot に取り込む。
+                const Key current_part_end = state.part_end_keys.at(&*part_it);
 
                 SrcNewHotRange src_hot;
                 src_hot.hot.pairs_range = PairsRange{begin->begin(), end->begin()};
                 src_hot.hot.key_range = KeyRange{
                     src_hot.hot.pairs_range.begin()->key,
-                    end_at_range_end ? (src_hot.hot.pairs_range.end() - 1)->key
+                    end_at_range_end ? current_part_end
                                      : prev_key(src_hot.hot.pairs_range.end()->key)};
                 src_hot.hot.load = load;
                 src_hot.src_dpu = idx_dpu;
@@ -824,13 +829,20 @@ Dur full_repartition(Partitioning& parts, DistributedData& data, const Query qry
                 cold_load -= load;
 
                 if (begin != part_it->begin()) {
-                    state.parts.insert(part_it, ChunkedPairsRange{part_it->begin(), begin});
+                    // 左 cold 断片は (part の元々の左境界, hot 開始の直前) を
+                    // 担当する。delim 側の右端は hot の begin key の直前。
+                    const auto new_it = state.parts.insert(part_it, ChunkedPairsRange{part_it->begin(), begin});
+                    state.part_end_keys.emplace(&*new_it, prev_key(begin->begin()->key));
                 }
+                // 右 cold 残余 (*part_it) は左が詰められるだけなので、その
+                // delim 側右端 (= current_part_end) は変わらない。map 上の
+                // 既存エントリも &*part_it が stable なのでそのまま有効。
                 *part_it = ChunkedPairsRange{end, part_it->end()};
                 return cold_load > cold_load_goal;
             });
         for (auto it = state.parts.begin(); it != state.parts.end();) {
             if (it->npairs() == 0) {
+                state.part_end_keys.erase(&*it);
                 it = state.parts.erase(it);
             } else {
                 ++it;
@@ -843,12 +855,13 @@ Dur full_repartition(Partitioning& parts, DistributedData& data, const Query qry
                 const auto carved = find_relatively_hot_ranges(state.parts.begin(), state.parts.end(), hot_npairs, nr_relative_hots,
                     [&](auto range_it, PairsRange hot_range, uint32_t load) {
                         const bool end_at_range_end = (hot_range.end() == range_it->PairsRange::end());
+                        const Key current_part_end = state.part_end_keys.at(&*range_it);
 
                         SrcNewHotRange src_hot;
                         src_hot.hot.pairs_range = hot_range;
                         src_hot.hot.key_range = KeyRange{
                             hot_range.begin()->key,
-                            end_at_range_end ? (hot_range.end() - 1)->key
+                            end_at_range_end ? current_part_end
                                              : prev_key(hot_range.end()->key)};
                         src_hot.hot.load = load;
                         src_hot.src_dpu = idx_dpu;
@@ -866,28 +879,42 @@ Dur full_repartition(Partitioning& parts, DistributedData& data, const Query qry
                 if (left_range == right_range) {
                     if (right != left_range->end()) {
                         if (left != left_range->begin()) {
-                            state.parts.insert(left_range, ChunkedPairsRange{left_range->begin(), left});
+                            // 新 left cold 断片: 左 = 旧 left_range と同じ、
+                            // 右 = hot の開始 (left.begin()->key) の直前。
+                            const auto new_it = state.parts.insert(left_range, ChunkedPairsRange{left_range->begin(), left});
+                            state.part_end_keys.emplace(&*new_it, prev_key(left.begin()->key));
                         }
+                        // *left_range は右 cold 残余になる; delim 側右端は変わらない。
                         *left_range = ChunkedPairsRange{right, left_range->end()};
                     } else {
                         if (left != left_range->begin()) {
+                            // 残余は左 [begin, left)。右端は hot の直前 (= left の開始 key の直前)。
                             *left_range = ChunkedPairsRange{left_range->begin(), left};
+                            state.part_end_keys.at(&*left_range) = prev_key(left.begin()->key);
                         } else {
+                            state.part_end_keys.erase(&*left_range);
                             state.parts.erase(left_range);
                         }
                     }
                 } else {
+                    // left_range..right_range の間の中間 range は全て carve-out 済。
                     for (auto range = std::next(left_range); range != right_range;) {
+                        state.part_end_keys.erase(&*range);
                         range = state.parts.erase(range);
                     }
                     if (right != right_range->end()) {
+                        // right_range は右 cold 残余に縮退。delim 側右端は不変。
                         *right_range = ChunkedPairsRange{right, right_range->end()};
                     } else {
+                        state.part_end_keys.erase(&*right_range);
                         state.parts.erase(right_range);
                     }
                     if (left != left_range->begin()) {
+                        // left_range は左 cold 残余に縮退。delim 側右端は hot 開始の直前へ更新。
                         *left_range = ChunkedPairsRange{left_range->begin(), left};
+                        state.part_end_keys.at(&*left_range) = prev_key(left.begin()->key);
                     } else {
+                        state.part_end_keys.erase(&*left_range);
                         state.parts.erase(left_range);
                     }
                 }
@@ -1243,12 +1270,16 @@ Dur rebalancing(Partitioning& parts, DistributedData& data, const Query qrys[], 
         find_absolutely_hot_ranges(state.parts.begin(), state.parts.end(), hot_npairs, hot_load,
             [&](auto part_it, DataChunkIterator begin, DataChunkIterator end, uint32_t load) {
                 const bool end_at_range_end = (end == part_it->end());
+                // full_repartition 側と同じ理由で cold partition の delim 側
+                // 右境界を参照し、データ末尾と partition 終端の間にあるキー
+                // 非存在領域を hot 範囲に取り込む。
+                const Key current_part_end = state.part_end_keys.at(&*part_it);
 
                 SrcNewHotRange src_hot;
                 src_hot.hot.pairs_range = PairsRange{begin->begin(), end->begin()};
                 src_hot.hot.key_range = KeyRange{
                     src_hot.hot.pairs_range.begin()->key,
-                    end_at_range_end ? (src_hot.hot.pairs_range.end() - 1)->key
+                    end_at_range_end ? current_part_end
                                      : prev_key(src_hot.hot.pairs_range.end()->key)};
                 src_hot.hot.load = load;
                 src_hot.src_dpu = idx_dpu;
@@ -1258,13 +1289,15 @@ Dur rebalancing(Partitioning& parts, DistributedData& data, const Query qrys[], 
                 cold_load -= load;
 
                 if (begin != part_it->begin()) {
-                    state.parts.insert(part_it, ChunkedPairsRange{part_it->begin(), begin});
+                    const auto new_it = state.parts.insert(part_it, ChunkedPairsRange{part_it->begin(), begin});
+                    state.part_end_keys.emplace(&*new_it, prev_key(begin->begin()->key));
                 }
                 *part_it = ChunkedPairsRange{end, part_it->end()};
                 return cold_load > cold_load_goal;
             });
         for (auto it = state.parts.begin(); it != state.parts.end();) {
             if (it->npairs() == 0) {
+                state.part_end_keys.erase(&*it);
                 it = state.parts.erase(it);
             } else {
                 ++it;
@@ -1277,12 +1310,13 @@ Dur rebalancing(Partitioning& parts, DistributedData& data, const Query qrys[], 
                 const auto carved = find_relatively_hot_ranges(state.parts.begin(), state.parts.end(), hot_npairs, nr_relative_hots,
                     [&](auto range_it, PairsRange hot_range, uint32_t load) {
                         const bool end_at_range_end = (hot_range.end() == range_it->PairsRange::end());
+                        const Key current_part_end = state.part_end_keys.at(&*range_it);
 
                         SrcNewHotRange src_hot;
                         src_hot.hot.pairs_range = hot_range;
                         src_hot.hot.key_range = KeyRange{
                             hot_range.begin()->key,
-                            end_at_range_end ? (hot_range.end() - 1)->key
+                            end_at_range_end ? current_part_end
                                              : prev_key(hot_range.end()->key)};
                         src_hot.hot.load = load;
                         src_hot.src_dpu = idx_dpu;
@@ -1300,28 +1334,35 @@ Dur rebalancing(Partitioning& parts, DistributedData& data, const Query qrys[], 
                 if (left_range == right_range) {
                     if (right != left_range->end()) {
                         if (left != left_range->begin()) {
-                            state.parts.insert(left_range, ChunkedPairsRange{left_range->begin(), left});
+                            const auto new_it = state.parts.insert(left_range, ChunkedPairsRange{left_range->begin(), left});
+                            state.part_end_keys.emplace(&*new_it, prev_key(left.begin()->key));
                         }
                         *left_range = ChunkedPairsRange{right, left_range->end()};
                     } else {
                         if (left != left_range->begin()) {
                             *left_range = ChunkedPairsRange{left_range->begin(), left};
+                            state.part_end_keys.at(&*left_range) = prev_key(left.begin()->key);
                         } else {
+                            state.part_end_keys.erase(&*left_range);
                             state.parts.erase(left_range);
                         }
                     }
                 } else {
                     for (auto range = std::next(left_range); range != right_range;) {
+                        state.part_end_keys.erase(&*range);
                         range = state.parts.erase(range);
                     }
                     if (right != right_range->end()) {
                         *right_range = ChunkedPairsRange{right, right_range->end()};
                     } else {
+                        state.part_end_keys.erase(&*right_range);
                         state.parts.erase(right_range);
                     }
                     if (left != left_range->begin()) {
                         *left_range = ChunkedPairsRange{left_range->begin(), left};
+                        state.part_end_keys.at(&*left_range) = prev_key(left.begin()->key);
                     } else {
+                        state.part_end_keys.erase(&*left_range);
                         state.parts.erase(left_range);
                     }
                 }

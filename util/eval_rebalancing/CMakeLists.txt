@@ -8,3 +8,5 @@ target_link_libraries(eval_rebalancing
     util
     cmdline
 )
+
+add_subdirectory(test)
