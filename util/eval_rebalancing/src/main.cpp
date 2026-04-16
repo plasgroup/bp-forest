@@ -1491,6 +1491,8 @@ int main(int argc, char* argv[])
             opt.batch_spec);
     };
 
+    std::cout << "inject_time,batch_idx,batch_size,imbalance,est_batch,est_rebalance,total_load" << std::endl;
+
     for (size_t batch_idx = 0, offset = 0; offset < queries.length; ++batch_idx) {
         const Dur inject_time = virtual_clock;
         const size_t current_batch_size = next_batch_size(queries.length - offset);
@@ -1522,13 +1524,13 @@ int main(int argc, char* argv[])
         const double avg_load = static_cast<double>(sum_load) / static_cast<double>(parts.ndpus());
         const double imbalance = avg_load == 0.0 ? 0.0 : static_cast<double>(max_load) / avg_load;
 
-        std::cout << "Batch " << batch_idx
-                  << " inject_time[ns]=" << inject_time.count()
-                  << " batch_size=" << current_batch_size
-                  << " imbalance=" << imbalance
-                  << " est_batch[ns]=" << batch_time.count()
-                  << " est_rebalance[ns]=" << rebalance_time.count()
-                  << " total_load=" << total_load
+        std::cout << inject_time.count() << ","
+                  << batch_idx << ","
+                  << current_batch_size << ","
+                  << imbalance << ","
+                  << batch_time.count() << ","
+                  << rebalance_time.count() << ","
+                  << total_load
                   << std::endl;
 
         offset += current_batch_size;
