@@ -46,10 +46,18 @@ void verify(const DistributedData& in, const std::vector<KVPair>& out)
     assert(actual_pairs == expected_pairs);
 }
 
+void assert_all_empty(const DistributedData& d)
+{
+    for (const auto& m : d.cold) assert(m.empty());
+    for (const auto& m : d.hot) assert(m.empty());
+}
+
 void run_and_verify(const DistributedData& in)
 {
-    const auto out = collect_all_data(in);
+    DistributedData copy = in;
+    const auto out = collect_all_data(copy);
     verify(in, out);
+    assert_all_empty(copy);
 }
 
 void test_E1_ndpus_zero()
@@ -71,11 +79,13 @@ void test_E3_cold_empty_only_hot()
     DistributedData d = make_dd(2);
     d.hot[0][10] = 100;
     d.hot[1][20] = 200;
+    const DistributedData saved = d;
     const auto out = collect_all_data(d);
     assert(out.size() == 2);
     assert(out[0].key == 10 && out[0].value == 100);
     assert(out[1].key == 20 && out[1].value == 200);
-    verify(d, out);
+    verify(saved, out);
+    assert_all_empty(d);
 }
 
 void test_E4_hot_empty_only_cold()
@@ -83,11 +93,13 @@ void test_E4_hot_empty_only_cold()
     DistributedData d = make_dd(2);
     d.cold[0][5] = 50;
     d.cold[1][15] = 150;
+    const DistributedData saved = d;
     const auto out = collect_all_data(d);
     assert(out.size() == 2);
     assert(out[0].key == 5 && out[0].value == 50);
     assert(out[1].key == 15 && out[1].value == 150);
-    verify(d, out);
+    verify(saved, out);
+    assert_all_empty(d);
 }
 
 void test_S1_single_dpu_cold_only()
@@ -173,6 +185,7 @@ void test_B1_one_dpu_large()
         assert(out[i].key == static_cast<Key>(i));
         assert(out[i].value == static_cast<Value>(i * 2));
     }
+    assert_all_empty(d);
 }
 
 void test_B2_asymmetric_two_dpus()
@@ -184,9 +197,11 @@ void test_B2_asymmetric_two_dpus()
     for (size_t i = 100; i < 1100; ++i) {
         d.cold[1][static_cast<Key>(i)] = static_cast<Value>(10 * i);
     }
+    const DistributedData saved = d;
     const auto out = collect_all_data(d);
     assert(out.size() == 1003);
-    run_and_verify(d);
+    verify(saved, out);
+    assert_all_empty(d);
 }
 
 void test_K1_descending_dpu_id()
@@ -222,6 +237,7 @@ void test_K3_extreme_key_values()
     assert(out.size() == 2);
     assert(out[0].key == 0 && out[0].value == 42);
     assert(out[1].key == std::numeric_limits<Key>::max() && out[1].value == 43);
+    assert_all_empty(d);
 }
 
 void test_K4_large_k()
@@ -231,12 +247,14 @@ void test_K4_large_k()
         d.cold[i][static_cast<Key>(2 * i)] = static_cast<Value>(i);
         d.hot[i][static_cast<Key>(2 * i + 1)] = static_cast<Value>(i + 100);
     }
+    const DistributedData saved = d;
     const auto out = collect_all_data(d);
     assert(out.size() == 32);
     for (size_t i = 0; i < 32; ++i) {
         assert(out[i].key == static_cast<Key>(i));
     }
-    run_and_verify(d);
+    verify(saved, out);
+    assert_all_empty(d);
 }
 }  // namespace
 

@@ -14,7 +14,7 @@ struct DistributedData {
     std::vector<std::map<Key, Value>> cold, hot;
 };
 
-inline std::vector<KVPair> collect_all_data(const DistributedData& data)
+inline std::vector<KVPair> collect_all_data(DistributedData&& data)
 {
     // data.cold[i] と data.hot[i] はいずれも std::map なので key 昇順ソート済み
     // である。各 DPU の cold/hot を 2*ndpus 本のソート済み列とみなし、min-heap
@@ -23,25 +23,19 @@ inline std::vector<KVPair> collect_all_data(const DistributedData& data)
     // N に対して k は独立な値 (DPU 数) なので N の漸近計算量は O(N) となる。
     // 以前の std::sort 実装は O(N log N) だったため、この関数内で N に対する
     // 漸近計算量が悪化していた点を改善する。
-    using MapIt = std::map<Key, Value>::const_iterator;
-    struct Cursor {
-        MapIt it;
-        MapIt end;
-    };
-
     size_t total = 0;
-    std::vector<Cursor> cursors;
+    std::vector<std::map<Key, Value>*> cursors;
     cursors.reserve(data.cold.size() + data.hot.size());
     for (size_t i = 0; i < data.cold.size(); ++i) {
         total += data.cold[i].size();
         if (!data.cold[i].empty()) {
-            cursors.push_back(Cursor{data.cold[i].cbegin(), data.cold[i].cend()});
+            cursors.push_back(&data.cold[i]);
         }
     }
     for (size_t i = 0; i < data.hot.size(); ++i) {
         total += data.hot[i].size();
         if (!data.hot[i].empty()) {
-            cursors.push_back(Cursor{data.hot[i].cbegin(), data.hot[i].cend()});
+            cursors.push_back(&data.hot[i]);
         }
     }
 
@@ -56,17 +50,17 @@ inline std::vector<KVPair> collect_all_data(const DistributedData& data)
         heap.push_back(i);
     }
     auto cmp = [&](size_t a, size_t b) {
-        return cursors[a].it->first > cursors[b].it->first;
+        return cursors[a]->begin()->first > cursors[b]->begin()->first;
     };
     std::make_heap(heap.begin(), heap.end(), cmp);
 
     while (!heap.empty()) {
         std::pop_heap(heap.begin(), heap.end(), cmp);
         const size_t idx = heap.back();
-        Cursor& cur = cursors[idx];
-        all.push_back(KVPair{cur.it->first, cur.it->second});
-        ++cur.it;
-        if (cur.it == cur.end) {
+        std::map<Key, Value>* const cur = cursors[idx];
+        const auto node = cur->extract(cur->begin());
+        all.push_back(KVPair{node.key(), node.mapped()});
+        if (cur->empty()) {
             heap.pop_back();
         } else {
             std::push_heap(heap.begin(), heap.end(), cmp);

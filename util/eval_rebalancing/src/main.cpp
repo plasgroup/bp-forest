@@ -1,9 +1,9 @@
 #define NR_RANKS 10
 
-#include "collect_all_data.hpp"
-#include "filesystem.hpp"
 #include "assert.hpp"
+#include "collect_all_data.hpp"
 #include "common.h"
+#include "filesystem.hpp"
 #include "host_params.hpp"
 #include "overload.hpp"
 #include "pimtree_query.hpp"
@@ -172,10 +172,13 @@ Dur rebalancing(Partitioning& parts, DistributedData& data, const Query qrys[], 
 namespace
 {
 constexpr Key kKeyMax = std::numeric_limits<Key>::max();
-constexpr uint32_t kPointWeightNs = 100;
-constexpr uint32_t kScanWeightNs = 200;
-constexpr uint32_t kModifyWeightNs = 300;
-constexpr uint32_t kRebalancePerPairNs = 100;
+constexpr uint32_t kPointWeightNs = 8000;
+constexpr uint32_t kScanWeightNs = 10000;
+constexpr uint32_t kModifyWeightNs = 12000;
+constexpr uint32_t cBatchNs = 4'000'000;
+constexpr uint32_t kFullRebalancePerPairNs = 7;
+constexpr uint32_t kIncRebalancePerPairNs = 60;
+constexpr uint32_t cIncRebalance = 500'000'000;
 
 inline Key point_key(const operation& op)
 {
@@ -810,15 +813,17 @@ void move_hot_range(DistributedData& data, const unsigned src_dpu, const unsigne
     auto first = data.cold[src_dpu].lower_bound(begin_key);
     const auto last = data.cold[src_dpu].upper_bound(end_key);
     while (first != last) {
-        data.hot[dst_dpu].insert(*first);
-        first = data.cold[src_dpu].erase(first);
+        const auto next = std::next(first);
+        auto node = data.cold[src_dpu].extract(first);
+        data.hot[dst_dpu].insert(data.hot[dst_dpu].end(), std::move(node));
+        first = next;
     }
 }
 
 template <typename Query>
 Dur full_repartition(Partitioning& parts, DistributedData& data, const Query qrys[], const size_t nqrys, QueryHandler<Query>& hdr)
 {
-    const std::vector<KVPair> all = collect_all_data(data);
+    const std::vector<KVPair> all = collect_all_data(std::move(data));
     parts = equal_data_partitions(parts.ndpus(), all.data(), all.size());
     data = apply_partitioning(parts, all.data(), all.size());
 
@@ -974,7 +979,6 @@ Dur full_repartition(Partitioning& parts, DistributedData& data, const Query qry
         [](const auto& lhs, const auto& rhs) { return lhs.second < rhs.second; });
     std::sort(new_hots.begin(), new_hots.end(), [](const auto& lhs, const auto& rhs) { return lhs.hot.load > rhs.hot.load; });
 
-    uint64_t moved_pairs = 0;
     for (size_t idx_hot = 0; idx_hot < new_hots.size(); ++idx_hot) {
         const unsigned dst_dpu = cold_loads[idx_hot].first;
         const auto& src_hot = new_hots[idx_hot];
@@ -986,10 +990,9 @@ Dur full_repartition(Partitioning& parts, DistributedData& data, const Query qry
             parts.delims.emplace(Delim{cold_resume_key, DelimType::Cold}, PartInfo{src_hot.src_dpu});
         }
         move_hot_range(data, src_hot.src_dpu, dst_dpu, begin_key, end_key);
-        moved_pairs += src_hot.npairs();
     }
 
-    return Dur{static_cast<Dur::rep>(moved_pairs * kRebalancePerPairNs)};
+    return std::chrono::duration_cast<Dur>(std::chrono::duration<uint64_t, std::nano>{all.size() * kFullRebalancePerPairNs});
 }
 }  // namespace
 
@@ -1106,7 +1109,7 @@ struct QueryHandler<operation> {
             }
             max_cost = std::max(max_cost, cost);
         }
-        return Dur{static_cast<Dur::rep>(max_cost)};
+        return std::chrono::duration_cast<Dur>(std::chrono::duration<uint64_t, std::nano>{max_cost + cBatchNs});
     }
 
     uint64_t total_load_in_batch() const
@@ -1229,7 +1232,7 @@ inline DistributedData apply_partitioning(const Partitioning& parts, const KVPai
                                                                             [](const KVPair& pair, const Key key) { return pair.key < key; });
 
         for (; data_cursor < part_end; ++data_cursor) {
-            target.emplace(data_cursor->key, data_cursor->value);
+            target.emplace_hint(target.end(), data_cursor->key, data_cursor->value);
         }
     }
 
@@ -1267,12 +1270,14 @@ Dur rebalancing(Partitioning& parts, DistributedData& data, const Query qrys[], 
     const uint32_t cold_nqrys_goal = static_cast<uint32_t>(nqrys * std::max(3u, opt.balancing + 1) / 3 / parts.ndpus());
     const uint32_t cold_nqrys_threshold = static_cast<uint32_t>(cold_nqrys_goal * opt.high_watermark_ratio);
 
+    uint64_t moved_pairs = 0;
     std::vector<BaseColdState> states(parts.ndpus());
     std::vector<unsigned> overloaded;
     overloaded.reserve(parts.ndpus());
     for (unsigned i_dpu = 0; i_dpu < parts.ndpus(); ++i_dpu) {
         if (routed.cold[i_dpu].sub_qrys.size() > cold_nqrys_threshold) {
             overloaded.push_back(i_dpu);
+            moved_pairs += data.cold[i_dpu].size();
         }
     }
     if (overloaded.empty()) {
@@ -1412,7 +1417,8 @@ Dur rebalancing(Partitioning& parts, DistributedData& data, const Query qrys[], 
 
         cold_loads[idx_dpu] = {idx_dpu, cold_load};
         if (nr_existing_hots + new_hots.size() > parts.ndpus()) {
-            return full_repartition(parts, data, qrys, nqrys, hdr);
+            return full_repartition(parts, data, qrys, nqrys, hdr)
+                   + std::chrono::duration_cast<Dur>(std::chrono::duration<uint64_t, std::nano>{moved_pairs * kIncRebalancePerPairNs + cIncRebalance} * 6/10);
         }
     }
 
@@ -1431,7 +1437,6 @@ Dur rebalancing(Partitioning& parts, DistributedData& data, const Query qrys[], 
         [](const auto& lhs, const auto& rhs) { return lhs.second < rhs.second; });
     std::sort(new_hots.begin(), new_hots.end(), [](const auto& lhs, const auto& rhs) { return lhs.hot.load > rhs.hot.load; });
 
-    uint64_t moved_pairs = 0;
     for (size_t idx_hot = 0; idx_hot < new_hots.size(); ++idx_hot) {
         const unsigned idx_dpu = cold_loads[idx_hot].first;
         const auto& src_hot = new_hots[idx_hot];
@@ -1445,10 +1450,9 @@ Dur rebalancing(Partitioning& parts, DistributedData& data, const Query qrys[], 
         }
 
         move_hot_range(data, src_hot.src_dpu, idx_dpu, begin_key, end_key);
-        moved_pairs += src_hot.npairs();
     }
 
-    return Dur{static_cast<Dur::rep>(moved_pairs * kRebalancePerPairNs)};
+    return std::chrono::duration_cast<Dur>(std::chrono::duration<uint64_t, std::nano>{moved_pairs * kIncRebalancePerPairNs + cIncRebalance});
 }
 
 int main(int argc, char* argv[])
@@ -1468,15 +1472,15 @@ int main(int argc, char* argv[])
     QueryHandler<operation> hdr{opt.commutative, {}, 0};
 
     std::mt19937_64 gen;
-    Dur virtual_clock{0};
+    Dur virtual_clock{800'000};
     Dur virtual_clock_at_last_sample{0};
 
     auto next_batch_size = [&](size_t remaining) -> size_t {
         return std::visit(overload(
-                              [&](const size_t& fixed) -> size_t {
+                              [&](size_t& fixed) -> size_t {
                                   return std::min(fixed, remaining);
                               },
-                              [&](const double& rate) -> size_t {
+                              [&](double& rate) -> size_t {
                                   const Dur elapsed = virtual_clock - virtual_clock_at_last_sample;
                                   const double elapsed_sec = std::chrono::duration_cast<std::chrono::duration<double>>(elapsed).count();
                                   const double mean = rate * elapsed_sec;
@@ -1496,15 +1500,20 @@ int main(int argc, char* argv[])
         const RoutedQueries<operation> routed = route_queries(parts, hdr, batch_queries, current_batch_size);
         hdr.on_batch_end();
 
-        const Dur batch_time = hdr.estimate_batch_time(routed);
         const Dur rebalance_time = rebalancing(parts, data, batch_queries, current_batch_size, routed, hdr);
+
+        hdr.on_batch_begin();
+        const RoutedQueries<operation> rerouted = route_queries(parts, hdr, batch_queries, current_batch_size);
+        hdr.on_batch_end();
+        const Dur batch_time = hdr.estimate_batch_time(rerouted);
+
         virtual_clock += batch_time + rebalance_time;
         const uint64_t total_load = hdr.total_load_in_batch();
 
         std::vector<size_t> cold_load(parts.ndpus()), hot_load(parts.ndpus()), total(parts.ndpus());
         for (unsigned dpu = 0; dpu < parts.ndpus(); ++dpu) {
-            cold_load[dpu] = routed.cold[dpu].sub_qrys.size();
-            hot_load[dpu] = routed.hot[dpu].sub_qrys.size();
+            cold_load[dpu] = rerouted.cold[dpu].sub_qrys.size();
+            hot_load[dpu] = rerouted.hot[dpu].sub_qrys.size();
             total[dpu] = cold_load[dpu] + hot_load[dpu];
         }
 
