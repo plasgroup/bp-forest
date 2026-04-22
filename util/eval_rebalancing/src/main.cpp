@@ -187,7 +187,9 @@ struct QueryHandler;
 
 std::vector<KVPair> load_kv_data(const std::string& path);
 Partitioning equal_data_partitions(unsigned ndpus, const KVPair sorted_data[], size_t ndata);
+Partitioning equal_data_partitions(unsigned ndpus, const std::vector<MapNode>& sorted);
 DistributedData apply_partitioning(const Partitioning& parts, const KVPair sorted_data[], size_t ndata);
+DistributedData apply_partitioning_nodes(const Partitioning& parts, std::vector<MapNode>&& sorted);
 template <typename Query>
 RoutedQueries<Query> route_queries(const Partitioning& parts, QueryHandler<Query>& hdr, const Query qrys[], size_t nqrys);
 template <typename Query>
@@ -848,9 +850,9 @@ void move_hot_range(DistributedData& data, const unsigned src_dpu, const unsigne
 template <typename Query>
 Dur full_repartition(Partitioning& parts, DistributedData& data, const Query qrys[], const size_t nqrys, QueryHandler<Query>& hdr)
 {
-    const std::vector<KVPair> all = collect_all_data(std::move(data));
-    parts = equal_data_partitions(parts.ndpus(), all.data(), all.size());
-    data = apply_partitioning(parts, all.data(), all.size());
+    std::vector<MapNode> all = collect_all_data(std::move(data));
+    parts = equal_data_partitions(parts.ndpus(), all);
+    data = apply_partitioning_nodes(parts, std::move(all));
 
     QueryHandler<Query> reroute_hdr = hdr;
     reroute_hdr.on_batch_begin();
@@ -1237,6 +1239,19 @@ inline Partitioning equal_data_partitions(const unsigned ndpus, const KVPair sor
     return result;
 }
 
+inline Partitioning equal_data_partitions(const unsigned ndpus, const std::vector<MapNode>& sorted)
+{
+    const size_t ndata = sorted.size();
+    ASSERT(ndata > 0);
+    Partitioning result;
+    for (unsigned i_dpu = 0; i_dpu < ndpus; ++i_dpu) {
+        const Key key = sorted[i_dpu * ndata / ndpus].key();
+        result.delims.emplace(Delim{key, DelimType::Base}, PartInfo{i_dpu});
+        result.delims.emplace(Delim{key, DelimType::Cold}, PartInfo{i_dpu});
+    }
+    return result;
+}
+
 inline DistributedData apply_partitioning(const Partitioning& parts, const KVPair sorted_data[], const size_t ndata)
 {
     const size_t ndpus = parts.ndpus();
@@ -1258,6 +1273,37 @@ inline DistributedData apply_partitioning(const Partitioning& parts, const KVPai
 
         for (; data_cursor < part_end; ++data_cursor) {
             target.emplace_hint(target.end(), data_cursor->key, data_cursor->value);
+        }
+    }
+
+    return result;
+}
+
+inline DistributedData apply_partitioning_nodes(const Partitioning& parts, std::vector<MapNode>&& sorted)
+{
+    const size_t ndpus = parts.ndpus();
+
+    ASSERT(!sorted.empty());
+    auto data_cursor = sorted.begin();
+    const auto data_end = sorted.end();
+
+    DistributedData result;
+    result.cold.resize(ndpus);
+    result.hot.resize(ndpus);
+
+    for (auto it_delim = parts.delims.begin(); it_delim != parts.delims.end(); ++it_delim) {
+        DataMap& target = (it_delim->first.type == DelimType::Hot ? result.hot : result.cold)[it_delim->second.dpu];
+        const auto next_delim = std::next(it_delim);
+        const auto part_end = next_delim == parts.delims.end()
+                                  ? data_end
+                                  : std::lower_bound(data_cursor, data_end, next_delim->first.key,
+                                      [](const MapNode& node, const Key key) { return node.key() < key; });
+
+        // 各 partition 内では昇順で流し込むので target.end() は常に最適な hint
+        // となり、insert は O(1) amortized。ここで node 再確保を避けるのが本経路
+        // の狙い。
+        for (; data_cursor < part_end; ++data_cursor) {
+            target.insert(target.end(), std::move(*data_cursor));
         }
     }
 
@@ -1506,7 +1552,7 @@ int main(int argc, char* argv[])
             }),
         opt.threshold_spec);
 
-    const std::vector<KVPair> data_pairs = load_kv_data(opt.data_file);
+    std::vector<KVPair> data_pairs = load_kv_data(opt.data_file);
     if (data_pairs.empty()) {
         std::cerr << "data file is empty" << std::endl;
         return 1;
@@ -1514,6 +1560,7 @@ int main(int argc, char* argv[])
 
     Partitioning parts = equal_data_partitions(opt.ndpus, data_pairs.data(), data_pairs.size());
     DistributedData data = apply_partitioning(parts, data_pairs.data(), data_pairs.size());
+    std::vector<KVPair>{}.swap(data_pairs);
     const pimtree_queries queries = make_pimtree_queries(opt.workload_file);
     QueryHandler<operation> hdr{opt.commutative, {}, 0};
 

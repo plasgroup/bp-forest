@@ -9,22 +9,26 @@
 
 using Key = key_uint64_t;
 using Value = value_uint64_t;
+using DataMap = std::map<Key, Value>;
+using MapNode = DataMap::node_type;
 
 struct DistributedData {
-    std::vector<std::map<Key, Value>> cold, hot;
+    std::vector<DataMap> cold, hot;
 };
 
-inline std::vector<KVPair> collect_all_data(DistributedData&& data)
+inline std::vector<MapNode> collect_all_data(DistributedData&& data)
 {
     // data.cold[i] と data.hot[i] はいずれも std::map なので key 昇順ソート済み
     // である。各 DPU の cold/hot を 2*ndpus 本のソート済み列とみなし、min-heap
     // による k-way merge で一本のソート済み列に束ねる。
     // 計算量: N 個の要素を k = 2*ndpus 本の列からマージするので O(N log k)。
     // N に対して k は独立な値 (DPU 数) なので N の漸近計算量は O(N) となる。
-    // 以前の std::sort 実装は O(N log N) だったため、この関数内で N に対する
-    // 漸近計算量が悪化していた点を改善する。
+    //
+    // 戻り値は std::map の node_type のベクタ。KVPair へ詰め替えず node の
+    // 所有権のまま持ち回すことで、呼び出し側で別 map へ insert(std::move(node))
+    // した際に node 再確保 (N 回の heap alloc) を省ける。
     size_t total = 0;
-    std::vector<std::map<Key, Value>*> cursors;
+    std::vector<DataMap*> cursors;
     cursors.reserve(data.cold.size() + data.hot.size());
     for (size_t i = 0; i < data.cold.size(); ++i) {
         total += data.cold[i].size();
@@ -39,7 +43,7 @@ inline std::vector<KVPair> collect_all_data(DistributedData&& data)
         }
     }
 
-    std::vector<KVPair> all;
+    std::vector<MapNode> all;
     all.reserve(total);
 
     // heap[i] は cursors[i] が指す現在の key の位置を示す index。
@@ -57,9 +61,9 @@ inline std::vector<KVPair> collect_all_data(DistributedData&& data)
     while (!heap.empty()) {
         std::pop_heap(heap.begin(), heap.end(), cmp);
         const size_t idx = heap.back();
-        std::map<Key, Value>* const cur = cursors[idx];
-        const auto node = cur->extract(cur->begin());
-        all.push_back(KVPair{node.key(), node.mapped()});
+        DataMap* const cur = cursors[idx];
+        auto node = cur->extract(cur->begin());
+        all.push_back(std::move(node));
         if (cur->empty()) {
             heap.pop_back();
         } else {

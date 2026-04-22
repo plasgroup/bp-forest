@@ -19,7 +19,7 @@ DistributedData make_dd(size_t ndpus)
     return d;
 }
 
-void verify(const DistributedData& in, const std::vector<KVPair>& out)
+void verify(const DistributedData& in, const std::vector<MapNode>& out)
 {
     size_t expected = 0;
     for (const auto& m : in.cold) expected += m.size();
@@ -27,7 +27,7 @@ void verify(const DistributedData& in, const std::vector<KVPair>& out)
     assert(out.size() == expected);
 
     for (size_t i = 1; i < out.size(); ++i) {
-        assert(out[i - 1].key < out[i].key);
+        assert(out[i - 1].key() < out[i].key());
     }
 
     std::vector<std::pair<Key, Value>> expected_pairs;
@@ -42,7 +42,7 @@ void verify(const DistributedData& in, const std::vector<KVPair>& out)
 
     std::vector<std::pair<Key, Value>> actual_pairs;
     actual_pairs.reserve(out.size());
-    for (const auto& kv : out) actual_pairs.emplace_back(kv.key, kv.value);
+    for (const auto& n : out) actual_pairs.emplace_back(n.key(), n.mapped());
     assert(actual_pairs == expected_pairs);
 }
 
@@ -82,8 +82,8 @@ void test_E3_cold_empty_only_hot()
     const DistributedData saved = d;
     const auto out = collect_all_data(std::move(d));
     assert(out.size() == 2);
-    assert(out[0].key == 10 && out[0].value == 100);
-    assert(out[1].key == 20 && out[1].value == 200);
+    assert(out[0].key() == 10 && out[0].mapped() == 100);
+    assert(out[1].key() == 20 && out[1].mapped() == 200);
     verify(saved, out);
     assert_all_empty(d);
 }
@@ -96,8 +96,8 @@ void test_E4_hot_empty_only_cold()
     const DistributedData saved = d;
     const auto out = collect_all_data(std::move(d));
     assert(out.size() == 2);
-    assert(out[0].key == 5 && out[0].value == 50);
-    assert(out[1].key == 15 && out[1].value == 150);
+    assert(out[0].key() == 5 && out[0].mapped() == 50);
+    assert(out[1].key() == 15 && out[1].mapped() == 150);
     verify(saved, out);
     assert_all_empty(d);
 }
@@ -182,8 +182,8 @@ void test_B1_one_dpu_large()
     const auto out = collect_all_data(std::move(d));
     assert(out.size() == N);
     for (size_t i = 0; i < N; ++i) {
-        assert(out[i].key == static_cast<Key>(i));
-        assert(out[i].value == static_cast<Value>(i * 2));
+        assert(out[i].key() == static_cast<Key>(i));
+        assert(out[i].mapped() == static_cast<Value>(i * 2));
     }
     assert_all_empty(d);
 }
@@ -235,8 +235,8 @@ void test_K3_extreme_key_values()
     d.hot[1][std::numeric_limits<Key>::max()] = 43;
     const auto out = collect_all_data(std::move(d));
     assert(out.size() == 2);
-    assert(out[0].key == 0 && out[0].value == 42);
-    assert(out[1].key == std::numeric_limits<Key>::max() && out[1].value == 43);
+    assert(out[0].key() == 0 && out[0].mapped() == 42);
+    assert(out[1].key() == std::numeric_limits<Key>::max() && out[1].mapped() == 43);
     assert_all_empty(d);
 }
 
@@ -251,7 +251,7 @@ void test_K4_large_k()
     const auto out = collect_all_data(std::move(d));
     assert(out.size() == 32);
     for (size_t i = 0; i < 32; ++i) {
-        assert(out[i].key == static_cast<Key>(i));
+        assert(out[i].key() == static_cast<Key>(i));
     }
     verify(saved, out);
     assert_all_empty(d);
