@@ -166,4 +166,9 @@ struct LinkedList : LinkedNodeHeader {
     {
         LinkedNodeHeader::remove();
     }
+
+    bool empty() const
+    {
+        return begin() == end();
+    }
 };
