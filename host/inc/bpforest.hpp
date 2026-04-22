@@ -6,6 +6,7 @@
 #include "extendable_buffer.hpp"
 #include "host_params.hpp"
 #include "input_header.h"
+#include "overload_threshold.hpp"
 #include "pairs_range.hpp"
 #include "parallel.hpp"
 #include "partition.hpp"
@@ -98,7 +99,8 @@ using PartitionDelim = std::pair<key_uint64_t, std::variant<BasePartitionDelim, 
 struct BPForestParameter {
     unsigned balancing = 1;
     bool enable_incremental = true;
-    double high_watermark_ratio = 1.05;
+    // BPForest resolves this spec to a concrete policy at construction using ndpus.
+    OverloadThresholdSpec overload_threshold_spec = HighWatermarkRatio{1.05};
     unsigned nr_host_threads = 0;
 };
 struct BPForest : ParallelManager<BPForest> {
@@ -153,6 +155,8 @@ private:
     }();
 
     const Param param;
+
+    const OverloadThreshold overload_threshold{param.overload_threshold_spec, nr_base_parts, param.balancing};
 
     TaskID last_qry_type = TASK_NONE;
     QueryData<key_uint64_t, value_uint64_t> get_queries{nr_base_parts, get_parallelism()};

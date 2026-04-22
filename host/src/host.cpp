@@ -73,17 +73,15 @@ struct BPForestOption {
     {
         a.add<unsigned>("balancing-param", 'a', "the tunable parameter for compute/memory load balancing in B+-Forest", false, 1);
         a.add<bool>("incremental", 0, "whether to enable incremental rebalancing", false, true);
-        a.add<double>("high-watermark", 0, "rebalance when the load on cold partitions exceeds (this value) times the expected load", false, 1.05);
+        add_overload_threshold_options(a);
         a.add<unsigned>("nr-host-threads", 't', "num of threads used in pre/post-processing in B+-Forest", false, 0);
     }
     void set_options(cmdline::parser& a)
     {
         param.balancing = a.get<unsigned>("balancing-param");
         param.enable_incremental = a.get<bool>("incremental");
-        param.high_watermark_ratio = a.get<double>("high-watermark");
         param.nr_host_threads = a.get<unsigned>("nr-host-threads");
-
-        ASSERT(param.high_watermark_ratio > 1);
+        param.overload_threshold_spec = parse_overload_threshold_spec(a).value_or(HighWatermarkRatio{1.05});
     }
 
     BPForest::Param param;

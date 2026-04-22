@@ -19,7 +19,7 @@
 // Solving the quadratic yields the closed form
 //   t  =  L/3  +  sqrt(L^2/9 + 2*sigma2*L).
 // T_count = ceil(lambda + t) is the smallest count treated as overload.
-// main.cpp fires on "count > threshold", so the stored threshold is
+// Callers fire on "count > threshold", so the stored threshold is
 //   threshold = T_count - 1.
 struct NoiseParams {
     double p;
@@ -56,7 +56,7 @@ struct NoiseParams {
         return static_cast<uint32_t>(raw);
     }
 
-    // Threshold under the "count > threshold" fire rule in main.cpp.
+    // Threshold under the "count > threshold" fire rule.
     uint32_t stored_threshold(std::size_t batch_size) const
     {
         const uint32_t tc = threshold_count(batch_size);

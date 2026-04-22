@@ -1686,10 +1686,11 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             // here separately. This is not the same metric used later in load estimation (which counts
             // original endpoints falling into the base range), so the two thresholds are not directly
             // comparable. Skipping DPUs below this threshold may drop some that the later load-based
-            // check would have kept; the `high_watermark_ratio` slack deliberately broadens this skip
+            // check would have kept; the overload threshold slack deliberately broadens this skip
             // to reduce the set of rebalanced DPUs.
-            const uint32_t cold_partial_cnt_goal = nr_queries * std::max(3u, param.balancing + 1) / 3 / nr_base_parts,
-                           cold_partial_cnt_threshold = cold_partial_cnt_goal * param.high_watermark_ratio;
+            const uint32_t cold_partial_cnt_goal = nr_queries * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
+            const uint32_t cold_partial_cnt_threshold
+                = overload_threshold.threshold_for(nr_queries, cold_partial_cnt_goal);
             dpu_id_t serialized_cold_count = 0, incision_count = 0;
             for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
                 InputHeader& input = input_headers[idx_dpu];
@@ -2221,9 +2222,10 @@ inline void BPForest::print_params(std::ostream& ostr) const
 #endif
             "param.balancing: " << param.balancing << "\n"
             "param.enable_incremental: " << param.enable_incremental << "\n"
-            "param.nr_host_threads: " << param.nr_host_threads << "\n"
-            "param.high_watermark_ratio: " << param.high_watermark_ratio << "\n"
-            "get_parallelism(): " << get_parallelism() << "\n"
+            "param.nr_host_threads: " << param.nr_host_threads << "\n";
+    print_overload_threshold_spec(ostr, param.overload_threshold_spec);
+    overload_threshold.print_resolution(ostr);
+    ostr << "get_parallelism(): " << get_parallelism() << "\n"
          << std::flush;
 #undef STRINGIFY
 #undef EXPAND_STRINGIFY

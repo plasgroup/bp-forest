@@ -5,8 +5,8 @@
 #include "common.h"
 #include "filesystem.hpp"
 #include "host_params.hpp"
-#include "noise_params.hpp"
 #include "overload.hpp"
+#include "overload_threshold.hpp"
 #include "pimtree_query.hpp"
 
 #include <cmdline.h>
@@ -65,7 +65,8 @@ struct CMDOpt {
     std::variant<size_t /* fixed batch size */, double /* Poisson query rate (op/s) */> batch_spec;
     unsigned ndpus{};
     unsigned balancing = 10;
-    std::variant<double /* legacy hwm ratio */, NoiseParams /* noise-aware */> threshold_spec;
+    OverloadThresholdSpec threshold_spec;
+    std::optional<OverloadThreshold> overload_threshold;
     bool commutative = false;
     bool enable_incremental = true;
 
@@ -80,8 +81,7 @@ struct CMDOpt {
         parser.add<std::optional<double>>("query-rate", 0, "average query arrival rate (op/s), Poisson sampled", false);
         parser.add<unsigned>("ndpus", 'n', "number of base DPUs", true);
         parser.add<unsigned>("balancing", 0, "balancing factor", false, 10);
-        parser.add<std::optional<double>>("fp-rate", 0, "target per-batch false-positive rate for overload detection: the probability of firing rebalance when the load is actually balanced. Mutually exclusive with --hwm-ratio. Default: 0.001.", false);
-        parser.add<std::optional<double>>("hwm-ratio", 0, "legacy overload threshold = per-DPU goal * r. Mutually exclusive with --fp-rate.", false);
+        add_overload_threshold_options(parser);
         parser.add("commutative", 'c', "treat scans as commutative");
         parser.add<bool>("incremental", 0, "whether to enable incremental rebalancing", false, true);
         parser.parse_check(argc, argv);
@@ -93,26 +93,8 @@ struct CMDOpt {
         commutative = parser.exist("commutative");
         enable_incremental = parser.get<bool>("incremental");
 
-        const auto fpr = parser.get<std::optional<double>>("fp-rate");
-        const auto hwm = parser.get<std::optional<double>>("hwm-ratio");
-        if (fpr && hwm) {
-            std::cerr << "must not set both --fp-rate and --hwm-ratio" << std::endl;
-            std::exit(1);
-        }
-        if (hwm) {
-            if (!(*hwm >= 1.0)) {
-                std::cerr << "--hwm-ratio must be >= 1.0" << std::endl;
-                std::exit(1);
-            }
-            threshold_spec = *hwm;
-        } else {
-            const double fp_rate = fpr.value_or(0.001);
-            if (!(fp_rate > 0.0 && fp_rate < 1.0)) {
-                std::cerr << "--fp-rate must be in (0, 1)" << std::endl;
-                std::exit(1);
-            }
-            threshold_spec = NoiseParams::compute(fp_rate, ndpus, balancing);
-        }
+        threshold_spec = parse_overload_threshold_spec(parser).value_or(FalsePositiveRate{0.001});
+        overload_threshold.emplace(threshold_spec, ndpus, balancing);
 
         const auto bs = parser.get<std::optional<size_t>>("batch-size");
         const auto qr = parser.get<std::optional<double>>("query-rate");
@@ -1293,11 +1275,7 @@ Dur rebalancing(Partitioning& parts, DistributedData& data, const Query qrys[], 
     }
 
     const uint32_t cold_nqrys_goal = static_cast<uint32_t>(nqrys * std::max(3u, opt.balancing + 1) / 3 / parts.ndpus());
-    const uint32_t cold_nqrys_threshold = std::visit(
-        overload(
-            [&](const double& hwm) { return static_cast<uint32_t>(cold_nqrys_goal * hwm); },
-            [&](const NoiseParams& np) { return np.stored_threshold(nqrys); }),
-        opt.threshold_spec);
+    const uint32_t cold_nqrys_threshold = opt.overload_threshold->threshold_for(nqrys, cold_nqrys_goal);
 
     uint64_t moved_pairs = 0;
     std::vector<BaseColdState> states(parts.ndpus());
@@ -1493,18 +1471,8 @@ int main(int argc, char* argv[])
     const CMDOpt parsed_opt{argc, argv};
     opt = parsed_opt;
 
-    std::visit(
-        overload(
-            [](const double& hwm) { std::cerr << "legacy threshold: hwm-ratio=" << hwm << std::endl; },
-            [](const NoiseParams& np) {
-                std::cerr << "noise-aware threshold:"
-                          << " p=" << np.p
-                          << " L=" << np.L
-                          << " K1=" << np.K1
-                          << " K2=" << np.K2
-                          << std::endl;
-            }),
-        opt.threshold_spec);
+    print_overload_threshold_spec(std::cerr, opt.threshold_spec);
+    opt.overload_threshold->print_resolution(std::cerr);
 
     const std::vector<KVPair> data_pairs = load_kv_data(opt.data_file);
     if (data_pairs.empty()) {
