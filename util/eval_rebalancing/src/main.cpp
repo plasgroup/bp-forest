@@ -177,8 +177,8 @@ constexpr uint32_t kScanWeightNs = 10000;
 constexpr uint32_t kModifyWeightNs = 12000;
 constexpr uint32_t cBatchNs = 4'000'000;
 constexpr uint32_t kFullRebalancePerPairNs = 7;
-constexpr uint32_t kIncRebalancePerPairNs = 60;
-constexpr uint32_t cIncRebalance = 500'000'000;
+constexpr uint32_t kIncRebalancePerPairNs = 80;
+constexpr uint32_t cIncRebalance = 700'000'000;
 
 inline Key point_key(const operation& op)
 {
@@ -1472,7 +1472,7 @@ int main(int argc, char* argv[])
     QueryHandler<operation> hdr{opt.commutative, {}, 0};
 
     std::mt19937_64 gen;
-    Dur virtual_clock{800'000};
+    Dur virtual_clock{500'000};
     Dur virtual_clock_at_last_sample{0};
 
     auto next_batch_size = [&](size_t remaining) -> size_t {
