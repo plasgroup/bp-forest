@@ -66,6 +66,7 @@ struct CMDOpt {
     unsigned balancing = 10;
     double high_watermark_ratio = 1.05;
     bool commutative = false;
+    bool enable_incremental = true;
 
     CMDOpt() = default;
 
@@ -80,6 +81,7 @@ struct CMDOpt {
         parser.add<unsigned>("balancing", 0, "balancing factor", false, 10);
         parser.add<double>("hwm-ratio", 0, "high watermark ratio", false, 1.05);
         parser.add("commutative", 'c', "treat scans as commutative");
+        parser.add<bool>("incremental", 0, "whether to enable incremental rebalancing", false, true);
         parser.parse_check(argc, argv);
 
         data_file = parser.get<std::string>("data");
@@ -88,6 +90,7 @@ struct CMDOpt {
         balancing = parser.get<unsigned>("balancing");
         high_watermark_ratio = parser.get<double>("hwm-ratio");
         commutative = parser.exist("commutative");
+        enable_incremental = parser.get<bool>("incremental");
 
         const auto bs = parser.get<std::optional<size_t>>("batch-size");
         const auto qr = parser.get<std::optional<double>>("query-rate");
@@ -1282,6 +1285,10 @@ Dur rebalancing(Partitioning& parts, DistributedData& data, const Query qrys[], 
     }
     if (overloaded.empty()) {
         return Dur{0};
+    }
+
+    if (!opt.enable_incremental) {
+        return full_repartition(parts, data, qrys, nqrys, hdr);
     }
 
     const uint32_t total_load = static_cast<uint32_t>(hdr.total_load_in_batch());
