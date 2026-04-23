@@ -1,8 +1,8 @@
 #define NR_RANKS 10
 
 #include "assert.hpp"
-#include "collect_all_data.hpp"
 #include "common.h"
+#include "rebuild_partitioning_nodes.hpp"
 #include "filesystem.hpp"
 #include "host_params.hpp"
 #include "noise_params.hpp"
@@ -134,44 +134,6 @@ struct CMDOpt {
 
 using Dur = std::chrono::nanoseconds;
 
-enum class DelimType {
-    Base,
-    Cold,
-    Hot,
-};
-struct Delim {
-    Key key;
-    DelimType type;
-
-    friend bool operator<(const Delim& lhs, const Delim& rhs)
-    {
-        return std::tie(lhs.key, lhs.type) < std::tie(rhs.key, rhs.type);
-    }
-};
-struct PartInfo {
-    unsigned dpu;
-};
-using Delims = std::map<Delim, PartInfo>;
-
-struct Partitioning {
-    Delims delims;
-
-    unsigned ndpus() const
-    {
-        const auto it = std::find_if(delims.rbegin(), delims.rend(), [](const auto& delim) { return delim.first.type == DelimType::Base; });
-        ASSERT(it != delims.rend());
-        return it->second.dpu + 1;
-    }
-    Delims::const_iterator get_base(Delims::const_iterator it) const
-    {
-        while (it != delims.begin() && it->first.type != DelimType::Base) {
-            --it;
-        }
-        ASSERT(it->first.type == DelimType::Base);
-        return it;
-    }
-};
-
 template <typename Query>
 struct RoutedQueries {
     struct PerDpu {
@@ -187,9 +149,7 @@ struct QueryHandler;
 
 std::vector<KVPair> load_kv_data(const std::string& path);
 Partitioning equal_data_partitions(unsigned ndpus, const KVPair sorted_data[], size_t ndata);
-Partitioning equal_data_partitions(unsigned ndpus, const std::vector<MapNode>& sorted);
 DistributedData apply_partitioning(const Partitioning& parts, const KVPair sorted_data[], size_t ndata);
-DistributedData apply_partitioning_nodes(const Partitioning& parts, std::vector<MapNode>&& sorted);
 template <typename Query>
 RoutedQueries<Query> route_queries(const Partitioning& parts, QueryHandler<Query>& hdr, const Query qrys[], size_t nqrys);
 template <typename Query>
@@ -850,9 +810,12 @@ void move_hot_range(DistributedData& data, const unsigned src_dpu, const unsigne
 template <typename Query>
 Dur full_repartition(Partitioning& parts, DistributedData& data, const Query qrys[], const size_t nqrys, QueryHandler<Query>& hdr)
 {
-    std::vector<MapNode> all = collect_all_data(std::move(data));
-    parts = equal_data_partitions(parts.ndpus(), all);
-    data = apply_partitioning_nodes(parts, std::move(all));
+    const unsigned ndpus = parts.ndpus();
+    auto rebuilt = rebuild_partitioning_nodes(std::move(data), ndpus);
+    parts = std::move(rebuilt.parts);
+    data = std::move(rebuilt.data);
+    size_t total_pairs = 0;
+    for (const auto& m : data.cold) total_pairs += m.size();
 
     QueryHandler<Query> reroute_hdr = hdr;
     reroute_hdr.on_batch_begin();
@@ -1019,7 +982,7 @@ Dur full_repartition(Partitioning& parts, DistributedData& data, const Query qry
         move_hot_range(data, src_hot.src_dpu, dst_dpu, begin_key, end_key);
     }
 
-    return std::chrono::duration_cast<Dur>(std::chrono::duration<uint64_t, std::nano>{all.size() * kFullRebalancePerPairNs});
+    return std::chrono::duration_cast<Dur>(std::chrono::duration<uint64_t, std::nano>{total_pairs * kFullRebalancePerPairNs});
 }
 }  // namespace
 
@@ -1239,19 +1202,6 @@ inline Partitioning equal_data_partitions(const unsigned ndpus, const KVPair sor
     return result;
 }
 
-inline Partitioning equal_data_partitions(const unsigned ndpus, const std::vector<MapNode>& sorted)
-{
-    const size_t ndata = sorted.size();
-    ASSERT(ndata > 0);
-    Partitioning result;
-    for (unsigned i_dpu = 0; i_dpu < ndpus; ++i_dpu) {
-        const Key key = sorted[i_dpu * ndata / ndpus].key();
-        result.delims.emplace(Delim{key, DelimType::Base}, PartInfo{i_dpu});
-        result.delims.emplace(Delim{key, DelimType::Cold}, PartInfo{i_dpu});
-    }
-    return result;
-}
-
 inline DistributedData apply_partitioning(const Partitioning& parts, const KVPair sorted_data[], const size_t ndata)
 {
     const size_t ndpus = parts.ndpus();
@@ -1273,37 +1223,6 @@ inline DistributedData apply_partitioning(const Partitioning& parts, const KVPai
 
         for (; data_cursor < part_end; ++data_cursor) {
             target.emplace_hint(target.end(), data_cursor->key, data_cursor->value);
-        }
-    }
-
-    return result;
-}
-
-inline DistributedData apply_partitioning_nodes(const Partitioning& parts, std::vector<MapNode>&& sorted)
-{
-    const size_t ndpus = parts.ndpus();
-
-    ASSERT(!sorted.empty());
-    auto data_cursor = sorted.begin();
-    const auto data_end = sorted.end();
-
-    DistributedData result;
-    result.cold.resize(ndpus);
-    result.hot.resize(ndpus);
-
-    for (auto it_delim = parts.delims.begin(); it_delim != parts.delims.end(); ++it_delim) {
-        DataMap& target = (it_delim->first.type == DelimType::Hot ? result.hot : result.cold)[it_delim->second.dpu];
-        const auto next_delim = std::next(it_delim);
-        const auto part_end = next_delim == parts.delims.end()
-                                  ? data_end
-                                  : std::lower_bound(data_cursor, data_end, next_delim->first.key,
-                                      [](const MapNode& node, const Key key) { return node.key() < key; });
-
-        // 各 partition 内では昇順で流し込むので target.end() は常に最適な hint
-        // となり、insert は O(1) amortized。ここで node 再確保を避けるのが本経路
-        // の狙い。
-        for (; data_cursor < part_end; ++data_cursor) {
-            target.insert(target.end(), std::move(*data_cursor));
         }
     }
 
