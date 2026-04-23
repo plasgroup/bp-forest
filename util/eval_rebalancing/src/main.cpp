@@ -1,8 +1,8 @@
 #define NR_RANKS 10
 
 #include "assert.hpp"
-#include "collect_all_data.hpp"
 #include "common.h"
+#include "rebuild_partitioning_nodes.hpp"
 #include "filesystem.hpp"
 #include "host_params.hpp"
 #include "overload.hpp"
@@ -115,44 +115,6 @@ struct CMDOpt {
 
 
 using Dur = std::chrono::nanoseconds;
-
-enum class DelimType {
-    Base,
-    Cold,
-    Hot,
-};
-struct Delim {
-    Key key;
-    DelimType type;
-
-    friend bool operator<(const Delim& lhs, const Delim& rhs)
-    {
-        return std::tie(lhs.key, lhs.type) < std::tie(rhs.key, rhs.type);
-    }
-};
-struct PartInfo {
-    unsigned dpu;
-};
-using Delims = std::map<Delim, PartInfo>;
-
-struct Partitioning {
-    Delims delims;
-
-    unsigned ndpus() const
-    {
-        const auto it = std::find_if(delims.rbegin(), delims.rend(), [](const auto& delim) { return delim.first.type == DelimType::Base; });
-        ASSERT(it != delims.rend());
-        return it->second.dpu + 1;
-    }
-    Delims::const_iterator get_base(Delims::const_iterator it) const
-    {
-        while (it != delims.begin() && it->first.type != DelimType::Base) {
-            --it;
-        }
-        ASSERT(it->first.type == DelimType::Base);
-        return it;
-    }
-};
 
 template <typename Query>
 struct RoutedQueries {
@@ -830,9 +792,12 @@ void move_hot_range(DistributedData& data, const unsigned src_dpu, const unsigne
 template <typename Query>
 Dur full_repartition(Partitioning& parts, DistributedData& data, const Query qrys[], const size_t nqrys, QueryHandler<Query>& hdr)
 {
-    const std::vector<KVPair> all = collect_all_data(std::move(data));
-    parts = equal_data_partitions(parts.ndpus(), all.data(), all.size());
-    data = apply_partitioning(parts, all.data(), all.size());
+    const unsigned ndpus = parts.ndpus();
+    auto rebuilt = rebuild_partitioning_nodes(std::move(data), ndpus);
+    parts = std::move(rebuilt.parts);
+    data = std::move(rebuilt.data);
+    size_t total_pairs = 0;
+    for (const auto& m : data.cold) total_pairs += m.size();
 
     QueryHandler<Query> reroute_hdr = hdr;
     reroute_hdr.on_batch_begin();
@@ -999,7 +964,7 @@ Dur full_repartition(Partitioning& parts, DistributedData& data, const Query qry
         move_hot_range(data, src_hot.src_dpu, dst_dpu, begin_key, end_key);
     }
 
-    return std::chrono::duration_cast<Dur>(std::chrono::duration<uint64_t, std::nano>{all.size() * kFullRebalancePerPairNs});
+    return std::chrono::duration_cast<Dur>(std::chrono::duration<uint64_t, std::nano>{total_pairs * kFullRebalancePerPairNs});
 }
 }  // namespace
 
@@ -1474,7 +1439,7 @@ int main(int argc, char* argv[])
     print_overload_threshold_spec(std::cerr, opt.threshold_spec);
     opt.overload_threshold->print_resolution(std::cerr);
 
-    const std::vector<KVPair> data_pairs = load_kv_data(opt.data_file);
+    std::vector<KVPair> data_pairs = load_kv_data(opt.data_file);
     if (data_pairs.empty()) {
         std::cerr << "data file is empty" << std::endl;
         return 1;
@@ -1482,6 +1447,7 @@ int main(int argc, char* argv[])
 
     Partitioning parts = equal_data_partitions(opt.ndpus, data_pairs.data(), data_pairs.size());
     DistributedData data = apply_partitioning(parts, data_pairs.data(), data_pairs.size());
+    std::vector<KVPair>{}.swap(data_pairs);
     const pimtree_queries queries = make_pimtree_queries(opt.workload_file);
     QueryHandler<operation> hdr{opt.commutative, {}, 0};
 
