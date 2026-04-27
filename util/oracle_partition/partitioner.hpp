@@ -839,7 +839,7 @@ public:
         std::vector<int64_t> sorted_workload = workload;
         std::sort(sorted_workload.begin(), sorted_workload.end());
 
-        auto [has_hot_partition, more_hot_partitions] = build_hot_partitions(keys, workload, base_partition);
+        auto [has_hot_partition, more_hot_partitions] = build_hot_partitions(keys, sorted_workload, base_partition);
         std::vector<partition_t> hot_partition = distribute_hot_partitions(keys, base_partition, has_hot_partition, more_hot_partitions, sorted_workload);
 
         partitions[0] = base_partition;
@@ -1336,41 +1336,44 @@ class HWCBPForestPartitioner : public Partitioner {
         }
 
         {
+            // Paper Alg.3 Phase 2 emission: for each carved window [l, r],
+            // emit every maximal non-hot run as a separate warm partition
+            // (i.e., (c_l..c_r \ h*) \ {∅}).
             auto hot_it = hot_partitions.begin();
-            // chunk_it_t left = best_left;
-            // chunk_it_t next = left;
             left_key_idx = best_left_key_idx;
             for (auto candidate_iter = candidates.crbegin(); candidate_iter != candidates.crend(); candidate_iter++) {
                 chunk_it_t left = candidate_iter->first, end = candidate_iter->second;
                 while (left != end) {
-                    while (hot_it != hot_partitions.end() && (*hot_it)->last_key(keys, last_key) < left->left_key)
-                        hot_it++;
-                    if (hot_it == hot_partitions.end() || left->left_key < (*hot_it)->first_key(keys, chunks.begin()->left_key))
+                    // skip leading hot chunks within this candidate
+                    while (left != end) {
+                        while (hot_it != hot_partitions.end() && (*hot_it)->last_key(keys, last_key) < left->left_key)
+                            hot_it++;
+                        if (hot_it == hot_partitions.end() || left->left_key < (*hot_it)->first_key(keys, chunks.begin()->left_key))
+                            break;
+                        left_key_idx += left->count;
+                        left++;
+                    }
+                    if (left == end)
                         break;
-                    left_key_idx += left->count;
-                    left++;
-                }
-                if (left == end) {
-                    printf("empty warm partition\n");
-                    continue;
-                }
-                chunk_it_t right = left;
-                size_t right_key_idx = left_key_idx;
-                while (right != end && (hot_it == hot_partitions.end() || right->left_key < (*hot_it)->first_key(keys, chunks.begin()->left_key))) {
-                    right_key_idx += right->count;
-                    right++;
-                }
 
-                size_t queries = count_queries_in_range(query_it, query_end, left->left_key, chunk_last_key(right, chunks.end(), last_key));
-                partition_t* warm = new partition_t(left_key_idx, right_key_idx, partition_t::WARM, right_key_idx - left_key_idx, queries);
-                warm->src_dpu = dpu_id;
-                found_warm.push_back(warm);
+                    // extend right to the next hot chunk or end of candidate
+                    chunk_it_t right = left;
+                    size_t right_key_idx = left_key_idx;
+                    while (right != end && (hot_it == hot_partitions.end() || right->left_key < (*hot_it)->first_key(keys, chunks.begin()->left_key))) {
+                        right_key_idx += right->count;
+                        right++;
+                    }
 
-                left = right;
-                left_key_idx = right_key_idx;
-                while (left != end) {
-                    left_key_idx += left->count;
-                    left++;
+                    // emit one non-hot run as a warm partition
+                    int64_t run_last_key = chunk_last_key(right - 1, chunks.end(), last_key);
+                    size_t queries = count_queries_in_range(query_it, query_end, left->left_key, run_last_key);
+                    partition_t* warm = new partition_t(left_key_idx, right_key_idx, partition_t::WARM, right_key_idx - left_key_idx, queries);
+                    warm->src_dpu = dpu_id;
+                    found_warm.push_back(warm);
+
+                    // continue searching for more non-hot runs in this candidate
+                    left = right;
+                    left_key_idx = right_key_idx;
                 }
             }
         }
