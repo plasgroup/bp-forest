@@ -18,6 +18,7 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <thread>
 #include <vector>
 
 
@@ -117,6 +118,7 @@ public:
     }
 
     size_t last_batch_size() { return last_batch_size_; }
+    virtual size_t outstanding() const { return 0; }
 };
 
 
@@ -404,37 +406,51 @@ template <class Benchmark>
 class PoissonArrival : public Benchmark
 {
     double query_rate;
+    size_t batch_cap;
+    size_t queue_size = 0;
 
     using Clock = std::chrono::high_resolution_clock;
     Clock::time_point prev_time;
 
     std::mt19937_64 gen;
 
+    size_t accumulate_arrivals()
+    {
+        const Clock::time_point now = Clock::now();
+        const double avg_nqrys = query_rate * std::chrono::duration_cast<std::chrono::duration<double>>(now - prev_time).count();
+        prev_time = now;
+        queue_size += std::poisson_distribution<size_t>{avg_nqrys}(gen);
+        return std::min(queue_size, batch_cap);
+    }
+
 public:
     template <typename... Args>
-    PoissonArrival(std::mt19937_64&& rand, double query_rate, Args&&... args) : Benchmark{std::forward<Args>(args)...}, query_rate{query_rate}, prev_time{Clock::now()}, gen{std::move(rand)}
+    PoissonArrival(std::mt19937_64&& rand, double query_rate, size_t batch_cap, Args&&... args)
+        : Benchmark{std::forward<Args>(args)...}, query_rate{query_rate}, batch_cap{batch_cap},
+          prev_time{Clock::now()}, gen{std::move(rand)}
     {
     }
     template <typename... Args>
-    PoissonArrival(double query_rate, Args&&... args) : PoissonArrival{std::mt19937_64{}, query_rate, std::forward<Args>(args)...}
+    PoissonArrival(double query_rate, size_t batch_cap, Args&&... args)
+        : PoissonArrival{std::mt19937_64{}, query_rate, batch_cap, std::forward<Args>(args)...}
     {
     }
 
     virtual bool do_one_batch(Database* db) override
     {
-        const Clock::time_point now = Clock::now();
-        const double avg_nqrys = query_rate * std::chrono::duration_cast<std::chrono::duration<double>>(now - prev_time).count();
-        const size_t batch_size = std::poisson_distribution<size_t>{avg_nqrys}(gen);
-        prev_time = std::move(now);
+        size_t batch_size;
+        while ((batch_size = accumulate_arrivals()) == 0) {
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
+        queue_size -= batch_size;
         return Benchmark::do_one_batch_impl(db, batch_size);
     }
 
+    size_t outstanding() const override { return queue_size; }
+
     void partition_with_next_batch(Database* db) override
     {
-        const Clock::time_point now = Clock::now();
-        const double avg_nqrys = query_rate * std::chrono::duration_cast<std::chrono::duration<double>>(now - prev_time).count();
-        const size_t batch_size = std::poisson_distribution<size_t>{avg_nqrys}(gen);
-
+        const size_t batch_size = std::min(accumulate_arrivals(), batch_cap);
         Benchmark::partition_with_next_batch_impl(db, batch_size);
     }
 };
