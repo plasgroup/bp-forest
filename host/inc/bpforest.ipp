@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <any>
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -53,6 +54,12 @@ inline void QueryDataPerRange<Query, Result>::clear()
         vec.clear();
     }
 }
+template <typename Query, typename Result>
+inline void QueryDataPerRange<Query, Result>::clear_for_thread(unsigned tid)
+{
+    qrys[tid].clear();
+    orig_idxs[tid].clear();
+}
 template <typename QandR>
 inline void QueryDataPerRange<QandR, QandR>::clear()
 {
@@ -63,12 +70,23 @@ inline void QueryDataPerRange<QandR, QandR>::clear()
         vec.clear();
     }
 }
+template <typename QandR>
+inline void QueryDataPerRange<QandR, QandR>::clear_for_thread(unsigned tid)
+{
+    qrys[tid].clear();
+    orig_idxs[tid].clear();
+}
 template <typename Query>
 inline void QueryDataPerRange<Query, void>::clear()
 {
     for (auto& vec : qrys) {
         vec.clear();
     }
+}
+template <typename Query>
+inline void QueryDataPerRange<Query, void>::clear_for_thread(unsigned tid)
+{
+    qrys[tid].clear();
 }
 template <typename Query, typename Result>
 inline QueryData<Query, Result>::QueryData(dpu_id_t nr_dpus, unsigned nr_threads)
@@ -98,6 +116,16 @@ inline void QueryData<Query, Result>::clear()
     }
     for (auto& per_part : hot) {
         per_part.clear();
+    }
+}
+template <typename Query, typename Result>
+inline void QueryData<Query, Result>::clear_for_thread(unsigned tid)
+{
+    for (auto& per_part : cold) {
+        per_part.clear_for_thread(tid);
+    }
+    for (auto& per_part : hot) {
+        per_part.clear_for_thread(tid);
     }
 }
 
@@ -479,25 +507,52 @@ inline void BPForest::route_queries(
 {
     ScopedTimer timer{QueryRoutingTime};
 
-    routed.clear();
-
     using TmpData = TmpDataForRouteQueries<Query, Result>;
     const TmpData tmp_data{nr_queries, queries, &routed, results};
     any_tmp_data = &tmp_data;
-    parallel_run(&BPForest::route_queries_impl<Query, Result>);
-    any_tmp_data.reset();
 
-    for (dpu_id_t idx_cold = 0; idx_cold < nr_base_parts; idx_cold++) {
-        const size_t nr_qrys = std::accumulate(
-            routed.cold[idx_cold].qrys.cbegin(), routed.cold[idx_cold].qrys.cend(),
-            size_t{0}, [](size_t tmp, auto& vec) { return tmp + vec.size(); });
-        routed.cold[idx_cold].nr_qrys = static_cast<uint32_t>(nr_qrys);
-    }
-    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-        const size_t nr_qrys = std::accumulate(
-            routed.hot[idx_dpu].qrys.cbegin(), routed.hot[idx_dpu].qrys.cend(),
-            size_t{0}, [](size_t tmp, auto& vec) { return tmp + vec.size(); });
-        routed.hot[idx_dpu].nr_qrys = static_cast<uint32_t>(nr_qrys);
+    parallel_run(&BPForest::route_clear_impl<Query, Result>);
+    parallel_run(&BPForest::route_queries_impl<Query, Result>);
+    parallel_run(&BPForest::route_accumulate_impl<Query, Result>);
+
+    any_tmp_data.reset();
+}
+template <typename Query, typename Result>
+inline void BPForest::route_clear_impl(unsigned tid)
+{
+    using TmpData = TmpDataForRouteQueries<Query, Result>;
+    assert(any_tmp_data.type() == typeid(const TmpData*));
+    QueryData<Query, Result>* routed;
+    std::tie(std::ignore, std::ignore, routed, std::ignore) = *std::any_cast<const TmpData*>(any_tmp_data);
+    routed->clear_for_thread(tid);
+}
+template <typename Query, typename Result>
+inline void BPForest::route_accumulate_impl(unsigned tid)
+{
+    using TmpData = TmpDataForRouteQueries<Query, Result>;
+    assert(any_tmp_data.type() == typeid(const TmpData*));
+    QueryData<Query, Result>* routed;
+    std::tie(std::ignore, std::ignore, routed, std::ignore) = *std::any_cast<const TmpData*>(any_tmp_data);
+
+    const dpu_id_t idx_begin = static_cast<dpu_id_t>(static_cast<uint64_t>(nr_base_parts) * tid / get_parallelism());
+    const dpu_id_t idx_end = static_cast<dpu_id_t>(static_cast<uint64_t>(nr_base_parts) * (tid + 1) / get_parallelism());
+    const unsigned nr_threads = get_parallelism();
+
+    for (dpu_id_t idx = idx_begin; idx < idx_end; idx++) {
+        size_t nr_cold = 0, nr_hot = 0;
+        for (unsigned t = 0; t < nr_threads; t++) {
+            nr_cold += routed->cold[idx].qrys[t].size();
+            nr_hot  += routed->hot[idx].qrys[t].size();
+        }
+        routed->cold[idx].nr_qrys = static_cast<uint32_t>(nr_cold);
+        routed->hot[idx].nr_qrys  = static_cast<uint32_t>(nr_hot);
+
+        if constexpr (!std::is_same_v<Result, void> && !std::is_same_v<Query, Result>) {
+            for (unsigned t = 0; t < nr_threads; t++) {
+                routed->cold[idx].results[t].reserve(routed->cold[idx].qrys[t].size());
+                routed->hot[idx].results[t].reserve(routed->hot[idx].qrys[t].size());
+            }
+        }
     }
 }
 template <typename Query, typename Result>
@@ -723,19 +778,6 @@ inline void BPForest::execute_in_dpus(TaskID task_no, QueryData<Query, Result>& 
 {
     last_qry_type = task_no;
 
-    if constexpr (!std::is_same_v<Result, void> && !std::is_same_v<Query, Result>) {
-        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-            for (unsigned tid = 0; tid < get_parallelism(); tid++) {
-                for (const auto& tmp : {std::ref(query_data.cold), std::ref(query_data.hot)}) {
-                    auto& query_data = tmp.get();
-                    const auto& qrys = query_data[idx_dpu].qrys[tid];
-                    auto& results = query_data[idx_dpu].results[tid];
-
-                    results.reserve(qrys.size());
-                }
-            }
-        }
-    }
     uint32_t max_nqrys = 0;
     if constexpr (!std::is_same_v<Result, void>) {
         for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {

@@ -57,6 +57,7 @@ struct QueryDataPerRange {
 
     explicit QueryDataPerRange(unsigned nr_threads) : qrys(nr_threads), orig_idxs(nr_threads), results(nr_threads) {}
     void clear();
+    void clear_for_thread(unsigned tid);
 };
 template <typename QandR>
 struct QueryDataPerRange<QandR, QandR> {
@@ -66,6 +67,7 @@ struct QueryDataPerRange<QandR, QandR> {
 
     explicit QueryDataPerRange(unsigned nr_threads) : qrys(nr_threads), orig_idxs(nr_threads) {}
     void clear();
+    void clear_for_thread(unsigned tid);
 };
 template <typename Query>
 struct QueryDataPerRange<Query, void> {
@@ -74,6 +76,7 @@ struct QueryDataPerRange<Query, void> {
 
     explicit QueryDataPerRange(unsigned nr_threads) : qrys(nr_threads) {}
     void clear();
+    void clear_for_thread(unsigned tid);
 };
 template <typename Query, typename Result>
 struct QueryData {
@@ -81,6 +84,7 @@ struct QueryData {
 
     explicit QueryData(dpu_id_t nr_dpus, unsigned nr_threads);
     void clear();
+    void clear_for_thread(unsigned tid);
 };
 
 struct BasePartitionDelim {
@@ -212,6 +216,10 @@ private:
         QueryData<Query, Result>& routed);
     template <typename Query, typename Result>
     void route_queries_impl(unsigned tid);
+    template <typename Query, typename Result>
+    void route_clear_impl(unsigned tid);
+    template <typename Query, typename Result>
+    void route_accumulate_impl(unsigned tid);
     template <typename Query, typename Result>
     using TmpDataForRouteQueries = std::tuple<uint32_t, const Query*, QueryData<Query, Result>*, Result*>;
 
