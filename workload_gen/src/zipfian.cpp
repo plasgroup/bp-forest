@@ -644,7 +644,7 @@ void WorkloadGen<SliceDist, Filter>::generate_queries_impl(const unsigned tid)
             if (tid == 0 && idx_query % 0x10000 == 0) {
                 const auto now = Clock::now();
                 if (now - timer_start > std::chrono::seconds{3}) {
-                    std::cout << '[' << queries_file_str << "] " << (idx_query * 100 / idx_query_begin) << "% queries generated" << std::endl;
+                    std::cout << '[' << queries_file_str << "] " << (idx_query * 100 / idx_query_end) << "% queries generated" << std::endl;
                     timer_start = now;
                 }
             }
