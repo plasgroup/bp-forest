@@ -15,13 +15,14 @@ bool approx(double a, double b, double eps)
 
 void test_compute_constants()
 {
-    // D=1000, alpha=0.001, a=10 -> p = 11/3000, L = ln(1e6)
+    // D=1000, alpha=0.001, a=10 -> p = 11/3000, L = ln(1e6), M = 1-p
     const auto np = NoiseParams::compute(0.001, 1000, 10);
+    const double M = 1.0 - 11.0 / 3000.0;
     assert(approx(np.p, 11.0 / 3000.0, 1e-12));
-    assert(approx(np.one_minus_p, 1.0 - 11.0 / 3000.0, 1e-12));
+    assert(approx(np.one_minus_p, M, 1e-12));
     assert(approx(np.L, std::log(1e6), 1e-12));
-    assert(approx(np.K1, np.L / 3.0, 1e-12));
-    assert(approx(np.K2, np.L * np.L / 9.0, 1e-12));
+    assert(approx(np.K1, M * np.L / 3.0, 1e-12));
+    assert(approx(np.K2, M * M * np.L * np.L / 9.0, 1e-12));
 }
 
 void test_balancing_floor()

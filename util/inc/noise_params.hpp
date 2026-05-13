@@ -14,10 +14,11 @@
 // For a target per-batch false-positive rate fp_rate, Bonferroni assigns
 // each DPU the budget q = fp_rate / D, i.e. L = ln(D / fp_rate).
 //
-// Bernstein's inequality (with the safe bound M <= 1 for Bernoulli) gives
-//   P(X - lambda >= t)  <=  exp( -t^2 / (2*sigma2 + 2*t/3) )  <=  1/e^L.
+// Bernstein's inequality with M = 1-p (tight bound for centered Bernoulli
+// when p < 1/2: |X_i - p| <= max(p, 1-p) = 1-p) gives
+//   P(X - lambda >= t)  <=  exp( -t^2 / (2*sigma2 + 2*M*t/3) )  <=  1/e^L.
 // Solving the quadratic yields the closed form
-//   t  =  L/3  +  sqrt(L^2/9 + 2*sigma2*L).
+//   t  =  M*L/3  +  sqrt(M^2*L^2/9 + 2*sigma2*L).
 // T_count = ceil(lambda + t) is the smallest count treated as overload.
 // Callers fire on "count > threshold", so the stored threshold is
 //   threshold = T_count - 1.
@@ -25,8 +26,8 @@ struct NoiseParams {
     double p;
     double one_minus_p;
     double L;   // ln(D / fp_rate)
-    double K1;  // L/3
-    double K2;  // L^2/9
+    double K1;  // M*L/3,     M = 1-p
+    double K2;  // M^2*L^2/9, M = 1-p
 
     static NoiseParams compute(double fp_rate, unsigned ndpus, unsigned balancing)
     {
@@ -34,8 +35,8 @@ struct NoiseParams {
         np.p = static_cast<double>(std::max(3u, balancing + 1u)) / (3.0 * static_cast<double>(ndpus));
         np.one_minus_p = 1.0 - np.p;
         np.L = std::log(static_cast<double>(ndpus) / fp_rate);
-        np.K1 = np.L / 3.0;
-        np.K2 = np.L * np.L / 9.0;
+        np.K1 = np.one_minus_p * np.L / 3.0;
+        np.K2 = np.K1 * np.K1;
         return np;
     }
 
