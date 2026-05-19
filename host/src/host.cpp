@@ -203,6 +203,11 @@ public:
 #endif /* DEBUG_ON */
     }
 
+    void batch_pred(uint64_t nr_queries, const key_uint64_t keys[], KVPair results[]) override
+    {
+        forest.batch_pred(static_cast<uint32_t>(nr_queries), keys, results);
+    }
+
     void batch_insert(size_t nr_queries, const KVPair pairs[]) override
     {
         forest.batch_insert(static_cast<uint32_t>(nr_queries), pairs);
@@ -237,6 +242,10 @@ public:
     void partition_with(uint64_t n, const key_uint64_t keys[], value_uint64_t values[]) override
     {
         forest.partition_with_get_batch(static_cast<uint32_t>(n), keys, values);
+    }
+    void partition_with(uint64_t n, const key_uint64_t keys[], KVPair results[]) override
+    {
+        forest.partition_with_pred_batch(static_cast<uint32_t>(n), keys, results);
     }
     void partition_with(uint64_t n, const KVPair pairs[]) override
     {
@@ -353,6 +362,8 @@ Benchmark* make_benchmark(const Option& opt, Args&&... args)
 {
     if (opt.op_type == TASK_GET)
         return new QueryRateKind<GetBenchmark>(std::forward<Args>(args)..., opt.workload_file);
+    else if (opt.op_type == TASK_PRED)
+        return new QueryRateKind<PredBenchmark>(std::forward<Args>(args)..., opt.workload_file);
     else if (opt.op_type == TASK_INSERT)
         return new QueryRateKind<InsertBenchmark>(std::forward<Args>(args)..., opt.workload_file);
     else if (opt.op_type == TASK_DELETE)

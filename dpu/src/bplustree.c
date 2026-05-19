@@ -42,6 +42,10 @@ static DEFINE_DIV_BY(TASK_DELETE_NR_TASKLETS, 16, _NR_QRYS);
 static DEFINE_DIV_BY(TASK_GET_NR_TASKLETS, 16, _NR_QRYS);
 #endif
 
+#ifdef SUPPORT_PRED
+static DEFINE_DIV_BY(TASK_PRED_NR_TASKLETS, 16, _NR_QRYS);
+#endif
+
 #ifdef SUPPORT_RANGE_MIN
 static DEFINE_DIV_BY(TASK_RANGE_MIN_NR_TASKLETS, 16, _NR_DELIMS);
 #endif
@@ -151,6 +155,7 @@ static unsigned construct_tree(const uintptr_t initial_pairs, const uint32_t nr_
             root->lf.numKeys = 0;
 #endif
             *root_numKeys = 0;
+            *p_nr_pairs = 0;
         }
         return 0;
     }
@@ -1186,6 +1191,114 @@ void task_get(void)
     }
 }
 #endif /* if SUPPORT_GET */
+
+
+#if SUPPORT_PRED
+static key_uint64_t PRED_pop_qry(PredWorkspace* wks)
+{
+    if (wks->idx_qry_in_cache == TASK_PRED_NR_CACHED_QRYS) {
+        wks->cursor_on_qrys += sizeof(key_uint64_t) * TASK_PRED_NR_CACHED_QRYS;
+        mram_read((__mram_ptr void*)wks->cursor_on_qrys, wks->qrys, sizeof(key_uint64_t) * TASK_PRED_NR_CACHED_QRYS);
+        wks->idx_qry_in_cache = 0;
+    }
+    return wks->qrys[wks->idx_qry_in_cache++];
+}
+static void PRED_push_result(PredWorkspace* wks, KVPair result)
+{
+    wks->results[wks->idx_result_in_cache] = result;
+    wks->idx_result_in_cache++;
+    if (wks->idx_result_in_cache == TASK_PRED_NR_CACHED_RESULTS) {
+        mram_write(wks->results, (__mram_ptr void*)wks->cursor_on_results, sizeof(KVPair) * TASK_PRED_NR_CACHED_RESULTS);
+        wks->cursor_on_results += sizeof(KVPair) * TASK_PRED_NR_CACHED_RESULTS;
+        wks->idx_result_in_cache = 0;
+    }
+}
+static void PRED_flush_results_cache(PredWorkspace* wks)
+{
+    if (wks->idx_result_in_cache != 0) {
+        mram_write(wks->results, (__mram_ptr void*)wks->cursor_on_results, sizeof(KVPair) * wks->idx_result_in_cache);
+        wks->cursor_on_results += sizeof(KVPair) * wks->idx_result_in_cache;
+        wks->idx_result_in_cache = 0;
+    }
+}
+//! @brief Strict predecessor: the pair with the largest key < `key`.
+//! Internal-node descent uses search_for_pair_index (= #{delim < key}), so we
+//! always descend the rightmost child whose subtree minimum is < key, i.e. the
+//! child that contains the global predecessor.  Host-side lower_bound routing
+//! guarantees the query reaches a tree that owns the predecessor, hence the
+//! reached leaf always has idx_pair > 0 (no idx_pair==0 path is needed).
+static KVPair PRED_search_one(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
+    const key_uint64_t key)
+{
+    PredWorkspace* const wks_me = &workspace.tree.pred[me()];
+
+    if (height == 0) {
+        const uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, key);
+        return (KVPair){root->lf.keys[idx_pair - 1], root->lf.values[idx_pair - 1]};
+    }
+
+    NodeLink link = root->inl.children[search_for_pair_index(&root->inl.keys[0], root_numKeys, key)];
+    for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
+        mram_read(&Deref(link.ptr).inl.keys[0], &wks_me->node_cache.inl.keys[0], sizeof(key_uint64_t) * link.numKeys);
+        const uint16_t idx_child = search_for_pair_index(&wks_me->node_cache.inl.keys[0], link.numKeys, key);
+        mram_read(&Deref(link.ptr).inl.children[idx_child / 2 * 2], &wks_me->node_cache.inl.children[0], sizeof(NodeLink) * 2);
+        link = wks_me->node_cache.inl.children[idx_child % 2];
+    }
+    mram_read(&Deref(link.ptr).lf.keys[0], &wks_me->node_cache.lf.keys[0], sizeof(key_uint64_t) * link.numKeys);
+    const uint16_t idx_pair = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, key);
+
+    KVPair result;
+    result.key = wks_me->node_cache.lf.keys[idx_pair - 1];
+    mram_read(&Deref(link.ptr).lf.values[idx_pair - 1], &result.value, sizeof(value_uint64_t));
+    return result;
+}
+static void PRED_execute(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
+    const uintptr_t results, const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
+{
+    static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader);
+
+    PredWorkspace* const wks_me = &workspace.tree.pred[me()];
+
+    wks_me->idx_qry_in_cache = 0;
+    wks_me->cursor_on_qrys = qrys + sizeof(key_uint64_t) * idx_qry_begin;
+    mram_read((__mram_ptr void*)wks_me->cursor_on_qrys, &wks_me->qrys[0], sizeof(key_uint64_t) * TASK_PRED_NR_CACHED_QRYS);
+
+    wks_me->idx_result_in_cache = 0;
+    wks_me->cursor_on_results = results + sizeof(KVPair) * idx_qry_begin;
+
+    for (unsigned idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
+        const key_uint64_t key = PRED_pop_qry(wks_me);
+        const KVPair result = PRED_search_one(root, height, root_numKeys, key);
+        PRED_push_result(wks_me, result);
+    }
+    PRED_flush_results_cache(wks_me);
+}
+void task_pred(void)
+{
+    if (me() < TASK_PRED_NR_TASKLETS) {
+        const uint32_t nr_cold_qrys = input_header.qrys.nr_cold_qrys, nr_hot_qrys = input_header.qrys.nr_hot_qrys;
+        const uintptr_t results = (uintptr_t)DPU_MRAM_HEAP_POINTER + input_header.qrys.result_offset;
+
+        const uint32_t nr_cold_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_PRED_NR_TASKLETS(nr_cold_qrys),
+                       nr_remainder_cold_qrys = nr_cold_qrys - nr_cold_qrys_per_tasklet * TASK_PRED_NR_TASKLETS,
+                       nr_cold_qrys_for_me = nr_cold_qrys_per_tasklet + (me() < nr_remainder_cold_qrys);
+        const uint32_t idx_cold_qry_begin = nr_cold_qrys_per_tasklet * me() + (me() <= nr_remainder_cold_qrys ? me() : nr_remainder_cold_qrys),
+                       idx_cold_qry_end = idx_cold_qry_begin + nr_cold_qrys_for_me;
+
+        const uint32_t nr_hot_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_PRED_NR_TASKLETS(nr_hot_qrys),
+                       nr_remainder_hot_qrys = nr_hot_qrys - nr_hot_qrys_per_tasklet * TASK_PRED_NR_TASKLETS,
+                       nr_hot_qrys_for_me = nr_hot_qrys_per_tasklet + (me() < nr_remainder_hot_qrys);
+        const uint32_t idx_hot_qry_begin = nr_hot_qrys_per_tasklet * me() + (me() <= nr_remainder_hot_qrys ? me() : nr_remainder_hot_qrys)
+                                           + nr_cold_qrys,
+                       idx_hot_qry_end = idx_hot_qry_begin + nr_hot_qrys_for_me;
+
+        PRED_execute(&cold_root, cold_height, cold_root_numKeys,
+            results, idx_cold_qry_begin, idx_cold_qry_end);
+        PRED_execute(&hot_root, hot_height, hot_root_numKeys,
+            results, idx_hot_qry_begin, idx_hot_qry_end);
+    }
+}
+#endif /* if SUPPORT_PRED */
 
 
 #if SUPPORT_RANGE_MIN

@@ -153,9 +153,15 @@ public:
                           const key_uint64_t queries[],
                           const value_uint64_t results[]);
 
-    void batch_range_count(uint64_t n, 
+    void batch_range_count(uint64_t n,
                            const RangeCountQuery queries[],
                            value_uint64_t results[]);
+
+    void batch_pred(uint64_t, const key_uint64_t[], KVPair[])
+    {
+        std::cerr << "batch_pred is not implemented" << std::endl;
+        exit(1);
+    }
 
     int get_parallelism() const
     {

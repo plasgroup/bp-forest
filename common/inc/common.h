@@ -73,6 +73,10 @@ inline bool operator<(const KVPair& lhs, const KVPair& rhs)
 {
     return lhs.key < rhs.key;
 }
+inline bool operator==(const KVPair& lhs, const KVPair& rhs)
+{
+    return lhs.key == rhs.key && lhs.value == rhs.value;
+}
 inline bool compare_kvpair_key(const KVPair& lhs, key_uint64_t rhs_key)
 {
     return lhs.key < rhs_key;

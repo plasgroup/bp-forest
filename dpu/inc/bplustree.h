@@ -127,6 +127,17 @@ typedef struct {
 } RCQWorkspace;
 
 
+typedef struct {
+    __dma_aligned Node node_cache;
+    __dma_aligned key_uint64_t qrys[TASK_PRED_NR_CACHED_QRYS];
+    __dma_aligned KVPair results[TASK_PRED_NR_CACHED_RESULTS];
+    uint32_t idx_qry_in_cache;
+    uintptr_t cursor_on_qrys;
+    uint32_t idx_result_in_cache;
+    uintptr_t cursor_on_results;
+} PredWorkspace;
+
+
 #define MAX_NR_SUMMARY_DATA (MAX_NR_NODES * (MAX_NR_CHILDREN - 1) / ((MAX_NR_CHILDREN - 1) * MIN_NR_CHILDREN + MAX_NR_CHILDREN))
 _Static_assert(MAX_NR_SUMMARY_DATA <= UINT16_MAX * 4, "MAX_NR_SUMMARY_DATA <= UINT16_MAX * 4");
 #define NR_SUMMARY_BLOCKS_PER_CHUNK                                       \
@@ -211,6 +222,7 @@ typedef union {
     SerializeWorkspace serialize[TASK_SERIALIZE_NR_TASKLETS];
     ClearTreeWorkspace clear;
     GetWorkspace get[TASK_GET_NR_TASKLETS];
+    PredWorkspace pred[TASK_PRED_NR_TASKLETS];
     InsertWorkspace insert[TASK_INSERT_NR_TASKLETS];
     DeleteWorkspace delete[TASK_DELETE_NR_TASKLETS];
     RCQWorkspace rcq[TASK_RANGE_COUNT_NR_TASKLETS];

@@ -35,7 +35,7 @@ public:
 private:
     void task_init(unsigned nr_pairs, const KVPair pairs[]);
     void task_get(const Tree& tree, unsigned nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
-    void task_pred(const Tree& tree, unsigned nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
+    void task_pred(const Tree& tree, unsigned nr_queries, const key_uint64_t keys[], KVPair result[]);
     uint32_t /* nr_values */ task_scan_cold(unsigned nr_queries, const KeyRange ranges[],
         uint32_t incision_pos[], IndexRange result_ranges[], value_uint64_t values[]);
     uint32_t /* nr_values */ task_scan_hot(unsigned nr_queries, const KeyRange ranges[],

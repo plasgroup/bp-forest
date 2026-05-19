@@ -115,6 +115,7 @@ struct BPForest : ParallelManager<BPForest> {
     ~BPForest();
 
     void batch_get(uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
+    void batch_pred(uint32_t nr_queries, const key_uint64_t keys[], KVPair result[]);
     void batch_insert(uint32_t nr_queries, const KVPair pairs[]);
     void batch_delete(uint32_t nr_queries, const key_uint64_t pairs[]);
     void batch_range_count(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
@@ -123,6 +124,7 @@ struct BPForest : ParallelManager<BPForest> {
     std::vector<std::array<uint32_t, 2>> last_query_dist() const;
 
     void partition_with_get_batch(uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
+    void partition_with_pred_batch(uint32_t nr_queries, const key_uint64_t keys[], KVPair result[]);
     void partition_with_insert_batch(uint32_t nr_queries, const KVPair pairs[]);
     void partition_with_delete_batch(uint32_t nr_queries, const key_uint64_t pairs[]);
     void partition_with_range_count_batch(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
@@ -164,6 +166,7 @@ private:
 
     TaskID last_qry_type = TASK_NONE;
     QueryData<key_uint64_t, value_uint64_t> get_queries{nr_base_parts, get_parallelism()};
+    QueryData<key_uint64_t, KVPair> pred_queries{nr_base_parts, get_parallelism()};
     QueryData<KVPair, void> insert_queries{nr_base_parts, get_parallelism()};
     QueryData<key_uint64_t, void> delete_queries{nr_base_parts, get_parallelism()};
     QueryData<RangeCountQuery, uint64_t> rcqs{nr_base_parts, get_parallelism()};
@@ -247,6 +250,9 @@ private:
 
     void postprocess_of_get(value_uint64_t result[]);
     void postprocess_of_get_impl(unsigned tid);
+
+    void postprocess_of_pred(KVPair result[]);
+    void postprocess_of_pred_impl(unsigned tid);
 
     void postprocess_of_rcq(uint32_t nr_queries, uint64_t result[]);
     void postprocess_of_rcq_impl(unsigned tid);

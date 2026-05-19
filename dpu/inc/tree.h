@@ -3,6 +3,7 @@
 
 void task_init(void);
 void task_get(void);
+void task_pred(void);
 void task_insert(void);
 void task_delete(void);
 void task_range_min(void);

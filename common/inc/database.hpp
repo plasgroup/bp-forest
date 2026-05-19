@@ -24,6 +24,13 @@ public:
         value_uint64_t results[])
         = 0;
 
+    // Strict predecessor: result[i] = pair with the largest key < keys[i],
+    // or {NOT_FOUND_VALUE, NOT_FOUND_VALUE} if none.
+    virtual void batch_pred(uint64_t n,
+        const key_uint64_t keys[],
+        KVPair results[])
+        = 0;
+
     virtual void batch_insert(uint64_t n,
         const KVPair pairs[])
         = 0;
@@ -48,6 +55,7 @@ public:
         = 0;
 
     virtual void partition_with(uint64_t /* n */, const key_uint64_t /* keys */[], value_uint64_t /* values */[]) {}
+    virtual void partition_with(uint64_t /* n */, const key_uint64_t /* keys */[], KVPair /* results */[]) {}
     virtual void partition_with(uint64_t /* n */, const KVPair /* pairs */[]) {}
     virtual void partition_with(uint64_t /* n */, const key_uint64_t /* keys */[]) {}
     virtual void partition_with(uint64_t /* n */, const KeyRange /* queries */[], uint64_t /* results */[]) {}
@@ -158,6 +166,21 @@ public:
                 results[i] = it->value;
             else
                 results[i] = NOT_FOUND_VALUE;
+        }
+    }
+
+    void batch_pred(uint64_t n,
+        const key_uint64_t keys[],
+        KVPair results[]) override
+    {
+        for (size_t i = 0; i < n; i++) {
+            // find(key) = lower_bound = first pair with key >= keys[i];
+            // the strict predecessor is the pair just before it.
+            auto it = find(keys[i]);
+            if (it == data.begin())
+                results[i] = KVPair{NOT_FOUND_VALUE, NOT_FOUND_VALUE};
+            else
+                results[i] = *(it - 1);
         }
     }
 

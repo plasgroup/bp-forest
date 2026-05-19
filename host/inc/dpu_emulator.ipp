@@ -41,7 +41,7 @@ inline void DPUEmulator::execute()
         const unsigned nr_cold_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram[4])),
                        nr_hot_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram[6]));
         const key_uint64_t* const keys = std::launder(reinterpret_cast<key_uint64_t*>(&mram[8]));
-        value_uint64_t* const result = new (&mram_2nd[0]) value_uint64_t[nr_cold_queries + nr_hot_queries];
+        KVPair* const result = new (&mram_2nd[0]) KVPair[nr_cold_queries + nr_hot_queries];
         task_pred(cold_tree, nr_cold_queries, keys, result);
         task_pred(hot_tree, nr_hot_queries, keys + nr_cold_queries, result + nr_cold_queries);
     } break;
@@ -195,15 +195,15 @@ inline void DPUEmulator::task_get(const Tree& tree, const unsigned nr_queries, c
         }
     }
 }
-inline void DPUEmulator::task_pred(const Tree& tree, const unsigned nr_queries, const key_uint64_t keys[], value_uint64_t result[])
+inline void DPUEmulator::task_pred(const Tree& tree, const unsigned nr_queries, const key_uint64_t keys[], KVPair result[])
 {
     for (unsigned i = 0; i < nr_queries; i++) {
         auto iter = tree.lower_bound(keys[i]);
         if (iter != tree.begin()) {
             iter--;
-            result[i] = iter->second;
+            result[i] = KVPair{iter->first, iter->second};
         } else {
-            result[i] = 0;
+            result[i] = KVPair{NOT_FOUND_VALUE, NOT_FOUND_VALUE};
         }
     }
 }

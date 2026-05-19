@@ -26,6 +26,8 @@ inline void assign_query(key_uint64_t& to, operation& from)
 {
     if (from.type == get_t)
         to = key_int64_to_uint64(from.tsk.g.key);
+    if (from.type == predecessor_t)
+        to = key_int64_to_uint64(from.tsk.p.key);
     if (from.type == remove_t)
         to = key_int64_to_uint64(from.tsk.r.key);
 }
@@ -66,6 +68,11 @@ inline WorkloadBuffer<T> load_pimtree_workload(const std::string& workload_file)
         assign_query(workload[i], qs.ops[i]);
     }
     return WorkloadBuffer{std::move(workload)};
+}
+
+inline std::ostream& operator<<(std::ostream& os, const KVPair& kv)
+{
+    return os << "{key=" << kv.key << ", value=" << kv.value << "}";
 }
 
 template <typename T>
@@ -155,6 +162,50 @@ protected:
     {
         oracle_results.reserve(last_batch_size_);
         verify_db->batch_get(last_batch_size_, last_queries, &oracle_results[0]);
+        compare_results(last_batch_size_, &results[0], &oracle_results[0]);
+    }
+
+    void partition_with_next_batch_impl(Database* db, const size_t batch_size)
+    {
+        const auto [queries, size] = workload_buf.peek(batch_size);
+        results.reserve(size);
+        db->partition_with(size, queries, &results[0]);
+    }
+};
+
+class PredBenchmark : public Benchmark
+{
+    WorkloadBuffer<key_uint64_t> workload_buf;
+    ExtendableBuffer<KVPair> results, oracle_results;
+
+    key_uint64_t* last_queries;
+
+public:
+    explicit PredBenchmark(const std::string& workload_file)
+        : workload_buf{load_pimtree_workload<key_uint64_t>(workload_file)}
+    {
+    }
+
+protected:
+    bool do_one_batch_impl(Database* db, const size_t batch_size)
+    {
+        const auto [queries, size] = workload_buf.take(batch_size);
+        if (size == batch_size) {
+            results.reserve(batch_size);
+            db->batch_pred(batch_size, queries, &results[0]);
+
+            last_queries = queries;
+            last_batch_size_ = batch_size;
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    void do_verify() override
+    {
+        oracle_results.reserve(last_batch_size_);
+        verify_db->batch_pred(last_batch_size_, last_queries, &oracle_results[0]);
         compare_results(last_batch_size_, &results[0], &oracle_results[0]);
     }
 

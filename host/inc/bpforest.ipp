@@ -146,6 +146,12 @@ struct PointQueryToKey<KVPair> {
 template <typename Query>
 constexpr bool IsPointQuery = std::is_invocable_v<PointQueryToKey<Query>, Query>;
 
+// predecessor query: key in, KVPair (predecessor pair) out.  Distinct (Query,
+// Result) pair from GET's <key_uint64_t, value_uint64_t> so its routing /
+// not_found specializations do not collide.
+template <typename Query, typename Result>
+constexpr bool IsPredecessorQuery = std::is_same_v<Query, key_uint64_t> && std::is_same_v<Result, KVPair>;
+
 template <typename RangeQuery>
 struct RangeQueryToRange {
     // KeyRange& operator()(RangeQuery&) const;
@@ -488,7 +494,8 @@ inline void BPForest::combine_delims()
                                assert(key <= delim.max_key);
                                combined_delims.emplace_back(key);
                                combined_delims_dest.push_back({delim.dpu, true});
-                               if (next == delims.cend() || next->first != delim.max_key + 1) {
+                               if (delim.max_key != KEY_MAX
+                                   && (next == delims.cend() || delim.max_key + 1 < next->first)) {
                                    combined_delims.emplace_back(delim.max_key + 1);
                                    combined_delims_dest.push_back({base_idx, false});
                                }
@@ -592,7 +599,13 @@ inline void BPForest::route_single_point_query(
     unsigned tid)
 {
     const key_uint64_t key = PointQueryToKey<Query>{}(qry);
-    const auto one_after_the_target = std::upper_bound(combined_delims.begin(), combined_delims.end(), key);
+    const auto one_after_the_target = [&] {
+        if constexpr (IsPredecessorQuery<Query, Result>) {
+            return std::lower_bound(combined_delims.begin(), combined_delims.end(), key);
+        } else {
+            return std::upper_bound(combined_delims.begin(), combined_delims.end(), key);
+        }
+    }();
 
     if (one_after_the_target == combined_delims.begin()) {
         not_found_in_point_query(idx_qry, qry, result, routed, tid);
@@ -636,6 +649,15 @@ inline void BPForest::not_found_in_point_query<key_uint64_t, void>(
     QueryData<key_uint64_t, void>&,
     unsigned)
 {
+}
+// PRED
+template <>
+inline void BPForest::not_found_in_point_query<key_uint64_t, KVPair>(
+    uint32_t, const key_uint64_t&, KVPair* result,
+    QueryData<key_uint64_t, KVPair>&,
+    unsigned)
+{
+    *result = KVPair{NOT_FOUND_VALUE, NOT_FOUND_VALUE};
 }
 
 template <typename Query, typename Result>
@@ -860,6 +882,46 @@ inline void BPForest::postprocess_of_get_impl(unsigned tid)
     }
 }
 
+inline void BPForest::batch_pred(uint32_t nr_queries, const key_uint64_t keys[], KVPair results[])
+{
+    ScopedTimer timer{BatchTotalTime};
+
+    route_queries(nr_queries, keys, results, pred_queries);
+
+    if (param.balancing > 0) {
+        incremental_repartition(nr_queries, keys, results, pred_queries);
+    }
+
+    execute_in_dpus(TASK_PRED, pred_queries);
+    postprocess_of_pred(results);
+}
+inline void BPForest::postprocess_of_pred(KVPair results[])
+{
+    ScopedTimer timer{PostprocessTime};
+
+    any_tmp_data = results;
+    parallel_run(&BPForest::postprocess_of_pred_impl);
+    any_tmp_data.reset();
+}
+inline void BPForest::postprocess_of_pred_impl(unsigned tid)
+{
+    KVPair* results = std::any_cast<KVPair*>(any_tmp_data);
+
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+        for (const auto& tmp : {std::ref(pred_queries.cold), std::ref(pred_queries.hot)}) {
+            const auto& query_data = tmp.get();
+            const auto& qrys = query_data[idx_dpu].qrys[tid];
+            const auto& partial_results = query_data[idx_dpu].results[tid];
+            const auto& orig_idxs = query_data[idx_dpu].orig_idxs[tid];
+
+            const size_t n_qrys = qrys.size();
+            for (size_t i = 0; i < n_qrys; i++) {
+                results[orig_idxs[i]] = partial_results[i];
+            }
+        }
+    }
+}
+
 inline void BPForest::batch_insert(uint32_t nr_queries, const KVPair pairs[])
 {
     ScopedTimer timer{BatchTotalTime};
@@ -978,6 +1040,9 @@ inline std::vector<std::array<uint32_t, 2>> BPForest::last_query_dist() const
         switch (last_qry_type) {
         case TASK_GET:
             results[idx_dpu] = {get_queries.cold[idx_dpu].nr_qrys, get_queries.hot[idx_dpu].nr_qrys};
+            break;
+        case TASK_PRED:
+            results[idx_dpu] = {pred_queries.cold[idx_dpu].nr_qrys, pred_queries.hot[idx_dpu].nr_qrys};
             break;
         case TASK_INSERT:
             results[idx_dpu] = {insert_queries.cold[idx_dpu].nr_qrys, insert_queries.hot[idx_dpu].nr_qrys};
@@ -1509,8 +1574,15 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
                     for (const auto& qry_vec : routed.cold[idx_base].qrys) {
                         for (const auto& qry : qry_vec) {
                             const key_uint64_t key = PointQueryToKey<Query>{}(qry);
-                            DataChunkIterator one_after_target_chunk = std::upper_bound(left, right, key,
-                                [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
+                            DataChunkIterator one_after_target_chunk = [&] {
+                                if constexpr (IsPredecessorQuery<Query, Result>) {
+                                    return std::lower_bound(left, right, key,
+                                        [](DataChunkIterator& chunk, key_uint64_t key) { return chunk.begin()->key < key; });
+                                } else {
+                                    return std::upper_bound(left, right, key,
+                                        [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
+                                }
+                            }();
                             (--one_after_target_chunk)->load()++;
                         }
                     }
@@ -1918,12 +1990,26 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 for (const auto& qry_vec : routed.cold[idx_dpu].qrys) {
                     for (const auto& qry : qry_vec) {
                         const key_uint64_t key = PointQueryToKey<Query>{}(qry);
-                        const LinkedChunkedPairsRange* one_after_target_part = std::upper_bound(begin_part, end_part, key,
-                            [](key_uint64_t key, const PairsRange& range) { return key < range.begin()->key; });
+                        const LinkedChunkedPairsRange* one_after_target_part = [&] {
+                            if constexpr (IsPredecessorQuery<Query, Result>) {
+                                return std::lower_bound(begin_part, end_part, key,
+                                    [](const PairsRange& range, key_uint64_t key) { return range.begin()->key < key; });
+                            } else {
+                                return std::upper_bound(begin_part, end_part, key,
+                                    [](key_uint64_t key, const PairsRange& range) { return key < range.begin()->key; });
+                            }
+                        }();
                         const ChunkedPairsRange& part = one_after_target_part[-1];
 
-                        DataChunkIterator one_after_target_chunk = std::upper_bound(part.begin(), part.end(), key,
-                            [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
+                        DataChunkIterator one_after_target_chunk = [&] {
+                            if constexpr (IsPredecessorQuery<Query, Result>) {
+                                return std::lower_bound(part.begin(), part.end(), key,
+                                    [](DataChunkIterator& chunk, key_uint64_t key) { return chunk.begin()->key < key; });
+                            } else {
+                                return std::upper_bound(part.begin(), part.end(), key,
+                                    [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
+                            }
+                        }();
                         (--one_after_target_chunk)->load()++;
                     }
                 }
@@ -2184,6 +2270,10 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
 inline void BPForest::partition_with_get_batch(uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[])
 {
     full_repartition(nr_queries, keys, result, get_queries);
+}
+inline void BPForest::partition_with_pred_batch(uint32_t nr_queries, const key_uint64_t keys[], KVPair result[])
+{
+    full_repartition(nr_queries, keys, result, pred_queries);
 }
 inline void BPForest::partition_with_insert_batch(uint32_t nr_queries, const KVPair pairs[])
 {

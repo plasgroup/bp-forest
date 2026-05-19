@@ -36,6 +36,11 @@ int main()
         task_get();
         break;
 #endif
+#if SUPPORT_PRED
+    case TASK_PRED:
+        task_pred();
+        break;
+#endif
 #if SUPPORT_INSERT
     case TASK_INSERT:
         task_insert();
