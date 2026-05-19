@@ -171,7 +171,7 @@ public:
 
     void batch_pred(uint64_t n,
         const key_uint64_t keys[],
-        KVPair results[]) override
+        KVPair results[])
     {
         for (size_t i = 0; i < n; i++) {
             // find(key) = lower_bound = first pair with key >= keys[i];
