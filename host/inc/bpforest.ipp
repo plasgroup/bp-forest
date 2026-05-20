@@ -1859,14 +1859,10 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
 
                 const bool do_cold = routed.cold[idx_dpu].nr_qrys > cold_partial_cnt_threshold;
 
-                // Hot pre-filter, same shape as cold: raw routed fragment
-                // count vs a per-hot noise threshold.  Accumulate this batch's
-                // excess endpoints (over the carve share) so a stale cached
-                // ratio is re-measured once the accumulated loss reaches the
-                // cost of one Stage2 probe.  That probe cost is essentially a
-                // constant (a serialize round-trip, independent of batch and
-                // hot pair count), so the firing threshold is a constant in
-                // excess endpoints -- NOT proportional to hot size.
+                // Stage2 probe cost is essentially constant (a serialize
+                // round-trip, independent of batch and hot pair count), so the
+                // staleness threshold is constant in excess endpoints --
+                // NOT proportional to hot size.
                 bool do_hot = false;
                 if (param.enable_hot_split && hot_delims[idx_dpu] != DelimIter{}) {
                     const uint32_t hot_endpoints = routed.hot[idx_dpu].nr_qrys * (IsPointQuery<Query> ? 1 : 2);
@@ -2035,8 +2031,8 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
     dpu_id_t hot_count = 0;
 
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-        // Skip DPUs whose cold tree was not serialized; any hot they host is
-        // handled by the hot-split body after this loop.
+        // do_hot-only DPUs (cold not serialized) are handled by the
+        // hot-split body below.
         const bool cold_serialized = input_headers[idx_dpu].task_no == TASK_SERIALIZE
             && input_headers[idx_dpu].serialize.do_cold;
         if (!cold_serialized) {
@@ -2049,16 +2045,15 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         assert(!list.empty());
         LinkedChunkedPairsRange* const begin_part = &static_cast<LinkedChunkedPairsRange&>(*list.begin());
         LinkedChunkedPairsRange* const end_part = &static_cast<LinkedChunkedPairsRange&>(*std::prev(list.end())) + 1;
-        // The cold ranges belonging to this DPU are stored contiguously in the
-        // `chunked_cold_ranges` pool; `upper_bound` / `idx_in_ary` below rely on this.
+        // begin_part..end_part is contiguous in the chunked_cold_ranges
+        // pool, which the upper_bound / idx_in_ary uses below rely on.
         assert(begin_part < end_part);
         assert(static_cast<size_t>(end_part - begin_part)
                == static_cast<size_t>(std::distance(list.begin(), list.end())));
 
-        // Counts, for each original range query, how many of its two endpoints (begin/end)
-        // fall inside the remaining cold subranges of this DPU. This is a different metric
-        // from `routed.cold[d].nr_qrys` (which counts routed fragments after splitting at
-        // combined-delim boundaries); do not mix the two.
+        // cold_endpoint_cnt counts original-query endpoints landing in this
+        // DPU's remaining cold subranges -- a different metric from
+        // routed.cold[d].nr_qrys (routed fragments after combined-delim split).
         uint32_t cold_endpoint_cnt = 0;
 
         {
@@ -2305,10 +2300,14 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
     }
 
     // ---- Hot-split body: split over-heated existing hots ----
-    // piece[0] stays on the original host (recorded in kept_hot[idx_dpu]) so
-    // re-measurement needs no data movement; piece[1..] join the delegation
-    // stream.  Refreshing the cached ratio here is what stops an over-large
+    // Two-phase: pass 1 measures and stashes splitter output, pass 2 commits
+    // (delims.erase / kept_hot / new_hots).  Splitting the mutations this way
+    // is what lets the capacity-overflow check between the passes fall back
+    // to full_repartition without leaving delims and nr_pairs[] out of sync.
+    // Refreshing the cached ratio in pass 1 is what stops an over-large
     // cached ratio from permanently suppressing re-measurement.
+    std::vector<std::vector<NewHotRange>> hot_split_plans(nr_base_parts);
+    dpu_id_t nr_new_pieces = 0;
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
         if (!hot_stage1_fired[idx_dpu] || hot_ranges[idx_dpu].npairs() == 0 || hot_delims[idx_dpu] == DelimIter{}) {
             continue;
@@ -2376,7 +2375,6 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
 
         const dpu_id_t nr_target_pieces = static_cast<dpu_id_t>(measured / hot_load);
         if (nr_target_pieces < 2) {
-            // Non-split: keep the existing hot tree untouched.
             hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};
             continue;
         }
@@ -2392,7 +2390,23 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             continue;
         }
 
-        // Split confirmed: keep piece[0] on idx_dpu, delegate piece[1..].
+        nr_new_pieces += emit_count - 1;
+        hot_split_plans[idx_dpu] = std::move(pieces);
+    }
+
+    // Falling back here is safe because pass 1 has not touched delims,
+    // kept_hot, hot_delims, or new_hots.
+    if (nr_existing_hots + hot_count + nr_new_pieces > nr_base_parts) {
+        raii.finalize();
+        return full_repartition(nr_queries, queries, results, routed);  // failure due to too many hot partitions
+    }
+
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+        const auto& pieces = hot_split_plans[idx_dpu];
+        if (pieces.empty()) {
+            continue;
+        }
+
         delims.erase(hot_delims[idx_dpu]);
         hot_delims[idx_dpu] = DelimIter{};
         kept_hot[idx_dpu].active = true;
@@ -2402,16 +2416,8 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         kept_hot[idx_dpu].max_chunk_load = pieces[0].max_chunk_load;
         hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};  // set to piece[0] at re-insertion below
 
-        for (dpu_id_t idx_piece = 1; idx_piece < emit_count; idx_piece++) {
-            if (nr_existing_hots + hot_count >= nr_base_parts) {
-                raii.finalize();
-                return full_repartition(nr_queries, queries, results, routed);  // failure due to too many hot partitions
-            }
-            NewHotRange& nh = new_hots[hot_count++];
-            nh.pairs_range = pieces[idx_piece].pairs_range;
-            nh.key_range = pieces[idx_piece].key_range;
-            nh.load = pieces[idx_piece].load;
-            nh.max_chunk_load = pieces[idx_piece].max_chunk_load;
+        for (size_t idx_piece = 1; idx_piece < pieces.size(); idx_piece++) {
+            new_hots[hot_count++] = pieces[idx_piece];
         }
     }
 
@@ -2446,7 +2452,6 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
 
         nr_pairs[idx_dpu].get()[1] = static_cast<uint32_t>(hot_ranges[idx_dpu].npairs());
 
-        // Cache now belongs to this delegated piece; ratio known from the carve.
         hot_max_chunk_ratio[idx_dpu] = static_cast<float>(new_hots[idx_hot].max_chunk_load) / static_cast<float>(hot_load);
         hot_excess_accum[idx_dpu] = 0;
     }
