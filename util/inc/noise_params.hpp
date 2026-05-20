@@ -1,53 +1,62 @@
 #pragma once
 
-#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 
-// Noise-aware overload threshold (Bernstein closed form).
+// Bernstein closed-form overload threshold.
 //
-// Per-DPU cold query count under the null (goal-loaded) hypothesis is
-//   X ~ Binomial(B, p),  p = max(3, a+1) / (3*D)
-// with mean lambda = B*p, variance sigma2 = lambda*(1-p).
-// For a target per-batch false-positive rate fp_rate, Bonferroni assigns
-// each DPU the budget q = fp_rate / D, i.e. L = ln(D / fp_rate).
+// A count under the null hypothesis is modelled as
+//   X ~ Binomial(B, p),  lambda = B*p,  M = 1-p,  sigma2 = lambda*M
+// where B and the per-trial rate `p` are both supplied by the caller; how `p`
+// is chosen is not this struct's concern.
 //
-// Bernstein's inequality with M = 1-p (tight bound for centered Bernoulli
-// when p < 1/2: |X_i - p| <= max(p, 1-p) = 1-p) gives
-//   P(X - lambda >= t)  <=  exp( -t^2 / (2*sigma2 + 2*M*t/3) )  <=  1/e^L.
-// Solving the quadratic yields the closed form
+// For a target false-positive rate fp_rate split across `family` tests by
+// Bonferroni, each test gets budget q = fp_rate / family, i.e.
+// L = ln(family / fp_rate).  `family` is passed per call (it may vary), so
+// NoiseParams retains only `fp_rate` and recomputes L every call.
+//
+// Bernstein's inequality with M = 1-p (tight for centered Bernoulli when
+// p < 1/2) gives
+//   P(X - lambda >= t)  <=  exp( -t^2 / (2*sigma2 + 2*M*t/3) )  <=  1/e^L,
+// whose quadratic solution is
 //   t  =  M*L/3  +  sqrt(M^2*L^2/9 + 2*sigma2*L).
-// T_count = ceil(lambda + t) is the smallest count treated as overload.
-// Callers fire on "count > threshold", so the stored threshold is
-//   threshold = T_count - 1.
+// threshold_count = ceil(lambda + t) is the smallest count treated as
+// overload.  The "-1" for a "count > threshold" fire rule and any
+// saturation/clamping are left to the caller.
 struct NoiseParams {
-    double p;
-    double one_minus_p;
-    double L;   // ln(D / fp_rate)
-    double K1;  // M*L/3,     M = 1-p
-    double K2;  // M^2*L^2/9, M = 1-p
+    double fp_rate;  // retained; L = ln(family / fp_rate) computed per call
 
-    static NoiseParams compute(double fp_rate, unsigned ndpus, unsigned balancing)
+    static NoiseParams compute(double fp_rate)
     {
         NoiseParams np;
-        np.p = static_cast<double>(std::max(3u, balancing + 1u)) / (3.0 * static_cast<double>(ndpus));
-        np.one_minus_p = 1.0 - np.p;
-        np.L = std::log(static_cast<double>(ndpus) / fp_rate);
-        np.K1 = np.one_minus_p * np.L / 3.0;
-        np.K2 = np.K1 * np.K1;
+        np.fp_rate = fp_rate;
         return np;
     }
 
-    // Smallest count treated as overload. Fires iff observed count >= this.
-    uint32_t threshold_count(std::size_t batch_size) const
+    // Bonferroni-corrected log budget for the given per-batch test count.
+    double L_for(unsigned family) const
+    {
+        return std::log(static_cast<double>(family) / fp_rate);
+    }
+
+    // Smallest count treated as overload for X ~ Binomial(batch_size, p).
+    uint32_t threshold_count(std::size_t batch_size, double p, unsigned family) const
     {
         const double B = static_cast<double>(batch_size);
+        const double M = 1.0 - p;
         const double lam = B * p;
-        const double sigma2 = lam * one_minus_p;
-        const double t = K1 + std::sqrt(2.0 * sigma2 * L + K2);
-        const double raw = std::ceil(lam + t);
+        const double sigma2 = lam * M;
+        const double L = L_for(family);
+        const double K1 = M * L / 3.0;
+        const double t = K1 + std::sqrt(2.0 * sigma2 * L + K1 * K1);
+        return clamp_u32(std::ceil(lam + t));
+    }
+
+private:
+    static uint32_t clamp_u32(double raw)
+    {
         if (raw >= static_cast<double>(std::numeric_limits<uint32_t>::max())) {
             return std::numeric_limits<uint32_t>::max();
         }
@@ -55,12 +64,5 @@ struct NoiseParams {
             return 0;
         }
         return static_cast<uint32_t>(raw);
-    }
-
-    // Threshold under the "count > threshold" fire rule.
-    uint32_t stored_threshold(std::size_t batch_size) const
-    {
-        const uint32_t tc = threshold_count(batch_size);
-        return tc == 0 ? 0 : tc - 1;
     }
 };

@@ -143,6 +143,7 @@ struct NewHotRange {
     PairsRange pairs_range;
     KeyRange key_range;
     uint32_t load;
+    uint32_t max_chunk_load;  // largest single-chunk load (endpoints) within this hot
 };
 
 using LinkedPairsRange = LinkedElement<PairsRange>;

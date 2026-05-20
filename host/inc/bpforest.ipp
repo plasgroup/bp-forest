@@ -16,6 +16,7 @@
 #include "pairs_range.hpp"
 #include "raii.hpp"
 #include "sg_block_info.hpp"
+#include "split_hot_range.hpp"
 #include "statistics.hpp"
 #include "upmem.hpp"
 #include "workload_types.h"
@@ -210,8 +211,18 @@ struct TaskInitInput {
     }
     size_t bytes_for_dpu(dpu_id_t dpu) const { return sizeof(InputHeader) + sizeof(KVPair) * input_headers[dpu].init.nr_cold_pairs; }
 };
+// ExtendableBuffer leaves trivial T uninitialized, so the hot-split caches
+// must be zeroed on every full (re)partition before they are first read.
+inline void BPForest::reset_hot_caches()
+{
+    for (dpu_id_t i = 0; i < nr_base_parts; i++) {
+        hot_max_chunk_ratio[i] = 0.0f;
+        hot_excess_accum[i] = 0;
+    }
+}
 inline void BPForest::distribute_equal_data(const KVPair sorted_pairs[], const size_t nr_total_pairs)
 {
+    reset_hot_caches();
     const ExtendableBuffer<const KVPair*> pairs_for_each_dpus{nr_base_parts};
 
     for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
@@ -261,6 +272,7 @@ inline void BPForest::load_partitioning(const std::vector<Partition>& partitioni
 {
     ASSERT(partitioning.size() == nr_base_parts * 2);
 
+    reset_hot_caches();
     delims.clear();
 
     key_uint64_t next_delim;
@@ -338,6 +350,11 @@ inline void BPForest::distribute_data_based_on_partitions(const KVPair sorted_pa
 
                            hot_ranges[delim.dpu] = passed;
                            nr_pairs[idx_base].get()[1] = input_headers[delim.dpu].init.nr_hot_pairs = static_cast<uint32_t>(passed.npairs());
+
+                           // Entry belongs to the hot, not the DPU: reset as
+                           // delim.dpu's hot changes here.
+                           hot_max_chunk_ratio[delim.dpu] = 0.0f;
+                           hot_excess_accum[delim.dpu] = 0;
                        }),
             delim);
     }
@@ -1117,12 +1134,13 @@ struct SerializaionNrPairsReceiver {
 };
 template <typename PairsRangeLike>
 struct SerializedKVPairReceiver {
+    const InputHeader* const input_headers;
     const KVPairsCommunicator<PairsRangeLike> pairs_comm;
     const CachelineAligned<std::array<uint32_t, 2>>* const nr_pairs;
 
     SerializedKVPairReceiver(const SerializedKVPairReceiver&) = default;
-    SerializedKVPairReceiver(const LinkedList<PairsRangeLike>* cold_ranges_lists, const PairsRange* hot_ranges, const CachelineAligned<std::array<uint32_t, 2>>* nr_pairs)
-        : pairs_comm{cold_ranges_lists, hot_ranges}, nr_pairs{nr_pairs} {}
+    SerializedKVPairReceiver(const InputHeader* input_headers, const LinkedList<PairsRangeLike>* cold_ranges_lists, const PairsRange* hot_ranges, const CachelineAligned<std::array<uint32_t, 2>>* nr_pairs)
+        : input_headers{input_headers}, pairs_comm{cold_ranges_lists, hot_ranges}, nr_pairs{nr_pairs} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index) const
     {
@@ -1130,7 +1148,9 @@ struct SerializedKVPairReceiver {
     }
     size_t bytes_for_dpu(dpu_id_t dpu) const
     {
-        return sizeof(KVPair) * (nr_pairs[dpu].get()[0] + nr_pairs[dpu].get()[1]);
+        const auto& serialize = input_headers[dpu].serialize;
+        const auto& np = nr_pairs[dpu].get();
+        return sizeof(KVPair) * ((serialize.do_cold ? np[0] : 0u) + (serialize.do_hot ? np[1] : 0u));
     }
 };
 inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
@@ -1271,7 +1291,7 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
         ScopedTimer timer{PairsRecvTime};
         UPMEM_AsyncDuration async;
         scatter_from_dpu(all_dpu, sizeof(InputHeader) + sizeof(key_uint64_t) * nr_base_parts,
-            SerializedKVPairReceiver<PairsRange>{&cold_ranges_lists[0], &hot_ranges[0], &nr_pairs[0]}, async);
+            SerializedKVPairReceiver<PairsRange>{&input_headers[0], &cold_ranges_lists[0], &hot_ranges[0], &nr_pairs[0]}, async);
     }
 
     return total_nr_pairs;
@@ -1504,6 +1524,7 @@ find_relatively_hot_ranges(const LinkedList<ChunkedPairsRange>::iterator begin_r
         }
     }
 }
+
 template <typename Query, typename Result>
 inline void BPForest::full_repartition(const uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed)
 {
@@ -1513,6 +1534,9 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
 
     delims.clear();
     std::fill(hot_delims.begin(), hot_delims.end(), DelimIter{});
+    // Every hot is reassigned from scratch below; clear all caches so no DPU
+    // carries a stale ratio/accumulator from a hot it no longer hosts.
+    reset_hot_caches();
 
     const RAII raii{[&] {
         for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
@@ -1623,6 +1647,13 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
                         new_hot.key_range = {new_hot.pairs_range.begin()->key,
                             (new_hot.pairs_range.end() == &data_buf[nr_total_pairs] ? KEY_MAX : new_hot.pairs_range.end()->key - 1)};
                         new_hot.load = load;
+                        {
+                            uint32_t mcl = 0;
+                            for (auto chunk = begin; chunk != end; ++chunk) {
+                                mcl = std::max(mcl, chunk->load());
+                            }
+                            new_hot.max_chunk_load = mcl;
+                        }
 
                         cold_npairs -= new_hot.pairs_range.npairs();
                         cold_endpoint_cnt -= load;
@@ -1641,12 +1672,21 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
                 const std::array<std::pair<LinkedList<ChunkedPairsRange>::iterator, DataChunkIterator>, 2>
                     carved_cold_range
                     = find_relatively_hot_ranges(list.begin(), list.end(), hot_npairs, nr_relative_hots,
-                        [&](const ChunkedPairsRange&, const PairsRange& range, uint32_t load) {
+                        [&](const ChunkedPairsRange& part, const PairsRange& range, uint32_t load) {
                             NewHotRange& new_hot = new_hots[hot_count++];
                             new_hot.pairs_range = range;
                             new_hot.key_range = {range.begin()->key,
                                 (range.end() == &data_buf[nr_total_pairs] ? KEY_MAX : range.end()->key - 1)};
                             new_hot.load = load;
+                            {
+                                uint32_t mcl = 0;
+                                for (auto chunk = part.begin(); chunk != part.end(); ++chunk) {
+                                    if (chunk->begin() >= range.begin() && chunk->begin() < range.end()) {
+                                        mcl = std::max(mcl, chunk->load());
+                                    }
+                                }
+                                new_hot.max_chunk_load = mcl;
+                            }
 
                             cold_npairs -= new_hot.pairs_range.npairs();
                             cold_endpoint_cnt -= new_hot.load;
@@ -1709,6 +1749,10 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
                 hot_ranges[idx_dpu] = pairs_range;
                 nr_pairs[idx_dpu].get()[1] = static_cast<uint32_t>(pairs_range.npairs());
                 hot_delims[idx_dpu] = delims.emplace(key_range.begin, HotPartitionDelim{key_range.end, idx_dpu}).first;
+
+                // idx_dpu now hosts this hot; the ratio is known from the carve.
+                hot_max_chunk_ratio[idx_dpu] = static_cast<float>(new_hots[idx_hot].max_chunk_load) / static_cast<float>(hot_load);
+                hot_excess_accum[idx_dpu] = 0;
             }
 
             combine_delims();
@@ -1789,28 +1833,57 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         }
     }};
 
+    const dpu_id_t nr_existing_hots = static_cast<dpu_id_t>(delims.size()) - nr_base_parts;
+    const uint32_t hot_load = (nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
 
     dpu_id_t cold_range_pool_count = 0;  // # of meaningful entries in chunked_cold_ranges
     {
         ScopedTimer timer{DataRetrieveTime};
 
         {
-            // `routed.cold[d].nr_qrys` counts routed fragments: when one original range query straddles
-            // a hot range, it is split at combined-delim boundaries and each cold fragment is counted
-            // here separately. This is not the same metric used later in load estimation (which counts
-            // original endpoints falling into the base range), so the two thresholds are not directly
-            // comparable. Skipping DPUs below this threshold may drop some that the later load-based
-            // check would have kept; the overload threshold slack deliberately broadens this skip
-            // to reduce the set of rebalanced DPUs.
+            // This pre-filter compares routed fragment counts; the later load
+            // estimation counts original endpoints in the base range, a
+            // different metric. The two thresholds are intentionally not made
+            // comparable: the slack deliberately broadens this skip to shrink
+            // the rebalanced DPU set.
+            const unsigned bonferroni_family = static_cast<unsigned>(nr_base_parts) + static_cast<unsigned>(nr_existing_hots);
+            const uint32_t hot_share = (nr_queries + nr_base_parts - 1) / nr_base_parts;
             const uint32_t cold_partial_cnt_goal = nr_queries * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
             const uint32_t cold_partial_cnt_threshold
-                = overload_threshold.threshold_for(nr_queries, cold_partial_cnt_goal);
+                = overload_threshold.threshold_for(nr_queries, cold_partial_cnt_goal, bonferroni_family);
             dpu_id_t serialized_cold_count = 0, incision_count = 0;
+            bool any_serialize = false;
             for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
                 InputHeader& input = input_headers[idx_dpu];
                 const dpu_id_t orig_incision_count = (base_to_nr_hot_psum[idx_dpu] = incision_count);
 
-                if (routed.cold[idx_dpu].nr_qrys <= cold_partial_cnt_threshold) {
+                const bool do_cold = routed.cold[idx_dpu].nr_qrys > cold_partial_cnt_threshold;
+
+                // Hot pre-filter, same shape as cold: raw routed fragment
+                // count vs a per-hot noise threshold.  Accumulate this batch's
+                // excess endpoints (over the carve share) so a stale cached
+                // ratio is re-measured once the accumulated loss reaches the
+                // cost of one Stage2 probe.  That probe cost is essentially a
+                // constant (a serialize round-trip, independent of batch and
+                // hot pair count), so the firing threshold is a constant in
+                // excess endpoints -- NOT proportional to hot size.
+                bool do_hot = false;
+                if (param.enable_hot_split && hot_delims[idx_dpu] != DelimIter{}) {
+                    const uint32_t hot_endpoints = routed.hot[idx_dpu].nr_qrys * (IsPointQuery<Query> ? 1 : 2);
+                    hot_excess_accum[idx_dpu] += hot_endpoints > hot_load ? hot_endpoints - hot_load : 0u;
+                    const bool stale = hot_excess_accum[idx_dpu]
+                        >= static_cast<uint64_t>(std::ceil(param.hot_load_probe_cost));
+                    const float ratio = stale ? 1.0f : std::max(1.0f, hot_max_chunk_ratio[idx_dpu]);
+                    const uint32_t split_floor
+                        = static_cast<uint32_t>(std::ceil(2.0f * static_cast<float>(hot_share) * ratio));
+                    const uint32_t stage1_threshold
+                        = overload_threshold.threshold_for(nr_queries, split_floor, bonferroni_family);
+                    do_hot = routed.hot[idx_dpu].nr_qrys > stage1_threshold;
+                }
+                hot_stage1_fired[idx_dpu] = do_hot;
+                kept_hot[idx_dpu].active = false;
+
+                if (!do_cold && !do_hot) {
                     input.task_no = TASK_NONE;
                     input.serialize.nr_delims = 0;
                     continue;
@@ -1819,36 +1892,39 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                     return full_repartition(nr_queries, queries, results, routed);
                 }
 
-                DelimIter iter = cold_delims[idx_dpu];
-                key_uint64_t begin_key = iter->first;
-                for (iter++; iter != cold_delims[idx_dpu + 1]; iter++) {
-                    const key_uint64_t delim_key = iter->first;
-                    const auto& delim = std::get<HotPartitionDelim>(iter->second);
+                if (do_cold) {
+                    DelimIter iter = cold_delims[idx_dpu];
+                    key_uint64_t begin_key = iter->first;
+                    for (iter++; iter != cold_delims[idx_dpu + 1]; iter++) {
+                        const key_uint64_t delim_key = iter->first;
+                        const auto& delim = std::get<HotPartitionDelim>(iter->second);
 
-                    if (begin_key != delim_key) {
-                        cold_key_ranges[serialized_cold_count++] = {begin_key, delim_key - 1};
-                        hot_delim_keys[incision_count++] = delim_key;
+                        if (begin_key != delim_key) {
+                            cold_key_ranges[serialized_cold_count++] = {begin_key, delim_key - 1};
+                            hot_delim_keys[incision_count++] = delim_key;
+                        }
+                        begin_key = delim.max_key + 1;
                     }
-                    begin_key = delim.max_key + 1;
-                }
-                if (begin_key != KEY_MAX + 1) {
-                    const key_uint64_t max_key = iter == delims.cend() ? KEY_MAX : iter->first - 1;
-                    if (begin_key <= max_key) {
-                        cold_key_ranges[serialized_cold_count++] = {begin_key, max_key};
-                    } else {
-                        incision_count--;
+                    if (begin_key != KEY_MAX + 1) {
+                        const key_uint64_t max_key = iter == delims.cend() ? KEY_MAX : iter->first - 1;
+                        if (begin_key <= max_key) {
+                            cold_key_ranges[serialized_cold_count++] = {begin_key, max_key};
+                        } else {
+                            incision_count--;
+                        }
                     }
                 }
 
                 input.task_no = TASK_SERIALIZE;
                 input.serialize.nr_delims = incision_count - orig_incision_count;
                 input.serialize.max_nr_delims = nr_base_parts;
-                input.serialize.do_cold = true;
-                input.serialize.do_hot = false;
+                input.serialize.do_cold = do_cold;
+                input.serialize.do_hot = do_hot;
+                any_serialize = true;
             }
             base_to_nr_hot_psum[nr_base_parts] = incision_count;
 
-            if (serialized_cold_count == 0) {
+            if (!any_serialize) {
                 return;
             }
         }
@@ -1891,7 +1967,12 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             uint32_t total_nr_pairs = 0;
             for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
                 if (input_headers[idx_dpu].task_no == TASK_SERIALIZE) {
-                    total_nr_pairs += nr_pairs[idx_dpu].get()[0];
+                    if (input_headers[idx_dpu].serialize.do_cold) {
+                        total_nr_pairs += nr_pairs[idx_dpu].get()[0];
+                    }
+                    if (input_headers[idx_dpu].serialize.do_hot) {
+                        total_nr_pairs += nr_pairs[idx_dpu].get()[1];
+                    }
                 }
             }
 
@@ -1911,23 +1992,33 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 }
                 LinkedList<ChunkedPairsRange>& list = chunked_cold_ranges_lists[idx_dpu];
 
-                uint32_t nr_cold_pairs_from_this_dpu = 0;
-                for (dpu_id_t incision_idx = base_to_nr_hot_psum[idx_dpu]; incision_idx < base_to_nr_hot_psum[idx_dpu + 1]; incision_idx++) {
-                    const uint32_t incision_pos = incision_indices[incision_idx],
-                                   nr_cold_pairs = incision_pos - nr_cold_pairs_from_this_dpu;
-                    assert(nr_cold_pairs > 0);
+                if (input_headers[idx_dpu].serialize.do_cold) {
+                    uint32_t nr_cold_pairs_from_this_dpu = 0;
+                    for (dpu_id_t incision_idx = base_to_nr_hot_psum[idx_dpu]; incision_idx < base_to_nr_hot_psum[idx_dpu + 1]; incision_idx++) {
+                        const uint32_t incision_pos = incision_indices[incision_idx],
+                                       nr_cold_pairs = incision_pos - nr_cold_pairs_from_this_dpu;
+                        assert(nr_cold_pairs > 0);
 
-                    LinkedChunkedPairsRange& cold_range = chunked_cold_ranges[cold_range_pool_count++];
-                    cold_range = ChunkedPairsRange{{cursor, cursor += nr_cold_pairs}};
-                    list.push_back(cold_range);
+                        LinkedChunkedPairsRange& cold_range = chunked_cold_ranges[cold_range_pool_count++];
+                        cold_range = ChunkedPairsRange{{cursor, cursor += nr_cold_pairs}};
+                        list.push_back(cold_range);
 
-                    nr_cold_pairs_from_this_dpu = incision_pos;
+                        nr_cold_pairs_from_this_dpu = incision_pos;
+                    }
+                    const uint32_t nr_cold_pairs = nr_pairs[idx_dpu].get()[0] - nr_cold_pairs_from_this_dpu;
+                    if (nr_cold_pairs > 0) {
+                        LinkedChunkedPairsRange& cold_range = chunked_cold_ranges[cold_range_pool_count++];
+                        cold_range = ChunkedPairsRange{{cursor, cursor += nr_cold_pairs}};
+                        list.push_back(cold_range);
+                    }
                 }
-                const uint32_t nr_cold_pairs = nr_pairs[idx_dpu].get()[0] - nr_cold_pairs_from_this_dpu;
-                if (nr_cold_pairs > 0) {
-                    LinkedChunkedPairsRange& cold_range = chunked_cold_ranges[cold_range_pool_count++];
-                    cold_range = ChunkedPairsRange{{cursor, cursor += nr_cold_pairs}};
-                    list.push_back(cold_range);
+
+                if (input_headers[idx_dpu].serialize.do_hot) {
+                    const uint32_t nr_hot_pairs = nr_pairs[idx_dpu].get()[1];
+                    if (nr_hot_pairs > 0) {
+                        hot_ranges[idx_dpu] = PairsRange{cursor, cursor + nr_hot_pairs};
+                        cursor += nr_hot_pairs;
+                    }
                 }
             }
         }
@@ -1936,17 +2027,19 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             ScopedTimer timer{PairsRecvTime};
             UPMEM_AsyncDuration async;
             scatter_from_dpu(all_dpu, sizeof(InputHeader) + sizeof(key_uint64_t) * nr_base_parts,
-                TaskNoneFilter<SerializedKVPairReceiver<ChunkedPairsRange>>{&input_headers[0], &chunked_cold_ranges_lists[0], &hot_ranges[0], &nr_pairs[0]}, async);
+                TaskNoneFilter<SerializedKVPairReceiver<ChunkedPairsRange>>{&input_headers[0], &input_headers[0], &chunked_cold_ranges_lists[0], &hot_ranges[0], &nr_pairs[0]}, async);
         }
     }
 
-    const dpu_id_t nr_existing_hots = static_cast<dpu_id_t>(delims.size()) - nr_base_parts;
-    const uint32_t hot_load = (nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts,
-                   cold_endpoint_cnt_goal = nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
+    const uint32_t cold_endpoint_cnt_goal = nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
     dpu_id_t hot_count = 0;
 
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-        if (input_headers[idx_dpu].task_no == TASK_NONE) {
+        // Skip DPUs whose cold tree was not serialized; any hot they host is
+        // handled by the hot-split body after this loop.
+        const bool cold_serialized = input_headers[idx_dpu].task_no == TASK_SERIALIZE
+            && input_headers[idx_dpu].serialize.do_cold;
+        if (!cold_serialized) {
             cold_npairs_list[idx_dpu] = 0;
             cold_loads[idx_dpu] = {idx_dpu, routed.cold[idx_dpu].nr_qrys * (IsPointQuery<Query> ? 1 : 2)};
             continue;
@@ -2111,6 +2204,13 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                         (new_hot.pairs_range.end() == part.PairsRange::end() ? cold_key_ranges[idx_in_ary].end
                                                                              : new_hot.pairs_range.end()->key - 1)};
                     new_hot.load = load;
+                    {
+                        uint32_t mcl = 0;
+                        for (auto chunk = begin; chunk != end; ++chunk) {
+                            mcl = std::max(mcl, chunk->load());
+                        }
+                        new_hot.max_chunk_load = mcl;
+                    }
 
                     cold_npairs -= new_hot.pairs_range.npairs();
                     cold_endpoint_cnt -= load;
@@ -2141,6 +2241,15 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                             (range.end() == part.PairsRange::end() ? cold_key_ranges[idx_in_ary].end
                                                                    : range.end()->key - 1)};
                         new_hot.load = load;
+                        {
+                            uint32_t mcl = 0;
+                            for (auto chunk = part.begin(); chunk != part.end(); ++chunk) {
+                                if (chunk->begin() >= range.begin() && chunk->begin() < range.end()) {
+                                    mcl = std::max(mcl, chunk->load());
+                                }
+                            }
+                            new_hot.max_chunk_load = mcl;
+                        }
 
                         cold_npairs -= new_hot.pairs_range.npairs();
                         cold_endpoint_cnt -= new_hot.load;
@@ -2194,15 +2303,132 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             return full_repartition(nr_queries, queries, results, routed);  // failure due to too many hot partitions
         }
     }
+
+    // ---- Hot-split body: split over-heated existing hots ----
+    // piece[0] stays on the original host (recorded in kept_hot[idx_dpu]) so
+    // re-measurement needs no data movement; piece[1..] join the delegation
+    // stream.  Refreshing the cached ratio here is what stops an over-large
+    // cached ratio from permanently suppressing re-measurement.
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+        if (!hot_stage1_fired[idx_dpu] || hot_ranges[idx_dpu].npairs() == 0 || hot_delims[idx_dpu] == DelimIter{}) {
+            continue;
+        }
+        const key_uint64_t hot_begin_key = hot_delims[idx_dpu]->first;
+        const key_uint64_t hot_max_key = std::get<HotPartitionDelim>(hot_delims[idx_dpu]->second).max_key;
+
+        ChunkedPairsRange hot_cpr{hot_ranges[idx_dpu]};
+        uint32_t measured = 0, max_chunk_load = 0;
+        {
+            ScopedTimer t{LoadEstimateTime};
+
+            const size_t nr_chunks = hot_cpr.nchunks();
+            chunk2load.reserve(nr_chunks);
+            for (size_t idx_chunk = 0; idx_chunk < nr_chunks; idx_chunk++) {
+                chunk2load[idx_chunk] = 0;
+            }
+            hot_cpr.set_load_ary(&chunk2load[0]);
+
+            // Single contiguous hot range, so a query maps to at most one hot
+            // fragment: no orig_idx dedup needed (unlike the cold path).
+            if constexpr (IsPointQuery<Query>) {
+                for (const auto& qry_vec : routed.hot[idx_dpu].qrys) {
+                    for (const auto& qry : qry_vec) {
+                        const key_uint64_t key = PointQueryToKey<Query>{}(qry);
+                        DataChunkIterator one_after_target_chunk = [&] {
+                            if constexpr (IsPredecessorQuery<Query, Result>) {
+                                return std::lower_bound(hot_cpr.begin(), hot_cpr.end(), key,
+                                    [](DataChunkIterator& chunk, key_uint64_t key) { return chunk.begin()->key < key; });
+                            } else {
+                                return std::upper_bound(hot_cpr.begin(), hot_cpr.end(), key,
+                                    [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
+                            }
+                        }();
+                        (--one_after_target_chunk)->load()++;
+                    }
+                }
+                measured = routed.hot[idx_dpu].nr_qrys;
+
+            } else {
+                for (const auto& idx_vec : routed.hot[idx_dpu].orig_idxs) {
+                    for (const auto orig_idx : idx_vec) {
+                        const KeyRange& range = RangeQueryToRange<Query>{}(queries[orig_idx]);
+                        for (const auto key : {range.begin, range.end}) {
+                            if (hot_begin_key <= key && key <= hot_max_key) {
+                                DataChunkIterator one_after_target_chunk = std::upper_bound(hot_cpr.begin(), hot_cpr.end(), key,
+                                    [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
+                                (--one_after_target_chunk)->load()++;
+                                measured++;
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (DataChunkIterator c = hot_cpr.begin(); c != hot_cpr.end(); ++c) {
+                max_chunk_load = std::max(max_chunk_load, c->load());
+            }
+        }
+
+        // Split or not, this is the only place a stale cached ratio is
+        // corrected, so it must run on every measured hot.
+        hot_max_chunk_ratio[idx_dpu] = static_cast<float>(max_chunk_load) / static_cast<float>(hot_load);
+        hot_excess_accum[idx_dpu] = 0;
+
+        const dpu_id_t nr_target_pieces = static_cast<dpu_id_t>(measured / hot_load);
+        if (nr_target_pieces < 2) {
+            // Non-split: keep the existing hot tree untouched.
+            hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};
+            continue;
+        }
+
+        std::vector<NewHotRange> pieces;
+        const dpu_id_t emit_count = split_hot_range_equal_load(hot_cpr, measured, nr_target_pieces, hot_max_key,
+            [&](PairsRange pr, KeyRange kr, uint32_t ld, uint32_t mcl) {
+                pieces.push_back(NewHotRange{pr, kr, ld, mcl});
+            });
+        if (emit_count <= 1) {
+            // A single dominant chunk cannot be subdivided: keep the hot whole.
+            hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};
+            continue;
+        }
+
+        // Split confirmed: keep piece[0] on idx_dpu, delegate piece[1..].
+        delims.erase(hot_delims[idx_dpu]);
+        hot_delims[idx_dpu] = DelimIter{};
+        kept_hot[idx_dpu].active = true;
+        kept_hot[idx_dpu].pairs_range = pieces[0].pairs_range;
+        kept_hot[idx_dpu].key_range = pieces[0].key_range;
+        kept_hot[idx_dpu].load = pieces[0].load;
+        kept_hot[idx_dpu].max_chunk_load = pieces[0].max_chunk_load;
+        hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};  // set to piece[0] at re-insertion below
+
+        for (dpu_id_t idx_piece = 1; idx_piece < emit_count; idx_piece++) {
+            if (nr_existing_hots + hot_count >= nr_base_parts) {
+                raii.finalize();
+                return full_repartition(nr_queries, queries, results, routed);  // failure due to too many hot partitions
+            }
+            NewHotRange& nh = new_hots[hot_count++];
+            nh.pairs_range = pieces[idx_piece].pairs_range;
+            nh.key_range = pieces[idx_piece].key_range;
+            nh.load = pieces[idx_piece].load;
+            nh.max_chunk_load = pieces[idx_piece].max_chunk_load;
+        }
+    }
+
     if (hot_count == 0) {
         return;
     }
 
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-        if (input_headers[idx_dpu].task_no != TASK_NONE) {
+        // Only DPUs whose cold tree was actually carved: do_hot-only
+        // candidates have cold_npairs_list==0 and overwriting would corrupt
+        // their persistent cold count for future batches.
+        if (input_headers[idx_dpu].task_no != TASK_NONE && input_headers[idx_dpu].serialize.do_cold) {
             nr_pairs[idx_dpu].get()[0] = cold_npairs_list[idx_dpu];
         }
-        if (hot_delims[idx_dpu] != DelimIter{}) {
+        // Exclude DPUs that already host a hot, including split hosts
+        // that will keep their piece[0] (delim erased, re-inserted below).
+        if (hot_delims[idx_dpu] != DelimIter{} || kept_hot[idx_dpu].active) {
             cold_loads[idx_dpu].second = std::numeric_limits<uint32_t>::max();
         }
     }
@@ -2219,6 +2445,23 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         hot_delims[idx_dpu] = delims.emplace(key_range.begin, HotPartitionDelim{key_range.end, idx_dpu}).first;
 
         nr_pairs[idx_dpu].get()[1] = static_cast<uint32_t>(hot_ranges[idx_dpu].npairs());
+
+        // Cache now belongs to this delegated piece; ratio known from the carve.
+        hot_max_chunk_ratio[idx_dpu] = static_cast<float>(new_hots[idx_hot].max_chunk_load) / static_cast<float>(hot_load);
+        hot_excess_accum[idx_dpu] = 0;
+    }
+
+    // Re-insert each split host's piece[0]: it already holds the left edge,
+    // so rebuilding its hot tree from piece[0] needs no data movement.
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+        if (!kept_hot[idx_dpu].active) {
+            continue;
+        }
+        hot_ranges[idx_dpu] = kept_hot[idx_dpu].pairs_range;
+        hot_delims[idx_dpu] = delims.emplace(kept_hot[idx_dpu].key_range.begin, HotPartitionDelim{kept_hot[idx_dpu].key_range.end, idx_dpu}).first;
+        nr_pairs[idx_dpu].get()[1] = static_cast<uint32_t>(hot_ranges[idx_dpu].npairs());
+        hot_max_chunk_ratio[idx_dpu] = static_cast<float>(kept_hot[idx_dpu].max_chunk_load) / static_cast<float>(hot_load);
+        hot_excess_accum[idx_dpu] = 0;
     }
 
     combine_delims();

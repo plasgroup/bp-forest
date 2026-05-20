@@ -106,6 +106,7 @@ typedef struct {
 } DeleteWorkspace;
 
 
+#if SUPPORT_RANGE_MIN
 typedef struct {
     __dma_aligned Node node_cache;
     __dma_aligned uint16_t lump_end_indices[TASK_RANGE_MIN_NR_CACHED_LUMP_END_INDICES];
@@ -118,6 +119,7 @@ typedef union {
     __dma_aligned uint16_t lump_end_indices[MAX_NR_RMQ_LUMPS + 2];
     TaskletLocalRMQWorkspace th[TASK_RANGE_MIN_NR_TASKLETS];
 } RMQWorkspace;
+#endif /* if SUPPORT_RANGE_MIN */
 
 
 typedef struct {
@@ -226,5 +228,7 @@ typedef union {
     InsertWorkspace insert[TASK_INSERT_NR_TASKLETS];
     DeleteWorkspace delete[TASK_DELETE_NR_TASKLETS];
     RCQWorkspace rcq[TASK_RANGE_COUNT_NR_TASKLETS];
+#if SUPPORT_RANGE_MIN
     RMQWorkspace rmq;
+#endif
 } TreeWorkspace;

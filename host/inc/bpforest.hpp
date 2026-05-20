@@ -103,9 +103,11 @@ using PartitionDelim = std::pair<key_uint64_t, std::variant<BasePartitionDelim, 
 struct BPForestParameter {
     unsigned balancing = 1;
     bool enable_incremental = true;
+    bool enable_hot_split = true;
     // BPForest resolves this spec to a concrete policy at construction using ndpus.
     OverloadThresholdSpec overload_threshold_spec = HighWatermarkRatio{1.05};
     unsigned nr_host_threads = 0;
+    double hot_load_probe_cost = 1000.0;
 };
 struct BPForest : ParallelManager<BPForest> {
     using Param = BPForestParameter;
@@ -162,7 +164,22 @@ private:
 
     const Param param;
 
-    const OverloadThreshold overload_threshold{param.overload_threshold_spec, nr_base_parts, param.balancing};
+    const OverloadThreshold overload_threshold{param.overload_threshold_spec};
+    ExtendableBuffer<float> hot_max_chunk_ratio{static_cast<size_t>(nr_base_parts)};
+    ExtendableBuffer<uint64_t> hot_excess_accum{static_cast<size_t>(nr_base_parts)};
+    ExtendableBuffer<bool> hot_stage1_fired{static_cast<size_t>(nr_base_parts)};
+    // The split piece kept on the original host.  A separate buffer rather
+    // than InputHeader fields: InputHeader's union is clobbered by the
+    // TASK_MOVE_HOT rewrite before this is consumed.  `active` is reset every
+    // batch in the hot pre-filter loop.
+    struct KeptHotPiece {
+        bool active = false;
+        PairsRange pairs_range;
+        KeyRange key_range;
+        uint32_t load = 0;
+        uint32_t max_chunk_load = 0;
+    };
+    ExtendableBuffer<KeptHotPiece> kept_hot{static_cast<size_t>(nr_base_parts)};
 
     TaskID last_qry_type = TASK_NONE;
     QueryData<key_uint64_t, value_uint64_t> get_queries{nr_base_parts, get_parallelism()};
@@ -212,6 +229,8 @@ private:
     void initialize_in_dpu(const InputHeader input_headers[], const LinkedList<PairsRangeLike> colds[], const PairsRange hots[]);
 
     void combine_delims();
+
+    void reset_hot_caches();
 
     template <typename Query, typename Result>
     void route_queries(

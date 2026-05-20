@@ -3,6 +3,7 @@
 #include "noise_params.hpp"
 #include "overload.hpp"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -11,15 +12,15 @@
 #include <ostream>
 #include <variant>
 
-// Rebalance-trigger policy for per-DPU cold-query count.  Callers fire
-// rebalance when observed count exceeds the threshold produced by
-// OverloadThreshold::threshold_for.
+// Rebalance-trigger policy for an observed per-DPU query count.  Callers fire
+// rebalance when the count exceeds the threshold produced by
+// OverloadThreshold::threshold_for, which takes the per-batch fair-share goal
+// as the null mean.
 //
 // Spec is the user-facing choice:
-//   HighWatermarkRatio : threshold = per-DPU goal * value.
-//   FalsePositiveRate  : target per-batch false-positive rate; threshold is
-//                        the Bernstein closed form in NoiseParams, resolved
-//                        once ndpus and balancing are known.
+//   HighWatermarkRatio : threshold = goal * value.
+//   FalsePositiveRate  : target per-batch false-positive rate; the threshold
+//                        is the Bernstein closed form in NoiseParams.
 struct HighWatermarkRatio {
     double value;
 };
@@ -28,28 +29,51 @@ struct FalsePositiveRate {
 };
 using OverloadThresholdSpec = std::variant<HighWatermarkRatio, FalsePositiveRate>;
 
-// A spec resolved against a concrete DPU count and balancing factor.
 struct OverloadThreshold {
     std::variant<HighWatermarkRatio, NoiseParams> policy;
 
-    OverloadThreshold(const OverloadThresholdSpec& spec, unsigned ndpus, unsigned balancing)
+    explicit OverloadThreshold(const OverloadThresholdSpec& spec)
         : policy(std::visit(
               overload(
                   [](const HighWatermarkRatio& r) -> std::variant<HighWatermarkRatio, NoiseParams> { return r; },
                   [&](const FalsePositiveRate& fpr) -> std::variant<HighWatermarkRatio, NoiseParams> {
-                      return NoiseParams::compute(fpr.value, ndpus, balancing);
+                      return NoiseParams::compute(fpr.value);
                   }),
               spec))
     {
     }
 
-    // Threshold to compare per-DPU cold-query count against (fire when count > threshold).
-    uint32_t threshold_for(std::size_t batch_size, uint32_t cold_query_goal) const
+    // Threshold to compare an observed per-DPU query count against (fire when
+    // count > threshold).  `goal` is the per-batch fair-share count used as
+    // the null mean: X ~ Binomial(B, goal/B) (cold passes its cold-query goal,
+    // hot its split floor).  `family` is the per-batch total number of
+    // statistical tests for the Bonferroni budget (cold nr_base_parts + hot
+    // pre-filter nr_existing_hots); ignored by HighWatermark (no statistics).
+    //   goal > B         -> saturate to B (count <= B so it cannot fire); the
+    //                       structural floor exceeds the observable max.
+    //   HighWatermark    -> min(B, ceil(goal * r))        (family ignored)
+    //   NoiseParams      -> min(B, Bernstein(B, goal, family) - 1)
+    uint32_t threshold_for(std::size_t batch_size, uint32_t goal, unsigned family) const
     {
+        const std::size_t B = batch_size;
+        const uint32_t Bcap = (B > std::numeric_limits<uint32_t>::max())
+                                  ? std::numeric_limits<uint32_t>::max()
+                                  : static_cast<uint32_t>(B);
+        if (static_cast<std::size_t>(goal) > B) {
+            return Bcap;  // saturate: non-firing
+        }
         return std::visit(
             overload(
-                [&](const HighWatermarkRatio& r) { return static_cast<uint32_t>(cold_query_goal * r.value); },
-                [&](const NoiseParams& np) { return np.stored_threshold(batch_size); }),
+                [&](const HighWatermarkRatio& r) -> uint32_t {
+                    const double thr = std::ceil(static_cast<double>(goal) * r.value);
+                    return thr >= static_cast<double>(Bcap) ? Bcap : static_cast<uint32_t>(thr);
+                },
+                [&](const NoiseParams& np) -> uint32_t {
+                    const double p = (B > 0) ? static_cast<double>(goal) / static_cast<double>(B) : 0.0;
+                    const uint32_t tc = np.threshold_count(B, p, family);
+                    const uint32_t stored = tc == 0 ? 0u : tc - 1u;
+                    return stored > Bcap ? Bcap : stored;
+                }),
             policy);
     }
 
@@ -58,10 +82,8 @@ struct OverloadThreshold {
     {
         if (const auto* np = std::get_if<NoiseParams>(&policy)) {
             ostr << "overload_threshold.noise_params:"
-                 << " p=" << np->p
-                 << " L=" << np->L
-                 << " K1=" << np->K1
-                 << " K2=" << np->K2
+                 << " fp_rate=" << np->fp_rate
+                 << " (L=ln(family/fp_rate) computed per batch)"
                  << "\n";
         }
     }

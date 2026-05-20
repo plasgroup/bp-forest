@@ -16,3 +16,16 @@ target_link_libraries(noise_params_test
     util
 )
 target_compile_features(noise_params_test PRIVATE cxx_std_17)
+
+add_executable(split_hot_range_test
+    split_hot_range_test.cpp
+)
+target_include_directories(split_hot_range_test PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/../../../host/inc
+)
+target_link_libraries(split_hot_range_test
+    common_base
+    host_params
+)
+target_compile_definitions(split_hot_range_test PRIVATE NR_RANKS=${NR_RANKS_DEFAULT})
+target_compile_features(split_hot_range_test PRIVATE cxx_std_17)

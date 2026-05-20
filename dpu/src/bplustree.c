@@ -1797,8 +1797,9 @@ void task_serialize(void)
                 result_pairs, nr_delims, input_delims, result_incisions);
         }
         if (input_header.serialize.do_hot) {
+            const uintptr_t hot_offset = input_header.serialize.do_cold ? sizeof(KVPair) * nr_pairs.cold : 0;
             SERIALIZE_execute(hot_root_numKeys, &hot_root, hot_height,
-                result_pairs + sizeof(KVPair) * nr_pairs.cold, 0, input_delims, result_incisions);
+                result_pairs + hot_offset, 0, input_delims, result_incisions);
         }
     }
 }

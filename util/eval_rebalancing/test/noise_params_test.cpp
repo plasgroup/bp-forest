@@ -1,5 +1,7 @@
 #include "noise_params.hpp"
+#include "overload_threshold.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -13,116 +15,156 @@ bool approx(double a, double b, double eps)
     return std::fabs(a - b) <= eps * std::max(1.0, std::fabs(b));
 }
 
-void test_compute_constants()
+// Reference Bernstein tail (same closed form as NoiseParams::threshold_count).
+uint32_t ref_tc(double B, double p, double L)
 {
-    // D=1000, alpha=0.001, a=10 -> p = 11/3000, L = ln(1e6), M = 1-p
-    const auto np = NoiseParams::compute(0.001, 1000, 10);
-    const double M = 1.0 - 11.0 / 3000.0;
-    assert(approx(np.p, 11.0 / 3000.0, 1e-12));
-    assert(approx(np.one_minus_p, M, 1e-12));
-    assert(approx(np.L, std::log(1e6), 1e-12));
-    assert(approx(np.K1, M * np.L / 3.0, 1e-12));
-    assert(approx(np.K2, M * M * np.L * np.L / 9.0, 1e-12));
+    const double M = 1.0 - p;
+    const double lam = B * p;
+    const double sigma2 = lam * M;
+    const double K1 = M * L / 3.0;
+    const double t = K1 + std::sqrt(2.0 * sigma2 * L + K1 * K1);
+    return static_cast<uint32_t>(std::ceil(lam + t));
 }
 
-void test_balancing_floor()
+OverloadThreshold fpr_threshold(double fp_rate)
 {
-    // balancing=1 -> max(3, 2) = 3 -> p = 1/D
-    const auto np = NoiseParams::compute(0.01, 100, 1);
-    assert(approx(np.p, 1.0 / 100.0, 1e-12));
-    // balancing=2 -> max(3, 3) = 3 -> p = 1/D
-    const auto np2 = NoiseParams::compute(0.01, 100, 2);
-    assert(approx(np2.p, 1.0 / 100.0, 1e-12));
-    // balancing=3 -> max(3, 4) = 4 -> p = 4/(3D)
-    const auto np3 = NoiseParams::compute(0.01, 100, 3);
-    assert(approx(np3.p, 4.0 / 300.0, 1e-12));
+    return OverloadThreshold{OverloadThresholdSpec{FalsePositiveRate{fp_rate}}};
+}
+OverloadThreshold hwm_threshold(double r)
+{
+    return OverloadThreshold{OverloadThresholdSpec{HighWatermarkRatio{r}}};
 }
 
-void test_threshold_formula_manual()
+// ---- NoiseParams: policy-agnostic Bernstein calculator ----
+
+void test_noise_params_retains_only_fp_rate()
 {
-    // D=1000, alpha=0.001, a=10, B=1e6
-    const auto np = NoiseParams::compute(0.001, 1000, 10);
+    // compute() takes fp_rate alone; no ndpus/balancing leak in.
+    const auto np = NoiseParams::compute(0.001);
+    assert(approx(np.fp_rate, 0.001, 1e-12));
+    assert(approx(np.L_for(1000), std::log(1e6), 1e-12));
+    assert(approx(np.L_for(2000), std::log(2e6), 1e-12));
+}
+
+void test_threshold_count_matches_closed_form()
+{
+    const auto np = NoiseParams::compute(0.001);
+    const unsigned family = 1000;
+    const double L = np.L_for(family);
     const double B = 1e6;
-    const double lam = B * np.p;                  // ~= 3666.67
-    const double sigma2 = lam * np.one_minus_p;   // ~= 3653.22
-    const double t = np.K1 + std::sqrt(2.0 * sigma2 * np.L + np.K2);
-    const uint32_t tc_expected = static_cast<uint32_t>(std::ceil(lam + t));
-    const uint32_t tc = np.threshold_count(static_cast<size_t>(B));
-    assert(tc == tc_expected);
-    // stored = tc - 1 (because main.cpp fires on count > threshold)
-    assert(np.stored_threshold(static_cast<size_t>(B)) == tc - 1);
-    // sanity range (spot-checked against Python eval_threshold_ideas.py)
-    assert(tc >= 3980 && tc <= 4010);
+    const double p = 11.0 / 3000.0;  // a caller-supplied rate
+    assert(np.threshold_count(static_cast<size_t>(B), p, family) == ref_tc(B, p, L));
 }
 
-void test_threshold_small_batch()
+void test_threshold_count_small_batch()
 {
-    // Small B: lam is tiny but threshold must still be at least ceil(K1 + sqrt(K2))
-    const auto np = NoiseParams::compute(0.001, 1000, 10);
-    const uint32_t tc0 = np.threshold_count(0);
-    // B=0 -> lam=0, sigma2=0, t=K1+sqrt(K2)=2*K1
-    const double expected_t = 2.0 * np.K1;
-    assert(tc0 == static_cast<uint32_t>(std::ceil(expected_t)));
-
-    // B=100: lam=0.367, threshold should stay >= tc0 since t is larger with positive sigma2
-    const uint32_t tc100 = np.threshold_count(100);
-    assert(tc100 >= tc0);
+    const auto np = NoiseParams::compute(0.001);
+    const unsigned family = 1000;
+    const double p = 11.0 / 3000.0;
+    const double K1 = (1.0 - p) * np.L_for(family) / 3.0;
+    // B=0 -> lam=0, sigma2=0, t=K1+sqrt(K1^2)=2*K1
+    const uint32_t tc0 = np.threshold_count(0, p, family);
+    assert(tc0 == static_cast<uint32_t>(std::ceil(2.0 * K1)));
+    // B=100: positive sigma2 only grows t
+    assert(np.threshold_count(100, p, family) >= tc0);
 }
 
-void test_threshold_monotone_in_B()
+void test_threshold_count_monotone_in_B()
 {
-    const auto np = NoiseParams::compute(0.001, 1000, 10);
+    const auto np = NoiseParams::compute(0.001);
+    const double p = 11.0 / 3000.0;
     uint32_t prev = 0;
     for (size_t B : {size_t{1000}, size_t{10000}, size_t{100000}, size_t{1000000}, size_t{10000000}, size_t{100000000}}) {
-        const uint32_t tc = np.threshold_count(B);
+        const uint32_t tc = np.threshold_count(B, p, 1000);
         assert(tc >= prev);
         prev = tc;
     }
 }
 
-void test_stored_vs_count()
+void test_threshold_count_monotone_in_family()
 {
-    // stored_threshold + 1 == threshold_count (when count > 0) so the fire rule
-    // "count > stored" matches "count >= threshold_count"
-    const auto np = NoiseParams::compute(0.01, 100, 10);
-    for (size_t B : {size_t{100}, size_t{1000}, size_t{10000}, size_t{100000}}) {
-        const uint32_t tc = np.threshold_count(B);
-        const uint32_t stored = np.stored_threshold(B);
-        if (tc > 0) {
-            assert(stored + 1 == tc);
-        } else {
-            assert(stored == 0);
-        }
-    }
+    // Larger family => larger L => higher (more conservative) threshold.
+    const auto np = NoiseParams::compute(0.001);
+    const double p = 11.0 / 3000.0;
+    assert(np.threshold_count(1'000'000, p, 5000) >= np.threshold_count(1'000'000, p, 500));
 }
 
-void test_upper_bound_vs_legacy_extremes()
+// ---- OverloadThreshold: one threshold_for, goal is the null mean ----
+
+void test_threshold_for_uses_goal_as_null_mean()
 {
-    // At extreme B=1e8 and D=1000, alpha=0.001, a=10:
-    //   goal = B*p = 366667, sigma = sqrt(lam*(1-p)) ~= 605.3
-    //   legacy hwm=1.05: threshold_count = ceil(goal*0.05) + goal ~= 385001 (miss by 30+ sigma)
-    //   A4: threshold_count ~= goal + 5.26*sigma ~= 369850
-    // Check A4 gives a much tighter threshold than legacy at huge B.
-    const auto np = NoiseParams::compute(0.001, 1000, 10);
+    const auto ot = fpr_threshold(0.001);
+    const unsigned family = 1000;
+    const size_t B = 1'000'000;
+    const uint32_t g = 4000;
+
+    const uint32_t thr = ot.threshold_for(B, g, family);
+    assert(thr > g);  // strictly positive Bernstein tail
+
+    const auto np = NoiseParams::compute(0.001);
+    const double p = static_cast<double>(g) / static_cast<double>(B);
+    const uint32_t tc = np.threshold_count(B, p, family);
+    assert(thr == tc - 1);  // "-1" applied by OverloadThreshold
+
+    // goal == B  -> p=1, M=0, t=0 -> tc=B -> stored B-1 (<= Bcap).
+    assert(ot.threshold_for(B, static_cast<uint32_t>(B), family) == static_cast<uint32_t>(B) - 1);
+    // goal  > B  -> saturate to B (never fires, since count <= B).
+    assert(ot.threshold_for(B, static_cast<uint32_t>(B) + 1, family) == static_cast<uint32_t>(B));
+}
+
+void test_threshold_for_high_watermark()
+{
+    const auto ot = hwm_threshold(1.05);
+    const size_t B = 1'000'000;
+    const uint32_t g = 4000;
+    assert(ot.threshold_for(B, g, 1) == static_cast<uint32_t>(std::ceil(g * 1.05)));
+    assert(ot.threshold_for(B, g, 999) == static_cast<uint32_t>(std::ceil(g * 1.05)));  // family ignored
+    // ceil(goal*r) exceeds B -> clamp to B.
+    assert(ot.threshold_for(B, static_cast<uint32_t>(B), 1) == static_cast<uint32_t>(B));
+    // goal > B -> saturate to B.
+    assert(ot.threshold_for(B, static_cast<uint32_t>(B) + 1, 1) == static_cast<uint32_t>(B));
+}
+
+// ---- Cold path: caller passes goal = B * max(3,bal+1)/(3D) ----
+
+void test_cold_goal_sanity()
+{
+    // D=1000, a=10 -> cold rate 11/3000; cold passes goal = B * 11/3000.
+    const auto ot = fpr_threshold(0.001);
+    const unsigned family = 1000;
+    const size_t B = 1'000'000;
+    const uint32_t goal = static_cast<uint32_t>(static_cast<double>(B) * 11.0 / 3000.0);
+    const auto np = NoiseParams::compute(0.001);
+    const uint32_t tc = np.threshold_count(B, static_cast<double>(goal) / static_cast<double>(B), family);
+    assert(ot.threshold_for(B, goal, family) == tc - 1);
+    // Sanity range (spot-checked against Python eval_threshold_ideas.py).
+    assert(tc >= 3980 && tc <= 4010);
+}
+
+void test_cold_goal_below_legacy_high_watermark()
+{
+    const auto ot = fpr_threshold(0.001);
     const size_t B = 100'000'000;
-    const uint32_t tc_a4 = np.threshold_count(B);
-    const uint64_t goal = static_cast<uint64_t>(B) * 11 / 3000;
-    const uint32_t tc_legacy = static_cast<uint32_t>(goal * 1.05) + 1;
-    assert(tc_a4 < tc_legacy);
-    assert(tc_a4 > goal);  // still an upper threshold above goal
-    assert(tc_a4 - goal >= 1000);  // at least several sigma above goal
+    const uint32_t goal = static_cast<uint32_t>(static_cast<uint64_t>(B) * 11 / 3000);
+    const uint32_t thr = ot.threshold_for(B, goal, 1000);
+    const uint32_t legacy = static_cast<uint32_t>(static_cast<uint64_t>(goal) * 1.05) + 1;
+    assert(thr < legacy);
+    assert(thr > goal);
+    assert(thr - goal >= 1000);
 }
 }  // namespace
 
 int main()
 {
-    test_compute_constants();
-    test_balancing_floor();
-    test_threshold_formula_manual();
-    test_threshold_small_batch();
-    test_threshold_monotone_in_B();
-    test_stored_vs_count();
-    test_upper_bound_vs_legacy_extremes();
+    test_noise_params_retains_only_fp_rate();
+    test_threshold_count_matches_closed_form();
+    test_threshold_count_small_batch();
+    test_threshold_count_monotone_in_B();
+    test_threshold_count_monotone_in_family();
+    test_threshold_for_uses_goal_as_null_mean();
+    test_threshold_for_high_watermark();
+    test_cold_goal_sanity();
+    test_cold_goal_below_legacy_high_watermark();
     std::puts("noise_params_test passed");
     return 0;
 }

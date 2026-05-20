@@ -69,6 +69,7 @@ struct CMDOpt {
     std::optional<OverloadThreshold> overload_threshold;
     bool commutative = false;
     bool enable_incremental = true;
+    double hot_load_probe_cost = 1000.0;  // accumulated excess endpoints one Stage2 probe is worth (> 0)
 
     CMDOpt() = default;
 
@@ -82,6 +83,11 @@ struct CMDOpt {
         parser.add<unsigned>("ndpus", 'n', "number of base DPUs", true);
         parser.add<unsigned>("balancing", 0, "balancing factor", false, 10);
         add_overload_threshold_options(parser);
+        parser.add<double>("hot-load-probe-cost", 0,
+            "accumulated excess endpoints one Stage2 probe is worth; a stale "
+            "hot is re-probed once its accumulated overload reaches this "
+            "constant. Must be > 0.",
+            false, 1000.0);
         parser.add("commutative", 'c', "treat scans as commutative");
         parser.add<bool>("incremental", 0, "whether to enable incremental rebalancing", false, true);
         parser.parse_check(argc, argv);
@@ -94,7 +100,13 @@ struct CMDOpt {
         enable_incremental = parser.get<bool>("incremental");
 
         threshold_spec = parse_overload_threshold_spec(parser).value_or(FalsePositiveRate{0.001});
-        overload_threshold.emplace(threshold_spec, ndpus, balancing);
+        overload_threshold.emplace(threshold_spec);
+
+        hot_load_probe_cost = parser.get<double>("hot-load-probe-cost");
+        if (!(hot_load_probe_cost > 0.0)) {
+            std::cerr << "--hot-load-probe-cost must be > 0" << std::endl;
+            std::exit(1);
+        }
 
         const auto bs = parser.get<std::optional<size_t>>("batch-size");
         const auto qr = parser.get<std::optional<double>>("query-rate");
@@ -1240,7 +1252,9 @@ Dur rebalancing(Partitioning& parts, DistributedData& data, const Query qrys[], 
     }
 
     const uint32_t cold_nqrys_goal = static_cast<uint32_t>(nqrys * std::max(3u, opt.balancing + 1) / 3 / parts.ndpus());
-    const uint32_t cold_nqrys_threshold = opt.overload_threshold->threshold_for(nqrys, cold_nqrys_goal);
+    // This eval harness performs cold-only detection (no hot pre-filter), so
+    // the Bonferroni family is just the cold test count = ndpus.
+    const uint32_t cold_nqrys_threshold = opt.overload_threshold->threshold_for(nqrys, cold_nqrys_goal, parts.ndpus());
 
     uint64_t moved_pairs = 0;
     std::vector<BaseColdState> states(parts.ndpus());
