@@ -2468,9 +2468,10 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
 
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
         InputHeader& input_header = input_headers[idx_dpu];
+        const bool cold_renewed = input_header.task_no == TASK_SERIALIZE && input_header.serialize.do_cold;
         input_header.move_hot.nr_cold_pairs = cold_npairs_list[idx_dpu];
         input_header.move_hot.nr_hot_pairs = static_cast<uint32_t>(hot_ranges[idx_dpu].npairs());
-        input_header.move_hot.renew_cold = (input_header.move_hot.nr_cold_pairs > 0);
+        input_header.move_hot.renew_cold = cold_renewed;
         input_header.move_hot.renew_hot = (input_header.move_hot.nr_hot_pairs > 0);
 
         input_header.task_no = TASK_MOVE_HOT;
@@ -2597,6 +2598,8 @@ inline void BPForest::print_params(std::ostream& ostr) const
 #endif
             "param.balancing: " << param.balancing << "\n"
             "param.enable_incremental: " << param.enable_incremental << "\n"
+            "param.enable_hot_split: " << param.enable_hot_split << "\n"
+            "param.hot_load_probe_cost: " << param.hot_load_probe_cost << "\n"
             "param.nr_host_threads: " << param.nr_host_threads << "\n";
     print_overload_threshold_spec(ostr, param.overload_threshold_spec);
     overload_threshold.print_resolution(ostr);
