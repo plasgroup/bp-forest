@@ -211,18 +211,8 @@ struct TaskInitInput {
     }
     size_t bytes_for_dpu(dpu_id_t dpu) const { return sizeof(InputHeader) + sizeof(KVPair) * input_headers[dpu].init.nr_cold_pairs; }
 };
-// ExtendableBuffer leaves trivial T uninitialized, so the hot-split caches
-// must be zeroed on every full (re)partition before they are first read.
-inline void BPForest::reset_hot_caches()
-{
-    for (dpu_id_t i = 0; i < nr_base_parts; i++) {
-        hot_max_chunk_ratio[i] = 0.0f;
-        hot_excess_accum[i] = 0;
-    }
-}
 inline void BPForest::distribute_equal_data(const KVPair sorted_pairs[], const size_t nr_total_pairs)
 {
-    reset_hot_caches();
     const ExtendableBuffer<const KVPair*> pairs_for_each_dpus{nr_base_parts};
 
     for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
@@ -272,7 +262,6 @@ inline void BPForest::load_partitioning(const std::vector<Partition>& partitioni
 {
     ASSERT(partitioning.size() == nr_base_parts * 2);
 
-    reset_hot_caches();
     delims.clear();
 
     key_uint64_t next_delim;
@@ -350,11 +339,6 @@ inline void BPForest::distribute_data_based_on_partitions(const KVPair sorted_pa
 
                            hot_ranges[delim.dpu] = passed;
                            nr_pairs[idx_base].get()[1] = input_headers[delim.dpu].init.nr_hot_pairs = static_cast<uint32_t>(passed.npairs());
-
-                           // Entry belongs to the hot, not the DPU: reset as
-                           // delim.dpu's hot changes here.
-                           hot_max_chunk_ratio[delim.dpu] = 0.0f;
-                           hot_excess_accum[delim.dpu] = 0;
                        }),
             delim);
     }
@@ -1534,9 +1518,6 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
 
     delims.clear();
     std::fill(hot_delims.begin(), hot_delims.end(), DelimIter{});
-    // Every hot is reassigned from scratch below; clear all caches so no DPU
-    // carries a stale ratio/accumulator from a hot it no longer hosts.
-    reset_hot_caches();
 
     const RAII raii{[&] {
         for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
@@ -1647,13 +1628,6 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
                         new_hot.key_range = {new_hot.pairs_range.begin()->key,
                             (new_hot.pairs_range.end() == &data_buf[nr_total_pairs] ? KEY_MAX : new_hot.pairs_range.end()->key - 1)};
                         new_hot.load = load;
-                        {
-                            uint32_t mcl = 0;
-                            for (auto chunk = begin; chunk != end; ++chunk) {
-                                mcl = std::max(mcl, chunk->load());
-                            }
-                            new_hot.max_chunk_load = mcl;
-                        }
 
                         cold_npairs -= new_hot.pairs_range.npairs();
                         cold_endpoint_cnt -= load;
@@ -1672,21 +1646,12 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
                 const std::array<std::pair<LinkedList<ChunkedPairsRange>::iterator, DataChunkIterator>, 2>
                     carved_cold_range
                     = find_relatively_hot_ranges(list.begin(), list.end(), hot_npairs, nr_relative_hots,
-                        [&](const ChunkedPairsRange& part, const PairsRange& range, uint32_t load) {
+                        [&]([[maybe_unused]] const ChunkedPairsRange& part, const PairsRange& range, uint32_t load) {
                             NewHotRange& new_hot = new_hots[hot_count++];
                             new_hot.pairs_range = range;
                             new_hot.key_range = {range.begin()->key,
                                 (range.end() == &data_buf[nr_total_pairs] ? KEY_MAX : range.end()->key - 1)};
                             new_hot.load = load;
-                            {
-                                uint32_t mcl = 0;
-                                for (auto chunk = part.begin(); chunk != part.end(); ++chunk) {
-                                    if (chunk->begin() >= range.begin() && chunk->begin() < range.end()) {
-                                        mcl = std::max(mcl, chunk->load());
-                                    }
-                                }
-                                new_hot.max_chunk_load = mcl;
-                            }
 
                             cold_npairs -= new_hot.pairs_range.npairs();
                             cold_endpoint_cnt -= new_hot.load;
@@ -1749,10 +1714,6 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
                 hot_ranges[idx_dpu] = pairs_range;
                 nr_pairs[idx_dpu].get()[1] = static_cast<uint32_t>(pairs_range.npairs());
                 hot_delims[idx_dpu] = delims.emplace(key_range.begin, HotPartitionDelim{key_range.end, idx_dpu}).first;
-
-                // idx_dpu now hosts this hot; the ratio is known from the carve.
-                hot_max_chunk_ratio[idx_dpu] = static_cast<float>(new_hots[idx_hot].max_chunk_load) / static_cast<float>(hot_load);
-                hot_excess_accum[idx_dpu] = 0;
             }
 
             combine_delims();
@@ -1859,19 +1820,9 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
 
                 const bool do_cold = routed.cold[idx_dpu].nr_qrys > cold_partial_cnt_threshold;
 
-                // Stage2 probe cost is essentially constant (a serialize
-                // round-trip, independent of batch and hot pair count), so the
-                // staleness threshold is constant in excess endpoints --
-                // NOT proportional to hot size.
                 bool do_hot = false;
                 if (param.enable_hot_split && hot_delims[idx_dpu] != DelimIter{}) {
-                    const uint32_t hot_endpoints = routed.hot[idx_dpu].nr_qrys * (IsPointQuery<Query> ? 1 : 2);
-                    hot_excess_accum[idx_dpu] += hot_endpoints > hot_load ? hot_endpoints - hot_load : 0u;
-                    const bool stale = hot_excess_accum[idx_dpu]
-                        >= static_cast<uint64_t>(std::ceil(param.hot_load_probe_cost));
-                    const float ratio = stale ? 1.0f : std::max(1.0f, hot_max_chunk_ratio[idx_dpu]);
-                    const uint32_t split_floor
-                        = static_cast<uint32_t>(std::ceil(2.0f * static_cast<float>(hot_share) * ratio));
+                    const uint32_t split_floor = 2u * hot_share;
                     const uint32_t stage1_threshold
                         = overload_threshold.threshold_for(nr_queries, split_floor, bonferroni_family);
                     do_hot = routed.hot[idx_dpu].nr_qrys > stage1_threshold;
@@ -2199,13 +2150,6 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                         (new_hot.pairs_range.end() == part.PairsRange::end() ? cold_key_ranges[idx_in_ary].end
                                                                              : new_hot.pairs_range.end()->key - 1)};
                     new_hot.load = load;
-                    {
-                        uint32_t mcl = 0;
-                        for (auto chunk = begin; chunk != end; ++chunk) {
-                            mcl = std::max(mcl, chunk->load());
-                        }
-                        new_hot.max_chunk_load = mcl;
-                    }
 
                     cold_npairs -= new_hot.pairs_range.npairs();
                     cold_endpoint_cnt -= load;
@@ -2236,15 +2180,6 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                             (range.end() == part.PairsRange::end() ? cold_key_ranges[idx_in_ary].end
                                                                    : range.end()->key - 1)};
                         new_hot.load = load;
-                        {
-                            uint32_t mcl = 0;
-                            for (auto chunk = part.begin(); chunk != part.end(); ++chunk) {
-                                if (chunk->begin() >= range.begin() && chunk->begin() < range.end()) {
-                                    mcl = std::max(mcl, chunk->load());
-                                }
-                            }
-                            new_hot.max_chunk_load = mcl;
-                        }
 
                         cold_npairs -= new_hot.pairs_range.npairs();
                         cold_endpoint_cnt -= new_hot.load;
@@ -2304,9 +2239,9 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
     // (delims.erase / kept_hot / new_hots).  Splitting the mutations this way
     // is what lets the capacity-overflow check between the passes fall back
     // to full_repartition without leaving delims and nr_pairs[] out of sync.
-    // Refreshing the cached ratio in pass 1 is what stops an over-large
-    // cached ratio from permanently suppressing re-measurement.
-    std::vector<std::vector<NewHotRange>> hot_split_plans(nr_base_parts);
+    for (auto& plan : hot_split_plans) {
+        plan.clear();
+    }
     dpu_id_t nr_new_pieces = 0;
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
         if (!hot_stage1_fired[idx_dpu] || hot_ranges[idx_dpu].npairs() == 0 || hot_delims[idx_dpu] == DelimIter{}) {
@@ -2316,7 +2251,7 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         const key_uint64_t hot_max_key = std::get<HotPartitionDelim>(hot_delims[idx_dpu]->second).max_key;
 
         ChunkedPairsRange hot_cpr{hot_ranges[idx_dpu]};
-        uint32_t measured = 0, max_chunk_load = 0;
+        uint32_t measured = 0;
         {
             ScopedTimer t{LoadEstimateTime};
 
@@ -2362,16 +2297,7 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                     }
                 }
             }
-
-            for (DataChunkIterator c = hot_cpr.begin(); c != hot_cpr.end(); ++c) {
-                max_chunk_load = std::max(max_chunk_load, c->load());
-            }
         }
-
-        // Split or not, this is the only place a stale cached ratio is
-        // corrected, so it must run on every measured hot.
-        hot_max_chunk_ratio[idx_dpu] = static_cast<float>(max_chunk_load) / static_cast<float>(hot_load);
-        hot_excess_accum[idx_dpu] = 0;
 
         const dpu_id_t nr_target_pieces = static_cast<dpu_id_t>(measured / hot_load);
         if (nr_target_pieces < 2) {
@@ -2379,19 +2305,19 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             continue;
         }
 
-        std::vector<NewHotRange> pieces;
+        auto& pieces = hot_split_plans[idx_dpu];
         const dpu_id_t emit_count = split_hot_range_equal_load(hot_cpr, measured, nr_target_pieces, hot_max_key,
-            [&](PairsRange pr, KeyRange kr, uint32_t ld, uint32_t mcl) {
-                pieces.push_back(NewHotRange{pr, kr, ld, mcl});
+            [&](PairsRange pr, KeyRange kr, uint32_t ld, [[maybe_unused]] uint32_t mcl) {
+                pieces.push_back(NewHotRange{pr, kr, ld});
             });
         if (emit_count <= 1) {
             // A single dominant chunk cannot be subdivided: keep the hot whole.
+            pieces.clear();
             hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};
             continue;
         }
 
         nr_new_pieces += emit_count - 1;
-        hot_split_plans[idx_dpu] = std::move(pieces);
     }
 
     // Falling back here is safe because pass 1 has not touched delims,
@@ -2413,7 +2339,6 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         kept_hot[idx_dpu].pairs_range = pieces[0].pairs_range;
         kept_hot[idx_dpu].key_range = pieces[0].key_range;
         kept_hot[idx_dpu].load = pieces[0].load;
-        kept_hot[idx_dpu].max_chunk_load = pieces[0].max_chunk_load;
         hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};  // set to piece[0] at re-insertion below
 
         for (size_t idx_piece = 1; idx_piece < pieces.size(); idx_piece++) {
@@ -2451,9 +2376,6 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         hot_delims[idx_dpu] = delims.emplace(key_range.begin, HotPartitionDelim{key_range.end, idx_dpu}).first;
 
         nr_pairs[idx_dpu].get()[1] = static_cast<uint32_t>(hot_ranges[idx_dpu].npairs());
-
-        hot_max_chunk_ratio[idx_dpu] = static_cast<float>(new_hots[idx_hot].max_chunk_load) / static_cast<float>(hot_load);
-        hot_excess_accum[idx_dpu] = 0;
     }
 
     // Re-insert each split host's piece[0]: it already holds the left edge,
@@ -2465,8 +2387,6 @@ inline void BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         hot_ranges[idx_dpu] = kept_hot[idx_dpu].pairs_range;
         hot_delims[idx_dpu] = delims.emplace(kept_hot[idx_dpu].key_range.begin, HotPartitionDelim{kept_hot[idx_dpu].key_range.end, idx_dpu}).first;
         nr_pairs[idx_dpu].get()[1] = static_cast<uint32_t>(hot_ranges[idx_dpu].npairs());
-        hot_max_chunk_ratio[idx_dpu] = static_cast<float>(kept_hot[idx_dpu].max_chunk_load) / static_cast<float>(hot_load);
-        hot_excess_accum[idx_dpu] = 0;
     }
 
     combine_delims();
@@ -2604,7 +2524,6 @@ inline void BPForest::print_params(std::ostream& ostr) const
             "param.balancing: " << param.balancing << "\n"
             "param.enable_incremental: " << param.enable_incremental << "\n"
             "param.enable_hot_split: " << param.enable_hot_split << "\n"
-            "param.hot_load_probe_cost: " << param.hot_load_probe_cost << "\n"
             "param.nr_host_threads: " << param.nr_host_threads << "\n";
     print_overload_threshold_spec(ostr, param.overload_threshold_spec);
     overload_threshold.print_resolution(ostr);

@@ -78,11 +78,6 @@ struct BPForestOption {
             "ranges out of cold and full repartition are unaffected)",
             false, true);
         add_overload_threshold_options(a);
-        a.add<double>("hot-load-probe-cost", 0,
-            "accumulated excess endpoints one Stage2 probe is worth; a stale "
-            "hot is re-probed once its accumulated overload reaches this "
-            "constant. Must be > 0.",
-            false, 1000.0);
         a.add<unsigned>("nr-host-threads", 't', "num of threads used in pre/post-processing in B+-Forest", false, 0);
     }
     void set_options(cmdline::parser& a)
@@ -92,11 +87,6 @@ struct BPForestOption {
         param.enable_hot_split = a.get<bool>("hot-split");
         param.nr_host_threads = a.get<unsigned>("nr-host-threads");
         param.overload_threshold_spec = parse_overload_threshold_spec(a).value_or(HighWatermarkRatio{1.05});
-        param.hot_load_probe_cost = a.get<double>("hot-load-probe-cost");
-        if (!(param.hot_load_probe_cost > 0.0)) {
-            std::cerr << "--hot-load-probe-cost must be > 0" << std::endl;
-            std::exit(1);
-        }
     }
 
     BPForest::Param param;
