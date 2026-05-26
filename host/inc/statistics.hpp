@@ -1,204 +1,273 @@
-#ifndef __STATISTICS_HPP__
-#define __STATISTICS_HPP__
+#pragma once
 
+#include "assert.hpp"
+
+#include <algorithm>
 #include <chrono>
-#include <map>
-#include <ostream>
+#include <cstdlib>
+#include <initializer_list>
+#include <iosfwd>
+#include <limits>
+#include <numeric>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
-class XferStatistics
+
+class TimerTree
 {
-    struct XferEntry {
-        XferEntry() : total_bytes(0),
-                      effective_bytes(0),
-                      count(0) {}
-        uint64_t total_bytes;
-        uint64_t effective_bytes;
-        uint64_t count;
+    struct BreakdownParam;
+    struct TimerTreeNode;
+
+    struct TimeBreakdown {
+        std::vector<std::pair<std::string, TimerTreeNode>> sub_timers;
+        std::vector<uint8_t> orig2vec;
+
+        TimeBreakdown() {}
+        inline TimeBreakdown(std::initializer_list<BreakdownParam> params);
+
+        void reset()
+        {
+            for (auto& sub_timer : sub_timers) {
+                sub_timer.second.reset();
+            }
+        }
+
+        void print_labels(std::ostream& ostr, std::string& prefix) const
+        {
+            bool first = true;
+            for (uint8_t i : orig2vec) {
+                auto& sub_timer = sub_timers[i];
+
+                if (!first) {
+                    ostr << ',';
+                }
+                first = false;
+
+                const size_t prefix_length = prefix.size();
+                prefix += sub_timer.first;
+                sub_timer.second.print_labels(ostr, prefix);
+                prefix.erase(prefix_length);
+            }
+        }
+        void print(std::ostream& ostr) const
+        {
+            bool first = true;
+            for (uint8_t i : orig2vec) {
+                auto& sub_timer = sub_timers[i];
+
+                if (!first) {
+                    ostr << ',';
+                }
+                first = false;
+
+                sub_timer.second.print(ostr);
+            }
+        }
     };
-    std::map<std::string, std::vector<XferEntry>> stat;
-    unsigned epoch = 0;
+    struct TimerTreeNode {
+        using Duration = std::chrono::nanoseconds;
+
+        Duration time{};
+        TimeBreakdown breakdown;
+
+        TimerTreeNode() {}
+        TimerTreeNode(std::initializer_list<BreakdownParam> breakdown_params) : breakdown{breakdown_params} {}
+
+        void reset()
+        {
+            time = Duration::zero();
+            breakdown.reset();
+        }
+
+        void print_labels(std::ostream& ostr, std::string& prefix) const
+        {
+            ostr << prefix;
+            if (!breakdown.sub_timers.empty()) {
+                ostr << ',';
+
+                prefix += '>';
+                breakdown.print_labels(ostr, prefix);
+                prefix.pop_back();
+            }
+        }
+        void print(std::ostream& ostr) const
+        {
+            ostr << time.count();
+            if (!breakdown.sub_timers.empty()) {
+                ostr << ',';
+
+                breakdown.print(ostr);
+            }
+        }
+    };
+
+    struct BreakdownParam {
+        std::pair<std::string, TimerTreeNode> data;
+
+        BreakdownParam(std::string&& tag) : data{std::move(tag), {}} {}
+        BreakdownParam(std::string&& tag, std::initializer_list<BreakdownParam> params) : data{std::move(tag), params}
+        {
+        }
+    };
+
+    struct LabelPrinter {
+        const TimerTree* tree;
+        friend std::ostream& operator<<(std::ostream& ostr, const LabelPrinter& printer)
+        {
+            std::string prefix;
+            printer.tree->breakdown.print_labels(ostr, prefix);
+            return ostr;
+        }
+    };
+    struct Printer {
+        const TimerTree* tree;
+        friend std::ostream& operator<<(std::ostream& ostr, const Printer& printer)
+        {
+            printer.tree->breakdown.print(ostr);
+            return ostr;
+        }
+    };
+
+    TimerTreeNode* current{nullptr};
+    TimeBreakdown breakdown;
+
+    friend class ScopedTimer;
 
 public:
-    void new_batch()
-    {
-        epoch++;
-    }
+    TimerTree(std::initializer_list<BreakdownParam> params) : breakdown(params) {}
 
-    void add(const char* symbol,
-        uint64_t xfer_bytes, uint64_t effective_bytes)
-    {
-        std::string key = std::string(symbol);
-        if (stat.find(key) == stat.end()) {
-            std::vector<XferEntry> v;
-            stat.insert(std::make_pair(key, std::vector<XferEntry>()));
-        }
-        std::vector<XferEntry>& v = stat[key];
-        while (v.size() <= epoch)
-            v.emplace_back();
-        XferEntry& e = v[epoch];
-        e.total_bytes += xfer_bytes;
-        e.effective_bytes += effective_bytes;
-        e.count++;
-    }
+    void reset() { breakdown.reset(); }
 
-    void print()
+    LabelPrinter print_labels() const
     {
-        printf("==== XFER STATISTICS (MB) ====\n");
-        printf("symbol                    rd count xfer-bytes    average  effective effeciency(%%) \n");
-        for (auto x : stat) {
-            const char* symbol = x.first.c_str();
-            std::vector<XferEntry>& v = x.second;
-            uint64_t sum_total_bytes = 0;
-            uint64_t sum_effective_bytes = 0;
-            uint64_t sum_count = 0;
-            for (unsigned i = 0; i < v.size(); i++) {
-                XferEntry& e = v[i];
-                sum_total_bytes += e.total_bytes;
-                sum_effective_bytes += e.effective_bytes;
-                sum_count += e.count;
-                print_line(symbol, static_cast<int>(i), e.count, e.total_bytes, e.effective_bytes);
-            }
-            print_line(symbol, -1, sum_count, sum_total_bytes, sum_effective_bytes);
-        }
+        return LabelPrinter{this};
     }
-
-private:
-    void print_line(const char* symbol, int rd,
-        uint64_t count, uint64_t total, uint64_t effective)
+    Printer print() const
     {
-#define MB(x) (((float)(x)) / 1000 / 1000)
-        printf("%-25s %2d %5lu %10.3f %10.3f %10.3f %5.3f\n",
-            symbol, rd, count,
-            MB(total),
-            count > 0 ? MB(total / count) : 0.0,
-            MB(effective),
-            total > 0 ? ((float)effective) / static_cast<float>(total) * 100 : 0.0);
-#undef MB
+        return Printer{this};
     }
 };
 
-#ifdef MEASURE_XFER_BYTES
-extern XferStatistics xfer_statistics;
-#endif /* MEASURE_XFER_BYTES */
+inline TimerTree::TimeBreakdown::TimeBreakdown(std::initializer_list<BreakdownParam> params)
+{
+    ASSERT(params.size() <= std::numeric_limits<uint8_t>::max() + 1u);
 
+    std::vector<uint8_t> tag_idxs(params.size());
+    std::iota(tag_idxs.begin(), tag_idxs.end(), uint8_t{0});
+    std::sort(tag_idxs.begin(), tag_idxs.end(), [&](uint8_t lhs, uint8_t rhs) { return params.begin()[lhs].data.first < params.begin()[rhs].data.first; });
 
-struct ElapsedTime {
-    using Duration = std::chrono::nanoseconds;
-    using Instances = std::map<int, ElapsedTime*>;
-
-    Duration time;
-    const std::string label;
-    const Instances::iterator iter;
-
-    static Instances& instances()
-    {
-        static Instances impl;
-        return impl;
+    sub_timers.resize(params.size());
+    orig2vec.resize(params.size());
+    for (size_t i = 0; i < params.size(); i++) {
+        sub_timers[i] = std::move(params.begin()[tag_idxs[i]].data);
+        orig2vec[tag_idxs[i]] = static_cast<uint8_t>(i);
     }
+}
 
-    explicit ElapsedTime(std::string_view label, int order = 0)
-        : time{}, label{label}, iter{instances().insert({order, this}).first}
-    {
-    }
-    ~ElapsedTime()
-    {
-        instances().erase(iter);
-    }
-    auto count() const { return time.count(); }
+class ScopedTimer
+{
+    TimerTree* tree;
+    TimerTree::TimerTreeNode* prev_timer;
 
-    static void reset()
+    TimerTree::TimerTreeNode::Duration prev_dur;
+    std::chrono::high_resolution_clock::time_point begin_time;
+
+public:
+    ScopedTimer(TimerTree& tree, std::string_view tag) : tree{&tree}, prev_timer{tree.current}
     {
-        for (auto& pair : instances()) {
-            auto& time = pair.second->time;
-            time = Duration::zero();
+        TimerTree::TimeBreakdown& breakdown = prev_timer != nullptr ? prev_timer->breakdown : tree.breakdown;
+
+        const auto iter = std::lower_bound(breakdown.sub_timers.begin(), breakdown.sub_timers.end(), tag,
+            [](const std::pair<std::string, TimerTree::TimerTreeNode>& e, std::string_view tag) { return e.first < tag; });
+        if (iter == breakdown.sub_timers.cend() || iter->first != tag) {
+            std::cerr << "no timer named " << tag << std::endl;
+            std::abort();
         }
-    }
-    static std::ostream& print(std::ostream& ostr)
-    {
-        auto& map = instances();
-        auto iter = map.cbegin();
-        if (iter != map.cend()) {
-            ostr << iter->second->time.count();
-            iter++;
-        }
-        for (; iter != map.cend(); iter++) {
-            ostr << ',' << iter->second->time.count();
-        }
-        return ostr;
-    }
-    static std::ostream& print_labels(std::ostream& ostr)
-    {
-        auto& map = instances();
-        auto iter = map.cbegin();
-        if (iter != map.cend()) {
-            ostr << iter->second->label;
-            iter++;
-        }
-        for (; iter != map.cend(); iter++) {
-            ostr << ',' << iter->second->label;
-        }
-        return ostr;
-    }
-};
+        tree.current = &iter->second;
 
-struct ScopedTimer final {
-    ElapsedTime* const result;
-    const ElapsedTime::Duration prev;
-    const std::chrono::high_resolution_clock::time_point begin;
-
-    ScopedTimer(ElapsedTime& dur) : result{&dur}, prev{dur.time}, begin{std::chrono::high_resolution_clock::now()} {}
+        prev_dur = tree.current->time;
+        begin_time = std::chrono::high_resolution_clock::now();
+    }
     ~ScopedTimer()
     {
-        result->time = prev + std::chrono::duration_cast<ElapsedTime::Duration>(std::chrono::high_resolution_clock::now() - begin);
+        tree->current->time = prev_dur + std::chrono::duration_cast<TimerTree::TimerTreeNode::Duration>(std::chrono::high_resolution_clock::now() - begin_time);
+        tree->current = prev_timer;
     }
 };
 
 
-inline ElapsedTime
-    DatabaseInitTime{"init_db[ns]", 0},
-
-    IncrementalRebalancingTime{"inc_rebalance[ns]", 1000},  // 1000--1999
-    FullRebalancingTime{"full_rebalance[ns]", 1001},  // 1000--1999
-
-    DataRetrieveTime{"retrieve_data[ns]", 1100},  // 1100--1199
 #ifdef SYNCHRONOUS_DPU_EXEC
-    CommandingSerializationTime{"cmd_serialization[ns]", 1110},
+inline TimerTree Timer{
+    {"init", {
+                 {"table"},
+                 {"send"},
+                 {"exec"},
+             }},
+    {"batch", {
+                  {"route"},
+                  {"full_reb", {
+                                   {"ret_all", {
+                                                   {"command"},
+                                                   {"exec"},
+                                                   {"recv_npairs"},
+                                                   {"alloc"},
+                                                   {"recv"},
+                                               }},
+                                   {"route"},
+                                   {"hist"},
+                                   {"abs"},
+                                   {"rel"},
+                                   {"table"},
+                                   {"re", {{"route"}}},
+                                   {"send"},
+                                   {"exec"},
+                               }},
+                  {"inc_reb", {
+                                  {"retrieve", {{"command"}, {"exec"}, {"recv_npairs"}, {"alloc"}, {"recv"}}},
+                                  {"cold", {{"hist"}, {"abs"}, {"rel"}}},
+                                  {"hot", {{"hist"}, {"abs"}, {"rel"}}},
+                                  {"table"},
+                                  {"send"},
+                                  {"exec"},
+                                  {"re", {{"route"}}},
+                              }},
+                  {"send"},
+                  {"exec"},
+                  {"recv"},
+                  {"postproc"},
+              }}};
+#else
+inline TimerTree Timer{
+    {"init", {
+                 {"table"},
+                 {"send_exec"},
+             }},
+    {"batch", {
+                  {"route"},
+                  {"full_reb", {
+                                   {"ret_all", {
+                                                   {"command_exec_recv_npairs"},
+                                                   {"alloc"},
+                                                   {"recv"},
+                                               }},
+                                   {"route"},
+                                   {"hist"},
+                                   {"abs"},
+                                   {"rel"},
+                                   {"table"},
+                                   {"re", {{"route"}}},
+                                   {"send_exec"},
+                               }},
+                  {"inc_reb", {
+                                  {"retrieve", {{"command_exec_recv_npairs"}, {"alloc"}, {"recv"}}},
+                                  {"cold", {{"hist"}, {"abs"}, {"rel"}}},
+                                  {"hot", {{"hist"}, {"abs"}, {"rel"}}},
+                                  {"table"},
+                                  {"send_exec"},
+                                  {"re", {{"route"}}},
+                              }},
+                  {"send_exec_recv"},
+                  {"postproc"},
+              }}};
 #endif
-    SerializeTime{"serialize[ns]", 1120},
-#ifdef SYNCHRONOUS_DPU_EXEC
-    NrPairsRecvTime{"recv_nr_pairs[ns]", 1130},
-#endif
-    PairsBufAllocTime{"alloc_pairs_buf[ns]", 1140},
-    PairsRecvTime{"recv_pairs[ns]", 1150},
-
-    LoadEstimateTime{"estimate_load[ns]", 1200},
-
-    AbsHotFindTime{"abs_hot[ns]", 1410},
-    RelHotFindTime{"rel_hot[ns]", 1420},
-
-    // PartitionApplyTime{"apply_part[ns]", 1500},  // 1500--1599
-#ifdef SYNCHRONOUS_DPU_EXEC
-    PairsSendTime{"send_pairs[ns]", 1510},
-#endif
-    TreeConstructTime{"const_trees[ns]", 1520},
-
-    RoutingTableMakeTime{"make_routing_table[ns]", 1600},
-
-    ReroutingTime{"reroute_qry[ns]", 1700},
-
-    BatchTotalTime{"batch[ns]", 2000},  // 2000--2999
-    QueryRoutingTime{"route_qry[ns]", 2100},
-#ifdef SYNCHRONOUS_DPU_EXEC
-    QuerySendTime{"send_qry[ns]", 2210},
-    QueryExecTime{"exec_qry[ns]", 2220},
-    QueryRecvTime{"recv_qry[ns]", 2230},
-#else /* SYNCHRONOUS_DPU_EXEC */
-    QuerySendExecRecvTime{"send_exec_recv_qry[ns]", 2200},
-#endif
-    PostprocessTime{"postprocess[ns]", 2300};
-
-#endif /* __STATISTICS_HPP__ */

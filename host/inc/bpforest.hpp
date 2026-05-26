@@ -277,9 +277,15 @@ private:
 
     size_t retrieve_all_data(ExtendableBuffer<KVPair>& buf);
     template <typename Query, typename Result>
-    void full_repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed);
+    void repartition(uint32_t nr_queries, const Query queries[], Result results[], QueryData<Query, Result>& routed);
+    enum class Balanced {
+        Yes,
+        No
+    };
     template <typename Query, typename Result>
-    void incremental_repartition(uint32_t nr_queries, const Query queries[], Result results[], QueryData<Query, Result>& routed);
+    Balanced incremental_repartition(uint32_t nr_queries, const Query queries[], Result results[], QueryData<Query, Result>& routed);
+    template <typename Query, typename Result>
+    void full_repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed);
 };
 
 

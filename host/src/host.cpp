@@ -38,10 +38,6 @@
 #include <tuple>
 #include <vector>
 
-#ifdef MEASURE_XFER_BYTES
-XferStatistics xfer_statistics;
-#endif /* MEASURE_XFER_BYTES */
-
 
 namespace cmdline
 {
@@ -169,7 +165,7 @@ struct Option {
     unsigned balancing_param;
     std::optional<std::string> partition;
     std::optional<std::string> dump_partition;
-    size_t batch_size;  // fixed batch size, or per-batch cap when query_rate is set
+    size_t batch_size;                 // fixed batch size, or per-batch cap when query_rate is set
     std::optional<double> query_rate;  // poisson arrival rate (op/s); empty = fixed batch_size mode
     std::string workload_file;
     std::string init_file;
@@ -453,7 +449,7 @@ int main(int argc, char* argv[])
 
     /* main routine */
     if (opt.print_perf) {
-        std::cout << "time,NR_DPUS,batch_num,num_keys,outstanding," << ElapsedTime::print_labels << std::endl;
+        std::cout << "time,NR_DPUS,batch_num,num_keys,outstanding," << Timer.print_labels() << std::endl;
     }
     if (opt.verify)
         benchmark->set_verify_db(&init_data);
@@ -474,16 +470,12 @@ int main(int argc, char* argv[])
         if (opt.print_perf) {
             std::cout << time << ',' << upmem_get_nr_dpus() << ',' << idx_batch << ',' << benchmark->last_batch_size() << ','
                       << benchmark->outstanding() << ','
-                      << ElapsedTime::print << std::endl;
+                      << Timer.print() << std::endl;
         }
 
-        ElapsedTime::reset();
+        Timer.reset();
         time = std::chrono::high_resolution_clock::now().time_since_epoch().count();
     });
-
-#ifdef MEASURE_XFER_BYTES
-    xfer_statistics.print();
-#endif /* MEASURE_XFER_BYTES */
 
     return 0;
 }

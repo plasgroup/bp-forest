@@ -97,9 +97,6 @@ inline void xfer_with_dpu(const DPUSet& set, uint32_t offset, BatchTransferBuffe
         }
         total_xfer_bytes += max_xfer_bytes * NrDPUsInRank;
     }
-#ifdef MEASURE_XFER_BYTES
-    xfer_statistics.add(symbol, total_xfer_bytes, total_effective_bytes);
-#endif /* MEASURE_XFER_BYTES */
 }
 
 template <typename T>
@@ -137,9 +134,6 @@ inline void scatter_gather_with_dpu(const DPUSet& set, uint32_t offset, Scattere
         }
         total_xfer_bytes += max_xfer_bytes * NrDPUsInRank;
     }
-#ifdef MEASURE_XFER_BYTES
-    xfer_statistics.add(symbol, total_xfer_bytes, total_effective_bytes);
-#endif /* MEASURE_XFER_BYTES */
 }
 
 inline void execute(const DPUSet& set, UPMEM_AsyncDuration&)
