@@ -76,17 +76,6 @@ struct OverloadThreshold {
                 }),
             policy);
     }
-
-    // Prints the derived noise-aware parameters if applicable; prints nothing for HighWatermarkRatio.
-    void print_resolution(std::ostream& ostr) const
-    {
-        if (const auto* np = std::get_if<NoiseParams>(&policy)) {
-            ostr << "overload_threshold.noise_params:"
-                 << " fp_rate=" << np->fp_rate
-                 << " (L=ln(family/fp_rate) computed per batch)"
-                 << "\n";
-        }
-    }
 };
 
 inline void print_overload_threshold_spec(std::ostream& ostr, const OverloadThresholdSpec& spec)

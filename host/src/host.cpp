@@ -5,6 +5,7 @@
 #include "database.hpp"
 #include "extendable_buffer.hpp"
 #include "host_params.hpp"
+#include "log.hpp"
 #include "partition.hpp"
 #include "piecewise_constant_workload.hpp"
 #include "pimtree_query.hpp"
@@ -114,6 +115,7 @@ struct Option {
         a.add<dpu_id_t>("print-cold-memory-load", 0, "print number of KV pairs stored in cold ranges in each dpu", false, 0);
         a.add<dpu_id_t>("print-hot-memory-load", 0, "print number of KV pairs stored in hot ranges in each dpu", false, 0);
         a.add("print-perf", 'p', "print performance metrics");
+        a.add<std::optional<std::string>>("part-log", 0, "print partitioning log to a file", false);
         a.add("verify", 'v', "verify the result");
         a.parse_check(argc, argv);
 
@@ -140,6 +142,7 @@ struct Option {
         print_cold_memory_load = a.get<dpu_id_t>("print-cold-memory-load");
         print_hot_memory_load = a.get<dpu_id_t>("print-hot-memory-load");
         print_perf = a.exist("print-perf");
+        const std::optional<std::string> part_log = a.get<std::optional<std::string>>("part-log");
         verify = a.exist("verify");
 
         if (ops == "get")
@@ -157,6 +160,10 @@ struct Option {
         else {
             fprintf(stderr, "invalid operation type: %s\n", ops.c_str());
             exit(1);
+        }
+
+        if (part_log) {
+            partitioning_log = std::make_unique<std::ofstream>(*part_log);
         }
     }
 
@@ -431,6 +438,12 @@ int main(int argc, char* argv[])
             std::quick_exit(1);
         }
         db.print_params(dump_param_file);
+        dump_param_file << "batch-size: " << opt.batch_size << "\n"
+                        << "num_batches: " << opt.nr_batches << "\n";
+        if (opt.query_rate) {
+            dump_param_file << "query-rate: " << *opt.query_rate << "\n";
+        }
+        dump_param_file << std::flush;
     }
 
     std::optional<std::ofstream> dump_compute_load_file, dump_cold_compute_load_file, dump_hot_compute_load_file;
@@ -471,6 +484,9 @@ int main(int argc, char* argv[])
             std::cout << time << ',' << upmem_get_nr_dpus() << ',' << idx_batch << ',' << benchmark->last_batch_size() << ','
                       << benchmark->outstanding() << ','
                       << Timer.print() << std::endl;
+        }
+        if (partitioning_log) {
+            *partitioning_log << "--- end batch " << idx_batch << " nqrys " << benchmark->last_batch_size() << " ---" << std::endl;
         }
 
         Timer.reset();

@@ -226,7 +226,7 @@ inline TimerTree Timer{
                   {"inc_reb", {
                                   {"retrieve", {{"command"}, {"exec"}, {"recv_npairs"}, {"alloc"}, {"recv"}}},
                                   {"cold", {{"hist"}, {"abs"}, {"rel"}}},
-                                  {"hot", {{"hist"}, {"abs"}, {"rel"}}},
+                                  {"hot", {{"hist"}, {"split"}}},
                                   {"table"},
                                   {"send"},
                                   {"exec"},
@@ -262,7 +262,7 @@ inline TimerTree Timer{
                   {"inc_reb", {
                                   {"retrieve", {{"command_exec_recv_npairs"}, {"alloc"}, {"recv"}}},
                                   {"cold", {{"hist"}, {"abs"}, {"rel"}}},
-                                  {"hot", {{"hist"}, {"abs"}, {"rel"}}},
+                                  {"hot", {{"hist"}, {"split"}}},
                                   {"table"},
                                   {"send_exec"},
                                   {"re", {{"route"}}},

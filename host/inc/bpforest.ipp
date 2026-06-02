@@ -11,6 +11,7 @@
 #include "extendable_buffer.hpp"
 #include "host_params.hpp"
 #include "input_header.h"
+#include "log.hpp"
 #include "log_buffer.hpp"
 #include "overload.hpp"
 #include "pairs_range.hpp"
@@ -1512,6 +1513,10 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
 {
     ScopedTimer t{Timer, "full_reb"};
 
+    if (partitioning_log) {
+        *partitioning_log << "start full resharding" << std::endl;
+    }
+
     const size_t nr_total_pairs = retrieve_all_data(data_buf);
 
     delims.clear();
@@ -1611,6 +1616,10 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
 
                 find_absolutely_hot_ranges(&base, &base + 1, hot_npairs, hot_load,
                     [&](ChunkedPairsRange& part, DataChunkIterator begin, DataChunkIterator end, uint32_t load) {
+                        if (partitioning_log) {
+                            *partitioning_log << "abs hot from " << idx_base << " load " << load << std::endl;
+                        }
+
                         if (part.begin() != begin) {
                             LinkedChunkedPairsRange& new_cold = chunked_cold_ranges[cold_count++];
                             new_cold = ChunkedPairsRange{part.begin(), begin};
@@ -1642,6 +1651,10 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
                     carved_cold_range
                     = find_relatively_hot_ranges(list.begin(), list.end(), hot_npairs, nr_relative_hots,
                         [&]([[maybe_unused]] const ChunkedPairsRange& part, const PairsRange& range, uint32_t load) {
+                            if (partitioning_log) {
+                                *partitioning_log << "rel hot from " << idx_base << " load " << load << std::endl;
+                            }
+
                             NewHotRange& new_hot = new_hots[hot_count++];
                             new_hot.pairs_range = range;
                             new_hot.key_range = {range.begin()->key,
@@ -1790,7 +1803,6 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
     }};
 
     const dpu_id_t nr_existing_hots = static_cast<dpu_id_t>(delims.size()) - nr_base_parts;
-    const uint32_t hot_load = (nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
 
     dpu_id_t cold_range_pool_count = 0;  // # of meaningful entries in chunked_cold_ranges
     {
@@ -1803,25 +1815,19 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             // comparable: the slack deliberately broadens this skip to shrink
             // the rebalanced DPU set.
             const unsigned bonferroni_family = static_cast<unsigned>(nr_base_parts) + static_cast<unsigned>(nr_existing_hots);
-            const uint32_t hot_share = (nr_queries + nr_base_parts - 1) / nr_base_parts;
-            const uint32_t cold_partial_cnt_goal = nr_queries * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
-            const uint32_t cold_partial_cnt_threshold
-                = overload_threshold.threshold_for(nr_queries, cold_partial_cnt_goal, bonferroni_family);
+            const uint32_t cold_cnt_goal = nr_queries * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
+            const uint32_t cold_cnt_threshold = overload_threshold.threshold_for(nr_queries, cold_cnt_goal, bonferroni_family);
+            const uint32_t hot_cnt_goal = 2u * (nr_queries + nr_base_parts - 1) / nr_base_parts;
+            const uint32_t hot_cnt_threshold = overload_threshold.threshold_for(nr_queries, hot_cnt_goal, bonferroni_family);
             dpu_id_t serialized_cold_count = 0, incision_count = 0;
             bool any_serialize = false;
             for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
                 InputHeader& input = input_headers[idx_dpu];
                 const dpu_id_t orig_incision_count = (base_to_nr_hot_psum[idx_dpu] = incision_count);
 
-                const bool do_cold = routed.cold[idx_dpu].nr_qrys > cold_partial_cnt_threshold;
-
-                bool do_hot = false;
-                if (param.enable_hot_split && hot_delims[idx_dpu] != DelimIter{}) {
-                    const uint32_t split_floor = 2u * hot_share;
-                    const uint32_t stage1_threshold
-                        = overload_threshold.threshold_for(nr_queries, split_floor, bonferroni_family);
-                    do_hot = routed.hot[idx_dpu].nr_qrys > stage1_threshold;
-                }
+                const bool do_cold = routed.cold[idx_dpu].nr_qrys > cold_cnt_threshold;
+                const bool do_hot = param.enable_hot_split && hot_delims[idx_dpu] != DelimIter{}
+                                    && routed.hot[idx_dpu].nr_qrys > hot_cnt_threshold;
                 hot_stage1_fired[idx_dpu] = do_hot;
                 kept_hot[idx_dpu].active = false;
 
@@ -1868,6 +1874,27 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
 
             if (!any_serialize) {
                 return Balanced::Yes;
+            }
+
+            if (partitioning_log) {
+                std::ostream& log = *partitioning_log;
+                log << "start partial resharding" << std::endl;
+                log << "threshold cold " << cold_cnt_threshold << " hot " << hot_cnt_threshold << std::endl;
+
+                for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+                    if (input_headers[idx_dpu].task_no == TASK_SERIALIZE) {
+                        if (input_headers[idx_dpu].serialize.do_cold) {
+                            log << "trigger cold " << idx_dpu << " nqrys " << routed.cold[idx_dpu].nr_qrys << " size " << nr_pairs[idx_dpu].get()[0] << std::endl;
+                        }
+                        if (input_headers[idx_dpu].serialize.do_hot) {
+                            const key_uint64_t key = hot_delims[idx_dpu]->first;
+                            const auto cold_idx = std::upper_bound(&cold_delims[0], &cold_delims[nr_base_parts], key,
+                                                      [](key_uint64_t key, const DelimIter& delim) { return key < delim->first; })
+                                                  - &cold_delims[1];
+                            log << "trigger hot " << idx_dpu << " from " << cold_idx << " nqrys " << routed.hot[idx_dpu].nr_qrys << " size " << nr_pairs[idx_dpu].get()[1] << std::endl;
+                        }
+                    }
+                }
             }
         }
 
@@ -1973,6 +2000,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         }
     }
 
+    const uint32_t hot_load = (nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
     const uint32_t cold_endpoint_cnt_goal = nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
     dpu_id_t hot_count = 0;
 
@@ -2125,6 +2153,10 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 LinkedList<ChunkedPairsRange>::iterator iter_cold = list.begin();
                 find_absolutely_hot_ranges(begin_part, end_part, hot_npairs, hot_load,
                     [&](LinkedChunkedPairsRange& part, DataChunkIterator begin, DataChunkIterator end, uint32_t load) {
+                        if (partitioning_log) {
+                            *partitioning_log << "abs hot from " << idx_dpu << " load " << load << std::endl;
+                        }
+
                         const dpu_id_t idx_in_ary = static_cast<dpu_id_t>(&part - &chunked_cold_ranges[0]);
                         while (&*iter_cold != &part) {
                             ++iter_cold;
@@ -2171,6 +2203,10 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                     = find_relatively_hot_ranges(list.begin(), list.end(), hot_npairs, nr_relative_hots,
                         [&](const ChunkedPairsRange& part, const PairsRange& range, uint32_t load) {
                             const dpu_id_t idx_in_ary = static_cast<dpu_id_t>(&static_cast<const LinkedChunkedPairsRange&>(part) - &chunked_cold_ranges[0]);
+
+                            if (partitioning_log) {
+                                *partitioning_log << "rel hot from " << idx_dpu << " load " << load << std::endl;
+                            }
 
                             NewHotRange& new_hot = new_hots[hot_count++];
                             new_hot.pairs_range = range;
@@ -2305,19 +2341,29 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 continue;
             }
 
-            auto& pieces = hot_split_plans[idx_dpu];
-            const dpu_id_t emit_count = split_hot_range_equal_load(hot_cpr, measured, nr_target_pieces, hot_max_key,
-                [&](PairsRange pr, KeyRange kr, uint32_t ld, [[maybe_unused]] uint32_t mcl) {
-                    pieces.push_back(NewHotRange{pr, kr, ld});
-                });
-            if (emit_count <= 1) {
-                // A single dominant chunk cannot be subdivided: keep the hot whole.
-                pieces.clear();
-                hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};
-                continue;
-            }
+            {
+                ScopedTimer t{Timer, "split"};
 
-            nr_new_pieces += emit_count - 1;
+                auto& pieces = hot_split_plans[idx_dpu];
+                const dpu_id_t emit_count = split_hot_range_equal_load(hot_cpr, measured, nr_target_pieces, hot_max_key,
+                    [&](PairsRange pr, KeyRange kr, uint32_t ld, [[maybe_unused]] uint32_t mcl) {
+                        pieces.push_back(NewHotRange{pr, kr, ld});
+                    });
+                if (emit_count <= 1) {
+                    // A single dominant chunk cannot be subdivided: keep the hot whole.
+                    pieces.clear();
+                    hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};
+                    continue;
+                }
+
+                nr_new_pieces += emit_count - 1;
+
+                if (partitioning_log) {
+                    for (const auto& piece : pieces) {
+                        *partitioning_log << "split hot from " << idx_dpu << " load " << piece.load << std::endl;
+                    }
+                }
+            }
         }
 
 
@@ -2529,8 +2575,8 @@ inline void BPForest::print_params(std::ostream& ostr) const
             "param.enable_hot_split: " << param.enable_hot_split << "\n"
             "param.nr_host_threads: " << param.nr_host_threads << "\n";
     print_overload_threshold_spec(ostr, param.overload_threshold_spec);
-    overload_threshold.print_resolution(ostr);
     ostr << "get_parallelism(): " << get_parallelism() << "\n"
+            "nr_dpus: " << nr_base_parts << "\n"
          << std::flush;
 #undef STRINGIFY
 #undef EXPAND_STRINGIFY
