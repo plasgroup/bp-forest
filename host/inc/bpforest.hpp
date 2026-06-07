@@ -102,6 +102,7 @@ using PartitionDelim = std::pair<key_uint64_t, std::variant<BasePartitionDelim, 
 
 struct BPForestParameter {
     unsigned balancing = 1;
+    unsigned more_hotness = 1;
     bool enable_incremental = true;
     bool enable_hot_split = true;
     // BPForest resolves this spec to a concrete policy at construction using ndpus.

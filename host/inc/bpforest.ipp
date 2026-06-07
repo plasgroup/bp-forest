@@ -1541,8 +1541,8 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
     route_queries(nr_queries, queries, results, routed);
 
     if (param.balancing > 0) {
-        const uint32_t hot_load = (nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts,
-                       cold_endpoint_cnt_goal = nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
+        const uint32_t hot_load = (param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts,
+                       cold_endpoint_cnt_goal = param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
 
         for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
             LinkedChunkedPairsRange& base = chunked_cold_ranges[idx_base];
@@ -1815,9 +1815,9 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             // comparable: the slack deliberately broadens this skip to shrink
             // the rebalanced DPU set.
             const unsigned bonferroni_family = static_cast<unsigned>(nr_base_parts) + static_cast<unsigned>(nr_existing_hots);
-            const uint32_t cold_cnt_goal = nr_queries * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
+            const uint32_t cold_cnt_goal = param.more_hotness * nr_queries * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
             const uint32_t cold_cnt_threshold = overload_threshold.threshold_for(nr_queries, cold_cnt_goal, bonferroni_family);
-            const uint32_t hot_cnt_goal = 2u * (nr_queries + nr_base_parts - 1) / nr_base_parts;
+            const uint32_t hot_cnt_goal = param.more_hotness * 2u * (nr_queries + nr_base_parts - 1) / nr_base_parts;
             const uint32_t hot_cnt_threshold = overload_threshold.threshold_for(nr_queries, hot_cnt_goal, bonferroni_family);
             dpu_id_t serialized_cold_count = 0, incision_count = 0;
             bool any_serialize = false;
@@ -2000,8 +2000,8 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         }
     }
 
-    const uint32_t hot_load = (nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
-    const uint32_t cold_endpoint_cnt_goal = nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
+    const uint32_t hot_load = param.more_hotness * (nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
+    const uint32_t cold_endpoint_cnt_goal = param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
     dpu_id_t hot_count = 0;
 
     {

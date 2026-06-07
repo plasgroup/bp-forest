@@ -68,6 +68,7 @@ struct BPForestOption {
     void add_options(cmdline::parser& a)
     {
         a.add<unsigned>("balancing-param", 'a', "the tunable parameter for compute/memory load balancing in B+-Forest", false, 1);
+        a.add<unsigned>("more-hot", 'h', "the tunable parameter for hotness of hot partitions", false, 1);
         a.add<bool>("incremental", 0, "whether to enable incremental rebalancing", false, true);
         a.add<bool>("hot-split", 0,
             "whether to enable splitting an already-hot partition that "
@@ -80,6 +81,7 @@ struct BPForestOption {
     void set_options(cmdline::parser& a)
     {
         param.balancing = a.get<unsigned>("balancing-param");
+        param.more_hotness = a.get<unsigned>("more-hot");
         param.enable_incremental = a.get<bool>("incremental");
         param.enable_hot_split = a.get<bool>("hot-split");
         param.nr_host_threads = a.get<unsigned>("nr-host-threads");
