@@ -398,9 +398,6 @@ struct CMDOpt {
         showinfo = parser.exist("showinfo");
         noinit = parser.exist("noinit");
 
-        if (zipf_peak && *zipf_peak == 0) {
-            zipf_peak.reset();
-        }
         if (zipf_peak && scramble) {
             std::cerr << "non-zero zipf_peak and scramble options are mutually exclusive" << std::endl;
             throw cmdline::cmdline_error{""};
