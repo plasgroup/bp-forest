@@ -28,6 +28,7 @@ foreach(build_version IN LISTS targets)
         host_params
         util
         workload_mgmt
+        numa_affinity
         parallel_manager
         cmdline
         cereal

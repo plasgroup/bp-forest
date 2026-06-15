@@ -135,6 +135,8 @@ struct BPForest : ParallelManager<BPForest> {
     std::vector<Partition> dump_partitions() const;
 
 private:
+    BPForest(const Param& = {});
+
     const dpu_id_t nr_base_parts;
 
     std::set<PartitionDelim> delims;
@@ -220,6 +222,9 @@ private:
 
     // pass intermediate data to parallel workers
     std::any any_tmp_data;
+
+    inline static thread_local unsigned numa_id = 0;
+    void set_numa_affinity(unsigned tid);
 
     void distribute_equal_data(const KVPair sorted_pairs[], size_t nr_pairs);
     void load_partitioning(const std::vector<Partition>& partitioning);

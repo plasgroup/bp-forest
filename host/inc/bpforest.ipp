@@ -13,6 +13,7 @@
 #include "input_header.h"
 #include "log.hpp"
 #include "log_buffer.hpp"
+#include "numa_affinity.hpp"
 #include "overload.hpp"
 #include "pairs_range.hpp"
 #include "raii.hpp"
@@ -171,16 +172,32 @@ struct RangeQueryToRange<RangeCountQuery> {
 };
 
 
-inline BPForest::BPForest(const KVPair sorted_pairs[], size_t nr_total_pairs, const Param& param)
+inline BPForest::BPForest(const Param& param)
     : ParallelManager<BPForest>{param.nr_host_threads},
       nr_base_parts{(upmem_init(), upmem_get_nr_dpus())}, param{param}
+{
+    const NUMA::Topology topology;
+    any_tmp_data = &topology;
+
+    parallel_run(&BPForest::set_numa_affinity);
+
+    any_tmp_data.reset();
+}
+inline void BPForest::set_numa_affinity(unsigned tid)
+{
+    const NUMA::Topology& topology = *std::any_cast<const NUMA::Topology*>(any_tmp_data);
+
+    numa_id = NUMA::set_compact_affinity(tid, topology);
+}
+
+inline BPForest::BPForest(const KVPair sorted_pairs[], size_t nr_total_pairs, const Param& param)
+    : BPForest{param}
 {
     ScopedTimer t{Timer, "init"};
     distribute_equal_data(sorted_pairs, nr_total_pairs);
 }
 inline BPForest::BPForest(const KVPair sorted_pairs[], size_t nr_total_pairs, const std::vector<Partition>& partitioning, const Param& param)
-    : ParallelManager<BPForest>{param.nr_host_threads},
-      nr_base_parts{(upmem_init(), upmem_get_nr_dpus())}, param{param}
+    : BPForest{param}
 {
     ScopedTimer t{Timer, "init"};
     load_partitioning(partitioning);
