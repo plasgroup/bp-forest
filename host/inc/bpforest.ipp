@@ -908,7 +908,7 @@ inline void BPForest::batch_pred(uint32_t nr_queries, const key_uint64_t keys[],
 }
 inline void BPForest::postprocess_of_pred(KVPair results[])
 {
-    ScopedTimer t{Timer, "posproc"};
+    ScopedTimer t{Timer, "postproc"};
 
     any_tmp_data = results;
     parallel_run(&BPForest::postprocess_of_pred_impl);
