@@ -18,7 +18,7 @@ struct Topology {
     {
         if (numa_available() >= 0) {
             const int max_node = numa_max_node();
-            cpus_per_node.resize(max_node + 1);
+            cpus_per_node.resize(static_cast<unsigned>(max_node) + 1u);
 
             struct bitmask* cpus = numa_allocate_cpumask();
             for (int node = 0; node <= max_node; ++node) {
@@ -26,7 +26,7 @@ struct Topology {
                 if (numa_node_to_cpus(node, cpus) == 0) {
                     count = numa_bitmask_weight(cpus);
                 }
-                cpus_per_node[node] = count;
+                cpus_per_node[static_cast<unsigned>(node)] = count;
                 total_cpus += count;
             }
             numa_free_cpumask(cpus);
