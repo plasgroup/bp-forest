@@ -218,7 +218,7 @@ private:
     const ExtendableBuffer<std::pair<dpu_id_t, uint32_t /* load */>> cold_loads{nr_base_parts};
     const ExtendableBuffer<uint32_t /* npairs */> cold_npairs_list{nr_base_parts};
     const ExtendableBuffer<NewHotRange> new_hots{nr_base_parts};
-    ExtendableBuffer<uint32_t> chunk2load;
+    inline static thread_local ExtendableBuffer<uint32_t> chunk2load;
 
     // pass intermediate data to parallel workers
     std::any any_tmp_data;
@@ -247,7 +247,7 @@ private:
     template <typename Query, typename Result>
     void route_accumulate_impl(unsigned tid);
     template <typename Query, typename Result>
-    using TmpDataForRouteQueries = std::tuple<uint32_t, const Query*, QueryData<Query, Result>*, Result*>;
+    using TmpDataForRouteQueries = const std::tuple<uint32_t, const Query*, QueryData<Query, Result>*, Result*>;
 
     template <typename Query, typename Result>
     void route_single_point_query(
@@ -292,6 +292,9 @@ private:
     Balanced incremental_repartition(uint32_t nr_queries, const Query queries[], Result results[], QueryData<Query, Result>& routed);
     template <typename Query, typename Result>
     void full_repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed);
+
+    template <typename Query, typename Result>
+    void full_repartition_worker(unsigned tid);
 };
 
 
