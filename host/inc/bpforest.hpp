@@ -294,7 +294,9 @@ private:
     void full_repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed);
 
     template <typename Query, typename Result>
-    void incremental_repartition_worker(unsigned tid);
+    void incremental_repartition_worker_cold(unsigned tid);
+    template <typename Query, typename Result>
+    void incremental_repartition_worker_hot(unsigned tid);
     template <typename Query, typename Result>
     void full_repartition_worker(unsigned tid);
 };

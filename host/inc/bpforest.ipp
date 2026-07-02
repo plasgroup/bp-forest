@@ -1865,6 +1865,7 @@ struct TmpDataForIncRepartition {
     dpu_id_t idx_dpu;
     dpu_id_t cold_count;
     dpu_id_t hot_count;
+    dpu_id_t nr_new_pieces;
 };
 template <typename Query, typename Result>
 inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query queries[], Result results[], QueryData<Query, Result>& routed) -> Balanced
@@ -1889,6 +1890,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
     tmp_data.idx_dpu = 0;
     tmp_data.cold_count = 0;  // # of meaningful entries in chunked_cold_ranges
     tmp_data.hot_count = 0;
+    tmp_data.nr_new_pieces = 0;
 
     {
         ScopedTimer t{Timer, "retrieve"};
@@ -2085,14 +2087,12 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         }
     }
 
-    const uint32_t hot_load = param.more_hotness * (nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
-
     {
         ScopedTimer t{Timer, "cold"};
 
         any_tmp_data = &tmp_data;
 
-        parallel_run(&BPForest::incremental_repartition_worker<Query, Result>);
+        parallel_run(&BPForest::incremental_repartition_worker_cold<Query, Result>);
 
         if (tmp_data.nr_existing_hots + tmp_data.hot_count > nr_base_parts) {
             return Balanced::No;
@@ -2101,106 +2101,12 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
 
     {
         ScopedTimer t{Timer, "hot"};
-        // ---- Hot-split body: split over-heated existing hots ----
-        // Two-phase: pass 1 measures and stashes splitter output, pass 2 commits
-        // (delims.erase / kept_hot / new_hots).  Splitting the mutations this way
-        // is what lets the capacity-overflow check between the passes fall back
-        // to full_repartition without leaving delims and nr_pairs[] out of sync.
-        for (auto& plan : hot_split_plans) {
-            plan.clear();
-        }
-        dpu_id_t nr_new_pieces = 0;
-        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-            if (!hot_stage1_fired[idx_dpu] || hot_ranges[idx_dpu].npairs() == 0 || hot_delims[idx_dpu] == DelimIter{}) {
-                continue;
-            }
-            const key_uint64_t hot_begin_key = hot_delims[idx_dpu]->first;
-            const key_uint64_t hot_max_key = std::get<HotPartitionDelim>(hot_delims[idx_dpu]->second).max_key;
 
-            ChunkedPairsRange hot_cpr{hot_ranges[idx_dpu]};
-            uint32_t measured = 0;
-            {
-                ScopedTimer t{Timer, "hist"};
-
-                const size_t nr_chunks = hot_cpr.nchunks();
-                chunk2load.reserve(nr_chunks);
-                for (size_t idx_chunk = 0; idx_chunk < nr_chunks; idx_chunk++) {
-                    chunk2load[idx_chunk] = 0;
-                }
-                hot_cpr.set_load_ary(&chunk2load[0]);
-
-                // Single contiguous hot range, so a query maps to at most one hot
-                // fragment: no orig_idx dedup needed (unlike the cold path).
-                if constexpr (IsPointQuery<Query>) {
-                    for (const auto& qry_vec : routed.hot[idx_dpu].qrys) {
-                        for (const auto& qry : qry_vec) {
-                            const key_uint64_t key = PointQueryToKey<Query>{}(qry);
-                            DataChunkIterator one_after_target_chunk = [&] {
-                                if constexpr (IsPredecessorQuery<Query, Result>) {
-                                    return std::lower_bound(hot_cpr.begin(), hot_cpr.end(), key,
-                                        [](DataChunkIterator& chunk, key_uint64_t key) { return chunk.begin()->key < key; });
-                                } else {
-                                    return std::upper_bound(hot_cpr.begin(), hot_cpr.end(), key,
-                                        [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
-                                }
-                            }();
-                            (--one_after_target_chunk)->load()++;
-                        }
-                    }
-                    measured = routed.hot[idx_dpu].nr_qrys;
-
-                } else {
-                    for (const auto& idx_vec : routed.hot[idx_dpu].orig_idxs) {
-                        for (const auto orig_idx : idx_vec) {
-                            const KeyRange& range = RangeQueryToRange<Query>{}(queries[orig_idx]);
-                            for (const auto key : {range.begin, range.end}) {
-                                if (hot_begin_key <= key && key <= hot_max_key) {
-                                    DataChunkIterator one_after_target_chunk = std::upper_bound(hot_cpr.begin(), hot_cpr.end(), key,
-                                        [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
-                                    (--one_after_target_chunk)->load()++;
-                                    measured++;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            const dpu_id_t nr_target_pieces = static_cast<dpu_id_t>(measured / hot_load);
-            if (nr_target_pieces < 2) {
-                hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};
-                continue;
-            }
-
-            {
-                ScopedTimer t{Timer, "split"};
-
-                auto& pieces = hot_split_plans[idx_dpu];
-                const dpu_id_t emit_count = split_hot_range_equal_load(hot_cpr, measured, nr_target_pieces, hot_max_key,
-                    [&](PairsRange pr, KeyRange kr, uint32_t ld, [[maybe_unused]] uint32_t mcl) {
-                        pieces.push_back(NewHotRange{pr, kr, ld});
-                    });
-                if (emit_count <= 1) {
-                    // A single dominant chunk cannot be subdivided: keep the hot whole.
-                    pieces.clear();
-                    hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};
-                    continue;
-                }
-
-                nr_new_pieces += emit_count - 1;
-
-                if (partitioning_log) {
-                    for (const auto& piece : pieces) {
-                        *partitioning_log << "split hot from " << idx_dpu << " load " << piece.load << std::endl;
-                    }
-                }
-            }
-        }
-
+        parallel_run(&BPForest::incremental_repartition_worker_hot<Query, Result>);
 
         // Falling back here is safe because pass 1 has not touched delims,
         // kept_hot, hot_delims, or new_hots.
-        if (tmp_data.nr_existing_hots + tmp_data.hot_count + nr_new_pieces > nr_base_parts) {
+        if (tmp_data.nr_existing_hots + tmp_data.hot_count + tmp_data.nr_new_pieces > nr_base_parts) {
             return Balanced::No;
         }
     }
@@ -2315,7 +2221,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
     return Balanced::Yes;
 }
 template <typename Query, typename Result>
-inline void BPForest::incremental_repartition_worker(unsigned /* tid */)
+inline void BPForest::incremental_repartition_worker_cold(unsigned /* tid */)
 {
     using TmpData = TmpDataForIncRepartition<Query, Result>;
     assert(any_tmp_data.type() == typeid(TmpData*));
@@ -2599,7 +2505,123 @@ inline void BPForest::incremental_repartition_worker(unsigned /* tid */)
         idx_dpu = get_next_idx_dpu(lock);
     }
 }
+template <typename Query, typename Result>
+inline void BPForest::incremental_repartition_worker_hot(unsigned /* tid */)
+{
+    using TmpData = TmpDataForIncRepartition<Query, Result>;
+    assert(any_tmp_data.type() == typeid(TmpData*));
+    TmpData& tmp = *std::any_cast<TmpData*>(any_tmp_data);
 
+    const uint32_t nr_queries = tmp.nr_queries;
+    const Query* const queries = tmp.queries;
+    const QueryData<Query, Result>& routed = *tmp.routed;
+    const dpu_id_t nr_existing_hots = tmp.nr_existing_hots;
+
+    const uint32_t hot_load = param.more_hotness * (nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
+
+    const auto get_next_idx_dpu = [&](const std::lock_guard<std::mutex>& /* lock */) {
+        if (nr_existing_hots + tmp.hot_count > nr_base_parts) {
+            return nr_base_parts;
+        }
+
+        dpu_id_t idx_dpu;
+        for (idx_dpu = tmp.idx_dpu; idx_dpu < nr_base_parts; idx_dpu++) {
+            if (hot_stage1_fired[idx_dpu] && hot_ranges[idx_dpu].npairs() != 0 && hot_delims[idx_dpu] != DelimIter{}) {
+                break;
+            }
+        }
+
+        tmp.idx_dpu = idx_dpu + 1;
+
+        return idx_dpu;
+    };
+
+    for (dpu_id_t idx_dpu = get_next_idx_dpu(std::lock_guard{tmp.mutex}); idx_dpu < nr_base_parts; idx_dpu++) {
+        const key_uint64_t hot_begin_key = hot_delims[idx_dpu]->first;
+        const key_uint64_t hot_max_key = std::get<HotPartitionDelim>(hot_delims[idx_dpu]->second).max_key;
+
+        ChunkedPairsRange hot_cpr{hot_ranges[idx_dpu]};
+        uint32_t measured = 0;
+        {
+            const size_t nr_chunks = hot_cpr.nchunks();
+            chunk2load.reserve(nr_chunks);
+            for (size_t idx_chunk = 0; idx_chunk < nr_chunks; idx_chunk++) {
+                chunk2load[idx_chunk] = 0;
+            }
+            hot_cpr.set_load_ary(&chunk2load[0]);
+
+            // Single contiguous hot range, so a query maps to at most one hot
+            // fragment: no orig_idx dedup needed (unlike the cold path).
+            if constexpr (IsPointQuery<Query>) {
+                for (const auto& qry_vec : routed.hot[idx_dpu].qrys) {
+                    for (const auto& qry : qry_vec) {
+                        const key_uint64_t key = PointQueryToKey<Query>{}(qry);
+                        DataChunkIterator one_after_target_chunk = [&] {
+                            if constexpr (IsPredecessorQuery<Query, Result>) {
+                                return std::lower_bound(hot_cpr.begin(), hot_cpr.end(), key,
+                                    [](DataChunkIterator& chunk, key_uint64_t key) { return chunk.begin()->key < key; });
+                            } else {
+                                return std::upper_bound(hot_cpr.begin(), hot_cpr.end(), key,
+                                    [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
+                            }
+                        }();
+                        (--one_after_target_chunk)->load()++;
+                    }
+                }
+                measured = routed.hot[idx_dpu].nr_qrys;
+
+            } else {
+                for (const auto& idx_vec : routed.hot[idx_dpu].orig_idxs) {
+                    for (const auto orig_idx : idx_vec) {
+                        const KeyRange& range = RangeQueryToRange<Query>{}(queries[orig_idx]);
+                        for (const auto key : {range.begin, range.end}) {
+                            if (hot_begin_key <= key && key <= hot_max_key) {
+                                DataChunkIterator one_after_target_chunk = std::upper_bound(hot_cpr.begin(), hot_cpr.end(), key,
+                                    [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
+                                (--one_after_target_chunk)->load()++;
+                                measured++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        const dpu_id_t nr_target_pieces = static_cast<dpu_id_t>(measured / hot_load);
+        if (nr_target_pieces < 2) {
+            hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};
+            idx_dpu = get_next_idx_dpu(std::lock_guard{tmp.mutex});
+            continue;
+        }
+
+        {
+            auto& pieces = hot_split_plans[idx_dpu];
+            const dpu_id_t emit_count = split_hot_range_equal_load(hot_cpr, measured, nr_target_pieces, hot_max_key,
+                [&](PairsRange pr, KeyRange kr, uint32_t ld, [[maybe_unused]] uint32_t mcl) {
+                    pieces.push_back(NewHotRange{pr, kr, ld});
+                });
+            if (emit_count <= 1) {
+                // A single dominant chunk cannot be subdivided: keep the hot whole.
+                pieces.clear();
+                hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};
+                idx_dpu = get_next_idx_dpu(std::lock_guard{tmp.mutex});
+                continue;
+            }
+
+            std::lock_guard lock{tmp.mutex};
+
+            tmp.nr_new_pieces += emit_count - 1;
+
+            if (partitioning_log) {
+                for (const auto& piece : pieces) {
+                    *partitioning_log << "split hot from " << idx_dpu << " load " << piece.load << std::endl;
+                }
+            }
+
+            idx_dpu = get_next_idx_dpu(lock);
+        }
+    }
+}
 
 inline void BPForest::partition_with_get_batch(uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[])
 {

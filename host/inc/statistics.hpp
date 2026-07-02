@@ -223,8 +223,8 @@ inline TimerTree Timer{
                                }},
                   {"inc_reb", {
                                   {"retrieve", {{"command"}, {"exec"}, {"recv_npairs"}, {"alloc"}, {"recv"}}},
-                                  {"cold", {{"hist"}, {"abs"}, {"rel"}}},
-                                  {"hot", {{"hist"}, {"split"}}},
+                                  {"cold"},
+                                  {"hot"},
                                   {"table"},
                                   {"send"},
                                   {"exec"},
@@ -257,8 +257,8 @@ inline TimerTree Timer{
                                }},
                   {"inc_reb", {
                                   {"retrieve", {{"command_exec_recv_npairs"}, {"alloc"}, {"recv"}}},
-                                  {"cold", {{"hist"}, {"abs"}, {"rel"}}},
-                                  {"hot", {{"hist"}, {"split"}}},
+                                  {"cold"},
+                                  {"hot"},
                                   {"table"},
                                   {"send_exec"},
                                   {"re", {{"route"}}},
