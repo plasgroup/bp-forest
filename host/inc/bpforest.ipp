@@ -1630,7 +1630,7 @@ inline void BPForest::full_repartition_worker(unsigned /* tid */)
     const auto get_next_idx_base = [&](const std::lock_guard<std::mutex>& /* lock */) {
         dpu_id_t idx_base;
         for (idx_base = tmp.idx_base; idx_base < nr_base_parts; idx_base++) {
-            if (!IsPointQuery<Query> && routed.cold[idx_base].nr_qrys > cold_endpoint_cnt_goal) {
+            if (!IsPointQuery<Query> || routed.cold[idx_base].nr_qrys > cold_endpoint_cnt_goal) {
                 break;
             }
 
