@@ -2102,6 +2102,11 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
     {
         ScopedTimer t{Timer, "hot"};
 
+        tmp_data.idx_dpu = 0;
+        for (auto& pieces : hot_split_plans) {
+            pieces.clear();
+        }
+
         parallel_run(&BPForest::incremental_repartition_worker_hot<Query, Result>);
 
         // Falling back here is safe because pass 1 has not touched delims,
@@ -2221,7 +2226,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
     return Balanced::Yes;
 }
 template <typename Query, typename Result>
-inline void BPForest::incremental_repartition_worker_cold(unsigned /* tid */)
+inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsigned tid)
 {
     using TmpData = TmpDataForIncRepartition<Query, Result>;
     assert(any_tmp_data.type() == typeid(TmpData*));
@@ -2506,7 +2511,7 @@ inline void BPForest::incremental_repartition_worker_cold(unsigned /* tid */)
     }
 }
 template <typename Query, typename Result>
-inline void BPForest::incremental_repartition_worker_hot(unsigned /* tid */)
+inline void BPForest::incremental_repartition_worker_hot([[maybe_unused]] unsigned tid)
 {
     using TmpData = TmpDataForIncRepartition<Query, Result>;
     assert(any_tmp_data.type() == typeid(TmpData*));
@@ -2536,7 +2541,7 @@ inline void BPForest::incremental_repartition_worker_hot(unsigned /* tid */)
         return idx_dpu;
     };
 
-    for (dpu_id_t idx_dpu = get_next_idx_dpu(std::lock_guard{tmp.mutex}); idx_dpu < nr_base_parts; idx_dpu++) {
+    for (dpu_id_t idx_dpu = get_next_idx_dpu(std::lock_guard{tmp.mutex}); idx_dpu < nr_base_parts;) {
         const key_uint64_t hot_begin_key = hot_delims[idx_dpu]->first;
         const key_uint64_t hot_max_key = std::get<HotPartitionDelim>(hot_delims[idx_dpu]->second).max_key;
 
