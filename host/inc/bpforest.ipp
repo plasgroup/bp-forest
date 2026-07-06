@@ -1904,27 +1904,30 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             const unsigned bonferroni_family = static_cast<unsigned>(nr_base_parts) + static_cast<unsigned>(tmp_data.nr_existing_hots);
             const uint32_t cold_cnt_goal = param.more_hotness * nr_queries * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
             const uint32_t cold_cnt_threshold = overload_threshold.threshold_for(nr_queries, cold_cnt_goal, bonferroni_family);
-            const uint32_t hot_cnt_goal = param.more_hotness * 2u * (nr_queries + nr_base_parts - 1) / nr_base_parts;
+            const uint32_t hot_cnt_goal = (param.more_hotness * 2u * nr_queries + nr_base_parts - 1) / nr_base_parts;
             const uint32_t hot_cnt_threshold = overload_threshold.threshold_for(nr_queries, hot_cnt_goal, bonferroni_family);
             dpu_id_t serialized_cold_count = 0, incision_count = 0;
-            bool any_serialize = false;
+            bool trigger = false;
             for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
                 InputHeader& input = input_headers[idx_dpu];
                 const dpu_id_t orig_incision_count = (base_to_nr_hot_psum[idx_dpu] = incision_count);
 
-                const bool do_cold = routed.cold[idx_dpu].nr_qrys > cold_cnt_threshold;
-                const bool do_hot = param.enable_hot_split && hot_delims[idx_dpu] != DelimIter{}
-                                    && routed.hot[idx_dpu].nr_qrys > hot_cnt_threshold;
+                const bool trigger_cold = routed.cold[idx_dpu].nr_qrys > cold_cnt_threshold,
+                           trigger_hot = param.enable_hot_split && routed.hot[idx_dpu].nr_qrys > hot_cnt_threshold;
+                trigger = trigger || trigger_cold || trigger_hot;
+                const bool do_cold = routed.cold[idx_dpu].nr_qrys > cold_cnt_goal;
+                const bool do_hot = param.enable_hot_split && routed.hot[idx_dpu].nr_qrys > hot_cnt_goal;
+
                 hot_stage1_fired[idx_dpu] = do_hot;
                 kept_hot[idx_dpu].active = false;
 
+                if (trigger && !param.enable_incremental) {
+                    return Balanced::No;
+                }
                 if (!do_cold && !do_hot) {
                     input.task_no = TASK_NONE;
                     input.serialize.nr_delims = 0;
                     continue;
-                }
-                if (!param.enable_incremental) {
-                    return Balanced::No;
                 }
 
                 if (do_cold) {
@@ -1955,11 +1958,10 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 input.serialize.max_nr_delims = nr_base_parts;
                 input.serialize.do_cold = do_cold;
                 input.serialize.do_hot = do_hot;
-                any_serialize = true;
             }
             base_to_nr_hot_psum[nr_base_parts] = incision_count;
 
-            if (!any_serialize) {
+            if (!trigger) {
                 return Balanced::Yes;
             }
 
@@ -2237,7 +2239,7 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
     const QueryData<Query, Result>& routed = *tmp.routed;
     const dpu_id_t nr_existing_hots = tmp.nr_existing_hots;
 
-    const uint32_t hot_load = param.more_hotness * (nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
+    const uint32_t hot_load = (param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
     const uint32_t cold_endpoint_cnt_goal = param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
 
     const auto get_next_idx_dpu = [&](const std::lock_guard<std::mutex>& /* lock */) {
@@ -2522,7 +2524,7 @@ inline void BPForest::incremental_repartition_worker_hot([[maybe_unused]] unsign
     const QueryData<Query, Result>& routed = *tmp.routed;
     const dpu_id_t nr_existing_hots = tmp.nr_existing_hots;
 
-    const uint32_t hot_load = param.more_hotness * (nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
+    const uint32_t hot_load = (param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
 
     const auto get_next_idx_dpu = [&](const std::lock_guard<std::mutex>& /* lock */) {
         if (nr_existing_hots + tmp.hot_count > nr_base_parts) {
@@ -2531,7 +2533,7 @@ inline void BPForest::incremental_repartition_worker_hot([[maybe_unused]] unsign
 
         dpu_id_t idx_dpu;
         for (idx_dpu = tmp.idx_dpu; idx_dpu < nr_base_parts; idx_dpu++) {
-            if (hot_stage1_fired[idx_dpu] && hot_ranges[idx_dpu].npairs() != 0 && hot_delims[idx_dpu] != DelimIter{}) {
+            if (input_headers[idx_dpu].task_no == TASK_SERIALIZE && input_headers[idx_dpu].serialize.do_hot) {
                 break;
             }
         }
