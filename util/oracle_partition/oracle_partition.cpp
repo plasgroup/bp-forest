@@ -38,7 +38,7 @@ struct Option {
         a.add<std::string>("pimtree-init-file", 'i', "file path to PIM-Tree init file", false);
         a.add<double>("items", 'n', "number of items in millions", false, 500.0);
 
-        a.add<std::string>("ops", 'o', "kind of operation (get, range)", false, "get");
+        a.add<std::string>("ops", 'o', "kind of operation (get, pred, range)", false, "get");
         a.add<int>("dpus", 'p', "number of DPUs", false, 2500);
 
         a.add<std::string>("load-output", 0, "output file for load (CSV)", false, "");
@@ -140,6 +140,8 @@ struct Option {
     operation_t op_type() {
         if (a.get<std::string>("ops") == "get")
             return get_t;
+        else if (a.get<std::string>("ops") == "pred")
+            return predecessor_t;
         else if (a.get<std::string>("ops") == "rmq")
             return scan_t;
         else if (a.get<std::string>("ops") == "count")
@@ -278,6 +280,23 @@ void evaluate_workload(std::vector<int64_t>& keys, size_t num_dpus, ChunkBuilder
     evaluate_workload(keys, num_dpus, chunk_builder, range_workload);
 }
 
+// A pred query for key k is answered by the partition owning the largest key
+// strictly less than k (the host routes it with lower_bound over the partition
+// delimiters, unlike upper_bound for get).  Hence it loads the same partition
+// as a get query for k - 1.  Queries with k <= min key have no predecessor and
+// are answered on the host without reaching any DPU, so they are dropped here.
+static std::vector<int64_t> pred_routing_keys(const std::vector<int64_t>& workload, int64_t min_key)
+{
+    std::vector<int64_t> routing_keys;
+    routing_keys.reserve(workload.size());
+    for (int64_t key: workload)
+        if (key > min_key)
+            routing_keys.push_back(key - 1);
+    if (routing_keys.size() < workload.size())
+        printf("dropped %ld pred queries with no predecessor\n", workload.size() - routing_keys.size());
+    return routing_keys;
+}
+
 void show_load(std::vector<int64_t>& keys)
 {
     ChunkBuilder* builder = nullptr;
@@ -334,16 +353,19 @@ void show_load(std::vector<int64_t>& keys)
     }
 
     std::pair<std::vector<size_t>, std::vector<size_t>> load;
-    if (opt.op_type() == get_t) {
+    if (opt.op_type() == get_t || opt.op_type() == predecessor_t) {
         std::vector<int64_t> workload;
         if (!opt.workload_file().empty()) {
             printf("load workload from %s\n", opt.workload_file().c_str());
-            workload = load_point_workload<int64_t>(opt.workload_file());
+            workload = load_point_workload<int64_t>(opt.workload_file(), opt.op_type());
         } else
             workload = pgen->generate(opt.num_queries());
         if (opt.workload_output() != nullptr)
-            save_point_workload(opt.workload_output(), workload);
-        
+            save_point_workload(opt.workload_output(), workload, opt.op_type());
+
+        if (opt.op_type() == predecessor_t)
+            workload = pred_routing_keys(workload, keys.front());
+
         partitioner->partition_point(keys, workload);
         load = simulate_load_for_point_query(keys, partitioner->ref_partition(0), partitioner->ref_partition(1), workload);
         evaluate_workload(keys, opt.num_dpus(), builder, workload);

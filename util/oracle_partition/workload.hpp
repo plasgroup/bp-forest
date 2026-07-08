@@ -230,16 +230,19 @@ std::vector<std::pair<K, V>> load_init_data(const std::string &file_name)
 }
 
 template <typename K>
-std::vector<K> load_point_workload(const std::string &file_name)
+std::vector<K> load_point_workload(const std::string &file_name, operation_t op_type = get_t)
 {
     std::vector<K> workload;
     pimtree_queries queries = make_pimtree_queries(file_name);
     for (size_t i = 0; i < queries.length; i++) {
-        if (queries.ops[i].type != get_t) {
+        if (queries.ops[i].type != op_type) {
             fprintf(stderr, "invalid operation type in workload file\n");
             exit(1);
         }
-        workload.push_back(queries.ops[i].tsk.g.key);
+        if (op_type == predecessor_t)
+            workload.push_back(queries.ops[i].tsk.p.key);
+        else
+            workload.push_back(queries.ops[i].tsk.g.key);
     }
     return workload;
 }
@@ -280,7 +283,7 @@ void save_init_data(const std::string &file_name, const std::vector<std::pair<K,
 }
 
 template <typename K>
-void save_point_workload(const std::string &file_name, const std::vector<K> &keys)
+void save_point_workload(const std::string &file_name, const std::vector<K> &keys, operation_t op_type = get_t)
 {
     struct operation op;
     memset(&op, 0, sizeof(op));
@@ -290,8 +293,11 @@ void save_point_workload(const std::string &file_name, const std::vector<K> &key
         exit(1);
     }
     for (auto key: keys) {
-        op.type = get_t;
-        op.tsk.g.key = (int64_t) key;
+        op.type = op_type;
+        if (op_type == predecessor_t)
+            op.tsk.p.key = (int64_t) key;
+        else
+            op.tsk.g.key = (int64_t) key;
         fwrite(&op, sizeof(op), 1, fp);
     }
     fclose(fp);
