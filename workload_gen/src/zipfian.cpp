@@ -636,7 +636,7 @@ void WorkloadGen<SliceDist, Filter>::generate_queries_impl(const unsigned tid)
     const size_t idx_query_begin = nqueries * tid / get_parallelism(),
                  idx_query_end = nqueries * (tid + 1) / get_parallelism();
 
-    if constexpr (op_tag == get_t || op_tag == remove_t) {
+    if constexpr (op_tag == get_t || op_tag == predecessor_t || op_tag == remove_t) {
         for (size_t idx_query = idx_query_begin; idx_query < idx_query_end; idx_query++) {
             if (tid == 0 && idx_query % 0x10000 == 0) {
                 const auto now = Clock::now();
@@ -661,10 +661,19 @@ void WorkloadGen<SliceDist, Filter>::generate_queries_impl(const unsigned tid)
             }
 
             operation& op = query_ops[idx_query];
-            if constexpr (op_tag == get_t) {
+            switch (op_tag) {
+            case get_t: {
                 op.tsk.g.key = key;
-            } else {
+            } break;
+            case predecessor_t: {
+                op.tsk.p.key = key;
+            } break;
+            case remove_t: {
                 op.tsk.r.key = key;
+            } break;
+            default:
+                // unreachable
+                std::exit(1);
             }
             op.type = op_tag;
         }
@@ -692,9 +701,6 @@ void WorkloadGen<SliceDist, Filter>::generate_queries_impl(const unsigned tid)
 
             operation& op = query_ops[idx_query];
             switch (op_tag) {
-            case predecessor_t:
-                op.tsk.p.key = key;
-                break;
             case scan_t: {
                 op.tsk.s.lkey = key;
                 op.tsk.s.rkey = std::min(key, std::numeric_limits<int64_t>::max() - static_cast<int64_t>(scan_range_width)) + static_cast<int64_t>(scan_range_width);
@@ -714,7 +720,7 @@ void WorkloadGen<SliceDist, Filter>::generate_queries_impl(const unsigned tid)
 template <class SliceDist, typename Filter>
 void WorkloadGen<SliceDist, Filter>::operator()()
 {
-    if (!noinit || pimtree_op_tag == get_t || pimtree_op_tag == remove_t) {
+    if (!noinit || pimtree_op_tag == get_t || pimtree_op_tag == predecessor_t || pimtree_op_tag == remove_t) {
         init_keys.reserve(npairs);
         parallel_run(&WorkloadGen::generate_init_keys_impl);
         std::cout << '[' << pairs_file_str << "] 100% keys generated" << std::endl;
@@ -812,7 +818,7 @@ void WorkloadGen<SliceDist, Filter>::operator()()
     }
 
     query_ops.reserve(nqueries);
-    if (pimtree_op_tag == get_t || pimtree_op_tag == remove_t) {
+    if (pimtree_op_tag == get_t || pimtree_op_tag == predecessor_t || pimtree_op_tag == remove_t) {
         query_item_dists.clear();
         query_item_dists.reserve(zipf_nr_cands);
         for (size_t idx_slice = 0; idx_slice < zipf_nr_cands; idx_slice++) {
@@ -826,6 +832,9 @@ void WorkloadGen<SliceDist, Filter>::operator()()
         switch (pimtree_op_tag) {
         case get_t:
             parallel_run(&WorkloadGen::generate_queries_impl<get_t>);
+            break;
+        case predecessor_t:
+            parallel_run(&WorkloadGen::generate_queries_impl<predecessor_t>);
             break;
         case remove_t:
             parallel_run(&WorkloadGen::generate_queries_impl<remove_t>);
@@ -858,9 +867,6 @@ void WorkloadGen<SliceDist, Filter>::operator()()
             }
         }
         switch (pimtree_op_tag) {
-        case predecessor_t:
-            parallel_run(&WorkloadGen::generate_queries_impl<predecessor_t>);
-            break;
         case scan_t:
             parallel_run(&WorkloadGen::generate_queries_impl<scan_t>);
             break;
