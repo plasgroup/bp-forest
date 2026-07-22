@@ -121,6 +121,7 @@ struct BPForest : ParallelManager<BPForest> {
     void batch_insert(uint32_t nr_queries, const KVPair pairs[]);
     void batch_delete(uint32_t nr_queries, const key_uint64_t pairs[]);
     void batch_range_count(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
+    void batch_range_max(uint32_t nr_queries, const KeyRange queries[], value_uint64_t result[]);
     void batch_scan(size_t nr_queries, const KeyRange ranges[], BatchScanResult& result);
     std::vector<std::array<uint32_t, 2>> get_nr_pairs() const;
     std::vector<std::array<uint32_t, 2>> last_query_dist() const;
@@ -130,6 +131,7 @@ struct BPForest : ParallelManager<BPForest> {
     void partition_with_insert_batch(uint32_t nr_queries, const KVPair pairs[]);
     void partition_with_delete_batch(uint32_t nr_queries, const key_uint64_t pairs[]);
     void partition_with_range_count_batch(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
+    void partition_with_range_max_batch(uint32_t nr_queries, const KeyRange queries[], value_uint64_t result[]);
 
     void print_params(std::ostream&) const;
     std::vector<Partition> dump_partitions() const;
@@ -190,6 +192,7 @@ private:
     QueryData<KVPair, void> insert_queries{nr_base_parts, get_parallelism()};
     QueryData<key_uint64_t, void> delete_queries{nr_base_parts, get_parallelism()};
     QueryData<RangeCountQuery, uint64_t> rcqs{nr_base_parts, get_parallelism()};
+    QueryData<KeyRange, value_uint64_t> rmaxqs{nr_base_parts, get_parallelism()};
 
     const ExtendableBuffer<InputHeader> input_headers{nr_base_parts};
 
@@ -280,6 +283,10 @@ private:
     void postprocess_of_rcq(uint32_t nr_queries, uint64_t result[]);
     void postprocess_of_rcq_impl(unsigned tid);
     using TmpDataForPostprocessOfRCQ = std::tuple<uint32_t, uint64_t*>;
+
+    void postprocess_of_rmaxq(uint32_t nr_queries, value_uint64_t result[]);
+    void postprocess_of_rmaxq_impl(unsigned tid);
+    using TmpDataForPostprocessOfRMaxQ = std::tuple<uint32_t, value_uint64_t*>;
 
     size_t retrieve_all_data(ExtendableBuffer<KVPair>& buf);
     template <typename Query, typename Result>

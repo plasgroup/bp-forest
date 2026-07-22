@@ -54,6 +54,10 @@ static DEFINE_DIV_BY(TASK_RANGE_MIN_NR_TASKLETS, 16, _NR_DELIMS);
 static DEFINE_DIV_BY(TASK_RANGE_COUNT_NR_TASKLETS, 16, _NR_QRYS);
 #endif
 
+#ifdef SUPPORT_RANGE_MAX
+static DEFINE_DIV_BY(TASK_RANGE_MAX_NR_TASKLETS, 16, _NR_QRYS);
+#endif
+
 Node cold_root, hot_root;
 key_uint64_t cold_min_key, hot_min_key;
 uint8_t cold_height, hot_height;
@@ -1648,6 +1652,132 @@ void task_range_count(void)
     }
 }
 #endif /* if SUPPORT_RANGE_COUNT */
+
+
+#if SUPPORT_RANGE_MAX
+static KeyRange* RANGE_MAX_pop_qry(KeyRange* qrys_cache, unsigned* idx_qry_in_cache, uintptr_t* cursor_on_qrys)
+{
+    if (*idx_qry_in_cache == TASK_RANGE_MAX_NR_CACHED_QRYS) {
+        *cursor_on_qrys += sizeof(KeyRange) * TASK_RANGE_MAX_NR_CACHED_QRYS;
+        mram_read((__mram_ptr void*)*cursor_on_qrys, qrys_cache, sizeof(KeyRange) * TASK_RANGE_MAX_NR_CACHED_QRYS);
+        *idx_qry_in_cache = 0;
+    }
+    return &qrys_cache[(*idx_qry_in_cache)++];
+}
+static void RANGE_MAX_push_result(value_uint64_t result, value_uint64_t* results_cache, unsigned* idx_result_in_cache, uintptr_t* cursor_on_results)
+{
+    results_cache[*idx_result_in_cache] = result;
+    (*idx_result_in_cache)++;
+    if (*idx_result_in_cache == TASK_RANGE_MAX_NR_CACHED_RESULTS) {
+        mram_write(results_cache, (__mram_ptr void*)*cursor_on_results, sizeof(value_uint64_t) * TASK_RANGE_MAX_NR_CACHED_RESULTS);
+        *cursor_on_results += sizeof(value_uint64_t) * TASK_RANGE_MAX_NR_CACHED_RESULTS;
+        *idx_result_in_cache = 0;
+    }
+}
+static void RANGE_MAX_flush_results_cache(value_uint64_t* results_cache, unsigned* idx_result_in_cache, uintptr_t* cursor_on_results)
+{
+    if (*idx_result_in_cache != 0) {
+        mram_write(results_cache, (__mram_ptr void*)*cursor_on_results, sizeof(value_uint64_t) * *idx_result_in_cache);
+        *cursor_on_results += sizeof(value_uint64_t) * *idx_result_in_cache;
+        *idx_result_in_cache = 0;
+    }
+}
+static value_uint64_t RANGE_MAX_impl(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
+    const KeyRange* const qry)
+{
+    RMaxQWorkspace* const wks_me = &workspace.tree.rmaxq[me()];
+
+    value_uint64_t max = NOT_FOUND_VALUE;
+
+    if (height == 0) {
+        uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, qry->begin);
+
+        for (; idx_pair < root_numKeys && root->lf.keys[idx_pair] <= qry->end; idx_pair++) {
+            if (root->lf.values[idx_pair] > max) {
+                max = root->lf.values[idx_pair];
+            }
+        }
+        return max;
+
+    } else {
+        NodeLink link = root->inl.children[search_for_child_index(&root->inl.keys[0], root_numKeys, qry->begin)];
+        for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
+            mram_read(&Deref(link.ptr).inl.keys[0], &wks_me->node_cache.inl.keys[0], sizeof(key_uint64_t) * link.numKeys);
+            const uint16_t idx_child = search_for_child_index(&wks_me->node_cache.inl.keys[0], link.numKeys, qry->begin);
+            mram_read(&Deref(link.ptr).inl.children[idx_child / 2 * 2], &wks_me->node_cache.inl.children[0], sizeof(NodeLink) * 2);
+            link = wks_me->node_cache.inl.children[idx_child % 2];
+        }
+        mram_read(&Deref(link.ptr).lf, &wks_me->node_cache.lf, offsetof(LeafNode, left));
+        uint16_t idx_pair = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, qry->begin);
+
+        for (;;) {
+            for (; idx_pair < link.numKeys; idx_pair++) {
+                if (wks_me->node_cache.lf.keys[idx_pair] > qry->end) {
+                    goto end_of_range;
+                }
+                if (wks_me->node_cache.lf.values[idx_pair] > max) {
+                    max = wks_me->node_cache.lf.values[idx_pair];
+                }
+            }
+            const NodeLink right_leaf = wks_me->node_cache.lf.right;
+            if (right_leaf.ptr == NODELINK_NULLPTR.ptr && right_leaf.numKeys == NODELINK_NULLPTR.numKeys) {
+                goto end_of_range;
+            }
+            link = right_leaf;
+            mram_read(&Deref(link.ptr).lf, &wks_me->node_cache.lf, offsetof(LeafNode, left));
+            idx_pair = 0;
+        }
+    end_of_range:
+        return max;
+    }
+}
+static void RANGE_MAX_execute(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
+    const uintptr_t results, const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
+{
+    static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader);
+
+    RMaxQWorkspace* const wks_me = &workspace.tree.rmaxq[me()];
+
+    unsigned idx_qry = idx_qry_begin, idx_qry_in_cache = 0;
+    uintptr_t cursor_on_qrys = qrys + sizeof(KeyRange) * idx_qry;
+    mram_read((__mram_ptr void*)(cursor_on_qrys), &wks_me->qrys[0], sizeof(KeyRange) * TASK_RANGE_MAX_NR_CACHED_QRYS);
+
+    unsigned idx_result_in_cache = 0;
+    uintptr_t cursor_on_results = results + sizeof(value_uint64_t) * idx_qry;
+
+    for (; idx_qry < idx_qry_end; idx_qry++) {
+        const KeyRange* const qry = RANGE_MAX_pop_qry(&wks_me->qrys[0], &idx_qry_in_cache, &cursor_on_qrys);
+        const value_uint64_t max = RANGE_MAX_impl(root, height, root_numKeys, qry);
+        RANGE_MAX_push_result(max, &wks_me->results[0], &idx_result_in_cache, &cursor_on_results);
+    }
+    RANGE_MAX_flush_results_cache(&wks_me->results[0], &idx_result_in_cache, &cursor_on_results);
+}
+void task_range_max(void)
+{
+    if (me() < TASK_RANGE_MAX_NR_TASKLETS) {
+        const uint32_t nr_cold_qrys = input_header.qrys.nr_cold_qrys, nr_hot_qrys = input_header.qrys.nr_hot_qrys;
+        const uintptr_t results = (uintptr_t)DPU_MRAM_HEAP_POINTER + input_header.qrys.result_offset;
+
+        const uint32_t nr_cold_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_RANGE_MAX_NR_TASKLETS(nr_cold_qrys),
+                       nr_remainder_cold_qrys = nr_cold_qrys - nr_cold_qrys_per_tasklet * TASK_RANGE_MAX_NR_TASKLETS,
+                       nr_cold_qrys_for_me = nr_cold_qrys_per_tasklet + (me() < nr_remainder_cold_qrys);
+        const uint32_t idx_cold_qry_begin = nr_cold_qrys_per_tasklet * me() + (me() <= nr_remainder_cold_qrys ? me() : nr_remainder_cold_qrys),
+                       idx_cold_qry_end = idx_cold_qry_begin + nr_cold_qrys_for_me;
+
+        const uint32_t nr_hot_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_RANGE_MAX_NR_TASKLETS(nr_hot_qrys),
+                       nr_remainder_hot_qrys = nr_hot_qrys - nr_hot_qrys_per_tasklet * TASK_RANGE_MAX_NR_TASKLETS,
+                       nr_hot_qrys_for_me = nr_hot_qrys_per_tasklet + (me() < nr_remainder_hot_qrys);
+        const uint32_t idx_hot_qry_begin = nr_hot_qrys_per_tasklet * me() + (me() <= nr_remainder_hot_qrys ? me() : nr_remainder_hot_qrys)
+                                           + nr_cold_qrys,
+                       idx_hot_qry_end = idx_hot_qry_begin + nr_hot_qrys_for_me;
+
+        RANGE_MAX_execute(&cold_root, cold_height, cold_root_numKeys,
+            results, idx_cold_qry_begin, idx_cold_qry_end);
+        RANGE_MAX_execute(&hot_root, hot_height, hot_root_numKeys,
+            results, idx_hot_qry_begin, idx_hot_qry_end);
+    }
+}
+#endif /* if SUPPORT_RANGE_MAX */
 
 
 static void SERIALIZE_init_pair_cache(SerializeWorkspace* wks, uintptr_t result_pairs)

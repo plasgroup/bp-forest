@@ -77,6 +77,12 @@ inline void DPUEmulator::execute()
         uint64_t* const result = new (&mram_2nd[RESULT_OFFSET]) uint64_t[nr_queries];
         task_range_count(nr_queries, queries, result);
     } break;
+    case TASK_RANGE_MAX: {
+        const unsigned nr_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram[4]));
+        const KeyRange* const queries = std::launder(reinterpret_cast<KeyRange*>(&mram[8]));
+        value_uint64_t* const result = new (&mram_2nd[RESULT_OFFSET]) value_uint64_t[nr_queries];
+        task_range_max(nr_queries, queries, result);
+    } break;
     case TASK_INSERT: {
         const unsigned nr_cold_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram[4])),
                        nr_hot_queries = *std::launder(reinterpret_cast<uint16_t*>(&mram[6]));
@@ -239,6 +245,21 @@ inline void DPUEmulator::task_range_count(unsigned nr_queries, const RangeCountQ
             }
         }
         result[i] = count;
+    }
+}
+inline void DPUEmulator::task_range_max(unsigned nr_queries, const KeyRange queries[], value_uint64_t result[])
+{
+    for (unsigned i = 0; i < nr_queries; i++) {
+        value_uint64_t max = NOT_FOUND_VALUE;
+        for (auto& tree : {cold_tree, hot_tree}) {
+            for (auto iter = tree.lower_bound(queries[i].begin);
+                 iter != tree.end() && iter->first <= queries[i].end;
+                 iter++) {
+
+                max = std::max(max, iter->second);
+            }
+        }
+        result[i] = max;
     }
 }
 inline uint32_t /* nr_values */ DPUEmulator::task_scan_cold(const unsigned nr_queries, const KeyRange ranges[],

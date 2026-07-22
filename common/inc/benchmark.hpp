@@ -389,6 +389,45 @@ public:
     }
 };
 
+class RangeMaxBenchmark : public RangeBenchmark
+{
+    ExtendableBuffer<value_uint64_t> results, oracle_results;
+
+    KeyRange* last_queries;
+
+public:
+    using RangeBenchmark::RangeBenchmark;
+
+    bool do_one_batch_impl(Database* db, const size_t batch_size)
+    {
+        const auto [queries, size] = workload_buf.take(batch_size);
+        if (size == batch_size) {
+            results.reserve(batch_size);
+            db->batch_range_max(batch_size, queries, &results[0]);
+
+            last_queries = queries;
+            last_batch_size_ = batch_size;
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    void do_verify() override
+    {
+        oracle_results.reserve(last_batch_size_);
+        verify_db->batch_range_max(last_batch_size_, last_queries, &oracle_results[0]);
+        compare_results(last_batch_size_, &results[0], &oracle_results[0]);
+    }
+
+    void partition_with_next_batch_impl(Database* db, const size_t batch_size)
+    {
+        const auto [queries, size] = workload_buf.peek(batch_size);
+        results.reserve(size);
+        db->partition_with(size, queries, &results[0]);
+    }
+};
+
 class RangeCountBenchmark : public Benchmark
 {
     WorkloadBuffer<RangeCountQuery> workload_buf;

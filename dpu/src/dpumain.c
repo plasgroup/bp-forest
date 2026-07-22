@@ -61,6 +61,11 @@ int main()
         task_range_count();
         break;
 #endif
+#if SUPPORT_RANGE_MAX
+    case TASK_RANGE_MAX:
+        task_range_max();
+        break;
+#endif
     case TASK_SERIALIZE:
         task_serialize();
         break;

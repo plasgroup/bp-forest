@@ -131,6 +131,13 @@ typedef struct {
 
 typedef struct {
     __dma_aligned Node node_cache;
+    __dma_aligned KeyRange qrys[TASK_RANGE_MAX_NR_CACHED_QRYS];
+    __dma_aligned value_uint64_t results[TASK_RANGE_MAX_NR_CACHED_RESULTS];
+} RMaxQWorkspace;
+
+
+typedef struct {
+    __dma_aligned Node node_cache;
     __dma_aligned key_uint64_t qrys[TASK_PRED_NR_CACHED_QRYS];
     __dma_aligned KVPair results[TASK_PRED_NR_CACHED_RESULTS];
     uint32_t idx_qry_in_cache;
@@ -228,6 +235,7 @@ typedef union {
     InsertWorkspace insert[TASK_INSERT_NR_TASKLETS];
     DeleteWorkspace delete[TASK_DELETE_NR_TASKLETS];
     RCQWorkspace rcq[TASK_RANGE_COUNT_NR_TASKLETS];
+    RMaxQWorkspace rmaxq[TASK_RANGE_MAX_NR_TASKLETS];
 #if SUPPORT_RANGE_MIN
     RMQWorkspace rmq;
 #endif

@@ -107,7 +107,7 @@ struct Option {
         a.add<size_t>("batch-size", 0, "fixed batch size (when --query-rate unset) or per-batch cap (when --query-rate set)", false, NUM_REQUESTS_PER_BATCH);
         a.add<std::optional<double>>("query-rate", 0, "set average query rate (op/s); when set, --batch-size acts as the per-batch cap", false);
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
-        a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq, count", false, "get");
+        a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq, count, max", false, "get");
         a.add<std::optional<std::string>>("dump-compute-load", 0, "print number of queries sent for each dpu to a file", false);
         a.add<std::optional<std::string>>("dump-cold-compute-load", 0, "print number of queries sent for cold partitions in each dpu to a file", false);
         a.add<std::optional<std::string>>("dump-hot-compute-load", 0, "print number of queries sent for hot partitions in each dpu to a file", false);
@@ -163,6 +163,8 @@ struct Option {
             op_type = TASK_RANGE_MIN;
         else if (ops == "count")
             op_type = TASK_RANGE_COUNT;
+        else if (ops == "max")
+            op_type = TASK_RANGE_MAX;
         else {
             fprintf(stderr, "invalid operation type: %s\n", ops.c_str());
             exit(1);
@@ -254,6 +256,13 @@ public:
         forest.batch_range_count(static_cast<uint32_t>(n), queries, results);
     };
 
+    void batch_range_max(uint64_t n,
+        const KeyRange queries[],
+        value_uint64_t results[]) override
+    {
+        forest.batch_range_max(static_cast<uint32_t>(n), queries, results);
+    };
+
     void partition_with(uint64_t n, const key_uint64_t keys[], value_uint64_t values[]) override
     {
         forest.partition_with_get_batch(static_cast<uint32_t>(n), keys, values);
@@ -270,9 +279,9 @@ public:
     {
         forest.partition_with_delete_batch(static_cast<uint32_t>(n), keys);
     }
-    void partition_with(uint64_t, const KeyRange[], uint64_t[]) override
+    void partition_with(uint64_t n, const KeyRange queries[], uint64_t results[]) override
     {
-        std::cerr << "batch_range_minimum is not implemented" << std::endl;
+        forest.partition_with_range_max_batch(static_cast<uint32_t>(n), queries, results);
     }
     void partition_with(uint64_t n, const RangeCountQuery queries[], uint64_t results[]) override
     {
@@ -387,6 +396,8 @@ Benchmark* make_benchmark(const Option& opt, Args&&... args)
         return new QueryRateKind<RMQBenchmark>(std::forward<Args>(args)..., opt.workload_file);
     else if (opt.op_type == TASK_RANGE_COUNT)
         return new QueryRateKind<RangeCountBenchmark>(std::forward<Args>(args)..., opt.workload_file);
+    else if (opt.op_type == TASK_RANGE_MAX)
+        return new QueryRateKind<RangeMaxBenchmark>(std::forward<Args>(args)..., opt.workload_file);
     else {
         std::cerr << "unsupported task type: " << opt.op_type << std::endl;
         exit(1);

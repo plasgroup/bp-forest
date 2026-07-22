@@ -65,6 +65,8 @@ struct Option {
             op_type = TASK_RANGE_SUM;
         else if (a.get<std::string>("ops") == "count")
             op_type = TASK_RANGE_COUNT;
+        else if (a.get<std::string>("ops") == "max")
+            op_type = TASK_RANGE_MAX;
         else {
             fprintf(stderr, "invalid operation type: %s\n", a.get<std::string>("ops").c_str());
             exit(1);
@@ -156,6 +158,10 @@ public:
     void batch_range_count(uint64_t n,
                            const RangeCountQuery queries[],
                            value_uint64_t results[]);
+
+    void batch_range_max(uint64_t n,
+                         const KeyRange queries[],
+                         value_uint64_t results[]);
 
     void batch_pred(uint64_t, const key_uint64_t[], KVPair[])
     {
@@ -330,6 +336,24 @@ void CPUDatabase::batch_range_count(uint64_t n,
     });
 }
 
+void CPUDatabase::batch_range_max(uint64_t n,
+                                  const KeyRange queries[],
+                                  value_uint64_t results[])
+{
+    ScopedTimer sw(BatchTotalTime);
+    parallel->run(0, n, [&](int tid, size_t s, size_t e) {
+        for (size_t i = s; i < e; i++) {
+            const KeyRange &qr = queries[i];
+            value_uint64_t max = NOT_FOUND_VALUE;
+            for (auto it = index->lower_bound(qr.begin);
+                 it != index->end() && it->first < qr.end; it++) {
+                max = std::max(max, values[it->second]);
+            }
+            results[i] = max;
+        }
+    });
+}
+
 int main(int argc, char* argv[])
 {
     opt.parse(argc, argv);
@@ -343,6 +367,8 @@ int main(int argc, char* argv[])
         benchmark = new RangeSumBenchmark(opt.workload_file, opt.is_pimtree_workload, opt.nr_keys);
     else if (opt.op_type == TASK_RANGE_COUNT)
         benchmark = new RangeCountBenchmark(opt.workload_file, opt.is_pimtree_workload, opt.nr_keys);
+    else if (opt.op_type == TASK_RANGE_MAX)
+        benchmark = new RangeMaxBenchmark(opt.workload_file, opt.is_pimtree_workload, opt.nr_keys);
     else {
         std::cerr << "unsupported task type: " << opt.op_type << std::endl;
         exit(1);

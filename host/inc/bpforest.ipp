@@ -1032,6 +1032,51 @@ inline void BPForest::postprocess_of_rcq_impl(unsigned tid)
     }
 }
 
+inline void BPForest::batch_range_max(uint32_t nr_queries, const KeyRange queries[], value_uint64_t results[])
+{
+    ScopedTimer t{Timer, "batch"};
+
+    route_queries(nr_queries, queries, results, rmaxqs);
+    repartition(nr_queries, queries, results, rmaxqs);
+    execute_in_dpus(TASK_RANGE_MAX, rmaxqs);
+    postprocess_of_rmaxq(nr_queries, results);
+}
+inline void BPForest::postprocess_of_rmaxq(uint32_t nr_queries, value_uint64_t result[])
+{
+    ScopedTimer t{Timer, "postproc"};
+
+    const TmpDataForPostprocessOfRMaxQ tmp_data{nr_queries, result};
+    any_tmp_data = &tmp_data;
+    parallel_run(&BPForest::postprocess_of_rmaxq_impl);
+    any_tmp_data.reset();
+}
+inline void BPForest::postprocess_of_rmaxq_impl(unsigned tid)
+{
+    value_uint64_t* results;
+    uint32_t nr_queries;
+    std::tie(nr_queries, results) = *std::any_cast<const TmpDataForPostprocessOfRMaxQ*>(any_tmp_data);
+
+    const uint32_t idx_qry_begin = nr_queries * tid / get_parallelism(),
+                   idx_qry_end = nr_queries * (tid + 1) / get_parallelism();
+    for (uint32_t idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
+        results[idx_qry] = NOT_FOUND_VALUE;
+    }
+
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+        for (const auto& tmp : {std::ref(rmaxqs.cold), std::ref(rmaxqs.hot)}) {
+            const auto& query_data = tmp.get();
+            const auto& qrys = query_data[idx_dpu].qrys[tid];
+            const auto& partial_results = query_data[idx_dpu].results[tid];
+            const auto& orig_idxs = query_data[idx_dpu].orig_idxs[tid];
+
+            const size_t n_qrys = qrys.size();
+            for (size_t i = 0; i < n_qrys; i++) {
+                results[orig_idxs[i]] = std::max(results[orig_idxs[i]], partial_results[i]);
+            }
+        }
+    }
+}
+
 inline std::vector<std::array<uint32_t, 2>> BPForest::get_nr_pairs() const
 {
     std::vector<std::array<uint32_t, 2>> results(nr_base_parts);
@@ -1059,6 +1104,9 @@ inline std::vector<std::array<uint32_t, 2>> BPForest::last_query_dist() const
             break;
         case TASK_RANGE_COUNT:
             results[idx_dpu] = {rcqs.cold[idx_dpu].nr_qrys, rcqs.hot[idx_dpu].nr_qrys};
+            break;
+        case TASK_RANGE_MAX:
+            results[idx_dpu] = {rmaxqs.cold[idx_dpu].nr_qrys, rmaxqs.hot[idx_dpu].nr_qrys};
             break;
         default:;
         }
@@ -2649,6 +2697,10 @@ inline void BPForest::partition_with_delete_batch(uint32_t nr_queries, const key
 inline void BPForest::partition_with_range_count_batch(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[])
 {
     full_repartition(nr_queries, queries, result, rcqs);
+}
+inline void BPForest::partition_with_range_max_batch(uint32_t nr_queries, const KeyRange queries[], value_uint64_t result[])
+{
+    full_repartition(nr_queries, queries, result, rmaxqs);
 }
 
 

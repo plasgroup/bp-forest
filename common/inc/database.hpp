@@ -54,6 +54,11 @@ public:
         value_uint64_t results[])
         = 0;
 
+    virtual void batch_range_max(uint64_t n,
+        const KeyRange queries[],
+        value_uint64_t results[])
+        = 0;
+
     virtual void partition_with(uint64_t /* n */, const key_uint64_t /* keys */[], value_uint64_t /* values */[]) {}
     virtual void partition_with(uint64_t /* n */, const key_uint64_t /* keys */[], KVPair /* results */[]) {}
     virtual void partition_with(uint64_t /* n */, const KVPair /* pairs */[]) {}
@@ -260,6 +265,17 @@ public:
                     return count;
                 });
         }
+    }
+
+    void batch_range_max(uint64_t n,
+        const KeyRange queries[],
+        value_uint64_t results[])
+    {
+        for (size_t i = 0; i < n; i++)
+            results[i] = foldl(queries[i], NOT_FOUND_VALUE,
+                [](value_uint64_t max, const KVPair& kv) {
+                    return kv.value > max ? kv.value : max;
+                });
     }
 
     int get_parallelism() const
