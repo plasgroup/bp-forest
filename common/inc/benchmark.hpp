@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <random>
@@ -117,7 +118,8 @@ public:
     }
     virtual ~Benchmark() {}
 
-    virtual void partition_with_next_batch(Database*) = 0;
+    //! compute the partitioning using all the queries in the given workload file as a reference
+    virtual void partition_with_workload(Database* db, const std::string& workload_file) = 0;
 
     void set_verify_db(Database* db)
     {
@@ -165,9 +167,10 @@ protected:
         compare_results(last_batch_size_, &results[0], &oracle_results[0]);
     }
 
-    void partition_with_next_batch_impl(Database* db, const size_t batch_size)
+    void partition_with_workload(Database* db, const std::string& workload_file) override
     {
-        const auto [queries, size] = workload_buf.peek(batch_size);
+        WorkloadBuffer<key_uint64_t> buf = load_pimtree_workload<key_uint64_t>(workload_file);
+        const auto [queries, size] = buf.peek(std::numeric_limits<size_t>::max());
         results.reserve(size);
         db->partition_with(size, queries, &results[0]);
     }
@@ -209,9 +212,10 @@ protected:
         compare_results(last_batch_size_, &results[0], &oracle_results[0]);
     }
 
-    void partition_with_next_batch_impl(Database* db, const size_t batch_size)
+    void partition_with_workload(Database* db, const std::string& workload_file) override
     {
-        const auto [queries, size] = workload_buf.peek(batch_size);
+        WorkloadBuffer<key_uint64_t> buf = load_pimtree_workload<key_uint64_t>(workload_file);
+        const auto [queries, size] = buf.peek(std::numeric_limits<size_t>::max());
         results.reserve(size);
         db->partition_with(size, queries, &results[0]);
     }
@@ -249,9 +253,10 @@ protected:
         verify_db->batch_insert(last_batch_size_, last_queries);
     }
 
-    void partition_with_next_batch_impl(Database* db, const size_t batch_size)
+    void partition_with_workload(Database* db, const std::string& workload_file) override
     {
-        const auto [queries, size] = workload_buf.peek(batch_size);
+        WorkloadBuffer<KVPair> buf = load_pimtree_workload<KVPair>(workload_file);
+        const auto [queries, size] = buf.peek(std::numeric_limits<size_t>::max());
         db->partition_with(size, queries);
     }
 };
@@ -292,9 +297,10 @@ protected:
         verify_db->batch_delete(last_batch_size_, last_queries);
     }
 
-    void partition_with_next_batch_impl(Database* db, const size_t batch_size)
+    void partition_with_workload(Database* db, const std::string& workload_file) override
     {
-        const auto [queries, size] = workload_buf.peek(batch_size);
+        WorkloadBuffer<key_uint64_t> buf = load_pimtree_workload<key_uint64_t>(workload_file);
+        const auto [queries, size] = buf.peek(std::numeric_limits<size_t>::max());
         db->partition_with(size, queries);
     }
 };
@@ -342,9 +348,10 @@ public:
         compare_results(last_batch_size_, &results[0], &oracle_results[0]);
     }
 
-    void partition_with_next_batch_impl(Database* db, const size_t batch_size)
+    void partition_with_workload(Database* db, const std::string& workload_file) override
     {
-        const auto [queries, size] = workload_buf.peek(batch_size);
+        WorkloadBuffer<KeyRange> buf = load_pimtree_workload<KeyRange>(workload_file);
+        const auto [queries, size] = buf.peek(std::numeric_limits<size_t>::max());
         results.reserve(size);
         db->partition_with(size, queries, &results[0]);
     }
@@ -381,9 +388,10 @@ public:
         compare_results(last_batch_size_, &results[0], &oracle_results[0]);
     }
 
-    void partition_with_next_batch_impl(Database* db, const size_t batch_size)
+    void partition_with_workload(Database* db, const std::string& workload_file) override
     {
-        const auto [queries, size] = workload_buf.peek(batch_size);
+        WorkloadBuffer<KeyRange> buf = load_pimtree_workload<KeyRange>(workload_file);
+        const auto [queries, size] = buf.peek(std::numeric_limits<size_t>::max());
         results.reserve(size);
         db->partition_with(size, queries, &results[0]);
     }
@@ -420,9 +428,10 @@ public:
         compare_results(last_batch_size_, &results[0], &oracle_results[0]);
     }
 
-    void partition_with_next_batch_impl(Database* db, const size_t batch_size)
+    void partition_with_workload(Database* db, const std::string& workload_file) override
     {
-        const auto [queries, size] = workload_buf.peek(batch_size);
+        WorkloadBuffer<KeyRange> buf = load_pimtree_workload<KeyRange>(workload_file);
+        const auto [queries, size] = buf.peek(std::numeric_limits<size_t>::max());
         results.reserve(size);
         db->partition_with(size, queries, &results[0]);
     }
@@ -464,9 +473,10 @@ protected:
         compare_results(last_batch_size_, &results[0], &oracle_results[0]);
     }
 
-    void partition_with_next_batch_impl(Database* db, const size_t batch_size)
+    void partition_with_workload(Database* db, const std::string& workload_file) override
     {
-        const auto [queries, size] = workload_buf.peek(batch_size);
+        WorkloadBuffer<RangeCountQuery> buf = load_pimtree_workload<RangeCountQuery>(workload_file);
+        const auto [queries, size] = buf.peek(std::numeric_limits<size_t>::max());
         results.reserve(size);
         db->partition_with(size, queries, &results[0]);
     }
@@ -484,11 +494,6 @@ protected:
     bool do_one_batch(Database* db) override
     {
         return Benchmark::do_one_batch_impl(db, batch_size);
-    }
-
-    void partition_with_next_batch(Database* db) override
-    {
-        Benchmark::partition_with_next_batch_impl(db, batch_size);
     }
 };
 
@@ -537,10 +542,4 @@ public:
     }
 
     size_t outstanding() const override { return queue_size; }
-
-    void partition_with_next_batch(Database* db) override
-    {
-        const size_t batch_size = std::min(accumulate_arrivals(), batch_cap);
-        Benchmark::partition_with_next_batch_impl(db, batch_size);
-    }
 };

@@ -1566,7 +1566,7 @@ find_relatively_hot_ranges(const LinkedList<ChunkedPairsRange>::iterator begin_r
 template <typename Query, typename Result>
 inline void BPForest::repartition(uint32_t nr_queries, const Query queries[], Result results[], QueryData<Query, Result>& routed)
 {
-    if (param.balancing > 0) {
+    if (param.enable_dynamic_repartition) {
         const Balanced balanced = incremental_repartition(nr_queries, queries, results, routed);
         if (balanced == Balanced::No) {
             full_repartition(nr_queries, queries, results, routed);
@@ -1617,7 +1617,7 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
     combine_delims();
     route_queries(nr_queries, queries, results, routed);
 
-    if (param.balancing > 0) {
+    {
         TmpDataForFullRepartition<Query, Result> tmp_data{
             .nr_queries = nr_queries,
             .queries = queries,
@@ -1919,10 +1919,6 @@ template <typename Query, typename Result>
 inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query queries[], Result results[], QueryData<Query, Result>& routed) -> Balanced
 {
     ScopedTimer t{Timer, "inc_reb"};
-
-    if (param.balancing == 0) {
-        return Balanced::Yes;
-    }
 
     const RAII raii{[&] {
         for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
@@ -2680,26 +2676,32 @@ inline void BPForest::incremental_repartition_worker_hot([[maybe_unused]] unsign
 
 inline void BPForest::partition_with_get_batch(uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[])
 {
+    ScopedTimer t{Timer, "partition"};
     full_repartition(nr_queries, keys, result, get_queries);
 }
 inline void BPForest::partition_with_pred_batch(uint32_t nr_queries, const key_uint64_t keys[], KVPair result[])
 {
+    ScopedTimer t{Timer, "partition"};
     full_repartition(nr_queries, keys, result, pred_queries);
 }
 inline void BPForest::partition_with_insert_batch(uint32_t nr_queries, const KVPair pairs[])
 {
+    ScopedTimer t{Timer, "partition"};
     full_repartition(nr_queries, pairs, (void*){nullptr}, insert_queries);
 }
 inline void BPForest::partition_with_delete_batch(uint32_t nr_queries, const key_uint64_t keys[])
 {
+    ScopedTimer t{Timer, "partition"};
     full_repartition(nr_queries, keys, (void*){nullptr}, delete_queries);
 }
 inline void BPForest::partition_with_range_count_batch(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[])
 {
+    ScopedTimer t{Timer, "partition"};
     full_repartition(nr_queries, queries, result, rcqs);
 }
 inline void BPForest::partition_with_range_max_batch(uint32_t nr_queries, const KeyRange queries[], value_uint64_t result[])
 {
+    ScopedTimer t{Timer, "partition"};
     full_repartition(nr_queries, queries, result, rmaxqs);
 }
 
@@ -2768,6 +2770,7 @@ inline void BPForest::print_params(std::ostream& ostr) const
             "EXTRACT_BY_INITIALIZATION: 0\n"
 #endif
             "param.balancing: " << param.balancing << "\n"
+            "param.enable_dynamic_repartition: " << param.enable_dynamic_repartition << "\n"
             "param.enable_incremental: " << param.enable_incremental << "\n"
             "param.enable_hot_split: " << param.enable_hot_split << "\n"
             "param.nr_host_threads: " << param.nr_host_threads << "\n";

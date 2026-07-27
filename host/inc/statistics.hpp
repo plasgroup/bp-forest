@@ -204,6 +204,23 @@ inline TimerTree Timer{
                  {"send"},
                  {"exec"},
              }},
+    {"partition", {
+                      {"full_reb", {
+                                       {"ret_all", {
+                                                       {"command"},
+                                                       {"exec"},
+                                                       {"recv_npairs"},
+                                                       {"alloc"},
+                                                       {"recv"},
+                                                   }},
+                                       {"route"},
+                                       {"find_hot"},
+                                       {"table"},
+                                       {"re", {{"route"}}},
+                                       {"send"},
+                                       {"exec"},
+                                   }},
+                  }},
     {"batch", {
                   {"route"},
                   {"full_reb", {
@@ -241,6 +258,20 @@ inline TimerTree Timer{
                  {"table"},
                  {"send_exec"},
              }},
+    {"partition", {
+                      {"full_reb", {
+                                       {"ret_all", {
+                                                       {"command_exec_recv_npairs"},
+                                                       {"alloc"},
+                                                       {"recv"},
+                                                   }},
+                                       {"route"},
+                                       {"find_hot"},
+                                       {"table"},
+                                       {"re", {{"route"}}},
+                                       {"send_exec"},
+                                   }},
+                  }},
     {"batch", {
                   {"route"},
                   {"full_reb", {

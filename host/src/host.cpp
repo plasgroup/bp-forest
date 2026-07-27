@@ -71,8 +71,10 @@ public:
 struct BPForestOption {
     void add_options(cmdline::parser& a)
     {
-        a.add<unsigned>("balancing-param", 'a', "the tunable parameter for compute/memory load balancing in B+-Forest", false, 1);
+        a.add<unsigned>("balancing-param", 'a', "the tunable parameter (>= 1) for compute/memory load balancing in B+-Forest", false, 1,
+            cmdline::range(1u, std::numeric_limits<unsigned>::max()));
         a.add<unsigned>("more-hot", 'h', "the tunable parameter for hotness of hot partitions", false, 1);
+        a.add<bool>("dynamic-repartition", 0, "whether to adaptively repartition when overload is detected during batch execution", false, true);
         a.add<bool>("incremental", 0, "whether to enable incremental rebalancing", false, true);
         a.add<bool>("hot-split", 0,
             "whether to enable splitting an already-hot partition that "
@@ -86,6 +88,7 @@ struct BPForestOption {
     {
         param.balancing = a.get<unsigned>("balancing-param");
         param.more_hotness = a.get<unsigned>("more-hot");
+        param.enable_dynamic_repartition = a.get<bool>("dynamic-repartition");
         param.enable_incremental = a.get<bool>("incremental");
         param.enable_hot_split = a.get<bool>("hot-split");
         param.nr_host_threads = a.get<unsigned>("nr-host-threads");
@@ -103,6 +106,7 @@ struct Option {
         a.add<std::string>("init_file", 'i', "file path to PIM-Tree init file", true);
         bpforest.add_options(a);
         a.add<std::optional<std::string>>("partition", 0, "load pre-calculated partitioning", false);
+        a.add<std::optional<std::string>>("partition-from-workload", 0, "compute the initial partitioning with the workload in the given file as a reference", false);
         a.add<std::optional<std::string>>("dump-partition", 0, "store partitioning", false);
         a.add<size_t>("batch-size", 0, "fixed batch size (when --query-rate unset) or per-batch cap (when --query-rate set)", false, NUM_REQUESTS_PER_BATCH);
         a.add<std::optional<double>>("query-rate", 0, "set average query rate (op/s); when set, --batch-size acts as the per-batch cap", false);
@@ -130,6 +134,11 @@ struct Option {
         init_file = a.get<std::string>("init_file");
         bpforest.set_options(a);
         partition = a.get<std::optional<std::string>>("partition");
+        partition_from_workload = a.get<std::optional<std::string>>("partition-from-workload");
+        if (partition && partition_from_workload) {
+            fprintf(stderr, "--partition and --partition-from-workload cannot be used together\n");
+            exit(1);
+        }
         dump_partition = a.get<std::optional<std::string>>("dump-partition");
         batch_size = a.get<size_t>("batch-size");
         query_rate = a.get<std::optional<double>>("query-rate");
@@ -177,8 +186,8 @@ struct Option {
 
     BPForestOption bpforest;
     std::string dump_param_file;
-    unsigned balancing_param;
     std::optional<std::string> partition;
+    std::optional<std::string> partition_from_workload;
     std::optional<std::string> dump_partition;
     size_t batch_size;                 // fixed batch size, or per-batch cap when query_rate is set
     std::optional<double> query_rate;  // poisson arrival rate (op/s); empty = fixed batch_size mode
@@ -426,23 +435,23 @@ int main(int argc, char* argv[])
                                ? make_benchmark<PoissonArrival>(opt, *opt.query_rate, opt.batch_size)
                                : make_benchmark<ConstSizedBatch>(opt, opt.batch_size);
 
-    if (false && !opt.partition) {
-        benchmark->partition_with_next_batch(&db);
+    if (opt.partition_from_workload) {
+        benchmark->partition_with_workload(&db, *opt.partition_from_workload);
+    }
 
-        for (auto& [func, opt_print, file_name] : {
-                 std::make_tuple(&BPForestDatabase::print_nr_pairs, std::ref(opt.print_memory_load), std::ref(opt.dump_memory_load)),
-                 std::make_tuple(&BPForestDatabase::print_nr_cold_pairs, std::ref(opt.print_cold_memory_load), std::ref(opt.dump_cold_memory_load)),
-                 std::make_tuple(&BPForestDatabase::print_nr_hot_pairs, std::ref(opt.print_hot_memory_load), std::ref(opt.dump_hot_memory_load))}) {
+    for (auto& [func, opt_print, file_name] : {
+             std::make_tuple(&BPForestDatabase::print_nr_pairs, std::ref(opt.print_memory_load), std::ref(opt.dump_memory_load)),
+             std::make_tuple(&BPForestDatabase::print_nr_cold_pairs, std::ref(opt.print_cold_memory_load), std::ref(opt.dump_cold_memory_load)),
+             std::make_tuple(&BPForestDatabase::print_nr_hot_pairs, std::ref(opt.print_hot_memory_load), std::ref(opt.dump_hot_memory_load))}) {
 
-            (db.*func)(std::cout, opt_print);
-            if (file_name) {
-                std::ofstream file(*file_name);
-                if (!file) {
-                    std::cerr << "cannot open file: " << *file_name << std::endl;
-                    std::quick_exit(1);
-                }
-                (db.*func)(file, MAX_NR_DPUS);
+        (db.*func)(std::cout, opt_print);
+        if (file_name) {
+            std::ofstream file(*file_name);
+            if (!file) {
+                std::cerr << "cannot open file: " << *file_name << std::endl;
+                std::quick_exit(1);
             }
+            (db.*func)(file, MAX_NR_DPUS);
         }
     }
 
