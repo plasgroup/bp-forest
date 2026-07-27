@@ -74,6 +74,7 @@ struct BPForestOption {
         a.add<unsigned>("balancing-param", 'a', "the tunable parameter (>= 1) for compute/memory load balancing in B+-Forest", false, 1,
             cmdline::range(1u, std::numeric_limits<unsigned>::max()));
         a.add<unsigned>("more-hot", 'h', "the tunable parameter for hotness of hot partitions", false, 1);
+        a.add<bool>("greedy-only", 0, "whether to select hot ranges only with the greedy scan, skipping the argmax-window scan", false, false);
         a.add<bool>("dynamic-repartition", 0, "whether to adaptively repartition when overload is detected during batch execution", false, true);
         a.add<bool>("incremental", 0, "whether to enable incremental rebalancing", false, true);
         a.add<bool>("hot-split", 0,
@@ -88,6 +89,7 @@ struct BPForestOption {
     {
         param.balancing = a.get<unsigned>("balancing-param");
         param.more_hotness = a.get<unsigned>("more-hot");
+        param.greedy_only = a.get<bool>("greedy-only");
         param.enable_dynamic_repartition = a.get<bool>("dynamic-repartition");
         param.enable_incremental = a.get<bool>("incremental");
         param.enable_hot_split = a.get<bool>("hot-split");

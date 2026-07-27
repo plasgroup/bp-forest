@@ -1673,7 +1673,9 @@ inline void BPForest::full_repartition_worker(unsigned /* tid */)
     const size_t nr_total_pairs = tmp.nr_total_pairs;
 
     const uint32_t hot_load = (param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts,
-                   cold_endpoint_cnt_goal = param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
+                   cold_endpoint_cnt_goal = param.greedy_only
+                                                ? param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) * param.balancing / nr_base_parts
+                                                : param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
 
     const auto get_next_idx_base = [&](const std::lock_guard<std::mutex>& /* lock */) {
         dpu_id_t idx_base;
@@ -1783,7 +1785,7 @@ inline void BPForest::full_repartition_worker(unsigned /* tid */)
             }
         }
 
-        if (cold_endpoint_cnt > cold_endpoint_cnt_goal) {
+        if (!param.greedy_only && cold_endpoint_cnt > cold_endpoint_cnt_goal) {
             const uint32_t nr_relative_hots = cold_endpoint_cnt / hot_load;
 
             const std::array<std::pair<LinkedList<ChunkedPairsRange>::iterator, DataChunkIterator>, 2>
@@ -1946,7 +1948,9 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             // comparable: the slack deliberately broadens this skip to shrink
             // the rebalanced DPU set.
             const unsigned bonferroni_family = static_cast<unsigned>(nr_base_parts) + static_cast<unsigned>(tmp_data.nr_existing_hots);
-            const uint32_t cold_cnt_goal = param.more_hotness * nr_queries * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
+            const uint32_t cold_cnt_goal = param.greedy_only
+                                               ? param.more_hotness * nr_queries * param.balancing / nr_base_parts
+                                               : param.more_hotness * nr_queries * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
             const uint32_t cold_cnt_threshold = overload_threshold.threshold_for(nr_queries, cold_cnt_goal, bonferroni_family);
             const uint32_t hot_cnt_goal = (param.more_hotness * 2u * nr_queries + nr_base_parts - 1) / nr_base_parts;
             const uint32_t hot_cnt_threshold = overload_threshold.threshold_for(nr_queries, hot_cnt_goal, bonferroni_family);
@@ -2284,7 +2288,9 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
     const dpu_id_t nr_existing_hots = tmp.nr_existing_hots;
 
     const uint32_t hot_load = (param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
-    const uint32_t cold_endpoint_cnt_goal = param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
+    const uint32_t cold_endpoint_cnt_goal = param.greedy_only
+                                                ? param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) * param.balancing / nr_base_parts
+                                                : param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
 
     const auto get_next_idx_dpu = [&](const std::lock_guard<std::mutex>& /* lock */) {
         if (nr_existing_hots + tmp.hot_count > nr_base_parts) {
@@ -2486,7 +2492,7 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
             }
         }
 
-        if (cold_endpoint_cnt > cold_endpoint_cnt_goal) {
+        if (!param.greedy_only && cold_endpoint_cnt > cold_endpoint_cnt_goal) {
             const uint32_t nr_relative_hots = cold_endpoint_cnt / hot_load;
 
             const std::array<std::pair<LinkedList<ChunkedPairsRange>::iterator, DataChunkIterator>, 2>
@@ -2770,6 +2776,7 @@ inline void BPForest::print_params(std::ostream& ostr) const
             "EXTRACT_BY_INITIALIZATION: 0\n"
 #endif
             "param.balancing: " << param.balancing << "\n"
+            "param.greedy_only: " << param.greedy_only << "\n"
             "param.enable_dynamic_repartition: " << param.enable_dynamic_repartition << "\n"
             "param.enable_incremental: " << param.enable_incremental << "\n"
             "param.enable_hot_split: " << param.enable_hot_split << "\n"

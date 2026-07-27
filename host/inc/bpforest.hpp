@@ -103,6 +103,7 @@ using PartitionDelim = std::pair<key_uint64_t, std::variant<BasePartitionDelim, 
 struct BPForestParameter {
     unsigned balancing = 1;
     unsigned more_hotness = 1;
+    bool greedy_only = false;
     bool enable_dynamic_repartition = true;
     bool enable_incremental = true;
     bool enable_hot_split = true;
