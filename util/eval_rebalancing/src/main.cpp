@@ -1439,7 +1439,6 @@ int main(int argc, char* argv[])
     opt = parsed_opt;
 
     print_overload_threshold_spec(std::cerr, opt.threshold_spec);
-    opt.overload_threshold->print_resolution(std::cerr);
 
     std::vector<KVPair> data_pairs = load_kv_data(opt.data_file);
     if (data_pairs.empty()) {
