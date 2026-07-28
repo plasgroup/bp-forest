@@ -593,8 +593,8 @@ inline void BPForest::route_queries_impl(unsigned tid)
     ASSERT(any_tmp_data.type() == typeid(const TmpData*));
     std::tie(nr_queries, queries, routed, results) = *std::any_cast<const TmpData*>(any_tmp_data);
 
-    const uint32_t idx_qry_begin = nr_queries * tid / get_parallelism(),
-                   idx_qry_end = nr_queries * (tid + 1) / get_parallelism();
+    const uint32_t idx_qry_begin = static_cast<uint32_t>(static_cast<uint64_t>(nr_queries) * tid / get_parallelism()),
+                   idx_qry_end = static_cast<uint32_t>(static_cast<uint64_t>(nr_queries) * (tid + 1) / get_parallelism());
     for (uint32_t i = idx_qry_begin; i < idx_qry_end; i++) {
         if constexpr (IsPointQuery<Query>) {
             if constexpr (std::is_same_v<Result, void>) {
@@ -1011,8 +1011,8 @@ inline void BPForest::postprocess_of_rcq_impl(unsigned tid)
     uint32_t nr_queries;
     std::tie(nr_queries, results) = *std::any_cast<const TmpDataForPostprocessOfRCQ*>(any_tmp_data);
 
-    const uint32_t idx_qry_begin = nr_queries * tid / get_parallelism(),
-                   idx_qry_end = nr_queries * (tid + 1) / get_parallelism();
+    const uint32_t idx_qry_begin = static_cast<uint32_t>(static_cast<uint64_t>(nr_queries) * tid / get_parallelism()),
+                   idx_qry_end = static_cast<uint32_t>(static_cast<uint64_t>(nr_queries) * (tid + 1) / get_parallelism());
     for (uint32_t idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
         results[idx_qry] = 0;
     }
@@ -1056,8 +1056,8 @@ inline void BPForest::postprocess_of_rmaxq_impl(unsigned tid)
     uint32_t nr_queries;
     std::tie(nr_queries, results) = *std::any_cast<const TmpDataForPostprocessOfRMaxQ*>(any_tmp_data);
 
-    const uint32_t idx_qry_begin = nr_queries * tid / get_parallelism(),
-                   idx_qry_end = nr_queries * (tid + 1) / get_parallelism();
+    const uint32_t idx_qry_begin = static_cast<uint32_t>(static_cast<uint64_t>(nr_queries) * tid / get_parallelism()),
+                   idx_qry_end = static_cast<uint32_t>(static_cast<uint64_t>(nr_queries) * (tid + 1) / get_parallelism());
     for (uint32_t idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
         results[idx_qry] = NOT_FOUND_VALUE;
     }
