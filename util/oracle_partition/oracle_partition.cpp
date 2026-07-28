@@ -14,7 +14,7 @@ struct Option {
         // partitioner
         a.add<std::string>("partitioner", 'P', "partitioner type (bpforest, hwc, oracle, equal, data, query)", false, "bpforest");
         a.add<int>("bpforest-alpha", 'a', "[bpforest|hwc] alpha parameter", false, 5);
-        a.add<int>("oracle-max-items-per-dpu", 'm', "[oracle] maximum number of items per DPU (default = items / dpus * (1 + 1/bpforest-alpha) )", false, -1);
+        a.add<int>("oracle-max-items-per-dpu", 'm', "[oracle] maximum number of items per DPU (default = #init-items / dpus * (1 + 1/bpforest-alpha) )", false, -1);
 
         // chunk builder
         a.add<std::string>("chunker", 'C', "chunk builder type (bpforest, random, singleton)", false, "bpforest");
@@ -24,19 +24,10 @@ struct Option {
         a.add<int>("random-chunk-min", 0, "[random] min chunk size", false, 8);
 
         // workload
-        a.add<std::string>("workload", 'W', "workload type (zipf, step)", false, "zipf");
-        a.add<int>("queries", 'q', "number of queries", false, 1000 * 1000);
-        a.add<int>("items-in-range", 'r', "range width of queries (#of items)", false, 100);
-        a.add<double>("zconst", 'z', "[zipf] zipf constant", false, 0.99);
-        a.add<int>("slices", 's', "[zipf] number of slices", false, 1024 * 10);
-        a.add<bool>("zipf-scramble", 0, "[zipf] scramble zipf", false, true);
-        a.add<int>("step-chunk-size", 0, "[step] chunk size (default = bpforest-leaf-size * bpforest-node-size)", false, -1);
-        a.add<int>("step-query-per-chunk", 0, "[step] queries per chunk (default = queries/dpus)", false, -1);
-        a.add<std::string>("pimtree-workload-file", 'w', "file path to PIM-Tree workload file", false);
+        a.add<std::string>("pimtree-workload-file", 'w', "file path to PIM-Tree workload file", true);
 
         // init data
-        a.add<std::string>("pimtree-init-file", 'i', "file path to PIM-Tree init file", false);
-        a.add<double>("items", 'n', "number of items in millions", false, 500.0);
+        a.add<std::string>("pimtree-init-file", 'i', "file path to PIM-Tree init file", true);
 
         a.add<std::string>("ops", 'o', "kind of operation (get, pred, range)", false, "get");
         a.add<int>("dpus", 'p', "number of DPUs", false, 2500);
@@ -47,9 +38,6 @@ struct Option {
         a.add<std::string>("init-output", 0, "output file for init data in PIM-Tree format", false, "");
 
         a.add<int>("seed", 0, "random seed", false, 1000*1000);
-
-        // debug
-        a.add("verify-partitoner", 0, "verify-pertitioner");
 
         a.parse_check(argc, argv);
     }
@@ -70,11 +58,11 @@ struct Option {
         return a.get<int>("bpforest-alpha");
     }
 
-    int oracle_max_items_per_dpu() {
+    int oracle_max_items_per_dpu(size_t nitems) {
         if (a.exist("oracle-max-items-per-dpu"))
             return a.get<int>("oracle-max-items-per-dpu");
         else
-            return items() * (1.0 + 1.0 / bpforest_alpha()) / num_dpus();
+            return nitems * (1.0 + 1.0 / bpforest_alpha()) / num_dpus();
     }
 
     const std::string& chunker() {
@@ -99,42 +87,6 @@ struct Option {
 
     int num_dpus() {
         return a.get<int>("dpus");
-    }
-
-    double zconst() {
-        return a.get<double>("zconst");
-    }
-
-    int num_slices() {
-        return a.get<int>("slices");
-    }
-
-    bool zipf_scramble() {
-        return a.get<bool>("zipf-scramble");
-    }
-
-    size_t items() {
-        return (size_t)(a.get<double>("items") * 1000 * 1000);
-    }
-
-    const std::string& workload() {
-        return a.get<std::string>("workload");
-    }
-
-    int step_chunk_size() {
-        return a.exist("step-chunk-size") ? a.get<int>("step-chunk-size") : a.get<int>("bpforest-leaf-size") * a.get<int>("bpforest-node-size");
-    }
-
-    int step_query_per_chunk() {
-        return a.exist("step-query-per-chunk") ? a.get<int>("step-query-per-chunk") : a.get<int>("queries") / a.get<int>("dpus");
-    }
-
-    int items_in_range() {
-        return a.get<int>("items-in-range");
-    }
-
-    int num_queries() {
-        return a.get<int>("queries");
     }
 
     operation_t op_type() {
@@ -179,10 +131,6 @@ struct Option {
             return a.get<std::string>("init-output").c_str();
         else
             return nullptr;
-    }
-
-    bool verify_partitioner() {
-        return a.exist("verify-partitoner");
     }
 } opt;
 
@@ -322,8 +270,8 @@ void show_load(std::vector<int64_t>& keys)
         printf("partitioner: bpforest(%d)\n", opt.bpforest_alpha());
         partitioner = new ChunkedBPForestPartitioner(opt.num_dpus(), builder, opt.bpforest_alpha());
     } else if (opt.partitioner() == "oracle") {
-        printf("partitioner: oracle(%d)\n", opt.oracle_max_items_per_dpu());
-        partitioner = new ChunkedOraclePartitioner(opt.num_dpus(), builder, opt.oracle_max_items_per_dpu());
+        printf("partitioner: oracle(%d)\n", opt.oracle_max_items_per_dpu(keys.size()));
+        partitioner = new ChunkedOraclePartitioner(opt.num_dpus(), builder, opt.oracle_max_items_per_dpu(keys.size()));
     } else if (opt.partitioner() == "equal") {
         printf("partitioner: equal\n");
         partitioner = new EqualSizePartitioner(opt.num_dpus());
@@ -338,28 +286,10 @@ void show_load(std::vector<int64_t>& keys)
         exit(1);
     }
 
-    OverKeyGenerator<int64_t>* pgen = nullptr;
-    if (opt.workload_file().empty()) {
-        if (opt.workload() == "zipf") {
-            printf("point workload: zipf(n=%d, a=%f, #slice=%d, %s)\n", opt.num_queries(), opt.zconst(), opt.num_slices(), opt.zipf_scramble() ? "scramble" : "no-scramble");
-            pgen = new SlicedZipfOverKeyGenerator<int64_t>(keys, opt.zconst(), opt.num_slices(), opt.zipf_scramble(), opt.seed());
-        } else if (opt.workload() == "step") {
-            printf("point workload: step(n=%d, chunk=%d, query_per_chunk=%d)\n", opt.num_queries(), opt.step_chunk_size(), opt.step_query_per_chunk());
-            pgen = new StepOverKeyGenerator<int64_t>(keys, opt.step_chunk_size(), opt.step_query_per_chunk(), opt.seed());
-        } else {
-            fprintf(stderr, "invalid workload type: %s\n", opt.workload().c_str());
-            exit(1);
-        }
-    }
-
     std::pair<std::vector<size_t>, std::vector<size_t>> load;
     if (opt.op_type() == get_t || opt.op_type() == predecessor_t) {
-        std::vector<int64_t> workload;
-        if (!opt.workload_file().empty()) {
-            printf("load workload from %s\n", opt.workload_file().c_str());
-            workload = load_point_workload<int64_t>(opt.workload_file(), opt.op_type());
-        } else
-            workload = pgen->generate(opt.num_queries());
+        printf("load workload from %s\n", opt.workload_file().c_str());
+        std::vector<int64_t> workload = load_point_workload<int64_t>(opt.workload_file(), opt.op_type());
         if (opt.workload_output() != nullptr)
             save_point_workload(opt.workload_output(), workload, opt.op_type());
 
@@ -370,14 +300,8 @@ void show_load(std::vector<int64_t>& keys)
         load = simulate_load_for_point_query(keys, partitioner->ref_partition(0), partitioner->ref_partition(1), workload);
         evaluate_workload(keys, opt.num_dpus(), builder, workload);
     } else {
-        std::vector<std::pair<int64_t, int64_t>> workload;
-        if (!opt.workload_file().empty()) {
-            printf("load workload from %s\n", opt.workload_file().c_str());
-            workload = load_range_workload<int64_t>(opt.workload_file());
-        } else {
-            printf("range workload: const-len(len=%d)\n", opt.items_in_range());
-            workload = ConstLengthRangeGenerator<int64_t>(pgen, keys, opt.items_in_range()).generate(opt.num_queries());
-        }
+        printf("load workload from %s\n", opt.workload_file().c_str());
+        std::vector<std::pair<int64_t, int64_t>> workload = load_range_workload<int64_t>(opt.workload_file());
         if (opt.workload_output() != nullptr)
             save_range_workload(opt.workload_output(), workload);
 
@@ -412,95 +336,21 @@ void show_load(std::vector<int64_t>& keys)
 }
 
 
-static void sanity_check_compair_BPForestPartitioner_and_ChunkedBPForestPartitioner(std::vector<int64_t> &keys);
-static void sanity_check_compair_OraclePartitioner_and_ChunkedOraclePartitioner(std::vector<int64_t>& keys);
-
 int main(int argc, char* argv[])
 {
     opt.parse(argc, argv);
 
+    printf("load init data from %s\n", opt.init_file().c_str());
+    std::vector<std::pair<int64_t, int64_t>> kvs = load_init_data<int64_t, int64_t>(opt.init_file());
     std::vector<int64_t> keys;
-    if (!opt.init_file().empty()) {
-        printf("load init data from %s\n", opt.init_file().c_str());
-        std::vector<std::pair<int64_t, int64_t>> kvs = load_init_data<int64_t, int64_t>(opt.init_file());
-        for (auto [key, value]: kvs)
-            keys.push_back(key);
-        if (opt.init_output() != nullptr)
-            save_init_data(opt.init_output(), kvs);
-    } else {
-        printf("generate %ld keys\n", opt.items());
-        EvenGenerator<int64_t> init_gen(INT64_MIN, INT64_MAX);
-        keys = init_gen.generate(opt.items());
-        if (opt.init_output() != nullptr) {
-            std::vector<std::pair<int64_t, int64_t>> kvs;
-            for (int64_t key: keys)
-                kvs.push_back({key, key & 0xff});
-            save_init_data(opt.init_output(), kvs);
-        }
-    }
-    
-    if (opt.verify_partitioner()) {
-        sanity_check_compair_BPForestPartitioner_and_ChunkedBPForestPartitioner(keys);
-        sanity_check_compair_OraclePartitioner_and_ChunkedOraclePartitioner(keys);
-    }
+    for (auto [key, value]: kvs)
+        keys.push_back(key);
+    if (opt.init_output() != nullptr)
+        save_init_data(opt.init_output(), kvs);
 
     show_load(keys);
 
     printf("OK\n");
 
     return 0;
-}
-
-
-static void sanity_check_compair_BPForestPartitioner_and_ChunkedBPForestPartitioner(std::vector<int64_t> &keys)
-{
-    std::vector<int64_t> workload = SlicedZipfOverKeyGenerator<int64_t>(keys, opt.zconst(), opt.num_slices(), true /* scramble */, opt.seed()).generate(opt.num_queries());
-    BPForestPartitioner partitioner(opt.num_dpus(), opt.bpforest_alpha());
-    SingletonChunkBuilder builder;
-    ChunkedBPForestPartitioner chunked_partitioner(opt.num_dpus(), &builder, opt.bpforest_alpha());
-    auto par1 = partitioner.partition_point(keys, workload);
-    auto par2 = chunked_partitioner.partition_point(keys, workload);
-    if (par1.size() != par2.size()) {
-        printf("par1.size() = %ld, par2.size() = %ld\n", par1.size(), par2.size());
-        exit(1);
-    }
-    for (size_t i = 0; i < par1.size(); i++) {
-        if (par1[i] != par2[i]) {
-            printf("par1[%ld] = (%d, %d), par2[%ld] = (%d, %d)\n", i, par1[i].begin_idx, par1[i].end_idx, i, par2[i].begin_idx, par2[i].end_idx);
-            exit(1);
-        }
-    }
-    chunked_partitioner.print_hot_partitions();
-}
-
-static void sanity_check_compair_OraclePartitioner_and_ChunkedOraclePartitioner(std::vector<int64_t>& keys)
-{
-    std::vector<int64_t> workload = SlicedZipfOverKeyGenerator<int64_t>(keys, opt.zconst(), opt.num_slices(), true /* scramble */, opt.seed()).generate(opt.num_queries());
-    OraclePartitioner partitioner(opt.num_dpus(), opt.oracle_max_items_per_dpu());
-    SingletonChunkBuilder builder;
-    ChunkedOraclePartitioner chunked_partitioner(opt.num_dpus(), &builder, opt.oracle_max_items_per_dpu());
-    auto par1 = partitioner.partition_point(keys, workload);
-    auto par2 = chunked_partitioner.partition_point(keys, workload);
-    if (par1.size() != par2.size()) {
-        printf("par1.size() = %ld, par2.size() = %ld\n", par1.size(), par2.size());
-    }
-    size_t count = 0;
-    for (partition_t p: par1)
-        count += p.end_idx - p.begin_idx;
-    printf("par1 count = %ld\n", count);
-
-    count = 0;
-    for (partition_t p: par2)
-        count += p.end_idx - p.begin_idx;
-    printf("par2 count = %ld\n", count);
-    
-    for (size_t i = 0; i < par1.size(); i++) {
-        if (par1[i] != par2[i]) {
-            printf("par1[%ld] = (%d, %d), par2[%ld] = (%d, %d)\n", i, par1[i].begin_idx, par1[i].end_idx, i, par2[i].begin_idx, par2[i].end_idx);
-        }
-    }
-
-    for (size_t i = par1.size(); i < par2.size(); i++) {
-        printf("par2[%ld] = (%d, %d)\n", i, par2[i].begin_idx, par2[i].end_idx);
-    }
 }

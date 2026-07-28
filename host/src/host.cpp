@@ -117,15 +117,9 @@ struct Option {
         a.add<std::optional<std::string>>("dump-compute-load", 0, "print number of queries sent for each dpu to a file", false);
         a.add<std::optional<std::string>>("dump-cold-compute-load", 0, "print number of queries sent for cold partitions in each dpu to a file", false);
         a.add<std::optional<std::string>>("dump-hot-compute-load", 0, "print number of queries sent for hot partitions in each dpu to a file", false);
-        a.add<dpu_id_t>("print-compute-load", 'c', "print number of queries sent for each dpu", false, 0);
-        a.add<dpu_id_t>("print-cold-compute-load", 0, "print number of queries sent for cold ranges in each dpu", false, 0);
-        a.add<dpu_id_t>("print-hot-compute-load", 0, "print number of queries sent for hot ranges in each dpu", false, 0);
         a.add<std::optional<std::string>>("dump-memory-load", 0, "print number of KV pairs stored in each dpu to a file", false);
         a.add<std::optional<std::string>>("dump-cold-memory-load", 0, "print number of cold KV pairs stored in each dpu to a file", false);
         a.add<std::optional<std::string>>("dump-hot-memory-load", 0, "print number of hot KV pairs stored in each dpu to a file", false);
-        a.add<dpu_id_t>("print-memory-load", 'm', "print number of KV pairs stored in each dpu", false, 0);
-        a.add<dpu_id_t>("print-cold-memory-load", 0, "print number of KV pairs stored in cold ranges in each dpu", false, 0);
-        a.add<dpu_id_t>("print-hot-memory-load", 0, "print number of KV pairs stored in hot ranges in each dpu", false, 0);
         a.add("print-perf", 'p', "print performance metrics");
         a.add<std::optional<std::string>>("part-log", 0, "print partitioning log to a file", false);
         a.add("verify", 'v', "verify the result");
@@ -149,15 +143,9 @@ struct Option {
         dump_compute_load = a.get<std::optional<std::string>>("dump-compute-load");
         dump_cold_compute_load = a.get<std::optional<std::string>>("dump-cold-compute-load");
         dump_hot_compute_load = a.get<std::optional<std::string>>("dump-hot-compute-load");
-        print_compute_load = a.get<dpu_id_t>("print-compute-load");
-        print_cold_compute_load = a.get<dpu_id_t>("print-cold-compute-load");
-        print_hot_compute_load = a.get<dpu_id_t>("print-hot-compute-load");
         dump_memory_load = a.get<std::optional<std::string>>("dump-memory-load");
         dump_cold_memory_load = a.get<std::optional<std::string>>("dump-cold-memory-load");
         dump_hot_memory_load = a.get<std::optional<std::string>>("dump-hot-memory-load");
-        print_memory_load = a.get<dpu_id_t>("print-memory-load");
-        print_cold_memory_load = a.get<dpu_id_t>("print-cold-memory-load");
-        print_hot_memory_load = a.get<dpu_id_t>("print-hot-memory-load");
         print_perf = a.exist("print-perf");
         const std::optional<std::string> part_log = a.get<std::optional<std::string>>("part-log");
         verify = a.exist("verify");
@@ -199,8 +187,6 @@ struct Option {
     TaskID op_type;
     std::optional<std::string> dump_compute_load, dump_cold_compute_load, dump_hot_compute_load,
         dump_memory_load, dump_cold_memory_load, dump_hot_memory_load;
-    dpu_id_t print_compute_load, print_memory_load;
-    dpu_id_t print_cold_compute_load, print_cold_memory_load, print_hot_compute_load, print_hot_memory_load;
     bool print_perf;
     bool verify = false;
 } opt;
@@ -441,12 +427,11 @@ int main(int argc, char* argv[])
         benchmark->partition_with_workload(&db, *opt.partition_from_workload);
     }
 
-    for (auto& [func, opt_print, file_name] : {
-             std::make_tuple(&BPForestDatabase::print_nr_pairs, std::ref(opt.print_memory_load), std::ref(opt.dump_memory_load)),
-             std::make_tuple(&BPForestDatabase::print_nr_cold_pairs, std::ref(opt.print_cold_memory_load), std::ref(opt.dump_cold_memory_load)),
-             std::make_tuple(&BPForestDatabase::print_nr_hot_pairs, std::ref(opt.print_hot_memory_load), std::ref(opt.dump_hot_memory_load))}) {
+    for (auto& [func, file_name] : {
+             std::make_tuple(&BPForestDatabase::print_nr_pairs, std::ref(opt.dump_memory_load)),
+             std::make_tuple(&BPForestDatabase::print_nr_cold_pairs, std::ref(opt.dump_cold_memory_load)),
+             std::make_tuple(&BPForestDatabase::print_nr_hot_pairs, std::ref(opt.dump_hot_memory_load))}) {
 
-        (db.*func)(std::cout, opt_print);
         if (file_name) {
             std::ofstream file(*file_name);
             if (!file) {
@@ -503,12 +488,11 @@ int main(int argc, char* argv[])
 
     auto time = std::chrono::high_resolution_clock::now().time_since_epoch().count();
     benchmark->run(opt.nr_batches, &db, [&](int idx_batch) {
-        for (auto& [func, opt_print, file] : {
-                 std::make_tuple(&BPForestDatabase::print_last_query_dist, std::ref(opt.print_compute_load), std::ref(dump_compute_load_file)),
-                 std::make_tuple(&BPForestDatabase::print_last_cold_query_dist, std::ref(opt.print_cold_compute_load), std::ref(dump_cold_compute_load_file)),
-                 std::make_tuple(&BPForestDatabase::print_last_hot_query_dist, std::ref(opt.print_hot_compute_load), std::ref(dump_hot_compute_load_file))}) {
+        for (auto& [func, file] : {
+                 std::make_tuple(&BPForestDatabase::print_last_query_dist, std::ref(dump_compute_load_file)),
+                 std::make_tuple(&BPForestDatabase::print_last_cold_query_dist, std::ref(dump_cold_compute_load_file)),
+                 std::make_tuple(&BPForestDatabase::print_last_hot_query_dist, std::ref(dump_hot_compute_load_file))}) {
 
-            (db.*func)(std::cout, opt_print);
             if (file) {
                 (db.*func)(*file, MAX_NR_DPUS);
             }

@@ -13,13 +13,6 @@ add_subdirectory(load_dist_evaluator)
 add_subdirectory(eval_rebalancing)
 add_subdirectory(show_partition)
 
-add_executable(pimtree_aggregation
-    pimtree_aggregation.cpp)
-
-find_package(Threads REQUIRED)
-
-target_link_libraries(pimtree_aggregation common_base cmdline workload_mgmt  Threads::Threads)
-
 # add_executable(bandwidth
 #     bandwidth.cpp)
 
