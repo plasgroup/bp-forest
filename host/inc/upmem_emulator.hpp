@@ -5,7 +5,6 @@
 
 #include <array>
 #include <cstddef>
-#include <iosfwd>
 
 
 #define EMU_MULTI_THREAD 16 /* nr worker threads */
@@ -56,16 +55,6 @@ public:
     std::byte* get_comm_buffer(dpu_id_t idx_dpu) { return dpus[idx_dpu].get_comm_buffer(); }
     void launch_dpu(dpu_id_t);
     void wait_all();
-
-    void print_nr_queries_in_last_batch(std::ostream&, dpu_id_t nr_dpus_to_print) const;
-    void print_nr_cold_queries_in_last_batch(std::ostream&, dpu_id_t nr_dpus_to_print) const;
-    void print_nr_hot_queries_in_last_batch(std::ostream&, dpu_id_t nr_dpus_to_print) const;
-    void print_nr_RMQ_delims_in_last_batch(std::ostream&, dpu_id_t nr_dpus_to_print) const;
-    void print_nr_cold_RMQ_delims_in_last_batch(std::ostream&, dpu_id_t nr_dpus_to_print) const;
-    void print_nr_hot_RMQ_delims_in_last_batch(std::ostream&, dpu_id_t nr_dpus_to_print) const;
-    void print_nr_pairs(std::ostream&, dpu_id_t nr_dpus_to_print) const;
-    void print_nr_cold_pairs(std::ostream&, dpu_id_t nr_dpus_to_print) const;
-    void print_nr_hot_pairs(std::ostream&, dpu_id_t nr_dpus_to_print) const;
 };
 
 
