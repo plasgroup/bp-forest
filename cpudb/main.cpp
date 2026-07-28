@@ -1,5 +1,4 @@
 
-#include <cereal/archives/binary.hpp>
 #include <cmdline.h>
 #include <thread>
 #include <fstream>
@@ -10,7 +9,6 @@
 #include "extendable_buffer.hpp"
 #include "host/inc/statistics.hpp"
 #include "pimtree_query.hpp"
-#include "piecewise_constant_workload.hpp"
 #include "sparsetable.ipp"
 #include "segment_tree.ipp"
 #include "workload_buffer.hpp"

@@ -31,7 +31,6 @@ foreach(build_version IN LISTS targets)
         numa_affinity
         parallel_manager
         cmdline
-        cereal
         Threads::Threads
     )
 

@@ -2,13 +2,10 @@
 #include "common.h"
 #include "database.hpp"
 #include "extendable_buffer.hpp"
-#include "piecewise_constant_workload.hpp"
 #include "pimtree_query.hpp"
 #include "statistics.hpp"
 #include "workload_buffer.hpp"
 #include "workload_types.h"
-
-#include <cereal/archives/binary.hpp>
 
 #include <algorithm>
 #include <chrono>

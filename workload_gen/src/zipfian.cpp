@@ -1,12 +1,9 @@
 #include "delimited_string.hpp"
-#include "piecewise_constant_workload.hpp"
 #include "pimtree_query.hpp"
 #include "workload_types.h"
 
 #include "extendable_buffer.hpp"
 #include "parallel.hpp"
-
-#include <cereal/archives/binary.hpp>
 
 #include <cmdline.h>
 

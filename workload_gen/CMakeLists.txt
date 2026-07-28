@@ -11,5 +11,4 @@ target_link_libraries(workload_gen PRIVATE
     common_base
     workload_mgmt
     cmdline
-    cereal
 )

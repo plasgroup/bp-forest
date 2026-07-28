@@ -30,7 +30,6 @@ foreach(build_version IN LISTS targets)
                 workload_mgmt
                 util
                 cmdline
-                cereal
             )
 
             target_link_libraries(${tester_name}_${build_version} PkgConfig::DPU_CONFIG)

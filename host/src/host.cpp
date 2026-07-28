@@ -7,7 +7,6 @@
 #include "host_params.hpp"
 #include "log.hpp"
 #include "partition.hpp"
-#include "piecewise_constant_workload.hpp"
 #include "pimtree_query.hpp"
 #include "statistics.hpp"
 #include "upmem.hpp"
