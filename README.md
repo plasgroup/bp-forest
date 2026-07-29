@@ -18,26 +18,22 @@ B+-Forest is based on many B+-trees and aims to handle data skew by extracting a
     `oracle_partition` (offline partitioner),
     `eval_load_dist` (query-routing simulator), `show_partition`
 - /external
-  - Third-party dependencies (git submodules)
+  - Bundled third-party dependencies
 - /docs
   - Design notes referenced from the source code
 
 ## Parameters
 
-* CMakeLists.txt (cache variables; `<target>` is one of `host_only`, `upmem`, `upmem_simulator`)
-  * NR_TASKLETS_DEFAULT, NR_TASKLETS_`<target>`
+* CMakeLists.txt (cache variables)
+  * NR_TASKLETS_DEFAULT
     * the number of tasklets per DPU
-  * NR_RANKS_DEFAULT, NR_RANKS_`<target>`
+  * NR_RANKS_DEFAULT
     * the number of ranks(1~40)
-  * NUM_REQUESTS_PER_BATCH_DEFAULT, NUM_REQUESTS_PER_BATCH_`<target>`
+  * NUM_REQUESTS_PER_BATCH_DEFAULT
     * the number of queries in each query batch
 * common/inc/common_params.h
   * (NR_RANKS)
-  * UPMEM_SIMULATOR
-    * defined if UPMEM's functional simulator is used, undefined otherwise
   * MAX_NR_SUMMARY_CHUNKS
-  * RMQ_RESULT_OFFSET
-  * MAX_NR_RMQ_LUMPS
 * host/inc/host_params.h
   * (NUM_REQUESTS_PER_BATCH)
   * DEFAULT_NR_BATCHES
@@ -46,15 +42,6 @@ B+-Forest is based on many B+-trees and aims to handle data skew by extracting a
     * the number of key-value pairs initially stored in a B+-Forest
   * INVERSED_REBALANCING_NOISE_MARGIN
   * TOUCH_QUERIES_IN_ADVANCE
-  * DEBUG_ON
-    * whether to compare the results of the queries with `std::map`
-  * PRINT_DEBUG
-    * whether to print the output of DPUs to stdout
-  * HOST_ONLY
-    * whether to replace the DPU processing with a fake implementation on the CPU
-  * MEASURE_XFER_BYTES
-  * UPMEM_TRACE
-    * when using `dpu-lldb` or `dpugrind`, define this
 * dpu/inc/dpu_params.h
   * MRAM_FOR_TREE
     * Size of the MRAM region for placing the tree nodes (in bytes)
@@ -67,23 +54,8 @@ B+-Forest is based on many B+-trees and aims to handle data skew by extracting a
   * TREE_CONSTRUCT_NR_CACHED_INPUT_LIFT
   * TREE_CONSTRUCT_NR_CACHED_OUTPUT_LIFT
   * TASK_SUMMARIZE_NR_TASKLETS
-  * TASK_RANGE_MIN_NR_TASKLETS
-  * TASK_RANGE_MIN_NR_CACHED_LUMP_END_INDICES
-  * TASK_RANGE_MIN_NR_CACHED_DELIM_KEYS
-  * TASK_RANGE_MIN_NR_CACHED_RESULTS
   * TASK_INIT_BITMAP_NR_TASKLETS
   * TASK_INIT_NR_CACHED_WORDS
-
-## install upmem-sdk
-upmem-sdk, the software development kit for UPMEM, is one of the dependency.
-you can install upmem-sdk at any directory you want.
-```bash
-mkdir upmem-sdk
-cd upmem-sdk
-wget http://sdk-releases.upmem.com/2021.4.0/ubuntu_20.04/upmem-2021.4.0-Linux-x86_64.tar.gz
-tar -xvf upmem-2021.4.0-Linux-x86_64.tar.gz
-source ./upmem-2021.4.0-Linux-x86_64/upmem_env.sh
-```
 
 ## build
 ```bash
@@ -92,6 +64,6 @@ cmake --build ./build
 ```
 
 For the experiment workflow (build flags, workload generation, and benchmark
-runs), use the scripts in the superproject that embeds this repository as a
-submodule: `scripts/build-bp-forest.sh`, `scripts/workload-gen.sh`, and
+runs), use the scripts in the enclosing artifact directory:
+`scripts/build-bp-forest.sh`, `scripts/workload-gen.sh`, and
 `scripts/run-bp-forest.sh`.
