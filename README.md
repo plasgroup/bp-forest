@@ -9,15 +9,27 @@ B+-Forest is based on many B+-trees and aims to handle data skew by extracting a
   - Source codes and header files for the host CPU
 - /common
   - Common header files
+- /workload_gen
+  - `workload_gen`: generator of initial data and query workloads
+- /workload_mgmt
+  - Header-only library for reading/writing workload and partition files
+- /util
+  - Generic headers and host-side tools:
+    `oracle_partition` (offline partitioner),
+    `eval_load_dist` (query-routing simulator), `show_partition`
+- /external
+  - Third-party dependencies (git submodules)
+- /docs
+  - Design notes referenced from the source code
 
 ## Parameters
 
-* CMakeLists.txt
-  * NR_TASKLETS_HOST_ONLY, NR_TASKLETS_UPMEM, NR_TASKLETS_SIMULATOR
+* CMakeLists.txt (cache variables; `<target>` is one of `host_only`, `upmem`, `upmem_simulator`)
+  * NR_TASKLETS_DEFAULT, NR_TASKLETS_`<target>`
     * the number of tasklets per DPU
-  * NR_RANKS_HOST_ONLY, NR_RANKS_UPMEM, NR_RANKS_SIMULATOR
+  * NR_RANKS_DEFAULT, NR_RANKS_`<target>`
     * the number of ranks(1~40)
-  * NUM_REQUESTS_PER_BATCH_HOST_ONLY, NUM_REQUESTS_PER_BATCH_UPMEM, NUM_REQUESTS_PER_BATCH_SIMULATOR
+  * NUM_REQUESTS_PER_BATCH_DEFAULT, NUM_REQUESTS_PER_BATCH_`<target>`
     * the number of queries in each query batch
 * common/inc/common_params.h
   * (NR_RANKS)
@@ -79,16 +91,7 @@ cmake -S . -B ./build
 cmake --build ./build
 ```
 
-## build & run
-
-* recursive-clone experiment repo https://github.com/plasgroup/bp-forest-hideshima-exp
-* `./scripts/build.sh`
-  * This will finally present the path to `run_all.sh`.
-* Run the `run_all.sh` given above.
-
-### switch between HOST_ONLY / UPMEM / SIMULATOR
-
-* in `./scripts/build.sh`
-  * replace `make -j \$(nproc) host_app_UPMEM` with `... host_app_host_only` / `... host_app_upmem_simulator`
-* in `./scripts/run_all.sh`
-  * replace `./build/${variant}/host/host_app_UPMEM` with `.../host_app_host_only` / `.../host_app_upmem_simulator`
+For the experiment workflow (build flags, workload generation, and benchmark
+runs), use the scripts in the superproject that embeds this repository as a
+submodule: `scripts/build-bp-forest.sh`, `scripts/workload-gen.sh`, and
+`scripts/run-bp-forest.sh`.

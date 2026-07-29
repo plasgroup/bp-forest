@@ -16,10 +16,6 @@ file(GLOB HOST_SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/*.cpp")
 find_package(Threads REQUIRED)
 
 foreach(build_version IN LISTS targets)
-    if(build_version STREQUAL "cpudb")
-        continue()
-    endif(build_version STREQUAL "cpudb")
-
     add_executable(host_app_${build_version} ${HOST_SOURCE})
     target_include_directories(host_app_${build_version} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/inc)
 

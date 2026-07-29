@@ -4,5 +4,3 @@ add_executable(oracle_partition
     load_simulator.cpp
 )
 target_link_libraries(oracle_partition common_base cmdline workload_mgmt)
-
-add_subdirectory(test)

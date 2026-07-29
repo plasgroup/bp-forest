@@ -6,7 +6,6 @@ add_subdirectory(numa_affinity)
 add_subdirectory(parallel_manager)
 add_subdirectory(host_params)
 
-add_subdirectory(show_pimtree_workload)
 add_subdirectory(oracle_partition)
 add_subdirectory(eval_load_dist)
 add_subdirectory(load_dist_evaluator)
