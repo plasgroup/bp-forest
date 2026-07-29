@@ -456,8 +456,7 @@ while (right != end_chunk) { ... hot_hook(*part, ...); ... }
 安全側に倒した選択。
 
 **もし将来 `ChunkedPairsRange` を list iterator 越しの live reference 型に
-置き換えると両方壊れる**。`util/eval_rebalancing` でも類似 bug (callback
-内 mutation → 隣接 heap 破壊) が過去に出ている (`rebalancing-algorithm.md §4`)。
+置き換えると両方壊れる** (`rebalancing-algorithm.md §4`)。
 
 ### 5.3 `hot.key_range.end` の 2 パターン
 

@@ -175,8 +175,6 @@ dedup する。対象範囲の外に飛び出した endpoint は計上されな�
   `_hot`) の `get_next_idx_dpu` に**走査中ガード**があり、
   `nr_existing_hots + hot_count > nr_base_parts` に達した時点で新しい
   DPU を掴まなくなる (走査途中の DPU は完走する)
-- 別実装 (`util/eval_rebalancing`) は `std::vector` + `reserve()` で
-  growable だが、§9 の 3 点を満たさないと同等の安全性は得られない
 
 ---
 
@@ -226,8 +224,7 @@ worker)。
 この 2 つの独立した保証により、callback が `part` を
 `{end, part.end()}` に縮めても関数内のローカル `left/right/end_chunk`
 は壊れない。移植時に `ChunkedPairsRange` を list iterator 越しの live
-reference 型に置き換えると両方壊れうる。eval_rebalancing 側で類似 bug
-(callback 内 mutation → 隣接ヒープ破壊) の実績あり。
+reference 型に置き換えると両方壊れうる。
 
 ---
 
@@ -531,35 +528,20 @@ BPForest::batch_get(nr_queries, keys, results)
 
 ---
 
-## 9. `util/eval_rebalancing` 対応表
+## 9. 再実装時の安全チェックポイント
 
-`eval_rebalancing/src/main.cpp` は DPU を使わずに rebalancing 相当の
-状態遷移を再現する独立シミュレータ。bpforest.ipp の該当関数と 1 対 1
-対応を念頭に書かれているが、データ構造は専用の再実装。
-
-| bpforest.ipp | eval_rebalancing/src/main.cpp |
-|---|---|
-| `find_absolutely_hot_ranges` | 同名の自由関数 (docs/hot-range-finding の sliding_window 版の直写し) |
-| `find_relatively_hot_ranges` | 同名の自由関数 (同上) |
-| `full_repartition` + `full_repartition_worker` (並列) | `full_repartition` (直列) |
-| `incremental_repartition` + worker_cold / worker_hot (並列) | `rebalancing` (直列; hot split 相当は未移植) |
-| `new_hots` = `ExtendableBuffer<NewHotRange>{nr_base_parts}` (固定サイズ) | `std::vector<SrcNewHotRange>` + `reserve(ndpus)` (`full_repartition` / `rebalancing` それぞれの冒頭; growable) |
-| incremental bailout: `Balanced::No` を返し `repartition()` が full へ | `rebalancing` の DPU ループ内の `nr_existing_hots + new_hots.size() > ndpus` 判定で直接 `full_repartition` を呼ぶ |
-| `chunked_cold_ranges_lists` | 専用の `std::list<ChunkedPairsRange>`-相当 |
-
-パラメータ面の差分: シミュレータの pre-filter も `OverloadThreshold`
-(`threshold_for`) を使うが family は `ndpus` 固定 (既存 hot 数の
-Bonferroni 補正なし)。`more_hotness` / `greedy_only` / hot split は
-未反映。
-
-現行 simulator の `new_hots` は growable なので即 heap overwrite には
-ならないが、§3 の不変条件が論理的に崩れた移植を書くと次段で別経路の
-境界を踏みうる。crash 調査時に最初に確認すべきポイント:
+rebalancing を bpforest.ipp の外に再実装するときに踏みやすい
+メモリ安全性の境界。crash 調査時に最初に確認すべきポイント:
 
 1. `find_absolutely_hot_ranges` の callback 内 mutation が関数のループ
    変数に影響しない snapshot 設計になっているか (`DataChunkIterator`
-   相当の型が `pair_begin` を live 参照していないか)
-2. callback 1 回あたりの emit 個数 × 全 base partition の合計が `ndpus`
-   を超えない不変条件が、移植版でも同じ証明で成立するか
+   相当の型が `part_begin` を live 参照していないか; §4)
+2. callback 1 回あたりの emit 個数 × 全 base partition の合計が
+   `nr_base_parts` を超えない不変条件が、移植版でも同じ証明で成立するか
+   (§3)
 3. incremental 相当の bailout (`incremental_repartition` の 2 段の
-   `Balanced::No` check; §3) と同じ check がシミュレータ側にあるか
+   `Balanced::No` check; §3) と同じ check が移植版にもあるか
+
+`new_hots` 相当を growable なコンテナにすれば即 heap overwrite こそ
+避けられるが、§3 の不変条件が論理的に崩れた移植は次段で別経路の境界を
+踏みうる。
