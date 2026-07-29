@@ -9,7 +9,6 @@
 #include <random>
 #include <functional>
 #include <chrono>
-#include "../../host/inc/statistics.hpp"
 
 template<typename T>
 void for_each_bpforest_baserange(std::vector<T>& items, size_t nr_dpus, std::function<void (unsigned int, unsigned int)> f)

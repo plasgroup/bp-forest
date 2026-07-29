@@ -100,24 +100,7 @@ class InitData : public Database
             return NOT_FOUND_VALUE;
     }
 
-    value_uint64_t init_value_for_key(key_uint64_t key)
-    {
-        return (key & 0xff) ^ ((key >> 2) & 0xff) ^ ((key >> 4) & 0xff) ^ ((key >> 8) & 0xff);
-    }
-
 public:
-    // generate data
-    InitData(size_t nr_keys)
-    {
-        std::cout << "generating " << nr_keys << " init data items" << std::endl;
-        data.reserve(nr_keys);
-        for (size_t i = 0; i < nr_keys; i++) {
-            const key_uint64_t k = KEY_MIN + init_key_interval(nr_keys) * i;
-            const value_uint64_t v = init_value_for_key(k);
-            data.emplace_back(KVPair{k, v});
-        }
-    }
-
     // load from PIM-Tree init file
     InitData(const std::string& init_file)
     {

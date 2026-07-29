@@ -1,67 +1,57 @@
 #pragma once
 
-#include <iostream>
+#include <cstddef>
 #include <vector>
 
+
+//! @brief Folds any index range of a fixed sequence in O(log n) time, after
+//! an O(n) build. `Op` must be associative (min, max, sum, ...).
 template <typename T, typename Op>
-class SegmentTree {
-public:
-    SegmentTree(const std::vector<T>& data, T identity)
-        : n((int) data.size()), identity(identity) {
-        tree.resize(2 * n, identity);
-        build(data);
-    }
-
-    void update(int index, T value) {
-        index += n;
-        tree[index] = value;
-        while (index > 0) {
-            index /= 2;
-            tree[index] = op(tree[2 * index], tree[2 * index + 1]);
-        }
-    }
-
-    // query for the sum of the elements in the range [left, right], both inclusive.
-    T query(int left, int right) {
-        left += n;
-        right += n + 1; // adjust the range to [left, right). The following code is for right-open range.
-        T res = identity;
-
-        while (left < right) {
-            if (left % 2 == 1) {
-                res = op(res, tree[left]);
-                left++;
-            }
-            if (right % 2 == 1) {
-                right--;
-                res = op(res, tree[right]);
-            }
-            left /= 2;
-            right /= 2;
-        }
-        return res;
-    }
-
-private:
+class SegmentTree
+{
     std::vector<T> tree;
-    int n;
+    size_t n;
     Op op;
     T identity;
 
-    void build(const std::vector<T>& data) {
-        for (int i = 0; i < n; ++i) {
+public:
+    SegmentTree(const std::vector<T>& data, T identity)
+        : tree(2 * data.size(), identity), n{data.size()}, identity{identity}
+    {
+        for (size_t i = 0; i < n; i++)
             tree[n + i] = data[i];
-        }
-        for (int i = n - 1; i > 0; --i) {
+        for (size_t i = n; i-- > 1;)
             tree[i] = op(tree[2 * i], tree[2 * i + 1]);
+    }
+
+    //! Both `left` and `right` are included in the folded range.
+    T query(size_t left, size_t right) const
+    {
+        T res = identity;
+
+        for (size_t l = left + n, r = right + n + 1; l < r; l /= 2, r /= 2) {
+            if (l % 2 == 1)
+                res = op(res, tree[l++]);
+            if (r % 2 == 1)
+                res = op(res, tree[--r]);
         }
+
+        return res;
     }
 };
 
+
 template <typename T>
-class SumOp {
-public:
-    T operator ()(T a, T b) {
-        return a + b;
-    }
+struct MinOp {
+    T operator()(T a, T b) const { return a < b ? a : b; }
+};
+
+template <typename T>
+struct MaxOp {
+    T operator()(T a, T b) const { return a > b ? a : b; }
+};
+
+template <typename T>
+struct SumOp {
+    T operator()(T a, T b) const { return a + b; }
 };

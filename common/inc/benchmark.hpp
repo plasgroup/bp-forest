@@ -3,7 +3,6 @@
 #include "database.hpp"
 #include "extendable_buffer.hpp"
 #include "pimtree_query.hpp"
-#include "statistics.hpp"
 #include "workload_buffer.hpp"
 #include "workload_types.h"
 

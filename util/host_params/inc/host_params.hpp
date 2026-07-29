@@ -31,11 +31,6 @@ constexpr size_t MAX_NR_DPUS = MAX_NR_DPUS_IN_RANK * NR_RANKS;
 #define NUM_INIT_REQS (20000 * MAX_NR_DPUS)
 #endif
 
-inline key_uint64_t init_key_interval(size_t nr_keys)
-{
-    return (KEY_MAX - KEY_MIN) / (nr_keys - 1);
-}
-
 using dpu_id_t = uint32_t;
 constexpr dpu_id_t INVALID_DPU_ID = std::numeric_limits<dpu_id_t>::max();
 
