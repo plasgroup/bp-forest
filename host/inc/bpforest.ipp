@@ -1367,7 +1367,7 @@ inline void find_absolutely_hot_ranges(LinkedChunkedPairsRange* const begin_part
         }
     }
 }
-template <typename Func /* bool(pair<PairsRange, load>) */>
+template <typename Func /* bool(ChunkedPairsRange&, PairsRange, load) */>
 inline std::array<std::pair<LinkedList<ChunkedPairsRange>::iterator, DataChunkIterator>, 2>
 find_relatively_hot_ranges(const LinkedList<ChunkedPairsRange>::iterator begin_range, const LinkedList<ChunkedPairsRange>::iterator end_range,
     const uint32_t hot_npairs, const dpu_id_t nr_hots,
