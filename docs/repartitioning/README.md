@@ -4,9 +4,9 @@
 ## 0. このドキュメントの位置づけ
 
 本ディレクトリは `BPForest::full_repartition` / `BPForest::incremental_repartition`
-について、**最適化版 (`host/inc/bpforest.ipp:1401-2138`) と同じ最終状態を
+について、**最適化版 (`host/inc/bpforest.ipp`) と同じ最終状態を
 生成する最も愚直な参照実装**を `.hpp` として置いている。ビルド対象では
-なく、最適化版を読むときのマップ・行単位 diff の "理論値" として使う。
+なく、最適化版を読むときのマップ・アルゴリズムの "理論値" として使う。
 
 - 理論・アルゴリズム・不変条件 → `docs/rebalancing-algorithm.md`
 - `find_absolutely_hot_ranges` / `find_relatively_hot_ranges` 単体の
@@ -18,15 +18,52 @@
 ある「semantics とその実装を切り分ける境界線」と、書いていて踏んだ
 実装上の地雷を整理したもの。
 
+### 0.1 スコープ — 契約が成立する範囲 (最初に読むこと)
+
+この参照実装群が「最適化版と同じ最終状態を生成する」という契約を
+主張できるのは、**デフォルトパラメータの cold-carve 経路** に限る。
+具体的には:
+
+- `param.balancing >= 1` (CLI が `>= 1` を強制する)
+- `param.more_hotness == 1`
+- `param.greedy_only == false`
+- クエリが point query (predecessor 以外) または range query
+- 判定・carve の対象が **cold partition** であること
+
+これ以降に最適化版へ追加された以下の機能は naive 側に**未反映**であり、
+これらが効く設定では上記の契約は成立しない:
+
+| 未反映の機能 | 最適化版での実体 |
+|---|---|
+| hot partition 自体の分割 (hot split) | `param.enable_hot_split`, `incremental_repartition_worker_hot`, `split_hot_range_equal_load`, `hot_split_plans` / `kept_hot` |
+| hotness 係数 | `param.more_hotness` (`hot_load` / goal 式に乗る) |
+| greedy 単独モード | `param.greedy_only` (goal 式が変わり relative 段が丸ごと消える) |
+| predecessor クエリ | chunk 特定が `upper_bound` ではなく `std::lower_bound` (`IsPredecessorQuery`) |
+| 並列 worker 化 | `TmpDataForFullRepartition` / `TmpDataForIncRepartition` + `std::mutex` + `parallel_run` による worker 分割 (§3.1) |
+
+また、この worker 分割によって最適化版の行単位対応は成立しなくなったので、
+本 README と naive 実装内のコメントは **行番号ではなく関数名 + phase 名**
+で最適化版を指す。対応は §6 の表を参照。
+
 ---
 
 ## 1. Semantics (最優先で保つべきもの)
 
 ### 1.1 2 つの関数が外部に保証する最終状態
 
-どちらの関数も戻り値は `void` で、副作用として以下を atomic に更新する。
-あとから外部観測できるのは以下の 5 つだけ (DPU 側 tree 含む)。愚直版は
-この 5 つを最適化版と一致させれば合格。
+`full_repartition` の戻り値は `void`。`incremental_repartition` は
+`Balanced` (`Yes` / `No`) を返し、`No` は「incremental では均しきれ
+なかった」を意味する — このとき `full_repartition` への escalate を行うのは
+呼出し側の `repartition()` ラッパであって、`incremental_repartition`
+自身ではない。愚直版は戻り値を持たず自分で `full_repartition_naive` を
+呼ぶ形にしているが、最終状態は同じ。
+
+どちらも副作用として以下を atomic に更新する。外部観測できる本質的な
+状態は以下の 5 つ (DPU 側 tree 含む)。愚直版はこの 5 つを最適化版と
+一致させれば合格。ほかに派生キャッシュとして、`delims` の base partition
+先頭 iterator の配列 `cold_delims` と、`combined_delims` と対になる
+引き先配列 `combined_delims_dest` も同時に再構築される (どちらも上記から
+一意に決まる)。
 
 | メンバ | 内容 |
 |---|---|
@@ -46,7 +83,7 @@ hot range" を 0〜数個抜き出し、別 DPU に再配置する。hot は col
 |---|---|---|
 | 適用範囲 | 全 DPU | 負荷が偏った DPU のみ |
 | データ回収 | 全 KV を CPU に pull | 対象 DPU の cold partial だけ (TASK_SERIALIZE) |
-| 呼出し元 | 初期構築, incremental の bailout | 定常バッチ (`batch_get`, `batch_range_count`) |
+| 呼出し元 | 初期構築, `repartition()` が `Balanced::No` を受けたとき | `repartition()` から毎バッチ |
 | コスト感 | batched RQ 100 回分 | Full よりはるかに安い |
 
 どちらも **「hot を抜き出す → cold 残余を保持」** という同一の base
@@ -69,17 +106,41 @@ nr_relative_hots       = cold_endpoint_cnt / hot_load;  // 論文の β
 double-scan 後の **cold 側クエリ負荷の上界** に対応するので、簡略化
 しない。詳細は `rebalancing-algorithm.md §1.3`。
 
+**現行実装との数値一致条件**: 最適化版 (`full_repartition_worker` /
+`incremental_repartition_worker_cold` / `..._worker_hot` の冒頭で
+定数を作る部分) では上記の式に `param.more_hotness` 係数が乗る。さらに
+`param.greedy_only` が真のとき `cold_endpoint_cnt_goal` は
+`max(3, α+1)/3` ではなく `× param.balancing` の式に切り替わり、同時に
+relative 段の外側ゲートが `!param.greedy_only && ...` で丸ごとスキップ
+される。上に書いた式が最適化版と数値一致するのは
+**`more_hotness == 1` かつ `greedy_only == false`** (どちらもデフォルト)
+のときだけ。
+
 ### 1.4 aggregate 上限 (不変条件)
 
 `full_repartition` / `incremental_repartition` 一呼び出しで切り出せる
 hot range 総数は `nr_base_parts` ($P$) を超えない。`new_hots` (固定
 サイズバッファ) の容量 check が無いのはこの不変条件に依存している。
-incremental は**事後**の bailout (L2073-2076) を持ち、`nr_existing_hots
-+ hot_count > nr_base_parts` なら `full_repartition` に escalate する。
 
-愚直版も `new_hots_local` (ローカル `std::vector`) を使うので
-overwrite 事故は無いが、bailout の check 自体は semantic として
-残している (削ると Phase 4 で範囲外アクセスになる)。
+incremental は**事後**の bailout を持ち、超過したら `Balanced::No` を
+返して `repartition()` ラッパに full への escalate を任せる。現行は
+2 段構えで、どちらも `incremental_repartition` 本体にある:
+
+- cold pass (`parallel_run(incremental_repartition_worker_cold)`) の直後 —
+  `nr_existing_hots + hot_count > nr_base_parts`
+- hot pass (`parallel_run(incremental_repartition_worker_hot)`) の直後 —
+  `nr_existing_hots + hot_count + nr_new_pieces > nr_base_parts`
+  (hot split で増える piece 数を足した版。hot pass はここまで split 計画
+  `hot_split_plans` を作るだけで `delims` / `kept_hot` / `hot_delims` /
+  `new_hots` を触っていないので、ここでの fallback も安全)
+
+加えて incremental の各 worker の `get_next_idx_dpu` 冒頭にも
+同じ上限 check があり、超えていたら新しい DPU を配らずループを畳む。
+
+愚直版は hot split を持たないので 1 段目だけを持ち、`new_hots_local`
+(ローカル `std::vector`) を使うので overwrite 事故は無いが、bailout の
+check 自体は semantic として残している (削ると Phase 4 で範囲外アクセスに
+なる)。
 
 ---
 
@@ -87,9 +148,11 @@ overwrite 事故は無いが、bailout の check 自体は semantic として
 
 | ファイル | 対応する最適化版 | 役割 |
 |---|---|---|
-| `full_repartition_naive.hpp` | `bpforest.ipp:1401-1610` | full 経路の愚直版。bridge helper と rebuild helper を定義 |
-| `incremental_repartition_naive.hpp` (v1) | `bpforest.ipp:1664-2138` | incremental 経路の愚直版。**DPU 側 partial serialize を廃止** し対象 DPU 丸ごと回収に単純化 |
+| `full_repartition_naive.hpp` | `BPForest::full_repartition` + `BPForest::full_repartition_worker` | full 経路の愚直版。bridge helper と rebuild helper を定義 |
+| `incremental_repartition_naive.hpp` (v1) | `BPForest::incremental_repartition` + `..._worker_cold` | incremental 経路の愚直版。**DPU 側 partial serialize を廃止** し対象 DPU 丸ごと回収に単純化 |
 | `incremental_repartition_serialize_naive.hpp` (v2) | 同上 | incremental 経路の愚直版。**DPU 側 partial serialize はそのまま残し** host 側ロジックだけ愚直化 |
+
+いずれも `..._worker_hot` (hot split) には対応物を持たない (§0.1)。
 
 `full_repartition_naive.hpp` は以下の共用ヘルパを定義しており、
 v1 / v2 はそれらを再利用する:
@@ -125,11 +188,64 @@ naive 実装を書くときに最も迷う境界。以下を混同すると最�
 
 | 記号 | 内容 | 愚直化の方針 |
 |---|---|---|
-| (a) | chunk 位置特定の `std::upper_bound` (L1470, L1484, L1878, L1922) | chunk 列の線形走査に置換 |
+| (a) | chunk 位置特定の `std::upper_bound` (load 推定パート。`full_repartition_worker` / `incremental_repartition_worker_cold` の chunk load populate ブロックと、後者の cold 片特定 `upper_bound(begin_part, end_part, ...)`) | chunk 列 / cold 片列の線形走査に置換 |
+| (b) | 欠番 | 以前は「hot_hook 内の `cold_endpoint_cnt > goal` 判定を廃止する」と書いていたが誤り。この判定は Algorithm 2/3 のロジックそのもので、剥がすと carve される hot が変わる (§3.2) |
 | (c) | cold 範囲列の `LinkedList<ChunkedPairsRange>` | `std::list<ChunkedPairsRange>`。find_* の直前だけ bridge で一時 LinkedList を組む |
 | (d) | carve のたびの in-place splice / `*left_range = ...` | `rebuild_cold_list_from_hots_naive` / `rebuild_cold_list_with_origins_naive` で毎回 build-from-scratch |
-| (e) | BPForest 側の一時データ用メンバ (`data_buf`, `chunk2load`, `chunked_cold_ranges[,_lists]`, `new_hots`, `cold_loads`, `input_headers`, `hot_delim_keys`, `base_to_nr_hot_psum`, `incision_indices`, `cold_key_ranges`, `cold_npairs_list` 等) | 全てローカル変数に置換 |
+| (e) | BPForest 側の一時データ用メンバ (下記) | 全てローカル変数に置換 |
 | (f) (v1 のみ) | DPU 側 partial serialize プロトコル (TASK_SERIALIZE + incision_indices) | 対象 DPU 丸ごと回収 (= `retrieve_dpu_all_pairs_naive`) に単純化 |
+| (g) (full のみ) | `get_next_idx_base` の pre-filter skip (point query かつ `routed.cold[b].nr_qrys <= cold_endpoint_cnt_goal` の base を load 推定ごと飛ばし、`nr_pairs` / `cold_loads` だけ埋める) | 愚直版は全 base を素通しで回す (skip された base は carve が起きないので最終状態は同じ) |
+
+incremental 側の `get_next_idx_dpu` は (g) に含めない。こちらが飛ばすのは
+Phase 1 で `do_cold` に選ばれなかった DPU であり、愚直版も
+`if (!touch[idx_dpu]) { cold_loads_local[idx_dpu] = ...; continue; }` で
+同じ skip をしている (剥がしていない)。`get_next_idx_dpu` 固有なのは
+lock 下での DPU 配り出しと、その先頭にある
+`nr_existing_hots + hot_count > nr_base_parts` の bailout 再チェック
+(§1.4) の 2 点だけ。
+
+(e) が指すメンバの現行一覧 (`host/inc/bpforest.hpp`):
+`data_buf`, `chunked_cold_ranges` / `chunked_cold_ranges_lists`,
+`cold_key_ranges`, `cold_loads`, `cold_npairs_list`, `new_hots`,
+`input_headers`, `hot_delim_keys`, `base_to_nr_hot_psum`,
+`nr_extracted_hots`, `incision_indices`, `cold_ranges` /
+`cold_ranges_lists`, `hot_ranges`, `chunk2load`, および
+worker 間受け渡し用の `any_tmp_data`。
+hot split 用の `hot_stage1_fired` / `kept_hot` / `hot_split_plans` も
+同じ扱いだが、愚直版は hot split 自体を持たない (§0.1)。
+
+注意点 2 つ:
+
+- `chunk2load` だけは `inline static thread_local ExtendableBuffer<uint32_t>`
+  (per-thread の scratch)。他のメンバのように「DPU 番号で引く共有配列」では
+  ないので、愚直版では単なるローカル `std::vector` になる。
+- `hot_delim_keys` という名前は 2 箇所にある。メンバの方は Phase 1 が
+  DPU へ送る incision key 列 (`SerializationCommander` が読む)。
+  `incremental_repartition_worker_cold` の range query 用 load 推定
+  ブロックにある同名の `static thread_local` はそれをシャドウする
+  別物で、cold 片の境界 key を並べた探索表。
+
+### 3.1.1 orchestration 層の構造 — 逐次ループ vs 並列 worker
+
+愚直版は「`for (idx_base / idx_dpu = 0 .. nr_base_parts)` の 1 本の
+逐次ループ内で全部やる」形だが、最適化版は同じ処理を
+
+- `TmpDataForFullRepartition` / `TmpDataForIncRepartition`
+  (バッチ共通の入力 + `std::mutex` + 共有カウンタ `idx_base`/`idx_dpu`,
+  `cold_count`, `hot_count`, `nr_new_pieces`) を `any_tmp_data` に載せる
+- `parallel_run(&BPForest::full_repartition_worker<Query, Result>)` 等で
+  worker を起動し、各 worker が `get_next_idx_*` で次の DPU を取り合う
+
+という形に分割している。DPU ごとの load 推定は lock 無しで走り、
+`new_hots` / `chunked_cold_ranges` / `cold_key_ranges` プールを触る
+carve 部分だけ `std::lock_guard{tmp.mutex}` の下に入る。
+
+**この分割は carve される hot 集合を変えない**。DPU ごとの carve は
+互いに独立で、`new_hots` への push 順だけが変わり、Phase 4 の matching が
+load 降順に sort し直すため (同 load の tie-break だけは不定)。愚直版が
+逐次ループでよい理由もそこにある。ただし副作用として最適化版とは
+**行単位の 1:1 対応が付かない**ので、対応付けは関数名 + phase 単位で
+考えること (§6)。
 
 ### 3.2 剥がしてはいけない「algorithm 本質」
 
@@ -139,14 +255,15 @@ naive 実装を書くときに最も迷う境界。以下を混同すると最�
 
 ```cpp
 // 段間ゲート (全 4 箇所、愚直版でも保持)
-//   bpforest.ipp:1495 (full abs 前), 1523 (full rel 前),
-//                1948 (incr abs 前), 1999 (incr rel 前)
+//   full_repartition_worker           : abs 段の直前 / rel 段の直前
+//   incremental_repartition_worker_cold: abs 段の直前 (= 早期復帰の裏返し)
+//                                        / rel 段の直前
 if (cold_endpoint_cnt > cold_endpoint_cnt_goal) {
     find_absolutely_hot_ranges(...);  // または find_relatively_hot_ranges
 }
 
 // hot_hook 内ゲート (全 4 箇所、愚直版でも保持)
-//   bpforest.ipp:1516, 1540, 1989, 2019
+//   上と同じ 2 関数 × abs / rel の hot_hook 末尾
 return cold_endpoint_cnt > cold_endpoint_cnt_goal;
 ```
 
@@ -158,15 +275,54 @@ return cold_endpoint_cnt > cold_endpoint_cnt_goal;
 - 段間ゲート (外側) と hot_hook 内ゲートは **両方とも** algorithm 本質。
   外側だけ残して内側を `return true` にすると、1 回の find_* 呼び出しで
   余計に carve が進む可能性がある。
+- 現行では rel 段の外側ゲートに `!param.greedy_only &&` が前置され、
+  greedy_only 時は relative 段そのものが消える。愚直版は
+  `greedy_only == false` (デフォルト) 前提なのでこの前置を持たない
+  (§0.1)。
 
 ### 3.3 "ほぼ" 本質的だがよく誤解されるもの
 
-- Phase 1 の `cold_partial_cnt_threshold` (高 watermark)。これは **false
-  negative を許容した safety margin** であり、`param.high_watermark_ratio`
-  を無理に 1.0 に近づけない。
+- Phase 1 の閾値は **false negative を許容した safety margin** であり、
+  goal に無理に近づけない。ここは現行実装で構造が変わった箇所なので
+  下に詳述する。
 - `cold_endpoint_cnt` の **scalar 追跡** (carve 時に `-= load` する)
   は `std::count_if` で毎回再計算しても semantics は同じだが、**最適化版
   と同じ値にしたい** ので愚直版でも scalar を使う (差分デバッグが楽)。
+
+#### 3.3.1 Phase 1 は「trigger 判定」と「対象選定」の 2 層
+
+かつての `param.high_watermark_ratio` による単一閾値 (`goal * ratio` を
+超えた DPU だけを touch) は**削除済み**。現行の
+`incremental_repartition` の Phase 1 (`ScopedTimer t{Timer, "retrieve"}`
+ブロック冒頭のループ) は、同じ `routed.cold[d].nr_qrys` に対して 2 つの
+判定を並行して行う:
+
+| 層 | 比較対象 | 結果 | 役割 |
+|---|---|---|---|
+| trigger | `overload_threshold.threshold_for(nr_queries, cold_cnt_goal, family)` | `trigger_cold` (hot 側は `trigger_hot`) | 1 つでも立てば「このバッチは rebalance する」。誰も立たなければ `Balanced::Yes` で即 return |
+| 対象選定 | `cold_cnt_goal` そのもの | `do_cold` (hot 側は `do_hot`) | TASK_SERIALIZE を送る DPU / 送る中身 (`do_cold` / `do_hot`) を決める |
+
+hot 側の 2 つ (`trigger_hot` / `do_hot`) は `param.enable_hot_split &&` で
+ゲートされているので、hot split 無効時は cold 側の判定だけが効く。
+`hot_cnt_goal` の係数 `2u` は `more_hotness` と違って固定。
+
+`threshold_for` は必ず goal 以上を返す (`HighWatermarkRatio` は CLI が
+`r > 1.0` を強制、`FalsePositiveRate` は Bernstein の `lam = goal` に
+正の偏差 `t` を足した値の `-1`) ので、**対象集合は trigger 集合を含む**。
+`Bcap` 飽和時などに両者が一致することはあるが、逆転はしない。「rebalance
+するかどうか」は保守的に、「するなら誰を作り直すか」は緩めに、という
+非対称な設計であり、片方だけ真似ると挙動が変わる。
+
+`threshold_for` は `OverloadThresholdSpec` の 2 択で意味が変わる:
+
+- `HighWatermarkRatio{r}` (デフォルト `r = 1.05`) — `min(B, ceil(goal * r))`。
+  旧 `high_watermark_ratio` に相当する。
+- `FalsePositiveRate{p}` — 「負荷が均等なのに発火する確率」を目標 `p` に
+  収める Bernstein 型の閾値。`family` は 1 バッチあたりの検定数
+  (`nr_base_parts + nr_existing_hots`) で、Bonferroni 補正に使う。
+
+さらに `goal > B` (バッチサイズ) のときは閾値を `B` に飽和させて
+**絶対に発火させない**。詳細は `util/inc/overload_threshold.hpp`。
 
 ---
 
@@ -212,8 +368,11 @@ const size_t piece_idx = static_cast<size_t>(
 ### 4.2 Rebuild helper — in-place splice を捨てて毎回組み直す
 
 最適化版は find_* の callback 内で `*left_range = {end, left_range->end()};`
-等と部分更新し、find_* 呼出し後に LinkedList の splice で cold 列を
-繋ぎ直す (bpforest.ipp:1500-1506, 1543-1578, 1967-1996, 2022-2057)。
+等と部分更新し、find_* 呼出し後に LinkedList の splice / erase で cold 列を
+繋ぎ直す (`full_repartition_worker` と
+`incremental_repartition_worker_cold` の、abs 段の hot_hook 内 +
+段直後の空 piece 除去、および rel 段直後の `carved_cold_range` を
+使った左右境界の splice)。
 愚直版はこれを全部捨てて、`new_hots_local` に溜めた hot 区間列から
 cold 列を **毎回 build-from-scratch** で組み立て直す。
 
@@ -243,7 +402,9 @@ carve ループと rebuild helper を完全に共有できる。
 
 origin の `key_range.end` は後段 rebuild で `{cur_kr_begin, origin.kr.end}`
 として tail sub-piece の key 範囲を決めるのに使う。これは最適化版
-`cold_key_ranges[idx_in_ary].end` (bpforest.ipp:1980-1983) の愚直化。
+`incremental_repartition_worker_cold` の hot_hook が引く
+`cold_key_ranges[idx_in_ary].end` の愚直化 (`idx_in_ary` は
+`&part - &chunked_cold_ranges[0]`、すなわち cold 片プール上の添字)。
 
 ---
 
@@ -251,7 +412,7 @@ origin の `key_range.end` は後段 rebuild で `{cur_kr_begin, origin.kr.end}`
 
 ### 5.1 `find_absolutely_hot_ranges` の早期終了は **multi-part を横断する**
 
-最適化版 `bpforest.ipp:1175-1204`:
+最適化版 (`find_absolutely_hot_ranges` 本体、`bpforest.ipp`):
 
 ```cpp
 for (LinkedChunkedPairsRange* part = begin_part; part != end_part; part++) {
@@ -314,10 +475,11 @@ hot.key_range.end
              : hot.pairs_range.end()->key - 1);      // mid-piece
 ```
 
-最適化版 (L1980-1983, L2043-2046 等) と同じ式。`piece_key_ranges` は
-incremental 経路でだけ必要 (full では 1 piece = base 全体なので
-`data_end` 境界との比較 1 つで済む; `full_repartition_naive.hpp` の
-callback 参照)。
+最適化版 (`incremental_repartition_worker_cold` の abs / rel 両 hot_hook
+にある `cold_key_ranges[idx_in_ary].end` 分岐) と同じ式。
+`piece_key_ranges` は incremental 経路でだけ必要 (full では
+1 piece = base 全体なので `&data_buf[nr_total_pairs]` 境界との比較
+1 つで済む; `full_repartition_naive.hpp` の callback 参照)。
 
 ### 5.4 Phase 1 の `kranges.size() == pieces`, `hkeys.size() == pieces - 1`
 
@@ -381,7 +543,7 @@ origin push のタイミングで `idx_piece = origins.size()` を付番する�
 
 両関数は **carve ごと** に `cold_npairs -= hot.npairs()`, `cold_endpoint_cnt -= hot.load`
 を適用する形で scalar を追跡している。naive 版もこれに倣っておくと、
-最適化版との行単位対応で数値が一致するので差分デバッグが楽。
+carve 1 回ごとに最適化版と同じ値を取るので差分デバッグが楽。
 
 - `cold_endpoint_cnt` の初期値は load estimate で cold 側に落ちた endpoint 数
 - carve 後に `std::count_if` で全件再計算する方針はセマンティクス的には
@@ -407,26 +569,35 @@ for (const ChunkedPairsRange& r : cold_list) {
 
 ## 6. 対応表: naive ↔ bpforest.ipp
 
-個別対応は各 naive file 末尾の表を参照:
+worker 分割により行単位の対応は付かないので、**関数名 + phase / ブロック名**
+で対応させる。個別対応は各 naive file 末尾の表も参照。
 
-- `full_repartition_naive.hpp` 末尾表 — full 1-step ↔ L1401-1610
-- `incremental_repartition_naive.hpp` 末尾表 — incremental 1-step ↔ L1664-2138
-- `incremental_repartition_serialize_naive.hpp` 末尾表 — 同上 + v2 固有差分
+### 6.1 関数の対応
 
-要点だけ再掲:
+| naive | 最適化版 (`host/inc/bpforest.ipp`) |
+|---|---|
+| — (愚直版は escalate を自分で呼ぶ) | `BPForest::repartition` — incremental → `Balanced::No` なら full |
+| `full_repartition_naive` の全体 | `BPForest::full_repartition` (orchestration) + `BPForest::full_repartition_worker` (base ごとの carve) |
+| `incremental_repartition_naive` / `..._serialize_naive` の全体 | `BPForest::incremental_repartition` (orchestration) + `BPForest::incremental_repartition_worker_cold` (DPU ごとの cold carve) |
+| — (未対応) | `BPForest::incremental_repartition_worker_hot` (hot split) |
+| `find_absolutely_hot_ranges_on_{range,list}_naive` が包む本体 | `find_absolutely_hot_ranges` (自由関数) |
+| `find_relatively_hot_ranges_on_list_naive` が包む本体 | `find_relatively_hot_ranges` (自由関数) |
+
+### 6.2 phase の対応
 
 | Phase | full | incremental |
 |---|---|---|
-| 1 DPU 選別 | 無 (全 DPU 対象) | L1691-1738 |
-| 2 データ回収 | L1405 (retrieve_all_data) | L1741-1825 (TASK_SERIALIZE) |
-| 3a 閾値定数 | L1442-1443 | L1887-1899 |
-| 3b load estimation | L1455-1493 | L1856-1935 |
-| 3c abs stage | L1495-1521 | L1956-1990 |
-| 3d rel stage | L1523-1541 | L1999-2058 |
-| 3e bailout | 無 | L2063-2066 |
-| 4 hot → DPU 割当 | L1585-1606 | L2072-2093 |
-| 5 DPU 送信 | L1609 (initialize_in_dpu) | L2097-2136 (TASK_MOVE_HOT) |
-| 6 re-route | L1605 (内部で実施) | L2142-2146 |
+| 1 DPU 選別 | `full_repartition_worker` の `get_next_idx_base` pre-filter (point query のみ) | `incremental_repartition` Phase 1 = `ScopedTimer{"retrieve"}` 冒頭のループ (trigger / do_cold / do_hot 判定 + `cold_key_ranges` / `hot_delim_keys` / `base_to_nr_hot_psum` 構築) |
+| 2 データ回収 | `full_repartition` の `retrieve_all_data(data_buf)` | 同ブロックの `SerializationCommander` gather → execute → `SerializaionNrPairsReceiver` scatter → `"alloc"` ブロックの incision スライス → `"recv"` ブロックの `SerializedKVPairReceiver` |
+| 2' 初回ルーティング | `full_repartition` の base ループ (等分 `chunked_cold_ranges[]` + `cold_delims` 再構築) 直後の `combine_delims` + `route_queries` | 無 (既存 partition を保つのが incremental) |
+| 3a 閾値定数 | `full_repartition_worker` 冒頭の `hot_load` / `cold_endpoint_cnt_goal` | `incremental_repartition_worker_cold` 冒頭の同名 2 定数 |
+| 3b load estimation | `full_repartition_worker` の `chunk2load` populate ブロック | `incremental_repartition_worker_cold` の同 populate ブロック (cold 片の特定 + `hot_delim_keys` 探索表) |
+| 3c abs stage | `find_absolutely_hot_ranges(&base, &base + 1, ...)` 呼出し + 直後の空 piece 除去 | `find_absolutely_hot_ranges(begin_part, end_part, ...)` 呼出し + 直後の `npairs() == 0` erase ループ |
+| 3d rel stage | `find_relatively_hot_ranges(list.begin(), list.end(), ...)` + `carved_cold_range` による splice | 同上 (同じ形の splice) |
+| 3e bailout | 無 | `incremental_repartition` の cold pass 直後 (`hot_count`) と hot pass 直後 (`+ nr_new_pieces`) の 2 段 (§1.4) |
+| 4 hot → DPU 割当 | `full_repartition` の `partial_sort` / `sort` + `delims.emplace` ループ | `incremental_repartition` の同形ループ (+ 既存 hot / `kept_hot` 保有 DPU を `UINT32_MAX` で除外, + split host の piece[0] 再挿入) |
+| 5 DPU 送信 | `full_repartition` 末尾の `initialize_in_dpu` | `incremental_repartition` の `input_header.task_no = TASK_MOVE_HOT` 設定 + `UpdatedPartitionsSender` gather → execute |
+| 6 re-route | Phase 4 の `if (hot_count > 0)` 内、`combine_delims` + `ScopedTimer{"re"}` の `route_queries` (hot が 1 つも出なければ Phase 2' の routing のまま) | 末尾 `ScopedTimer{"re"}` の `route_queries` |
 
 ---
 
@@ -455,3 +626,9 @@ naive 参照実装を書き換える / 新しいパターンを追加すると�
       いるか
 - [ ] `rebalancing-algorithm.md §3` の不変条件 ($P$ 以下の hot total)
       が破れる経路を作っていないか
+- [ ] Phase 1 の trigger 判定を `overload_threshold.threshold_for(...)`
+      で、対象選定 (`do_cold`) を goal そのもので行う **2 層** を崩して
+      いないか (§3.3.1)
+- [ ] §0.1 のスコープ外機能 (hot split / `more_hotness` / `greedy_only` /
+      predecessor クエリ) に手を出したなら、§0.1 の表と各 naive file 冒頭の
+      スコープ注記を同時に更新したか

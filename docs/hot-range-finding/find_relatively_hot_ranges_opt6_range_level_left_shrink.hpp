@@ -2,16 +2,18 @@
 /// @brief 論文 Algorithm 3 第2スキャンの sliding window 最適化版 + opt1..opt6。
 ///        ベースは find_relatively_hot_ranges_opt5_right_margin_compression.hpp。
 ///        ビルド対象ではない (参照用)。
+///        現行では `param.greedy_only` (CLI --greedy-only、既定 false) が true の場合、呼出し側
+///        (full_repartition_worker / incremental_repartition_worker_cold) が本関数の呼び出し自体をスキップする。
 ///
 /// ── opt6: RangeLevelLeftShrink ──────────────────────
-/// bpforest.ipp L1369-L1398 相当。
+/// bpforest.ipp `find_relatively_hot_ranges` の左端縮小ブロック (下記 (a)(b)) 相当。
 ///
 /// 目的:
 ///   opt5 までの Step B は左端縮小を chunk 単位で毎回判定しており、
 ///   ウィンドウが複数 cold range をまたいで走査される際、途中の range を
 ///   1 chunk ずつ舐めて捨てていた。bpforest.ipp はこの縮小を
-///     (a) cold range 単位の bulk ループ (L1370-L1389)
-///     (b) 最終 range 内の chunk 単位ループ (L1393-L1398)
+///     (a) cold range 単位の bulk ループ ("pull the left end inward per cold range")
+///     (b) 最終 range 内の chunk 単位ループ ("pull the left end inward per data chunk")
 ///   に分解しており、range 全体を O(1) で飛ばせる。
 ///
 ///   range 単位処理には "left 側の raw 残量 (left_npairs_offcut) と
@@ -30,7 +32,7 @@
 ///       `left_npairs_offcut - left->npairs() >= left_window_offcut` の間
 ///       chunk を 1 つずつ捨てる。
 ///
-///   opt6 は bpforest.ipp L1205-L1402 と semantically equivalent になる
+///   opt6 は bpforest.ipp の `find_relatively_hot_ranges` 全体と semantically equivalent になる
 ///   (最終段階)。
 ///
 ///   含意:
@@ -42,24 +44,24 @@
 ///       書かれており、opt6 への集約後もすべて継承される。
 ///
 /// ── opt5: RightMarginCompression ─────────────────────
-/// bpforest.ipp L1362-L1367 相当。opt4 の閾値ゲート成立直後、同 range 内で
-/// right を先取りしてマージンを最小化する。
+/// bpforest.ipp `find_relatively_hot_ranges` の "minimize the margin within the window" ループ相当。
+/// opt4 の閾値ゲート成立直後、同 range 内で right を先取りしてマージンを最小化する。
 ///
 /// ── opt4: RightQuotaThresholdGate ───────────────────
-/// bpforest.ipp L1355-L1361 相当。Step A の重い recompute と Step B を
+/// bpforest.ipp `find_relatively_hot_ranges` の right-quota 閾値ゲート相当。Step A の重い recompute と Step B を
 /// 閾値 `right_npairs_offcut > right_window_offcut` の成立時だけに遅延。
 ///
 /// ── opt3: SingleRangeSteadyStateFastPath ────────────
-/// bpforest.ipp L1329-L1338 相当。left_range == right_range のとき right を
-/// 1 chunk 足して left を tight while で押し戻す専用分岐。
+/// bpforest.ipp `find_relatively_hot_ranges` メインループの single-range 分岐相当。
+/// left_range == right_range のとき right を 1 chunk 足して left を tight while で押し戻す専用分岐。
 ///
 /// ── opt2: BootstrapAllHotEarlyExit ─────────────────
-/// bpforest.ipp L1271-L1276 相当。bootstrap が全 range を吸収したら argmax
-/// 確定で carve へ直行。
+/// bpforest.ipp `find_relatively_hot_ranges` の "all chunks are hot" early return 相当。
+/// bootstrap が全 range を吸収したら argmax 確定で carve へ直行。
 ///
 /// ── opt1: BootstrapWholeRangeAdvance ─────────────────
-/// bpforest.ipp L1254-L1268 相当。メインループ前に right を cold range 単位で
-/// 進める bootstrap。
+/// bpforest.ipp `find_relatively_hot_ranges` の "push the right end outward per cold range" ループ相当。
+/// メインループ前に right を cold range 単位で進める bootstrap。
 ///
 /// 含まない最適化:
 ///   なし (opt6 が最終段階)。

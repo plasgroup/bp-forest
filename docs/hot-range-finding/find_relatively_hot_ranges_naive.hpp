@@ -61,7 +61,8 @@
 ///   `<` の場合は窓の容量不足 (carve しても nr_hots に届かない) なので採用しない。
 ///
 /// なお bpforest.ipp::find_relatively_hot_ranges も同一の規則を実装している
-/// (L1306-L1308 で left_window_offcut を slot_rounded(left_range->npairs()) に揃える)。
+/// (bootstrap 直後の左端初期化と bulk left shrink の range 前進時に
+/// left_window_offcut を slot_rounded(left_range->npairs()) に揃える)。
 
 #pragma once
 

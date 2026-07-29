@@ -1,10 +1,26 @@
-batch insertの実装
+batch insert の tasklet 並列化: 設計案
 ===
 
+> **この文書は未実装の設計案である。** 現行の単一 tasklet 実装と同時期に書かれたもので、
+> ここに書かれた段階はどれも実装されたことがない。現行の TASK_INSERT
+> (`dpu/src/bplustree.c` の `task_insert` / `INSERT_execute_batch` / `INSERT_execute`) との
+> 違いは次のとおり:
+>
+> *   **単一 tasklet で実行する** (`_Static_assert(TASK_INSERT_NR_TASKLETS == 1)`)。
+>     したがって本文書の主題である「クエリのスレッドへの分配」は現行では起きない。
+> *   **クエリをソートしない。** `INSERT_execute_batch` は受け取った順に 1 件ずつ
+>     `INSERT_execute` を呼ぶ。ステップ 1 の bitonic sort のために置かれていた
+>     `dpu/src/sort.c` / `dpu/inc/sort.h` は中身が実装されないまま残っていたため削除した。
+> *   **split を保留しない。** `INSERT_execute` は根から葉へ降りる途中で満杯のノードを
+>     先回りして分割する (先取り分割)。このため、ステップ 3-4 の「保留した split を
+>     あとで反映する」機構は現行では不要になっている。本案を実装するなら、先取り分割との
+>     折り合いをどうつけるか (先取り分割のまま担当ノード集合を決めるか、
+>     保留方式に戻すか) を先に決める必要がある。
+
 1.  insert queriesをキー順にソート
-    *   SPMに収まる範囲ごとにbitonic sortしDRAMに書き戻す
+    *   WRAMに収まる範囲ごとにbitonic sortしMRAMに書き戻す
         *   bitonic sortを選んだ理由:
-            *   SPMは貴重なのでin-placeがいい
+            *   WRAMは貴重なのでin-placeがいい
             *   16スレッドで並列に処理したい
     *   複数回の小さなsorted queriesを後からmerge
 2.  ソートされたバッチを良い感じにスレッドに分配

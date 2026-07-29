@@ -17,14 +17,14 @@ Initialization of Trees
 
 * 全部で $`L := \left\lceil n \over M_l \right\rceil`$ 個の葉ノードを作る
 * $`n = M_l q + r`$ ($`q, r \in \mathbb{N}, r < M_l`$) として、
-  * $`L = 1 (\implies q = 0)`$ のとき、その唯一のノードに $`n`$ 個のkey-valueペアを入れる
-  * $`L > 1 \land 0 < r < m_l \iff n - (L - 1) M_l < m_l`$ のとき、
+  * $`L = 1`$ のとき、その唯一のノードに $`n`$ 個のkey-valueペアを入れる
+  * $`L > 1 \land 0 < r < m_l \iff L > 1 \land n - (L - 1) M_l < m_l`$ のとき、
     * 左側から $`L - 2`$ 個のノードに $`M_l`$ 個ずつkey-valueペアを入れる
     * 右側から2番目のノードに $`M_l + r - m_l`$ 個のkey-valueペアを入れる
     * 最も右側のノードに $`m_l`$ 個のkey-valueペアを入れる
   * $`L > 1 \land (r = 0 \lor r \ge m_l) \iff L > 1 \land n - (L - 1) M_l \ge m_l`$ のとき、
     * 左側から $`L - 1`$ 個のノードに $`M_l`$ 個ずつkey-valueペアを入れる
-    * 最も右側のノードに $`r`$ 個のkey-valueペアを入れる
+    * 最も右側のノードに $`n - (L - 1) M_l`$ 個のkey-valueペアを入れる
 
 ### 内部の層の中身
 
@@ -42,7 +42,7 @@ Initialization of Trees
     * 最も右側のノードに $`m_I`$ 個の子供を持たせる
   * **レイアウト「tidy」**: $`I > 1 \land (r = 0 \lor r \ge m_I) \iff I > 1 \land n - (I - 1) M_I \ge m_I`$ のとき、
     * 左側から $`I - 1`$ 個のノードに $`M_I`$ 個ずつ子供を持たせる
-    * 最も右側のノードに $`r`$ 個の子供を持たせる
+    * 最も右側のノードに $`n - (I - 1) M_I`$ 個の子供を持たせる
 
 ## いろんな計算
 
@@ -90,10 +90,11 @@ $`N_C`$ 個の子からなる層の上に $`N_P`$ 個の親からなる層があ
 
 ### 葉のインデックスからペアのインデックス
 
-$`N_V`$ 個のkey-valueペアが $`N_L`$ 個の葉ノードに入っている。左側から $`i_L`$ 個の葉に入っていkey-valueペアの総数 $`i_V`$ は？
+$`N_V`$ 個のkey-valueペアが $`N_L`$ 個の葉ノードに入っている。左側から $`i_L`$ 個の葉に入っているkey-valueペアの総数 $`i_V`$ は？
 
-[親のインデックスから子のインデックス](#親のインデックスから子のインデックス)と同様。
+[親のインデックスから子のインデックス](#親のインデックスから子のインデックス)と同様
+($`M_I, m_I`$ を葉の $`M_l, m_l`$ に、$`N_C`$ をペア数 $`N_V`$ に読み替える)。
 
-* $`N_L > i_L + \begin{cases} 1 & (\text{tail-away}) \\ 0 & (\text{other layout}) \end{cases}`$ のとき、 $`i_V = M_L i_L`$
-* そうでなく $`i_L = N_L`$ なら、 $`i_V = N_C`$
-* そうでないなら、 $`i_V = N_C - m_L`$
+* $`N_L > i_L + \begin{cases} 1 & (\text{tail-away}) \\ 0 & (\text{other layout}) \end{cases}`$ のとき、 $`i_V = M_l i_L`$
+* そうでなく $`i_L = N_L`$ なら、 $`i_V = N_V`$
+* そうでないなら、 $`i_V = N_V - m_l`$

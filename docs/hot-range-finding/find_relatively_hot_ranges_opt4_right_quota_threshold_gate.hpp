@@ -4,7 +4,7 @@
 ///        ビルド対象ではない (参照用)。
 ///
 /// ── opt4: RightQuotaThresholdGate ───────────────────
-/// bpforest.ipp L1355-L1361 相当。
+/// bpforest.ipp `find_relatively_hot_ranges` の right-quota 閾値ゲート (`right_npairs_offcut > right_window_offcut`) 相当。
 ///
 /// 目的:
 ///   opt3 までの multi-range Step A は毎 chunk で new_right_window_offcut を再計算し、
@@ -26,7 +26,7 @@
 ///   これにより Step B の起動頻度は O(ウィンドウが hot_npairs 幅を跨いだ回数) に下がる。
 ///
 /// ── opt3: SingleRangeSteadyStateFastPath ────────────
-/// bpforest.ipp L1329-L1338 相当。
+/// bpforest.ipp `find_relatively_hot_ranges` メインループの single-range 分岐 (`left_range == right_range` fast path) 相当。
 ///
 /// 目的:
 ///   定常 loop の inner iteration は、ウィンドウが単一 cold range に収まっている間
@@ -48,7 +48,7 @@
 ///     - Step C (argmax 更新) は両 path で共通。
 ///
 /// ── opt2: BootstrapAllHotEarlyExit ─────────────────
-/// bpforest.ipp L1271-L1276 相当。
+/// bpforest.ipp `find_relatively_hot_ranges` の "all chunks are hot" early return 相当。
 ///
 /// 目的:
 ///   opt1 の whole-range bootstrap がすべての range を吸収した場合、argmax は既に
@@ -61,7 +61,7 @@
 ///   その sentinel 経路を削除して本来の早期 return に置き換える。
 ///
 /// ── opt1: BootstrapWholeRangeAdvance ─────────────────
-/// bpforest.ipp L1254-L1268 相当 (whole-range 段のみ)。
+/// bpforest.ipp `find_relatively_hot_ranges` の "push the right end outward per cold range" ループ相当 (whole-range 段のみ)。
 ///
 /// 目的:
 ///   ベースの sliding 版は Phase 1 を
@@ -83,7 +83,7 @@
 ///   - opt6: RangeLevelLeftShrink
 ///
 /// 含まない最適化のうち、bootstrap に関するもの:
-///   - chunk 単位の bootstrap (L1279-L1297) は opt1 では行わない。
+///   - chunk 単位の bootstrap (bpforest.ipp の "push the right end outward per data chunk" 段) は opt1 では行わない。
 ///     whole-range bootstrap が終わったら、残った端数は既存 Step A にそのまま引き継ぐ。
 ///
 /// 不変条件:
@@ -193,7 +193,7 @@ find_relatively_hot_ranges(const LinkedList<ChunkedPairsRange>::iterator begin_r
     uint32_t right_window_offcut = 0;
     uint32_t non_left_effective = 0;
 
-    // ── BootstrapWholeRangeAdvance (bpforest.ipp L1254-L1268 相当) ──
+    // ── BootstrapWholeRangeAdvance (bpforest.ipp "push the right end outward per cold range" ループ相当) ──
     //
     // 意味:
     //   left は begin_range のまま固定し、right だけを cold range 単位で前進させる。

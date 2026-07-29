@@ -4,7 +4,7 @@
 ///        ビルド対象ではない (参照用)。
 ///
 /// ── opt1: BootstrapWholeRangeAdvance ─────────────────
-/// bpforest.ipp L1254-L1268 相当 (whole-range 段のみ)。
+/// bpforest.ipp `find_relatively_hot_ranges` の "push the right end outward per cold range" ループ相当 (whole-range 段のみ)。
 ///
 /// 目的:
 ///   ベースの sliding 版は Phase 1 を
@@ -29,7 +29,7 @@
 ///   - opt6: RangeLevelLeftShrink
 ///
 /// 含まない最適化のうち、bootstrap に関するもの:
-///   - chunk 単位の bootstrap (L1279-L1297) は opt1 では行わない。
+///   - chunk 単位の bootstrap (bpforest.ipp の "push the right end outward per data chunk" 段) は opt1 では行わない。
 ///     whole-range bootstrap が終わったら、残った端数は既存 Step A にそのまま引き継ぐ。
 ///
 /// 不変条件:
@@ -139,7 +139,7 @@ find_relatively_hot_ranges(const LinkedList<ChunkedPairsRange>::iterator begin_r
     uint32_t right_window_offcut = 0;
     uint32_t non_left_effective = 0;
 
-    // ── BootstrapWholeRangeAdvance (bpforest.ipp L1254-L1268 相当) ──
+    // ── BootstrapWholeRangeAdvance (bpforest.ipp "push the right end outward per cold range" ループ相当) ──
     //
     // 意味:
     //   left は begin_range のまま固定し、right だけを cold range 単位で前進させる。

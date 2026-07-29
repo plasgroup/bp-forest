@@ -1,17 +1,26 @@
 /// @file full_repartition_naive.hpp
-/// @brief bpforest.ipp:1401-1610 の `BPForest::full_repartition` を、
-///        同一シグネチャ・同一意味論のまま最も愚直に書き直した参照実装。
+/// @brief `BPForest::full_repartition` + `BPForest::full_repartition_worker`
+///        (host/inc/bpforest.ipp) を、同一シグネチャ・同一意味論のまま
+///        最も愚直に書き直した参照実装。
 ///        参照用であり、ビルド対象ではない。
+///
+/// スコープ (詳細は docs/repartitioning/README.md §0.1):
+///   デフォルトパラメータ (`more_hotness == 1`, `greedy_only == false`)
+///   かつ predecessor 以外のクエリでのみ「最適化版と同じ最終状態」の契約が
+///   成立する。最適化版の `param.more_hotness` 係数 / `param.greedy_only`
+///   分岐 / predecessor 用 `std::lower_bound` / 並列 worker 化
+///   (`TmpDataForFullRepartition` + mutex + `parallel_run`) は未反映。
 ///
 /// 剥がした最適化 (= 愚直化の内容):
 ///   (a) クエリの chunk 位置特定を `std::upper_bound` ではなく
-///       chunk 列の線形走査で行う (bpforest.ipp:1470, 1484)。
+///       chunk 列の線形走査で行う (最適化版 `full_repartition_worker` の
+///       chunk load populate ブロック)。
 ///   (b) 欠番。以前は「hot_hook 内の `cold_endpoint_cnt > goal` 判定
 ///       を廃止する」と書いていたが、これは誤り — この判定は
 ///       Algorithm 2/3 のロジックそのものであり、`return true` を
 ///       返し続けると carve される hot 数・位置・最終パーティションが
-///       変わってしまう。愚直版でも段間 (bpforest.ipp:1495, 1523) と
-///       hot_hook 内 (bpforest.ipp:1516, 1540) の両方の
+///       変わってしまう。愚直版でも段間 (abs / rel 各段の直前) と
+///       hot_hook 内 (abs / rel 各 hot_hook の末尾) の両方の
 ///       `cold_endpoint_cnt > cold_endpoint_cnt_goal` 判定を維持する。
 ///   (c) cold 範囲列を `LinkedList<ChunkedPairsRange>` ではなく
 ///       `std::list<ChunkedPairsRange>` で持つ。
@@ -21,14 +30,22 @@
 ///       `idx_in_ary`) の管理や、intrusive link を意識したノード確保が
 ///       呼び出し側から消える。
 ///   (d) carve のたびに `*left_range = ...` / splice で部分更新する
-///       (bpforest.ipp:1500-1506, 1543-1578) のではなく、`new_hots_local`
-///       に記録された hot 区間列から cold list を一から build-from-scratch
-///       で組み立て直す。
-///   (e) BPForest 側の「一時データ用」メンバ (`data_buf`, `chunk2load`,
+///       (abs 段 hot_hook 内の `list.insert` と、rel 段直後の
+///        `carved_cold_range` を使った左右境界の splice) のではなく、
+///       `new_hots_local` に記録された hot 区間列から cold list を
+///       一から build-from-scratch で組み立て直す。
+///   (e) BPForest 側の「一時データ用」メンバ (`data_buf`,
 ///        `chunked_cold_ranges[,_lists]`, `new_hots`, `cold_loads`,
-///        `input_headers` 等) を使わず、ローカル変数で完結させる。
+///        `input_headers`, `hot_ranges`, および per-thread scratch の
+///        `chunk2load` = `inline static thread_local`) を使わず、
+///       ローカル変数で完結させる。
 ///       `delims` / `cold_delims` / `hot_delims` / `nr_pairs` は
 ///       呼び出し間で持ち越す「状態」なのでメンバのまま更新する。
+///   (g) `get_next_idx_base` の pre-filter skip (point query で
+///       `routed.cold[b].nr_qrys <= goal` の base を load 推定ごと飛ばし、
+///       `nr_pairs` / `cold_loads` だけ埋める) を持たず、全 base を
+///       素通しで回す。skip された base は carve が起きないので最終状態は
+///       同じ。
 ///
 /// 保っている意味論 (= 最適化版と同じもの):
 ///   - `hot_load`, `cold_endpoint_cnt_goal`, `hot_npairs` の計算式
@@ -57,9 +74,13 @@
 // helper (a): key を含む chunk を線形走査で特定
 // ─────────────────────────────────────────────────────────────
 //
-// 最適化版 (bpforest.ipp:1470, 1484):
+// 最適化版 (`full_repartition_worker` の chunk load populate ブロック):
 //     upper_bound(left, right, key, [](k, ch){ return k < ch.begin()->key; });
 //     --one_after_target_chunk;
+//
+// 注: 最適化版は predecessor クエリ (`IsPredecessorQuery`) のときだけ
+//     `std::lower_bound` に切り替える。この愚直版は upper_bound 系の
+//     意味論しか実装していない (README §0.1)。
 //
 // part 内で `chunk.begin()->key <= key` を満たす最後の chunk を返す。
 inline DataChunkIterator find_chunk_containing_key_naive(
@@ -81,8 +102,8 @@ inline DataChunkIterator find_chunk_containing_key_naive(
 // helper: base partition 単位で chunk load を集計する (愚直版)
 // ─────────────────────────────────────────────────────────────
 //
-// 最適化版 (bpforest.ipp:1456-1493) と同等。upper_bound を
-// find_chunk_containing_key_naive に差し替えただけ。
+// 最適化版 `full_repartition_worker` の chunk load populate ブロックと
+// 同等。upper_bound を find_chunk_containing_key_naive に差し替えただけ。
 // 呼び出し時点で `base` は単一の ChunkedPairsRange (= base partition
 // 全体) であり、その `set_load_ary` 済みの chunk 負荷配列をインクリ
 // メントする。
@@ -137,7 +158,8 @@ inline uint32_t estimate_chunk_load_naive(
 // これに倣い、スタック上に 1 要素の temporary `LinkedChunkedPairsRange`
 // を置いて渡す。
 //
-// hot_hook 内での `*part` 書き換え (最適化版 bpforest.ipp:1505) は
+// hot_hook 内での `*part` 書き換え (最適化版 `full_repartition_worker`
+// の abs 段 hot_hook にある `part = ChunkedPairsRange{end, part.end()}`) は
 // find_absolutely_hot_ranges の内部 loop の進行に影響しない
 // (loop は冒頭で捕捉した `end_chunk` と `right` だけを見る)。
 // 従って愚直版の hot_hook は tmp を書き換えず、hot 区間と load を
@@ -160,7 +182,7 @@ inline void find_absolutely_hot_ranges_on_range_naive(
 //         (複数 cold 片を一括で処理)
 // ─────────────────────────────────────────────────────────────
 //
-// 最適化版 (bpforest.ipp:1960) の
+// 最適化版 `incremental_repartition_worker_cold` の
 //     find_absolutely_hot_ranges(begin_part, end_part, ...);
 // に対応する、複数 cold 片を 1 回の呼び出しでまとめて処理する bridge。
 // full_repartition では cold は 1 片なので使わないが、
@@ -227,8 +249,8 @@ inline void find_absolutely_hot_ranges_on_list_naive(
 // 壊れない。
 //
 // 戻り値は discard する: 最適化版は carve 済 cold 境界の iterator 組
-// を返し、それを元に部分 splice で cold list を更新する
-// (bpforest.ipp:1543-1578)。愚直版は hot_hook で記録された hot 区間列
+// (`carved_cold_range`) を返し、それを元に部分 splice で cold list を
+// 更新する。愚直版は hot_hook で記録された hot 区間列
 // から cold list を一から再構築するので、境界 iterator は不要。
 template <typename HotHook>
 inline void find_relatively_hot_ranges_on_list_naive(
@@ -352,20 +374,19 @@ inline void BPForest::full_repartition_naive(
     combine_delims();
     route_queries(nr_queries, queries, results, routed);
 
-    // balancing off: cold 一本で確定
     std::vector<std::array<uint32_t, 2>> nr_pairs_local(nr_base_parts, {0, 0});
     std::vector<PairsRange> hot_ranges_local(nr_base_parts, PairsRange{nullptr, nullptr});
 
-    if (param.balancing == 0) {
-        for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
-            nr_pairs_local[idx_base]
-                = {static_cast<uint32_t>(cold_lists[idx_base].front().npairs()), 0};
-        }
-        initialize_in_dpu_naive(nr_pairs_local, cold_lists, hot_ranges_local);
-        return;
-    }
-
-    // ── 5. 閾値定数 (最適化版 L1432-1433 と同式) ────────
+    // ── 5. 閾値定数 ────────────────────────────────────
+    //
+    // 最適化版 `full_repartition_worker` 冒頭の hot_load /
+    // cold_endpoint_cnt_goal と同式。ただし最適化版はこれに
+    // `param.more_hotness` 係数が乗り、`param.greedy_only` が真のとき
+    // goal が `× param.balancing` の式に切り替わる。下の式が数値一致
+    // するのはデフォルト (more_hotness == 1, greedy_only == false) のとき
+    // だけ (README §0.1, §1.3)。
+    //
+    // `param.balancing` は CLI で `>= 1` が強制されるので 0 分岐は無い。
     constexpr uint32_t W = IsPointQuery<Query> ? 1 : 2;
     const uint32_t hot_load
         = (nr_queries * W + nr_base_parts - 1) / nr_base_parts;
@@ -394,8 +415,8 @@ inline void BPForest::full_repartition_naive(
         uint32_t cold_endpoint_cnt = estimate_chunk_load_naive(
             queries, routed, idx_base, nr_base_parts, cold_list.front());
 
-        // 6b. Absolute hot 段 — 段間ゲート (bpforest.ipp:1495) と
-        //     hot_hook 内ゲート (bpforest.ipp:1516) の両方を保持する。
+        // 6b. Absolute hot 段 — 段間ゲート (abs 段の直前) と
+        //     hot_hook 内ゲート (hot_hook 末尾の return) の両方を保持する。
         const size_t abs_start = new_hots_local.size();
         if (cold_endpoint_cnt > cold_endpoint_cnt_goal) {
             find_absolutely_hot_ranges_on_range_naive(
@@ -435,6 +456,8 @@ inline void BPForest::full_repartition_naive(
         }
 
         // 6d. Relative hot 段 (cold_endpoint_cnt が goal を超えるときだけ)。
+        //     最適化版はこの外側ゲートに `!param.greedy_only &&` が前置
+        //     される (greedy_only 時は rel 段が丸ごと消える)。
         if (cold_endpoint_cnt > cold_endpoint_cnt_goal && !cold_list.empty()) {
             const uint32_t nr_relative_hots = cold_endpoint_cnt / hot_load;
 
@@ -473,7 +496,9 @@ inline void BPForest::full_repartition_naive(
         cold_loads_local[idx_base] = {idx_base, cold_endpoint_cnt};
     }
 
-    // ── 7. hot を低負荷 DPU に割り当て (最適化版 L1585-1606) ──
+    // ── 7. hot を低負荷 DPU に割り当て ──────────────────
+    //   最適化版 `full_repartition` の partial_sort / sort +
+    //   delims.emplace ループに対応。
     for (dpu_id_t idx = 0; idx < nr_base_parts; idx++) {
         nr_pairs_local[idx] = {cold_npairs_after[idx], 0};
     }
@@ -507,34 +532,50 @@ inline void BPForest::full_repartition_naive(
 
 
 // ─────────────────────────────────────────────────────────────
-// 参考: 最適化版との対応表 (bpforest.ipp の行番号)
+// 参考: 最適化版との対応表 (関数 + ブロック単位)
 // ─────────────────────────────────────────────────────────────
-//  愚直版ステップ                         | 最適化版 (bpforest.ipp)
+// 最適化版は worker 分割されており行単位の 1:1 対応は付かない。
+// 対応は関数名 + ブロック名で見ること (README §6)。
+//
+//  愚直版ステップ                         | 最適化版
 // ────────────────────────────────────────┼──────────────────────────
-//  1 retrieve_all_data                    | L1405
-//  2 delims / hot_delims クリア           | L1407-1408
-//  3 cold_lists / chunk_loads 初期化      | L1410-1422
-//                                         | (`chunked_cold_ranges` プール,
-//                                         |  `chunk2load` をローカルに)
-//  4 初回 route_queries                   | L1425-1429
-//  5 閾値定数                             | L1431-1433
-//  6a chunk load populate                 | L1455-1493
-//    └─ (a) 線形 chunk 特定               | L1470, L1484 を置換
-//  6b Absolute hot 段                     | L1495-1521
-//    ├─ 段間ゲート (保持)                 | L1495 の条件式
-//    ├─ bridge (c) 単一要素               | L1498 の `&base, &base + 1`
-//    └─ hot_hook 内ゲート (保持)          | L1516 の return 条件
-//  6c cold list rebuild (abs 後)          | L1500-1506, 1518-1520 を置換
+//  1 retrieve_all_data                    | full_repartition:
+//                                         |   retrieve_all_data(data_buf)
+//  2 delims / hot_delims クリア           | 同上 直後の clear / fill
+//  3 cold_lists / chunk_loads 初期化      | 同上 chunked_cold_ranges[] と
+//                                         | chunked_cold_ranges_lists[] を
+//                                         | 埋める base ループ
+//                                         | (プール / chunk2load をローカルに)
+//  4 初回 route_queries                   | 同上 combine_delims +
+//                                         |   route_queries
+//  5 閾値定数                             | full_repartition_worker 冒頭
+//                                         | (more_hotness / greedy_only 分岐
+//                                         |  は未反映)
+//  6a chunk load populate                 | 同 worker の chunk2load ブロック
+//    └─ (a) 線形 chunk 特定               | 同ブロックの upper_bound を置換
+//  6b Absolute hot 段                     | 同 worker の
+//                                         |   find_absolutely_hot_ranges 呼出
+//    ├─ 段間ゲート (保持)                 | 呼出し直前の if 条件
+//    ├─ bridge (c) 単一要素               | `&base, &base + 1`
+//    └─ hot_hook 内ゲート (保持)          | hot_hook 末尾の return 条件
+//  6c cold list rebuild (abs 後)          | hot_hook 内の list.insert /
+//                                         | 段直後の空 base erase を置換
 //                                         | 愚直化 (d)
-//  6d Relative hot 段                     | L1523-1541
-//    ├─ 段間ゲート (保持)                 | L1523 の条件式
-//    ├─ bridge (c) std::list → LinkedList | L1529 の iter 形を置換
-//    └─ hot_hook 内ゲート (保持)          | L1540 の return 条件
-//  6e cold list rebuild (abs + rel 後)    | L1543-1578 を置換 (愚直化 (d))
-//  7  hot → DPU マッチング                | L1585-1606
-//  8  initialize_in_dpu                   | L1609
+//  6d Relative hot 段                     | 同 worker の
+//                                         |   find_relatively_hot_ranges 呼出
+//    ├─ 段間ゲート (保持)                 | 呼出し直前の if 条件
+//    |                                    | (最適化版は !greedy_only 付き)
+//    ├─ bridge (c) std::list → LinkedList | `list.begin(), list.end()`
+//    └─ hot_hook 内ゲート (保持)          | hot_hook 末尾の return 条件
+//  6e cold list rebuild (abs + rel 後)    | 段直後の carved_cold_range
+//                                         | splice を置換 (愚直化 (d))
+//  7  hot → DPU マッチング                | full_repartition の
+//                                         | partial_sort / sort +
+//                                         | delims.emplace ループ
+//  8  initialize_in_dpu                   | full_repartition 末尾
 //
 // 意味論: hot 集合 / delims / hot_delims / nr_pairs / DPU 側 B+ tree
 //         いずれも最適化版と一致する (ソート tie-break の違いを除けば)。
 //         `cold_endpoint_cnt` の scalar 追跡も最適化版と同じ値を取る
 //         (段ごとに `-= load` を累積するため)。
+//         ただし成立するのは README §0.1 のスコープ内でのみ。
