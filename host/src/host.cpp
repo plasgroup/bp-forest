@@ -16,8 +16,6 @@
 
 #include <cmdline.h>
 
-#include <numa.h>
-
 #include <ios>
 #include <sched.h>
 #include <sys/time.h>
@@ -25,7 +23,6 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -38,7 +35,6 @@
 #include <memory>
 #include <numeric>
 #include <optional>
-#include <system_error>
 #include <tuple>
 #include <vector>
 
@@ -402,12 +398,6 @@ Benchmark* make_benchmark(const Option& opt, Args&&... args)
 
 int main(int argc, char* argv[])
 {
-    if (numa_available() >= 0) {
-        if (numa_run_on_node(0) != 0) {
-            throw std::system_error{errno, std::generic_category(), "numa_run_on_node"};
-        }
-    }
-
     opt.parse(argc, argv);
 
     std::optional<std::vector<Partition>> partitions;
