@@ -1142,7 +1142,7 @@ class HWCBPForestPartitioner : public Partitioner {
             has_hot_partition[i] = has;
         }
 
-        printf("total: #more_hot = %d\n", more_hot_partitions.size());
+        printf("total: #more_hot = %zu\n", more_hot_partitions.size());
 
         return {has_hot_partition, more_hot_partitions};
     }

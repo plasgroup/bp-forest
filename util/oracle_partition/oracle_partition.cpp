@@ -153,7 +153,7 @@ void save_load(
     fprintf(fp, "# dpu_id, base_load, hot_load, ");
     fprintf(fp, "base_begin_idx, base_end_idx, hot_begin_idx, hot_end_idx, total_load, hot_items\n");
     for (size_t i = 0; i < base_load.size(); i++)
-        fprintf(fp, "%ld, %ld, %ld, %d, %d, %d, %d, %d, %d\n",
+        fprintf(fp, "%ld, %ld, %ld, %d, %d, %d, %d, %lu, %d\n",
                 i, base_load[i], hot_load[i],
                 base[i].begin_idx, base[i].end_idx, hot[i].begin_idx, hot[i].end_idx,
                 base_load[i] + hot_load[i], hot[i].end_idx - hot[i].begin_idx);
