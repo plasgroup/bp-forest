@@ -19,10 +19,13 @@
 //! trees are emulated with std::map; deletion erases pairs instead of leaving
 //! the tombstones the DPU program uses, which yields the same observable
 //! contents for every task.
-class DPUEmulator
+class FakeDPU
 {
+public:
     // as large as the whole MRAM of a real DPU
     static constexpr size_t MRAMSize = 1ul << 26;
+
+private:
     struct alignas(uint64_t) MRAMImage {
         std::byte impl[MRAMSize];
     };
@@ -47,4 +50,4 @@ private:
 };
 
 
-#include "dpu_emulator.ipp"
+#include "fake_dpu.ipp"

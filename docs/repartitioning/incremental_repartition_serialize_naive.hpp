@@ -116,7 +116,7 @@
 //   out_nr_cold_pairs_per_dpu  : 対象 DPU ごとの cold pair 総数
 //                                (= `nr_pairs[d][0]`)
 //
-// 実装は dpu_emulator / upmem 通信層に属するため、本 docs では宣言のみ。
+// 実装は fake_dpu / upmem 通信層に属するため、本 docs では宣言のみ。
 inline void serialize_cold_on_touched_dpus_naive(
     BPForest&,
     const std::vector<bool>& touched_dpus,

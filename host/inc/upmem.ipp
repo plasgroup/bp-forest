@@ -5,7 +5,7 @@
 #include "dpu_set.hpp"
 #include "host_params.hpp"
 
-#ifndef HOST_ONLY
+#if !defined(FAKE_DPU) && !defined(DPU_ON_CPU)
 #include <array>
 #endif
 
@@ -21,7 +21,7 @@ struct UPMEM_AsyncDuration {
     UPMEM_AsyncDuration(const UPMEM_AsyncDuration&) = delete;
     UPMEM_AsyncDuration& operator=(const UPMEM_AsyncDuration&) = delete;
 
-#ifndef HOST_ONLY
+#if !defined(FAKE_DPU) && !defined(DPU_ON_CPU)
     bool all{};
     std::array<bool, NR_RANKS> rank{};
 #endif
@@ -31,8 +31,10 @@ inline void upmem_init_impl();
 inline void upmem_release_impl();
 
 
-#ifdef HOST_ONLY
-#include "upmem_impl_host_only.ipp"
+#if defined(FAKE_DPU)
+#include "upmem_impl_fake_dpu.ipp"
+#elif defined(DPU_ON_CPU)
+#include "upmem_impl_dpu_on_cpu.ipp"
 #else
 #include "upmem_impl_dpu.ipp"
 #endif

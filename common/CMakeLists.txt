@@ -23,10 +23,14 @@ foreach(build_version IN LISTS targets)
 endforeach(build_version)
 
 
-if(TARGET common_host_only)
-    target_compile_definitions(common_host_only INTERFACE HOST_ONLY)
-endif(TARGET common_host_only)
+if(TARGET common_fake_dpu)
+    target_compile_definitions(common_fake_dpu INTERFACE FAKE_DPU)
+endif(TARGET common_fake_dpu)
 
 if(TARGET common_upmem_simulator)
     target_compile_definitions(common_upmem_simulator INTERFACE UPMEM_SIMULATOR)
 endif(TARGET common_upmem_simulator)
+
+if(TARGET common_dpu_on_cpu)
+    target_compile_definitions(common_dpu_on_cpu INTERFACE DPU_ON_CPU)
+endif(TARGET common_dpu_on_cpu)

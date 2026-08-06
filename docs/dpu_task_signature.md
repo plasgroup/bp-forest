@@ -36,7 +36,7 @@ DPU プログラム (`dpu/src/dpumain.c`) は 1 回の起動で 1 種類のタ�
 (`BPForest::execute_in_dpus`, `host/inc/bpforest.ipp`)。全 DPU で同じ値にすることで、
 結果の一括転送を単一のオフセットからおこなえる。
 
-現行プロトコルの最も読みやすい参照実装は `host/inc/dpu_emulator.ipp` (host_only ビルド用の
+現行プロトコルの最も読みやすい参照実装は `host/inc/fake_dpu.ipp` (fake_dpu ビルド用の
 DPU エミュレータ)。DPU 側の実体は `dpu/src/bplustree.c`。
 
 ## 実装済みのタスク

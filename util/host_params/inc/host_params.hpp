@@ -46,7 +46,7 @@ constexpr uint32_t KVPairsChunkSize = KVPAIRS_CHUNK_SIZE;
 // #define DEBUG_ON
 // #define PRINT_DEBUG
 
-#ifdef HOST_ONLY
+#ifdef FAKE_DPU
 // #define MEASURE_XFER_BYTES
 #else
 // #define UPMEM_TRACE

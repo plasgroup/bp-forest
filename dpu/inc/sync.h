@@ -70,6 +70,25 @@ __attribute__((unused)) static void wait_for_next_ready(void)
 }
 #endif
 
+#include <mutex.h>
+
+extern const mutex_id_t tmp_sync_mutex;
+
+#ifdef DPU_ON_CPU
+
+extern const mutex_id_t global_lock_mutex;
+
+__attribute__((unused)) static void acquire_lock(void)
+{
+    mutex_lock(global_lock_mutex);
+}
+__attribute__((unused)) static void release_lock(void)
+{
+    mutex_unlock(global_lock_mutex);
+}
+
+#else /* DPU_ON_CPU */
+
 // AtomicBits[2 * NR_TASKLETS - 2]
 __attribute__((unused)) static void acquire_lock(void)
 {
@@ -84,10 +103,7 @@ __attribute__((unused)) static void release_lock(void)
                  : "memory");
 }
 
-
-#include <mutex.h>
-
-extern const mutex_id_t tmp_sync_mutex;
+#endif /* DPU_ON_CPU */
 
 __attribute__((unused)) static void notify_next_of_readiness(void)
 {

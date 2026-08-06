@@ -381,7 +381,7 @@ static unsigned construct_tree(const uintptr_t initial_pairs, const uint32_t nr_
                                                 - nr_nodes_not_sent;
                 idx_lift_cache = idx_lift_cache_begin;
 
-                const unsigned incoming_links = lifted_links;
+                const uintptr_t incoming_links = lifted_links;
                 {  // Fetch the links to children before rewriting lifted_links_offset
                     _Static_assert((TREE_CONSTRUCT_NR_CACHED_INPUT_LIFT * sizeof(LinkLift)) % 8 == 0, "(TREE_CONSTRUCT_NR_CACHED_INPUT_LIFT * sizeof(LinkLift)) % 8 == 0");
                     mram_read((__mram_ptr void*)(incoming_links - lifted_links_offset),

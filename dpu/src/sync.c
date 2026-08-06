@@ -12,3 +12,7 @@ bool bwd_readiness[NR_TASKLETS - 1] = {};
 #include <mutex.h>
 
 MUTEX_INIT(tmp_sync_mutex);
+
+#ifdef DPU_ON_CPU
+MUTEX_INIT(global_lock_mutex);
+#endif

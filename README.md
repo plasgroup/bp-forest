@@ -5,6 +5,8 @@ B+-Forest is based on many B+-trees and aims to handle data skew by extracting a
 ## Code Structure
 - /dpu
   - Source codes and header files for the DPUs
+- /dpu_on_cpu
+  - Shim headers and runtime to compile the DPU program for the host CPU (the `dpu_on_cpu` build mode)
 - /host
   - Source codes and header files for the host CPU
 - /common
@@ -12,12 +14,12 @@ B+-Forest is based on many B+-trees and aims to handle data skew by extracting a
 
 ## Parameters
 
-* CMakeLists.txt
-  * NR_TASKLETS_HOST_ONLY, NR_TASKLETS_UPMEM, NR_TASKLETS_SIMULATOR
+* CMakeLists.txt (`<target>` is one of fake_dpu / upmem / upmem_simulator / dpu_on_cpu)
+  * NR_TASKLETS_`<target>`
     * the number of tasklets per DPU
-  * NR_RANKS_HOST_ONLY, NR_RANKS_UPMEM, NR_RANKS_SIMULATOR
+  * NR_RANKS_`<target>`
     * the number of ranks(1~40)
-  * NUM_REQUESTS_PER_BATCH_HOST_ONLY, NUM_REQUESTS_PER_BATCH_UPMEM, NUM_REQUESTS_PER_BATCH_SIMULATOR
+  * NUM_REQUESTS_PER_BATCH_`<target>`
     * the number of queries in each query batch
 * common/inc/common_params.h
   * (NR_RANKS)
@@ -26,7 +28,7 @@ B+-Forest is based on many B+-trees and aims to handle data skew by extracting a
   * MAX_NR_SUMMARY_CHUNKS
   * RMQ_RESULT_OFFSET
   * MAX_NR_RMQ_LUMPS
-* host/inc/host_params.h
+* util/host_params/inc/host_params.hpp
   * (NUM_REQUESTS_PER_BATCH)
   * DEFAULT_NR_BATCHES
     * the number of query batches
@@ -38,8 +40,10 @@ B+-Forest is based on many B+-trees and aims to handle data skew by extracting a
     * whether to compare the results of the queries with `std::map`
   * PRINT_DEBUG
     * whether to print the output of DPUs to stdout
-  * HOST_ONLY
+  * FAKE_DPU
     * whether to replace the DPU processing with a fake implementation on the CPU
+  * DPU_ON_CPU
+    * defined in the dpu_on_cpu build, which runs the real DPU program compiled for the CPU
   * MEASURE_XFER_BYTES
   * UPMEM_TRACE
     * when using `dpu-lldb` or `dpugrind`, define this
@@ -86,9 +90,17 @@ cmake --build ./build
   * This will finally present the path to `run_all.sh`.
 * Run the `run_all.sh` given above.
 
-### switch between HOST_ONLY / UPMEM / SIMULATOR
+### switch between fake_dpu / upmem / upmem_simulator
 
 * in `./scripts/build.sh`
-  * replace `make -j \$(nproc) host_app_UPMEM` with `... host_app_host_only` / `... host_app_upmem_simulator`
+  * replace `make -j \$(nproc) host_app_upmem` with `... host_app_fake_dpu` / `... host_app_upmem_simulator`
 * in `./scripts/run_all.sh`
-  * replace `./build/${variant}/host/host_app_UPMEM` with `.../host_app_host_only` / `.../host_app_upmem_simulator`
+  * replace `./build/${variant}/host/host_app_upmem` with `.../host_app_fake_dpu` / `.../host_app_upmem_simulator`
+
+### dpu_on_cpu mode
+
+`host_app_dpu_on_cpu` runs the real DPU program (unlike the fake implementation of the fake_dpu build) compiled for the host CPU, for debugging it with ordinary tools (gdb, sanitizers). Each DPU is a dlopen'd copy of the program's shared library; each tasklet is a thread. The UPMEM SDK is not needed: configure with `-Dtargets=dpu_on_cpu` and build the `host_app_dpu_on_cpu` target.
+
+* DPU printf goes to a per-DPU log, collected launch-wise by `read_log()` with the SDK's `=== DPU#0x.. ===` headers (visible with PRINT_DEBUG builds); set `DPU_ON_CPU_TEE_LOG=1` to also tee every printf to stderr immediately. On abort/assert, pending logs are dumped to stderr.
+* `EMU_NR_WORKERS=n` bounds how many DPUs run concurrently (`1` = one by one; also honored by fake_dpu); `DPU_ON_CPU_PROGRAM_PATH` overrides the path of the DPU program library.
+* Not reproduced (by design): WRAM/stack size limits, collisions inside the single 64MB MRAM space (statics and heap are separate objects here), the garbage content of uninitialized MRAM, and the DPU's round-robin scheduling — tasklets are preemptive threads, so a data race that never fires on the device may fire here (and vice versa). When results differ from the device, suspect these first.

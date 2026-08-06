@@ -271,7 +271,7 @@ inline void BPForest::distribute_equal_data(const KVPair sorted_pairs[], const s
     }
 #endif
 
-#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+#if !defined(FAKE_DPU) && defined(PRINT_DEBUG)
     std::unique_ptr<LogBuffer> log = read_log(all_dpu);
     std::cout << log->get() << std::flush;
 #endif
@@ -479,7 +479,7 @@ inline void BPForest::initialize_in_dpu(const InputHeader input_headers[], const
     }
 #endif
 
-#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+#if !defined(FAKE_DPU) && defined(PRINT_DEBUG)
     std::unique_ptr<LogBuffer> log = read_log(all_dpu);
     std::cout << log->get() << std::flush;
 #endif
@@ -855,7 +855,7 @@ inline void BPForest::execute_in_dpus(TaskID task_no, QueryData<Query, Result>& 
     }
 #endif
 
-#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+#if !defined(FAKE_DPU) && defined(PRINT_DEBUG)
     std::unique_ptr<LogBuffer> log = read_log(all_dpu);
     std::cout << log->get() << std::flush;
 #endif
@@ -1254,7 +1254,7 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
         scatter_from_dpu(all_dpu, sizeof(InputHeader), SerializaionNrPairsReceiver{&base_to_nr_hot_psum[0], &incision_indices[0]}, async);
     }
 #endif
-#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+#if !defined(FAKE_DPU) && defined(PRINT_DEBUG)
     {
         std::unique_ptr<LogBuffer> log = read_log(all_dpu);
         std::cout << log->get() << std::flush;
@@ -2060,7 +2060,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             scatter_from_dpu(all_dpu, sizeof(InputHeader), TaskNoneFilter<SerializaionNrPairsReceiver>{&input_headers[0], &base_to_nr_hot_psum[0], &incision_indices[0]}, async);
         }
 #endif
-#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+#if !defined(FAKE_DPU) && defined(PRINT_DEBUG)
         {
             std::unique_ptr<LogBuffer> log = read_log(all_dpu);
             std::cout << log->get() << std::flush;
@@ -2260,7 +2260,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         execute(all_dpu, async);
     }
 #endif
-#if !defined(HOST_ONLY) && defined(PRINT_DEBUG)
+#if !defined(FAKE_DPU) && defined(PRINT_DEBUG)
     {
         std::unique_ptr<LogBuffer> log = read_log(all_dpu);
         std::cout << log->get() << std::flush;
@@ -2714,7 +2714,7 @@ inline void BPForest::partition_with_range_max_batch(uint32_t nr_queries, const 
 
 inline void BPForest::print_params(std::ostream& ostr) const
 {
-#ifndef HOST_ONLY
+#ifndef FAKE_DPU
     ostr << get_param_dump().get();
 #endif
 
@@ -2729,10 +2729,15 @@ inline void BPForest::print_params(std::ostream& ostr) const
 #endif
             "MAX_NR_SUMMARY_CHUNKS: " EXPAND_STRINGIFY(MAX_NR_SUMMARY_CHUNKS) "\n"
             "MAX_NR_RMQ_LUMPS: " EXPAND_STRINGIFY(MAX_NR_RMQ_LUMPS) "\n"
-#ifdef HOST_ONLY
-            "HOST_ONLY: 1\n"
+#ifdef FAKE_DPU
+            "FAKE_DPU: 1\n"
 #else
-            "HOST_ONLY: 0\n"
+            "FAKE_DPU: 0\n"
+#endif
+#ifdef DPU_ON_CPU
+            "DPU_ON_CPU: 1\n"
+#else
+            "DPU_ON_CPU: 0\n"
 #endif
             "NUM_REQUESTS_PER_BATCH: " EXPAND_STRINGIFY(NUM_REQUESTS_PER_BATCH) "\n"
             "DEFAULT_NR_BATCHES: " EXPAND_STRINGIFY(DEFAULT_NR_BATCHES) "\n"
@@ -2753,7 +2758,7 @@ inline void BPForest::print_params(std::ostream& ostr) const
 #else
             "PRINT_DEBUG: 0\n"
 #endif
-#ifdef HOST_ONLY
+#ifdef FAKE_DPU
 #ifdef MEASURE_XFER_BYTES
             "MEASURE_XFER_BYTES: 1\n"
 #else

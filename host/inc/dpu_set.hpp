@@ -3,14 +3,14 @@
 #include "host_params.hpp"
 
 
-#ifdef HOST_ONLY
+#if defined(FAKE_DPU) || defined(DPU_ON_CPU)
 
 #include <bitset>
 
 typedef std::bitset<MAX_NR_DPUS> DPUSet;
 
 
-#else /* HOST_ONLY */
+#else /* FAKE_DPU */
 
 extern "C" {
 #include <dpu.h>
@@ -28,7 +28,7 @@ struct DPUSetSingle {
 };
 using DPUSet = std::variant<DPUSetAll, DPUSetRanks, DPUSetSingle>;
 
-#endif /* HOST_ONLY */
+#endif /* FAKE_DPU */
 
 
 inline DPUSet all_dpu;

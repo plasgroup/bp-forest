@@ -1,6 +1,6 @@
 #pragma once
 
-#include "dpu_emulator.hpp"
+#include "fake_dpu.hpp"
 
 #include "assert.hpp"
 #include "common.h"
@@ -17,7 +17,7 @@
 #include <vector>
 
 
-inline void DPUEmulator::execute()
+inline void FakeDPU::execute()
 {
     InputHeader header;
     std::memcpy(&header, &mram[0], sizeof(InputHeader));
@@ -181,11 +181,11 @@ struct iterator_traits<KVPairToStdPair> {
 };
 }  // namespace std
 
-inline void DPUEmulator::construct_tree(Tree& tree, const uint32_t nr_pairs, const KVPair pairs[])
+inline void FakeDPU::construct_tree(Tree& tree, const uint32_t nr_pairs, const KVPair pairs[])
 {
     Tree{KVPairToStdPair{pairs}, KVPairToStdPair{pairs + nr_pairs}}.swap(tree);
 }
-inline void DPUEmulator::task_get(const Tree& tree, const uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[])
+inline void FakeDPU::task_get(const Tree& tree, const uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[])
 {
     for (uint32_t i = 0; i < nr_queries; i++) {
         const auto iter = tree.find(keys[i]);
@@ -198,7 +198,7 @@ inline void DPUEmulator::task_get(const Tree& tree, const uint32_t nr_queries, c
 }
 //! @brief Strict predecessor: the pair with the largest key < the queried key.
 //! Host-side routing guarantees the predecessor exists in this tree.
-inline void DPUEmulator::task_pred(const Tree& tree, const uint32_t nr_queries, const key_uint64_t keys[], KVPair result[])
+inline void FakeDPU::task_pred(const Tree& tree, const uint32_t nr_queries, const key_uint64_t keys[], KVPair result[])
 {
     for (uint32_t i = 0; i < nr_queries; i++) {
         auto iter = tree.lower_bound(keys[i]);
@@ -210,7 +210,7 @@ inline void DPUEmulator::task_pred(const Tree& tree, const uint32_t nr_queries, 
         }
     }
 }
-inline void DPUEmulator::task_range_count(const Tree& tree, const uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[])
+inline void FakeDPU::task_range_count(const Tree& tree, const uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[])
 {
     for (uint32_t i = 0; i < nr_queries; i++) {
         uint64_t count = 0;
@@ -225,7 +225,7 @@ inline void DPUEmulator::task_range_count(const Tree& tree, const uint32_t nr_qu
         result[i] = count;
     }
 }
-inline void DPUEmulator::task_range_max(const Tree& tree, const uint32_t nr_queries, const KeyRange queries[], value_uint64_t result[])
+inline void FakeDPU::task_range_max(const Tree& tree, const uint32_t nr_queries, const KeyRange queries[], value_uint64_t result[])
 {
     for (uint32_t i = 0; i < nr_queries; i++) {
         value_uint64_t max = NOT_FOUND_VALUE;
@@ -238,13 +238,13 @@ inline void DPUEmulator::task_range_max(const Tree& tree, const uint32_t nr_quer
         result[i] = max;
     }
 }
-inline void DPUEmulator::task_insert(Tree& tree, const uint32_t nr_queries, const KVPair pairs[])
+inline void FakeDPU::task_insert(Tree& tree, const uint32_t nr_queries, const KVPair pairs[])
 {
     for (uint32_t i = 0; i < nr_queries; i++) {
         tree.insert_or_assign(pairs[i].key, pairs[i].value);
     }
 }
-inline void DPUEmulator::task_delete(Tree& tree, const uint32_t nr_queries, const key_uint64_t keys[])
+inline void FakeDPU::task_delete(Tree& tree, const uint32_t nr_queries, const key_uint64_t keys[])
 {
     for (uint32_t i = 0; i < nr_queries; i++) {
         tree.erase(keys[i]);

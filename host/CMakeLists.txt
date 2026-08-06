@@ -45,4 +45,12 @@ foreach(build_version IN LISTS targets)
         target_compile_definitions(host_app_${build_version} PRIVATE
             DPU_BINARY_PATH="${CMAKE_CURRENT_BINARY_DIR}/../dpu/dpu_program_${build_version}")
     endif(build_version MATCHES "^upmem")
+
+    if(build_version STREQUAL "dpu_on_cpu")
+        target_link_libraries(host_app_${build_version} ${CMAKE_DL_LIBS})
+        add_dependencies(host_app_${build_version} dpu_program_${build_version})
+
+        target_compile_definitions(host_app_${build_version} PRIVATE
+            DPU_CPU_PROGRAM_PATH="$<TARGET_FILE:dpu_program_${build_version}>")
+    endif(build_version STREQUAL "dpu_on_cpu")
 endforeach()

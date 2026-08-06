@@ -1,6 +1,6 @@
 #pragma once
 
-#ifdef HOST_ONLY
+#if defined(FAKE_DPU) || defined(DPU_ON_CPU)
 #include <cstdint>
 
 struct sg_block_info {
@@ -8,8 +8,8 @@ struct sg_block_info {
     uint32_t length;
 };
 
-#else /* HOST_ONLY */
+#else /* FAKE_DPU */
 extern "C" {
 #include <dpu.h>
 }
-#endif /* HOST_ONLY */
+#endif /* FAKE_DPU */

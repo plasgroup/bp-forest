@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.10)
 project(bp-forest C CXX)
 
 if(NOT DEFINED targets)
-    list(APPEND targets host_only upmem upmem_simulator)
+    list(APPEND targets fake_dpu upmem upmem_simulator dpu_on_cpu)
 endif(NOT DEFINED targets)
 
 
@@ -33,6 +33,7 @@ add_subdirectory(external)
 add_subdirectory(common)
 add_subdirectory(util)
 add_subdirectory(dpu)
+add_subdirectory(dpu_on_cpu)
 add_subdirectory(workload_mgmt)
 add_subdirectory(tester_host)
 add_subdirectory(host)

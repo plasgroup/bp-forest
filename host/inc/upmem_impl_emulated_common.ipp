@@ -1,43 +1,34 @@
 #pragma once
 
+//! @file
+//! UPMEM module implementation shared by the emulated-DPU builds (fake_dpu
+//! and dpu_on_cpu).  Transfers assert the constraints the SDK's transfer
+//! functions enforce, and keep the rank-wise total_xfer_bytes accounting.
+//!
+//! The including file must define, before including this one:
+//! - constexpr dpu_id_t NrDPUs, NrDPUsInRank
+//! - inline std::optional<Backend> emulated_dpus, where Backend provides
+//!   get_comm_buffer(dpu_id_t), launch_dpu(dpu_id_t), wait_all() and
+//!   mram_heap_bytes()
+//! as well as upmem_init_impl()/upmem_release_impl() managing emulated_dpus.
+
 #include "batch_transfer_buffer.hpp"
 #include "dpu_set.hpp"
 #include "host_params.hpp"
 #include "sg_block_info.hpp"
-#include "statistics.hpp"
-#include "upmem_emulator.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <iostream>
-#include <optional>
 #include <type_traits>
 #include <utility>
 
 
-constexpr dpu_id_t NrDPUs = MAX_NR_DPUS;
-constexpr dpu_id_t NrDPUsInRank = MAX_NR_DPUS_IN_RANK;
-inline std::optional<UPMEMEmulator<NrDPUs>> emulator;
-
-
 inline UPMEM_AsyncDuration::~UPMEM_AsyncDuration()
 {
-}
-
-inline void upmem_init_impl()
-{
-    all_dpu.reset();
-    all_dpu.flip();
-    emulator.emplace();
-}
-inline void upmem_release_impl()
-{
-    all_dpu.reset();
-    emulator.reset();
 }
 
 
@@ -75,6 +66,7 @@ inline DPUSet select_rank(dpu_id_t index)
 template <bool ToDPU, class BatchTransferBuffer>
 inline void xfer_with_dpu(const DPUSet& set, uint32_t offset, BatchTransferBuffer&& buf, UPMEM_AsyncDuration&)
 {
+    assert(offset % 8 == 0 && "MRAM offset of a transfer must be 8-byte aligned");
     uint64_t total_xfer_bytes = 0;
     uint64_t total_effective_bytes = 0;
     for (dpu_id_t i = 0; i < NrDPUs;) {
@@ -85,14 +77,16 @@ inline void xfer_with_dpu(const DPUSet& set, uint32_t offset, BatchTransferBuffe
                 const auto size = buf.bytes_for_dpu(i);
                 static_assert(std::is_trivially_copyable_v<std::remove_pointer_t<decltype(ptr)>>,
                     "non-trivial copying cannot be performed between CPU and DPU");
+                assert(size % 8 == 0 && "length of a transfer must be 8-byte aligned");
+                assert(offset + size <= emulated_dpus->mram_heap_bytes() && "transfer beyond the end of MRAM");
 
-                void* mram_addr = emulator->get_comm_buffer(i) + offset;
+                void* const mram_addr = emulated_dpus->get_comm_buffer(i) + offset;
                 if constexpr (ToDPU)
                     std::memcpy(mram_addr, ptr, size);
                 else
                     std::memcpy(ptr, mram_addr, size);
                 total_effective_bytes += size;
-                max_xfer_bytes = std::max(max_xfer_bytes, size);
+                max_xfer_bytes = std::max<size_t>(max_xfer_bytes, size);
             }
         }
         total_xfer_bytes += max_xfer_bytes * NrDPUsInRank;
@@ -108,14 +102,18 @@ inline void broadcast_to_dpu(const DPUSet& set, uint32_t offset, const Single<T>
 template <bool ToDPU, class ScatteredBatchTransferBuffer>
 inline void scatter_gather_with_dpu(const DPUSet& set, uint32_t offset, ScatteredBatchTransferBuffer&& buf, UPMEM_AsyncDuration&)
 {
+    // per-DPU lengths need no alignment here: the upmem implementation
+    // rounds them up to 8 bytes when issuing the scatter-gather transfer
+    assert(offset % 8 == 0 && "MRAM offset of a transfer must be 8-byte aligned");
     uint64_t total_xfer_bytes = 0;
     uint64_t total_effective_bytes = 0;
     for (dpu_id_t i = 0; i < NrDPUs;) {
         size_t max_xfer_bytes = 0;
         for (dpu_id_t j = 0; i < NrDPUs && j < NrDPUsInRank; i++, j++) {
             if (set[i]) {
-                std::byte* mram_addr = emulator->get_comm_buffer(i) + offset;
                 const size_t xfer_bytes = buf.bytes_for_dpu(i);
+                assert(offset + xfer_bytes <= emulated_dpus->mram_heap_bytes() && "transfer beyond the end of MRAM");
+                std::byte* mram_addr = emulated_dpus->get_comm_buffer(i) + offset;
                 size_t left_xfer_bytes = xfer_bytes;
 
                 sg_block_info block;
@@ -140,8 +138,8 @@ inline void execute(const DPUSet& set, UPMEM_AsyncDuration&)
 {
     for (dpu_id_t i = 0; i < NrDPUs; i++)
         if (set[i])
-            emulator->launch_dpu(i);
-    emulator->wait_all();
+            emulated_dpus->launch_dpu(i);
+    emulated_dpus->wait_all();
 }
 
 template <class Func>
