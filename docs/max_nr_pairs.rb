@@ -19,9 +19,9 @@ SizeOfNode = gets.strip.to_i
 MaxNrNodes = MRAMForTree / SizeOfNode
 
 # dpu/inc/bplustree.h の定義と同じ。
-# 葉: keys[MaxNrPairs] + values[MaxNrPairs] + right (4B) + left (4B) + パディング
+# 葉: values[MaxNrPairs] + right (4B + パディング 4B) + keys[MaxNrPairs] + left (4B + パディング 4B)
 MaxNrPairs = (SizeOfNode - 16) / 16
-# 内部: keys[MaxNrChildren - 1] (8B each) + children[MaxNrChildren] (4B each) を偶数に切り下げ
+# 内部: children[MaxNrChildren] (4B each) + keys[MaxNrChildren - 1] (8B each) を偶数に切り下げ
 # (DEBUG_OCCUPANCY 有効時は numKeys の 4B を引いた (SizeOfNode + 8 - 4) / 12 / 2 * 2)
 MaxNrChildren = (SizeOfNode + 8) / 12 / 2 * 2
 

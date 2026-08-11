@@ -32,17 +32,30 @@ static const NodeLink NODELINK_NULLPTR = {NODE_NULLPTR, UINT_MAX&((1u << CEIL_LO
 #define MAX_NR_PAIRS ((SIZEOF_NODE - 16) / (sizeof(key_uint64_t) + sizeof(value_uint64_t)))
 #define MIN_NR_PAIRS ((MAX_NR_PAIRS + 1) / 2)
 
+// Bidirectional layout: all the occupied elements of a node form one
+// contiguous region in the middle, so a single DMA, sized from the occupancy
+// embedded in the NodeLink, can fetch exactly the occupied part.  Every node
+// fetch on the query paths does so (fetch_internal_filled/fetch_leaf_filled).
+//  * The children/values array occupies the front of the node and is filled
+//    backward from its end.
+//  * The keys array occupies the back and is filled forward.
+//  * Fixed-size fields that the same DMA should cover (the leaf's `right`
+//    link) sit between the two arrays.
+//  * The leaf's `left` is used only by writers that transfer the whole node
+//    anyway (insertion) or its own 8-byte slot, so it sits at the tail,
+//    outside the occupancy-sized fetch; `values` then starts at offset 0,
+//    which keeps the fetch's address arithmetic minimal.
 typedef struct {
-    __dma_aligned key_uint64_t keys[MAX_NR_CHILDREN - 1];
     __dma_aligned NodeLink children[MAX_NR_CHILDREN];
+    __dma_aligned key_uint64_t keys[MAX_NR_CHILDREN - 1];
 #ifdef DEBUG_OCCUPANCY
     unsigned numKeys;
 #endif
 } InternalNode;
 typedef struct {
-    __dma_aligned key_uint64_t keys[MAX_NR_PAIRS];
     __dma_aligned value_uint64_t values[MAX_NR_PAIRS];
     __dma_aligned NodeLink right;
+    __dma_aligned key_uint64_t keys[MAX_NR_PAIRS];
     __dma_aligned NodePtr left;
 #ifdef DEBUG_OCCUPANCY
     unsigned numKeys;
@@ -55,6 +68,14 @@ typedef union {
     char size_adjuster[SIZEOF_NODE];
 } Node;
 _Static_assert(sizeof(Node) == SIZEOF_NODE, "sizeof(Node) == SIZEOF_NODE");
+
+// The n-th child/value in logical order.
+#define NthChild(inl, n) ((inl).children[MAX_NR_CHILDREN - 1 - (unsigned)(n)])
+#define NthValue(lf, n) ((lf).values[MAX_NR_PAIRS - 1 - (unsigned)(n)])
+// The values in logical order by negative indexing:
+// RevValues(lf)[-(int32_t)n] == NthValue(lf, n).  Scan loops hoist this base
+// pointer so that the per-element addressing stays one instruction (lsl_sub).
+#define RevValues(lf) (&NthValue(lf, 0))
 
 
 // HEIGHT <= log_{MIN_NR_CHILDREN} [ (MAX_NR_NODES - 1) * (MIN_NR_CHILDREN - 1) / 2.0 + 1 ]

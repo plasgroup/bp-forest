@@ -97,6 +97,33 @@ static __attribute__((unused)) uint16_t search_for_pair_index(const key_uint64_t
 }
 
 
+static void fetch_leaf_filled(const __mram_ptr LeafNode* src, LeafNode* dst, unsigned numKeys)
+{
+    const uintptr_t begin = offsetof(LeafNode, values) + sizeof(value_uint64_t) * (MAX_NR_PAIRS - numKeys),
+                    end = offsetof(LeafNode, keys) + sizeof(key_uint64_t) * numKeys;
+    mram_read((const __mram_ptr void*)((uintptr_t)src + begin), (void*)((uintptr_t)dst + begin), end - begin);
+}
+
+// The start is rounded down to the 8-byte DMA granularity.
+static void fetch_internal_filled(const __mram_ptr InternalNode* src, InternalNode* dst, unsigned numKeys)
+{
+    const uintptr_t begin = (offsetof(InternalNode, children) + sizeof(NodeLink) * (MAX_NR_CHILDREN - (numKeys + 1))) & ~(uintptr_t)7,
+                    end = offsetof(InternalNode, keys) + sizeof(key_uint64_t) * numKeys;
+    mram_read((const __mram_ptr void*)((uintptr_t)src + begin), (void*)((uintptr_t)dst + begin), end - begin);
+}
+
+
+// Optimization barrier for loop-invariant addresses: at every -O level the
+// compiler rematerializes the me()-scaled workspace address at each use in
+// the query loops instead of keeping it in a register.  The empty asm makes
+// the value opaque, so later uses must keep (or spill) it, not recompute it.
+static inline void* loop_invariant(void* p)
+{
+    __asm__("" : "+r"(p));
+    return p;
+}
+
+
 __attribute__((unused)) static bool check_tree_structure(const Node* root, unsigned height, unsigned root_numKeys);
 
 
@@ -141,7 +168,7 @@ static void TREE_CONSTRUCT_receive_lifted_links_from_junior(unsigned nr_children
         } else {
             dest_node->inl.keys[idx_child_in_this_node - 1] = key;
         }
-        dest_node->inl.children[idx_child_in_this_node] = p_lift->child;
+        NthChild(dest_node->inl, idx_child_in_this_node) = p_lift->child;
     }
 }
 
@@ -232,7 +259,7 @@ static unsigned construct_tree(const uintptr_t initial_pairs, const uint32_t nr_
                     idx_pair_cache = 0;
                 }
                 node_cache->lf.keys[idx_pair_in_this_node] = wks->in.pairs[idx_pair_cache].key;
-                node_cache->lf.values[idx_pair_in_this_node] = wks->in.pairs[idx_pair_cache].value;
+                NthValue(node_cache->lf, idx_pair_in_this_node) = wks->in.pairs[idx_pair_cache].value;
                 idx_pair_cache++;
             }
             node_cache->lf.left = left_node;
@@ -412,7 +439,7 @@ static unsigned construct_tree(const uintptr_t initial_pairs, const uint32_t nr_
                         } else {
                             node_cache->inl.keys[idx_child_in_this_node - 1] = key;
                         }
-                        node_cache->inl.children[idx_child_in_this_node] = p_lift->child;
+                        NthChild(node_cache->inl, idx_child_in_this_node) = p_lift->child;
                         idx_child_cache++;
                     }
 
@@ -518,23 +545,23 @@ static KVPair* INSERT_fetch_next_qry(InsertWorkspace* wks)
 }
 static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const height, uint8_t* const root_numKeys, const KVPair* const qry)
 {
-    InsertWorkspace* const wks_me = &workspace.tree.insert[me()];
+    InsertWorkspace* const wks_me = loop_invariant(&workspace.tree.insert[me()]);
 
     if (*height == 0) {
         // Insert into the leaf
         const uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], *root_numKeys, qry->key);
         if (idx_pair < *root_numKeys && root->lf.keys[idx_pair] == qry->key) {
-            root->lf.values[idx_pair] = qry->value;  // update
+            NthValue(root->lf, idx_pair) = qry->value;  // update
             return false;
         } else {
             if (*root_numKeys < MAX_NR_PAIRS) {
                 // No split
                 for (unsigned i = *root_numKeys; i > idx_pair; i--) {
                     root->lf.keys[i] = root->lf.keys[i - 1];
-                    root->lf.values[i] = root->lf.values[i - 1];
+                    NthValue(root->lf, i) = NthValue(root->lf, i - 1);
                 }
                 root->lf.keys[idx_pair] = qry->key;
-                root->lf.values[idx_pair] = qry->value;
+                NthValue(root->lf, idx_pair) = qry->value;
                 (*root_numKeys)++;
 #ifdef DEBUG_OCCUPANCY
                 root->lf.numKeys++;
@@ -558,34 +585,34 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
                     // Move the last MIN_NR_PAIRS pairs to the new sibling
                     for (unsigned i = 0; i < new_sibling_numKeys; i++) {
                         new_sibling->lf.keys[i] = root->lf.keys[i + old_root_numKeys - 1];
-                        new_sibling->lf.values[i] = root->lf.values[i + old_root_numKeys - 1];
+                        NthValue(new_sibling->lf, i) = NthValue(root->lf, i + old_root_numKeys - 1);
                     }
                     // Insert the new pair into the old root
                     for (unsigned i = old_root_numKeys - 1; i > idx_pair; i--) {
                         root->lf.keys[i] = root->lf.keys[i - 1];
-                        root->lf.values[i] = root->lf.values[i - 1];
+                        NthValue(root->lf, i) = NthValue(root->lf, i - 1);
                     }
                     root->lf.keys[idx_pair] = qry->key;
-                    root->lf.values[idx_pair] = qry->value;
+                    NthValue(root->lf, idx_pair) = qry->value;
                 } else {
                     // Move the last MIN_NR_PAIRS-1 pairs and the new pair to the new sibling
                     for (unsigned i = old_root_numKeys; i < idx_pair; i++) {
                         new_sibling->lf.keys[i - old_root_numKeys] = root->lf.keys[i];
-                        new_sibling->lf.values[i - old_root_numKeys] = root->lf.values[i];
+                        NthValue(new_sibling->lf, i - old_root_numKeys) = NthValue(root->lf, i);
                     }
                     new_sibling->lf.keys[idx_pair - old_root_numKeys] = qry->key;
-                    new_sibling->lf.values[idx_pair - old_root_numKeys] = qry->value;
+                    NthValue(new_sibling->lf, idx_pair - old_root_numKeys) = qry->value;
                     for (unsigned i = idx_pair; i < new_sibling_numKeys; i++) {
                         new_sibling->lf.keys[i - (old_root_numKeys - 1)] = root->lf.keys[i];
-                        new_sibling->lf.values[i - (old_root_numKeys - 1)] = root->lf.values[i];
+                        NthValue(new_sibling->lf, i - (old_root_numKeys - 1)) = NthValue(root->lf, i);
                     }
                 }
                 mram_write(root, &Deref(old_root_ptr), sizeof(Node));
                 mram_write(new_sibling, &Deref(new_sibling_ptr), sizeof(Node));
                 // Create a new root
                 root->inl.keys[0] = new_sibling->lf.keys[0];
-                root->inl.children[0] = old_root_link;
-                root->inl.children[1] = new_sibling_link;
+                NthChild(root->inl, 0) = old_root_link;
+                NthChild(root->inl, 1) = new_sibling_link;
 #ifdef DEBUG_OCCUPANCY
                 root->inl.numKeys = 1;
 #endif
@@ -601,11 +628,15 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
 
         NodePtr parent_ptr = /* parent of root, or root */ NODE_NULLPTR;
         uint16_t idx_node = 0;
+        // WRAM copy, in logical order, of the physical pair of children slots
+        // that contains the link to the current node.  Keeping it logical and
+        // reversing only at the write-back sites compiles shorter than holding
+        // it in physical order.
         NodeLink link_to_node[2] = /* root */ {NODELINK_NULLPTR, NODELINK_NULLPTR};
 
         uint8_t node_height = *height;
         uint16_t idx_child = search_for_child_index(&root->inl.keys[0], *root_numKeys, qry->key);
-        __dma_aligned NodeLink child_link = root->inl.children[idx_child];
+        __dma_aligned NodeLink child_link = NthChild(root->inl, idx_child);
 
 
         if (*root_numKeys == MAX_NR_CHILDREN - 1) {
@@ -617,10 +648,10 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
             const unsigned old_root_numKeys = MAX_NR_CHILDREN - MIN_NR_CHILDREN - 1, new_sibling_numKeys = MIN_NR_CHILDREN - 1;
             const NodeLink old_root_link = {old_root_ptr, old_root_numKeys}, new_sibling_link = {new_sibling_ptr, new_sibling_numKeys};
 
-            new_sibling->inl.children[0] = root->inl.children[old_root_numKeys + 1];
+            NthChild(new_sibling->inl, 0) = NthChild(root->inl, old_root_numKeys + 1);
             for (unsigned i = 1; i < new_sibling_numKeys + 1; i++) {
                 new_sibling->inl.keys[i - 1] = root->inl.keys[i - 1 + (old_root_numKeys + 1)];
-                new_sibling->inl.children[i] = root->inl.children[i + old_root_numKeys + 1];
+                NthChild(new_sibling->inl, i) = NthChild(root->inl, i + old_root_numKeys + 1);
             }
 #ifdef DEBUG_OCCUPANCY
             new_sibling->inl.numKeys = new_sibling_numKeys;
@@ -633,9 +664,9 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
                 // Move the old root to the cache
                 for (unsigned i = 0; i < old_root_numKeys; i++) {
                     old_root->inl.keys[i] = root->inl.keys[i];
-                    old_root->inl.children[i] = root->inl.children[i];
+                    NthChild(old_root->inl, i) = NthChild(root->inl, i);
                 }
-                old_root->inl.children[old_root_numKeys] = root->inl.children[old_root_numKeys];
+                NthChild(old_root->inl, old_root_numKeys) = NthChild(root->inl, old_root_numKeys);
 #ifdef DEBUG_OCCUPANCY
                 old_root->inl.numKeys = old_root_numKeys;
 #endif
@@ -658,8 +689,8 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
 
             // Create a new root
             root->inl.keys[0] = root->inl.keys[old_root_numKeys];
-            link_to_node[0] = root->inl.children[0] = old_root_link;
-            link_to_node[1] = root->inl.children[1] = new_sibling_link;
+            link_to_node[0] = NthChild(root->inl, 0) = old_root_link;
+            link_to_node[1] = NthChild(root->inl, 1) = new_sibling_link;
 #ifdef DEBUG_OCCUPANCY
             root->inl.numKeys = 1;
 #endif
@@ -673,7 +704,7 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
             mram_read(&Deref(child_link.ptr), child, sizeof(Node));
 
             const uint16_t idx_grandchild = search_for_child_index(&child->inl.keys[0], child_link.numKeys, qry->key);
-            const NodeLink grandchild_link = child->inl.children[idx_grandchild];
+            const NodeLink grandchild_link = NthChild(child->inl, idx_grandchild);
 
             if (child_link.numKeys == MAX_NR_CHILDREN - 1) {
                 // Split this internal node
@@ -688,11 +719,11 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
                 if (/* root */ (node_link->ptr == NODELINK_NULLPTR.ptr && node_link->numKeys == NODELINK_NULLPTR.numKeys)) {
                     for (unsigned i = *root_numKeys; i > idx_child; i--) {
                         root->inl.keys[i] = root->inl.keys[i - 1];
-                        root->inl.children[i + 1] = root->inl.children[i];
+                        NthChild(root->inl, i + 1) = NthChild(root->inl, i);
                     }
                     root->inl.keys[idx_child] = child->inl.keys[new_child_numKeys];
-                    root->inl.children[idx_child] = new_child_link;
-                    root->inl.children[idx_child + 1] = new_sibling_link;
+                    NthChild(root->inl, idx_child) = new_child_link;
+                    NthChild(root->inl, idx_child + 1) = new_sibling_link;
 #ifdef DEBUG_OCCUPANCY
                     root->inl.numKeys += 1;
 #endif
@@ -701,27 +732,28 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
                     if (idx_grandchild >= new_child_numKeys + 1) {
                         idx_child += 1;
                     }
-                    link_to_node[0] = root->inl.children[idx_child / 2 * 2];
-                    link_to_node[1] = root->inl.children[idx_child / 2 * 2 + 1];
+                    link_to_node[0] = NthChild(root->inl, idx_child / 2 * 2);
+                    link_to_node[1] = NthChild(root->inl, idx_child / 2 * 2 + 1);
 
                 } else {
                     Node* const node = &wks_me->node_cache[!child_cache];
                     for (unsigned i = node_link->numKeys; i > idx_child; i--) {
                         node->inl.keys[i] = node->inl.keys[i - 1];
-                        node->inl.children[i + 1] = node->inl.children[i];
+                        NthChild(node->inl, i + 1) = NthChild(node->inl, i);
                     }
                     node->inl.keys[idx_child] = child->inl.keys[new_child_numKeys];
-                    node->inl.children[idx_child] = new_child_link;
-                    node->inl.children[idx_child + 1] = new_sibling_link;
+                    NthChild(node->inl, idx_child) = new_child_link;
+                    NthChild(node->inl, idx_child + 1) = new_sibling_link;
 #ifdef DEBUG_OCCUPANCY
                     node->inl.numKeys += 1;
 #endif
 
                     node_link->numKeys += 1;
                     if (/* root */ parent_ptr == NODE_NULLPTR) {
-                        root->inl.children[idx_node] = *node_link;
+                        NthChild(root->inl, idx_node) = *node_link;
                     } else {
-                        mram_write(&link_to_node[0], &Deref(parent_ptr).inl.children[idx_node / 2 * 2], sizeof(NodeLink) * 2);
+                        __dma_aligned const NodeLink pair_in_phys_order[2] = {link_to_node[1], link_to_node[0]};
+                        mram_write(&pair_in_phys_order[0], &NthChild(Deref(parent_ptr).inl, idx_node / 2 * 2 + 1), sizeof(NodeLink) * 2);
                     }
 
                     mram_write(node, &Deref(node_link->ptr), sizeof(Node));
@@ -730,17 +762,17 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
                     if (idx_grandchild >= new_child_numKeys + 1) {
                         idx_child += 1;
                     }
-                    link_to_node[0] = node->inl.children[idx_child / 2 * 2];
-                    link_to_node[1] = node->inl.children[idx_child / 2 * 2 + 1];
+                    link_to_node[0] = NthChild(node->inl, idx_child / 2 * 2);
+                    link_to_node[1] = NthChild(node->inl, idx_child / 2 * 2 + 1);
                 }
                 idx_node = idx_child;
 
                 // Move the appropriate half of children to the new sibling
                 Node* const new_sibling = &wks_me->node_cache[new_sibling_cache];
-                new_sibling->inl.children[0] = child->inl.children[new_child_numKeys + 1];
+                NthChild(new_sibling->inl, 0) = NthChild(child->inl, new_child_numKeys + 1);
                 for (unsigned i = 1; i < new_sibling_numKeys + 1; i++) {
                     new_sibling->inl.keys[i - 1] = child->inl.keys[i + new_child_numKeys];
-                    new_sibling->inl.children[i] = child->inl.children[i + new_child_numKeys + 1];
+                    NthChild(new_sibling->inl, i) = NthChild(child->inl, i + new_child_numKeys + 1);
                 }
 #ifdef DEBUG_OCCUPANCY
                 new_sibling->inl.numKeys = new_sibling_numKeys;
@@ -778,11 +810,11 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
 
                 parent_ptr = node_link.ptr;
                 if (/* root */ (node_link.ptr == NODELINK_NULLPTR.ptr && node_link.numKeys == NODELINK_NULLPTR.numKeys)) {
-                    link_to_node[0] = root->inl.children[idx_child / 2 * 2];
-                    link_to_node[1] = root->inl.children[idx_child / 2 * 2 + 1];
+                    link_to_node[0] = NthChild(root->inl, idx_child / 2 * 2);
+                    link_to_node[1] = NthChild(root->inl, idx_child / 2 * 2 + 1);
                 } else {
-                    link_to_node[0] = node->inl.children[idx_child / 2 * 2];
-                    link_to_node[1] = node->inl.children[idx_child / 2 * 2 + 1];
+                    link_to_node[0] = NthChild(node->inl, idx_child / 2 * 2);
+                    link_to_node[1] = NthChild(node->inl, idx_child / 2 * 2 + 1);
                 }
                 idx_node = idx_child;
 
@@ -802,7 +834,7 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
 
         const uint16_t idx_pair = search_for_pair_index(&leaf->lf.keys[0], child_link.numKeys, qry->key);
         if (idx_pair < child_link.numKeys && leaf->lf.keys[idx_pair] == qry->key) {
-            mram_write(&qry->value, &Deref(child_link.ptr).lf.values[idx_pair], sizeof(value_uint64_t));  // update
+            mram_write(&qry->value, &NthValue(Deref(child_link.ptr).lf, idx_pair), sizeof(value_uint64_t));  // update
             if (is_cache_dirty) {
                 mram_write(node, &Deref(node_link->ptr), sizeof(Node));
             }
@@ -812,10 +844,10 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
                 // No split
                 for (unsigned i = child_link.numKeys; i > idx_pair; i--) {
                     leaf->lf.keys[i] = leaf->lf.keys[i - 1];
-                    leaf->lf.values[i] = leaf->lf.values[i - 1];
+                    NthValue(leaf->lf, i) = NthValue(leaf->lf, i - 1);
                 }
                 leaf->lf.keys[idx_pair] = qry->key;
-                leaf->lf.values[idx_pair] = qry->value;
+                NthValue(leaf->lf, idx_pair) = qry->value;
 #ifdef DEBUG_OCCUPANCY
                 leaf->lf.numKeys += 1;
 #endif
@@ -824,14 +856,15 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
                 // Update the number of keys in the parent
                 child_link.numKeys += 1;
                 if (/* root */ (node_link->ptr == NODELINK_NULLPTR.ptr && node_link->numKeys == NODELINK_NULLPTR.numKeys)) {
-                    root->inl.children[idx_child] = child_link;
+                    NthChild(root->inl, idx_child) = child_link;
                 } else {
-                    node->inl.children[idx_child] = child_link;
+                    NthChild(node->inl, idx_child) = child_link;
                     if (is_cache_dirty) {
                         mram_write(node, &Deref(node_link->ptr), sizeof(Node));
                     } else {
-                        mram_write(&node->inl.children[idx_child / 2 * 2],
-                            &Deref(node_link->ptr).inl.children[idx_child / 2 * 2],
+                        // both sides in physical order: the pair starts at its higher logical index
+                        mram_write(&NthChild(node->inl, idx_child / 2 * 2 + 1),
+                            &NthChild(Deref(node_link->ptr).inl, idx_child / 2 * 2 + 1),
                             sizeof(NodeLink) * 2);
                     }
                 }
@@ -855,11 +888,11 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
                 if (/* root */ (node_link->ptr == NODELINK_NULLPTR.ptr && node_link->numKeys == NODELINK_NULLPTR.numKeys)) {
                     for (unsigned i = *root_numKeys; i > idx_child; i--) {
                         root->inl.keys[i] = root->inl.keys[i - 1];
-                        root->inl.children[i + 1] = root->inl.children[i];
+                        NthChild(root->inl, i + 1) = NthChild(root->inl, i);
                     }
                     root->inl.keys[idx_child] = new_sibling_min_key;
-                    root->inl.children[idx_child] = new_leaf_link;
-                    root->inl.children[idx_child + 1] = new_sibling_link;
+                    NthChild(root->inl, idx_child) = new_leaf_link;
+                    NthChild(root->inl, idx_child + 1) = new_sibling_link;
 #ifdef DEBUG_OCCUPANCY
                     root->inl.numKeys += 1;
 #endif
@@ -869,20 +902,21 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
                     Node* const node = &wks_me->node_cache[!leaf_cache];
                     for (unsigned i = node_link->numKeys; i > idx_child; i--) {
                         node->inl.keys[i] = node->inl.keys[i - 1];
-                        node->inl.children[i + 1] = node->inl.children[i];
+                        NthChild(node->inl, i + 1) = NthChild(node->inl, i);
                     }
                     node->inl.keys[idx_child] = new_sibling_min_key;
-                    node->inl.children[idx_child] = new_leaf_link;
-                    node->inl.children[idx_child + 1] = new_sibling_link;
+                    NthChild(node->inl, idx_child) = new_leaf_link;
+                    NthChild(node->inl, idx_child + 1) = new_sibling_link;
 #ifdef DEBUG_OCCUPANCY
                     node->inl.numKeys += 1;
 #endif
 
                     node_link->numKeys += 1;
                     if (/* root */ parent_ptr == NODE_NULLPTR) {
-                        root->inl.children[idx_node] = *node_link;
+                        NthChild(root->inl, idx_node) = *node_link;
                     } else {
-                        mram_write(&link_to_node[0], &Deref(parent_ptr).inl.children[idx_node / 2 * 2], sizeof(NodeLink) * 2);
+                        __dma_aligned const NodeLink pair_in_phys_order[2] = {link_to_node[1], link_to_node[0]};
+                        mram_write(&pair_in_phys_order[0], &NthChild(Deref(parent_ptr).inl, idx_node / 2 * 2 + 1), sizeof(NodeLink) * 2);
                     }
 
                     mram_write(node, &Deref(node_link->ptr), sizeof(Node));
@@ -915,26 +949,26 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
                     // Move the last MIN_NR_PAIRS pairs to the new sibling
                     for (unsigned i = 0; i < new_sibling_numKeys; i++) {
                         new_sibling->lf.keys[i] = leaf->lf.keys[i + new_leaf_numKeys - 1];
-                        new_sibling->lf.values[i] = leaf->lf.values[i + new_leaf_numKeys - 1];
+                        NthValue(new_sibling->lf, i) = NthValue(leaf->lf, i + new_leaf_numKeys - 1);
                     }
                     // Insert the new pair into the old root
                     for (unsigned i = new_leaf_numKeys - 1; i > idx_pair; i--) {
                         leaf->lf.keys[i] = leaf->lf.keys[i - 1];
-                        leaf->lf.values[i] = leaf->lf.values[i - 1];
+                        NthValue(leaf->lf, i) = NthValue(leaf->lf, i - 1);
                     }
                     leaf->lf.keys[idx_pair] = qry->key;
-                    leaf->lf.values[idx_pair] = qry->value;
+                    NthValue(leaf->lf, idx_pair) = qry->value;
                 } else {
                     // Move the last MIN_NR_PAIRS-1 pairs and the new pair to the new sibling
                     for (unsigned i = new_leaf_numKeys; i < idx_pair; i++) {
                         new_sibling->lf.keys[i - new_leaf_numKeys] = leaf->lf.keys[i];
-                        new_sibling->lf.values[i - new_leaf_numKeys] = leaf->lf.values[i];
+                        NthValue(new_sibling->lf, i - new_leaf_numKeys) = NthValue(leaf->lf, i);
                     }
                     new_sibling->lf.keys[idx_pair - new_leaf_numKeys] = qry->key;
-                    new_sibling->lf.values[idx_pair - new_leaf_numKeys] = qry->value;
+                    NthValue(new_sibling->lf, idx_pair - new_leaf_numKeys) = qry->value;
                     for (unsigned i = idx_pair; i < MAX_NR_PAIRS; i++) {
                         new_sibling->lf.keys[i - (new_leaf_numKeys - 1)] = leaf->lf.keys[i];
-                        new_sibling->lf.values[i - (new_leaf_numKeys - 1)] = leaf->lf.values[i];
+                        NthValue(new_sibling->lf, i - (new_leaf_numKeys - 1)) = NthValue(leaf->lf, i);
                     }
                 }
                 mram_write(leaf, &Deref(child_link.ptr), sizeof(Node));
@@ -948,7 +982,7 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
 static void INSERT_execute_batch(Node* const root, uint8_t* const height, uint8_t* const root_numKeys, uint32_t* const p_nr_pairs,
     const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
 {
-    InsertWorkspace* const wks_me = &workspace.tree.insert[me()];
+    InsertWorkspace* const wks_me = loop_invariant(&workspace.tree.insert[me()]);
     wks_me->idx_qry_in_cache = TASK_INSERT_NR_CACHED_QRYS;  // to trigger the first fetch
     wks_me->cursor_on_qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader) + sizeof(KVPair) * idx_qry_begin;
 
@@ -1012,7 +1046,7 @@ static key_uint64_t* DELETE_fetch_next_qry(DeleteWorkspace* wks)
 static uint32_t /* # of deleted pairs */ DELETE_execute(Node* const root, const uint8_t height, const uint8_t root_numKeys,
     const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
 {
-    DeleteWorkspace* const wks_me = &workspace.tree.delete[me()];
+    DeleteWorkspace* const wks_me = loop_invariant(&workspace.tree.delete[me()]);
     wks_me->idx_qry_in_cache = TASK_INSERT_NR_CACHED_QRYS;  // to trigger the first fetch
     wks_me->cursor_on_qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader) + sizeof(key_uint64_t) * idx_qry_begin;
 
@@ -1024,7 +1058,7 @@ static uint32_t /* # of deleted pairs */ DELETE_execute(Node* const root, const 
 
             const uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, key);
             if (idx_pair < root_numKeys && root->lf.keys[idx_pair] == key) {
-                root->lf.values[idx_pair] = NOT_FOUND_VALUE;  // mark as deleted
+                NthValue(root->lf, idx_pair) = NOT_FOUND_VALUE;  // mark as deleted
                 nr_deleted++;
             }
         }
@@ -1034,18 +1068,17 @@ static uint32_t /* # of deleted pairs */ DELETE_execute(Node* const root, const 
         for (unsigned idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
             const key_uint64_t key = *DELETE_fetch_next_qry(wks_me);
 
-            NodeLink link = root->inl.children[search_for_child_index(&root->inl.keys[0], root_numKeys, key)];
+            NodeLink link = NthChild(root->inl, search_for_child_index(&root->inl.keys[0], root_numKeys, key));
             for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
-                mram_read(&Deref(link.ptr).inl.keys[0], &wks_me->node_cache.inl.keys[0], sizeof(key_uint64_t) * link.numKeys);
+                fetch_internal_filled(&Deref(link.ptr).inl, &wks_me->node_cache.inl, link.numKeys);
                 const uint16_t idx_child = search_for_child_index(&wks_me->node_cache.inl.keys[0], link.numKeys, key);
-                mram_read(&Deref(link.ptr).inl.children[idx_child / 2 * 2], &wks_me->node_cache.inl.children[idx_child / 2 * 2], sizeof(NodeLink) * 2);
-                link = wks_me->node_cache.inl.children[idx_child];
+                link = NthChild(wks_me->node_cache.inl, idx_child);
             }
-            mram_read(&Deref(link.ptr).lf.keys[0], &wks_me->node_cache.lf.keys[0], sizeof(key_uint64_t) * link.numKeys);
+            fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
             const uint16_t idx_pair = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, key);
 
             if (idx_pair < link.numKeys && wks_me->node_cache.lf.keys[idx_pair] == key) {
-                mram_write(&tombstone, &Deref(link.ptr).lf.values[idx_pair], sizeof(value_uint64_t));
+                mram_write(&tombstone, &NthValue(Deref(link.ptr).lf, idx_pair), sizeof(value_uint64_t));
                 nr_deleted++;
             }
         }
@@ -1121,7 +1154,7 @@ static void GET_execute(const Node* const root, const uint8_t height, const uint
 {
     static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader);
 
-    GetWorkspace* const wks_me = &workspace.tree.get[me()];
+    GetWorkspace* const wks_me = loop_invariant(&workspace.tree.get[me()]);
 
     unsigned idx_qry = idx_qry_begin, idx_qry_in_cache = 0;
     uintptr_t cursor_on_qrys = qrys + sizeof(key_uint64_t) * idx_qry,
@@ -1135,7 +1168,7 @@ static void GET_execute(const Node* const root, const uint8_t height, const uint
 
             const uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, key);
             if (idx_pair < root_numKeys && root->lf.keys[idx_pair] == key) {
-                wks_me->qrys[idx_qry_in_cache] = root->lf.values[idx_pair];
+                wks_me->qrys[idx_qry_in_cache] = NthValue(root->lf, idx_pair);
             } else {
                 wks_me->qrys[idx_qry_in_cache] = 0;  // not found
             }
@@ -1147,18 +1180,17 @@ static void GET_execute(const Node* const root, const uint8_t height, const uint
             GET_prepare_next_qry(&wks_me->qrys[0], &idx_qry_in_cache, &cursor_on_qrys, &cursor_on_results);
             const key_uint64_t key = wks_me->qrys[idx_qry_in_cache];
 
-            NodeLink link = root->inl.children[search_for_child_index(&root->inl.keys[0], root_numKeys, key)];
+            NodeLink link = NthChild(root->inl, search_for_child_index(&root->inl.keys[0], root_numKeys, key));
             for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
-                mram_read(&Deref(link.ptr).inl.keys[0], &wks_me->node_cache.inl.keys[0], sizeof(key_uint64_t) * link.numKeys);
+                fetch_internal_filled(&Deref(link.ptr).inl, &wks_me->node_cache.inl, link.numKeys);
                 const uint16_t idx_child = search_for_child_index(&wks_me->node_cache.inl.keys[0], link.numKeys, key);
-                mram_read(&Deref(link.ptr).inl.children[idx_child / 2 * 2], &wks_me->node_cache.inl.children[0], sizeof(NodeLink) * 2);
-                link = wks_me->node_cache.inl.children[idx_child % 2];
+                link = NthChild(wks_me->node_cache.inl, idx_child);
             }
-            mram_read(&Deref(link.ptr).lf.keys[0], &wks_me->node_cache.lf.keys[0], sizeof(key_uint64_t) * link.numKeys);
+            fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
             const uint16_t idx_pair = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, key);
 
             if (idx_pair < link.numKeys && wks_me->node_cache.lf.keys[idx_pair] == key) {
-                mram_read(&Deref(link.ptr).lf.values[idx_pair], &wks_me->qrys[idx_qry_in_cache], sizeof(value_uint64_t));
+                wks_me->qrys[idx_qry_in_cache] = NthValue(wks_me->node_cache.lf, idx_pair);
             } else {
                 wks_me->qrys[idx_qry_in_cache] = 0;  // not found
             }
@@ -1234,34 +1266,29 @@ static void PRED_flush_results_cache(PredWorkspace* wks)
 static KVPair PRED_search_one(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
     const key_uint64_t key)
 {
-    PredWorkspace* const wks_me = &workspace.tree.pred[me()];
+    PredWorkspace* const wks_me = loop_invariant(&workspace.tree.pred[me()]);
 
     if (height == 0) {
         const uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, key);
-        return (KVPair){root->lf.keys[idx_pair - 1], root->lf.values[idx_pair - 1]};
+        return (KVPair){root->lf.keys[idx_pair - 1], NthValue(root->lf, idx_pair - 1)};
     }
 
-    NodeLink link = root->inl.children[search_for_pair_index(&root->inl.keys[0], root_numKeys, key)];
+    NodeLink link = NthChild(root->inl, search_for_pair_index(&root->inl.keys[0], root_numKeys, key));
     for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
-        mram_read(&Deref(link.ptr).inl.keys[0], &wks_me->node_cache.inl.keys[0], sizeof(key_uint64_t) * link.numKeys);
+        fetch_internal_filled(&Deref(link.ptr).inl, &wks_me->node_cache.inl, link.numKeys);
         const uint16_t idx_child = search_for_pair_index(&wks_me->node_cache.inl.keys[0], link.numKeys, key);
-        mram_read(&Deref(link.ptr).inl.children[idx_child / 2 * 2], &wks_me->node_cache.inl.children[0], sizeof(NodeLink) * 2);
-        link = wks_me->node_cache.inl.children[idx_child % 2];
+        link = NthChild(wks_me->node_cache.inl, idx_child);
     }
-    mram_read(&Deref(link.ptr).lf.keys[0], &wks_me->node_cache.lf.keys[0], sizeof(key_uint64_t) * link.numKeys);
+    fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
     const uint16_t idx_pair = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, key);
-
-    KVPair result;
-    result.key = wks_me->node_cache.lf.keys[idx_pair - 1];
-    mram_read(&Deref(link.ptr).lf.values[idx_pair - 1], &result.value, sizeof(value_uint64_t));
-    return result;
+    return (KVPair){wks_me->node_cache.lf.keys[idx_pair - 1], NthValue(wks_me->node_cache.lf, idx_pair - 1)};
 }
 static void PRED_execute(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
     const uintptr_t results, const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
 {
     static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader);
 
-    PredWorkspace* const wks_me = &workspace.tree.pred[me()];
+    PredWorkspace* const wks_me = loop_invariant(&workspace.tree.pred[me()]);
 
     wks_me->idx_qry_in_cache = 0;
     wks_me->cursor_on_qrys = qrys + sizeof(key_uint64_t) * idx_qry_begin;
@@ -1348,7 +1375,7 @@ static void RANGE_MIN_execute(const Node* const root, const uint8_t height, cons
     const uintptr_t lump_end_indices, const uint16_t idx_lump_begin, const uint16_t idx_lump_end,
     const uintptr_t delim_keys, const uintptr_t results)
 {
-    TaskletLocalRMQWorkspace* const wks_me = &workspace.tree.rmq.th[me()];
+    TaskletLocalRMQWorkspace* const wks_me = loop_invariant(&workspace.tree.rmq.th[me()]);
 
     unsigned idx_lump = idx_lump_begin, idx_lump_in_cache,
              idx_delim, idx_delim_in_cache,
@@ -1392,8 +1419,8 @@ static void RANGE_MIN_execute(const Node* const root, const uint8_t height, cons
 
                 value_uint64_t min = VALUE_MAX;
                 for (; idx_pair < root_numKeys && root->lf.keys[idx_pair] <= range_end; idx_pair++) {
-                    if (min > root->lf.values[idx_pair]) {
-                        min = root->lf.values[idx_pair];
+                    if (min > RevValues(root->lf)[-(int32_t)idx_pair]) {
+                        min = RevValues(root->lf)[-(int32_t)idx_pair];
                     }
                 }
                 wks_me->results[idx_result_in_cache] = min;
@@ -1407,14 +1434,13 @@ static void RANGE_MIN_execute(const Node* const root, const uint8_t height, cons
             const key_uint64_t range_begin = wks_me->delim_keys[idx_delim_in_cache];
             idx_delim_in_cache++;
 
-            NodeLink link = root->inl.children[search_for_child_index(&root->inl.keys[0], root_numKeys, range_begin)];
+            NodeLink link = NthChild(root->inl, search_for_child_index(&root->inl.keys[0], root_numKeys, range_begin));
             for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
-                mram_read(&Deref(link.ptr).inl.keys[0], &wks_me->node_cache.inl.keys[0], sizeof(key_uint64_t) * link.numKeys);
+                fetch_internal_filled(&Deref(link.ptr).inl, &wks_me->node_cache.inl, link.numKeys);
                 const uint16_t idx_child = search_for_child_index(&wks_me->node_cache.inl.keys[0], link.numKeys, range_begin);
-                mram_read(&Deref(link.ptr).inl.children[idx_child / 2 * 2], &wks_me->node_cache.inl.children[0], sizeof(NodeLink) * 2);
-                link = wks_me->node_cache.inl.children[idx_child % 2];
+                link = NthChild(wks_me->node_cache.inl, idx_child);
             }
-            mram_read(&Deref(link.ptr).lf, &wks_me->node_cache.lf, offsetof(LeafNode, left));
+            fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
             uint16_t idx_pair = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, range_begin);
 
             RANGE_MIN_prepare_next_lump_end_index(&wks_me->lump_end_indices[0], &idx_lump_in_cache, &cursor_on_lump_end_indices);
@@ -1427,13 +1453,15 @@ static void RANGE_MIN_execute(const Node* const root, const uint8_t height, cons
                 idx_delim_in_cache++;
 
                 value_uint64_t min = VALUE_MAX;
+                const value_uint64_t* const rev_values = loop_invariant(RevValues(wks_me->node_cache.lf));
+                const key_uint64_t* const cached_keys = loop_invariant(&wks_me->node_cache.lf.keys[0]);
                 for (;;) {
                     for (; idx_pair < link.numKeys; idx_pair++) {
-                        if (wks_me->node_cache.lf.keys[idx_pair] > range_end) {
+                        if (cached_keys[idx_pair] > range_end) {
                             goto end_of_range;
                         }
-                        if (min > wks_me->node_cache.lf.values[idx_pair]) {
-                            min = wks_me->node_cache.lf.values[idx_pair];
+                        if (min > rev_values[-(int32_t)idx_pair]) {
+                            min = rev_values[-(int32_t)idx_pair];
                         }
                     }
                     const NodeLink right_leaf = wks_me->node_cache.lf.right;
@@ -1441,7 +1469,7 @@ static void RANGE_MIN_execute(const Node* const root, const uint8_t height, cons
                         goto end_of_range;
                     }
                     link = right_leaf;
-                    mram_read(&Deref(link.ptr).lf, &wks_me->node_cache.lf, offsetof(LeafNode, left));
+                    fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
                     idx_pair = 0;
                 }
             end_of_range:
@@ -1559,37 +1587,43 @@ static void RANGE_COUNT_flush_results_cache(uint64_t* results_cache, unsigned* i
 static uint64_t RANGE_COUNT_impl(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
     const RangeCountQuery* const qry)
 {
-    RCQWorkspace* const wks_me = &workspace.tree.rcq[me()];
+    RCQWorkspace* const wks_me = loop_invariant(&workspace.tree.rcq[me()]);
+    // hoisted out of the scan loops by hand: the compiler must assume the
+    // fetches into node_cache may alias *qry, so it cannot
+    const key_uint64_t range_end = qry->range.end;
+    const value_uint64_t needle = qry->needle;
 
     uint64_t count = 0;
 
     if (height == 0) {
         uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, qry->range.begin);
 
-        for (; idx_pair < root_numKeys && root->lf.keys[idx_pair] <= qry->range.end; idx_pair++) {
-            if (root->lf.values[idx_pair] != NOT_FOUND_VALUE && root->lf.values[idx_pair] == qry->needle) {
+        const value_uint64_t* const rev_values = RevValues(root->lf);
+        for (; idx_pair < root_numKeys && root->lf.keys[idx_pair] <= range_end; idx_pair++) {
+            if (rev_values[-(int32_t)idx_pair] != NOT_FOUND_VALUE && rev_values[-(int32_t)idx_pair] == needle) {
                 count++;
             }
         }
         return count;
 
     } else {
-        NodeLink link = root->inl.children[search_for_child_index(&root->inl.keys[0], root_numKeys, qry->range.begin)];
+        NodeLink link = NthChild(root->inl, search_for_child_index(&root->inl.keys[0], root_numKeys, qry->range.begin));
         for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
-            mram_read(&Deref(link.ptr).inl.keys[0], &wks_me->node_cache.inl.keys[0], sizeof(key_uint64_t) * link.numKeys);
+            fetch_internal_filled(&Deref(link.ptr).inl, &wks_me->node_cache.inl, link.numKeys);
             const uint16_t idx_child = search_for_child_index(&wks_me->node_cache.inl.keys[0], link.numKeys, qry->range.begin);
-            mram_read(&Deref(link.ptr).inl.children[idx_child / 2 * 2], &wks_me->node_cache.inl.children[0], sizeof(NodeLink) * 2);
-            link = wks_me->node_cache.inl.children[idx_child % 2];
+            link = NthChild(wks_me->node_cache.inl, idx_child);
         }
-        mram_read(&Deref(link.ptr).lf, &wks_me->node_cache.lf, offsetof(LeafNode, left));
+        fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
         uint16_t idx_pair = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, qry->range.begin);
 
+        const value_uint64_t* const rev_values = loop_invariant(RevValues(wks_me->node_cache.lf));
+        const key_uint64_t* const cached_keys = loop_invariant(&wks_me->node_cache.lf.keys[0]);
         for (;;) {
             for (; idx_pair < link.numKeys; idx_pair++) {
-                if (wks_me->node_cache.lf.keys[idx_pair] > qry->range.end) {
+                if (cached_keys[idx_pair] > range_end) {
                     goto end_of_range;
                 }
-                if (wks_me->node_cache.lf.values[idx_pair] != NOT_FOUND_VALUE && wks_me->node_cache.lf.values[idx_pair] == qry->needle) {
+                if (rev_values[-(int32_t)idx_pair] != NOT_FOUND_VALUE && rev_values[-(int32_t)idx_pair] == needle) {
                     count++;
                 }
             }
@@ -1598,7 +1632,7 @@ static uint64_t RANGE_COUNT_impl(const Node* const root, const uint8_t height, c
                 goto end_of_range;
             }
             link = right_leaf;
-            mram_read(&Deref(link.ptr).lf, &wks_me->node_cache.lf, offsetof(LeafNode, left));
+            fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
             idx_pair = 0;
         }
     end_of_range:
@@ -1610,7 +1644,7 @@ static void RANGE_COUNT_execute(const Node* const root, const uint8_t height, co
 {
     static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader);
 
-    RCQWorkspace* const wks_me = &workspace.tree.rcq[me()];
+    RCQWorkspace* const wks_me = loop_invariant(&workspace.tree.rcq[me()]);
 
     unsigned idx_qry = idx_qry_begin, idx_qry_in_cache = 0;
     uintptr_t cursor_on_qrys = qrys + sizeof(RangeCountQuery) * idx_qry;
@@ -1685,38 +1719,43 @@ static void RANGE_MAX_flush_results_cache(value_uint64_t* results_cache, unsigne
 static value_uint64_t RANGE_MAX_impl(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
     const KeyRange* const qry)
 {
-    RMaxQWorkspace* const wks_me = &workspace.tree.rmaxq[me()];
+    RMaxQWorkspace* const wks_me = loop_invariant(&workspace.tree.rmaxq[me()]);
+    // hoisted out of the scan loops by hand: the compiler must assume the
+    // fetches into node_cache may alias *qry, so it cannot
+    const key_uint64_t range_end = qry->end;
 
     value_uint64_t max = NOT_FOUND_VALUE;
 
     if (height == 0) {
         uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, qry->begin);
 
-        for (; idx_pair < root_numKeys && root->lf.keys[idx_pair] <= qry->end; idx_pair++) {
-            if (root->lf.values[idx_pair] > max) {
-                max = root->lf.values[idx_pair];
+        const value_uint64_t* const rev_values = RevValues(root->lf);
+        for (; idx_pair < root_numKeys && root->lf.keys[idx_pair] <= range_end; idx_pair++) {
+            if (rev_values[-(int32_t)idx_pair] > max) {
+                max = rev_values[-(int32_t)idx_pair];
             }
         }
         return max;
 
     } else {
-        NodeLink link = root->inl.children[search_for_child_index(&root->inl.keys[0], root_numKeys, qry->begin)];
+        NodeLink link = NthChild(root->inl, search_for_child_index(&root->inl.keys[0], root_numKeys, qry->begin));
         for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
-            mram_read(&Deref(link.ptr).inl.keys[0], &wks_me->node_cache.inl.keys[0], sizeof(key_uint64_t) * link.numKeys);
+            fetch_internal_filled(&Deref(link.ptr).inl, &wks_me->node_cache.inl, link.numKeys);
             const uint16_t idx_child = search_for_child_index(&wks_me->node_cache.inl.keys[0], link.numKeys, qry->begin);
-            mram_read(&Deref(link.ptr).inl.children[idx_child / 2 * 2], &wks_me->node_cache.inl.children[0], sizeof(NodeLink) * 2);
-            link = wks_me->node_cache.inl.children[idx_child % 2];
+            link = NthChild(wks_me->node_cache.inl, idx_child);
         }
-        mram_read(&Deref(link.ptr).lf, &wks_me->node_cache.lf, offsetof(LeafNode, left));
+        fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
         uint16_t idx_pair = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, qry->begin);
 
+        const value_uint64_t* const rev_values = loop_invariant(RevValues(wks_me->node_cache.lf));
+        const key_uint64_t* const cached_keys = loop_invariant(&wks_me->node_cache.lf.keys[0]);
         for (;;) {
             for (; idx_pair < link.numKeys; idx_pair++) {
-                if (wks_me->node_cache.lf.keys[idx_pair] > qry->end) {
+                if (cached_keys[idx_pair] > range_end) {
                     goto end_of_range;
                 }
-                if (wks_me->node_cache.lf.values[idx_pair] > max) {
-                    max = wks_me->node_cache.lf.values[idx_pair];
+                if (rev_values[-(int32_t)idx_pair] > max) {
+                    max = rev_values[-(int32_t)idx_pair];
                 }
             }
             const NodeLink right_leaf = wks_me->node_cache.lf.right;
@@ -1724,7 +1763,7 @@ static value_uint64_t RANGE_MAX_impl(const Node* const root, const uint8_t heigh
                 goto end_of_range;
             }
             link = right_leaf;
-            mram_read(&Deref(link.ptr).lf, &wks_me->node_cache.lf, offsetof(LeafNode, left));
+            fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
             idx_pair = 0;
         }
     end_of_range:
@@ -1736,7 +1775,7 @@ static void RANGE_MAX_execute(const Node* const root, const uint8_t height, cons
 {
     static const uintptr_t qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader);
 
-    RMaxQWorkspace* const wks_me = &workspace.tree.rmaxq[me()];
+    RMaxQWorkspace* const wks_me = loop_invariant(&workspace.tree.rmaxq[me()]);
 
     unsigned idx_qry = idx_qry_begin, idx_qry_in_cache = 0;
     uintptr_t cursor_on_qrys = qrys + sizeof(KeyRange) * idx_qry;
@@ -1852,7 +1891,7 @@ static void SERIALIZE_execute(uint8_t root_numKeys, const Node* root, uint8_t he
     uint32_t nr_delims, uintptr_t delims,
     uintptr_t result_incisions)
 {
-    SerializeWorkspace* const wks = &workspace.tree.serialize[me()];
+    SerializeWorkspace* const wks = loop_invariant(&workspace.tree.serialize[me()]);
     SERIALIZE_init_pair_cache(wks, result_pairs);
     SERIALIZE_init_delim_cache(wks, nr_delims, delims);
     SERIALIZE_init_incision_cache(wks, result_incisions);
@@ -1860,8 +1899,9 @@ static void SERIALIZE_execute(uint8_t root_numKeys, const Node* root, uint8_t he
     key_uint64_t* delim = SERIALIZE_fetch_next_delim(wks);
 
     if (height == 0) {
+        const value_uint64_t* const rev_values = RevValues(root->lf);
         for (uint8_t i = 0; i < root_numKeys; i++) {
-            const value_uint64_t value = root->lf.values[i];
+            const value_uint64_t value = rev_values[-(int32_t)i];
             if (value != NOT_FOUND_VALUE) {
                 const key_uint64_t key = root->lf.keys[i];
 
@@ -1874,21 +1914,24 @@ static void SERIALIZE_execute(uint8_t root_numKeys, const Node* root, uint8_t he
             }
         }
     } else {
-        NodeLink cursor = root->inl.children[0];
+        NodeLink cursor = NthChild(root->inl, 0);
         // find first leaf
         for (uint8_t height_of_parent = height; height_of_parent > 1; height_of_parent--) {
-            mram_read(&Deref(cursor.ptr).inl.children[0], &wks->children_cache[0], sizeof(NodeLink) * 2);
-            cursor = wks->children_cache[0];
+            // the physical pair {&NthChild(_, 1), &NthChild(_, 0)} holds children 1 and 0
+            mram_read(&NthChild(Deref(cursor.ptr).inl, 1), &wks->children_cache[0], sizeof(NodeLink) * 2);
+            cursor = wks->children_cache[1];
         }
 
         // serialize kvpairs in leaf nodes
+        const value_uint64_t* const rev_values = loop_invariant(RevValues(wks->leaf_cache));
+        const key_uint64_t* const cached_keys = loop_invariant(&wks->leaf_cache.keys[0]);
         for (;;) {
-            mram_read(&Deref(cursor.ptr), &wks->leaf_cache, sizeof(LeafNode));
+            fetch_leaf_filled(&Deref(cursor.ptr).lf, &wks->leaf_cache, cursor.numKeys);
 
             for (uint8_t i = 0; i < cursor.numKeys; i++) {
-                const value_uint64_t value = wks->leaf_cache.values[i];
+                const value_uint64_t value = rev_values[-(int32_t)i];
                 if (value != NOT_FOUND_VALUE) {
-                    const key_uint64_t key = wks->leaf_cache.keys[i];
+                    const key_uint64_t key = cached_keys[i];
 
                     while (delim != NULL && *delim < key) {
                         SERIALIZE_mark_incision(wks, &delim);
@@ -1946,26 +1989,31 @@ static void tree_clear(uint8_t* const p_root_numKeys, const Node* const root, ui
         if (height == 0) {
         } else if (height == 1) {
             for (uint8_t idx_leaf = 0; idx_leaf <= root_numKeys; idx_leaf++) {
-                Free_node(root->inl.children[idx_leaf].ptr);
+                Free_node(NthChild(root->inl, idx_leaf).ptr);
             }
         } else {
             for (uint8_t idx_child = 0; idx_child <= root_numKeys; idx_child++) {
                 uint8_t stack_height = 0;
-                NodeLink cursor = root->inl.children[idx_child];
+                NodeLink cursor = NthChild(root->inl, idx_child);
 
                 for (;;) {
                     for (; stack_height + 2 < height; stack_height++) {
                         ClearTreeStackElem* stack_new_elem = &wks->stack[stack_height];
                         stack_new_elem->node = cursor;
                         stack_new_elem->nr_visited_children = 0;
-                        mram_read(&Deref(cursor.ptr).inl.children[0], &stack_new_elem->children_cache[0], sizeof(NodeLink) * 2);
-                        cursor = stack_new_elem->children_cache[0];
+                        // the physical pair {&NthChild(_, 1), &NthChild(_, 0)} holds children 1 and 0
+                        mram_read(&NthChild(Deref(cursor.ptr).inl, 1), &stack_new_elem->children_cache[0], sizeof(NodeLink) * 2);
+                        cursor = stack_new_elem->children_cache[1];
                     }
                     // here, cursor points to a parent of a leaf
 
-                    mram_read(&Deref(cursor.ptr).inl.children[0], &wks->children_cache[0], ((cursor.numKeys + 1) + 1) / 2 * 2 * sizeof(NodeLink));
-                    for (uint8_t idx_leaf = 0; idx_leaf <= cursor.numKeys; idx_leaf++) {
-                        Free_node(wks->children_cache[idx_leaf].ptr);
+                    {
+                        // all the occupied child slots, extended to the 8-byte boundary on the lower side
+                        const unsigned nr_child_slots = ((cursor.numKeys + 1) + 1) / 2 * 2;
+                        mram_read(&Deref(cursor.ptr).inl.children[MAX_NR_CHILDREN - nr_child_slots], &wks->children_cache[0], nr_child_slots * sizeof(NodeLink));
+                        for (uint8_t idx_leaf = 0; idx_leaf <= cursor.numKeys; idx_leaf++) {
+                            Free_node(wks->children_cache[nr_child_slots - 1 - idx_leaf].ptr);
+                        }
                     }
 
                     for (;; stack_height--) {
@@ -1982,11 +2030,12 @@ static void tree_clear(uint8_t* const p_root_numKeys, const Node* const root, ui
                         if (orig_nr_visited_children != cursor.numKeys) {
                             stack_top->nr_visited_children = orig_nr_visited_children + 1;
 
+                            // the cached physical pair holds children {2j+1, 2j}
                             if (orig_nr_visited_children % 2 == 0) {
-                                cursor = stack_top->children_cache[1];
-                            } else {
-                                mram_read(&Deref(cursor.ptr).inl.children[orig_nr_visited_children + 1], &stack_top->children_cache[0], sizeof(NodeLink) * 2);
                                 cursor = stack_top->children_cache[0];
+                            } else {
+                                mram_read(&NthChild(Deref(cursor.ptr).inl, orig_nr_visited_children + 2), &stack_top->children_cache[0], sizeof(NodeLink) * 2);
+                                cursor = stack_top->children_cache[1];
                             }
                             break;
                         }
@@ -2141,10 +2190,10 @@ static bool checkInternal(NodeLink link, bool is_child_leaf)
         }
     }
     for (unsigned i = 0; i <= link.numKeys; i++) {
-        const NodeLink child_link = internal.inl.children[i];
+        const NodeLink child_link = NthChild(internal.inl, i);
         if (child_link.ptr == NODE_NULLPTR) {
             success = false;
-            printf("Node[%u].children[%u] == null\n", link.ptr, i);
+            printf("NthChild(Node[%u], %u) == null\n", link.ptr, i);
         } else {
             __dma_aligned key_uint64_t key_in_child;
             if (i != 0) {
@@ -2154,12 +2203,12 @@ static bool checkInternal(NodeLink link, bool is_child_leaf)
                 if (is_child_leaf) {
                     if (internal.inl.keys[i - 1] > key_in_child) {
                         success = false;
-                        printf("Node[%u].keys[%u] > Node[%u].children[%u]->keys[0]\n", link.ptr, i - 1, link.ptr, i);
+                        printf("Node[%u].keys[%u] > NthChild(Node[%u], %u)->keys[0]\n", link.ptr, i - 1, link.ptr, i);
                     }
                 } else {
                     if (internal.inl.keys[i - 1] >= key_in_child) {
                         success = false;
-                        printf("Node[%u].keys[%u] >= Node[%u].children[%u]->keys[0]\n", link.ptr, i - 1, link.ptr, i);
+                        printf("Node[%u].keys[%u] >= NthChild(Node[%u], %u)->keys[0]\n", link.ptr, i - 1, link.ptr, i);
                     }
                 }
             }
@@ -2169,7 +2218,7 @@ static bool checkInternal(NodeLink link, bool is_child_leaf)
                     &key_in_child, sizeof(key_uint64_t));
                 if (internal.inl.keys[i] <= key_in_child) {
                     success = false;
-                    printf("Node[%u].keys[%u] <= Node[%u].children[%u]->keys[%u]\n", link.ptr, i, link.ptr, i, child_link.numKeys - 1);
+                    printf("Node[%u].keys[%u] <= NthChild(Node[%u], %u)->keys[%u]\n", link.ptr, i, link.ptr, i, child_link.numKeys - 1);
                 }
             }
         }
@@ -2208,7 +2257,7 @@ static bool check_tree_structure(const Node* root, unsigned height, unsigned roo
         }
 #endif
         for (unsigned idx_child_of_root = 0; idx_child_of_root <= root_numKeys; idx_child_of_root++) {
-            stack[0].link = root->inl.children[idx_child_of_root];
+            stack[0].link = NthChild(root->inl, idx_child_of_root);
             stack[0].nr_visited_children = 0;
             stack_height = 1;
 
@@ -2220,7 +2269,12 @@ static bool check_tree_structure(const Node* root, unsigned height, unsigned roo
                     const unsigned nr_visited = stack[stack_height - 1].nr_visited_children;
                     if (nr_visited <= stack[stack_height - 1].link.numKeys) {
                         stack[stack_height - 1].nr_visited_children++;
-                        stack[stack_height].link = Deref(stack[stack_height - 1].link.ptr).inl.children[nr_visited];
+                        {
+                            // fetch the aligned physical pair containing the child
+                            __dma_aligned NodeLink pair[2];
+                            mram_read(&NthChild(Deref(stack[stack_height - 1].link.ptr).inl, nr_visited / 2 * 2 + 1), &pair[0], sizeof(NodeLink) * 2);
+                            stack[stack_height].link = pair[1 - nr_visited % 2];
+                        }
                         stack[stack_height].nr_visited_children = 0;
                         stack_height++;
                     } else {
@@ -2239,10 +2293,10 @@ static bool check_tree_structure(const Node* root, unsigned height, unsigned roo
             }
         }
         for (unsigned i = 0; i <= root_numKeys; i++) {
-            const NodeLink child_link = root->inl.children[i];
+            const NodeLink child_link = NthChild(root->inl, i);
             if (child_link.ptr == NODE_NULLPTR) {
                 success = false;
-                printf("Root.children[%u] == null\n", i);
+                printf("NthChild(Root, %u) == null\n", i);
             } else {
                 __dma_aligned key_uint64_t key_in_child;
                 if (i != 0) {
@@ -2252,12 +2306,12 @@ static bool check_tree_structure(const Node* root, unsigned height, unsigned roo
                     if (is_child_of_root_leaf) {
                         if (root->inl.keys[i - 1] > key_in_child) {
                             success = false;
-                            printf("Root.keys[%u] > Root.children[%u]->keys[0]\n", i - 1, i);
+                            printf("Root.keys[%u] > NthChild(Root, %u)->keys[0]\n", i - 1, i);
                         }
                     } else {
                         if (root->inl.keys[i - 1] >= key_in_child) {
                             success = false;
-                            printf("Root.keys[%u] >= Root.children[%u]->keys[0]\n", i - 1, i);
+                            printf("Root.keys[%u] >= NthChild(Root, %u)->keys[0]\n", i - 1, i);
                         }
                     }
                 }
@@ -2267,7 +2321,7 @@ static bool check_tree_structure(const Node* root, unsigned height, unsigned roo
                         &key_in_child, sizeof(key_uint64_t));
                     if (root->inl.keys[i] <= key_in_child) {
                         success = false;
-                        printf("Root.keys[%u] <= Root.children[%u]->keys[%u]\n", i, i, child_link.numKeys - 1);
+                        printf("Root.keys[%u] <= NthChild(Root, %u)->keys[%u]\n", i, i, child_link.numKeys - 1);
                     }
                 }
             }
