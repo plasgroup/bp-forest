@@ -4,7 +4,7 @@ Rebalancing Algorithm
 BPForest の rebalancing (クエリ負荷を平滑化するための hot range 抽出と
 再配置) の仕組みを、**意味 → 実装** の順に整理したドキュメント。
 
-コード source of truth: `host/inc/bpforest.ipp`
+コード source of truth: `bpforest/inc/bpforest.ipp`
 理論対応: 論文の §"Query Density-Driven Partitioning" と appendix
 関連参照ドキュメント:
 
@@ -483,7 +483,7 @@ hot partition を複数片に割って捌き直す**機構。対象は `TASK_SER
 - 分割数は `nr_target_pieces = measured / hot_load`。2 未満なら split
   せず、`hot_ranges[idx_dpu]` を null に戻して hot を保持 (DPU 側の
   hot 木は据え置き)
-- `split_hot_range_equal_load` (`host/inc/split_hot_range.hpp`) が
+- `split_hot_range_equal_load` (`bpforest/inc/split_hot_range.hpp`) が
   chunk 粒度で load をほぼ等分 (`ceil(measured / nr_target_pieces)`
   ずつ) に切る。細分不能な単一巨大 chunk があると emit 数は目標より
   減り、1 個なら split を断念して hot を保持

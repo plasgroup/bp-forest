@@ -33,10 +33,10 @@ DPU プログラム (`dpu/src/dpumain.c`) は 1 回の起動で 1 種類のタ�
 `qrys.result_offset` は、返り値を書き込む位置をヒープ先頭からのバイトオフセットで表す。
 ホストは全 DPU 中の最大クエリ数 `max_nqrys` を使って
 `sizeof(InputHeader) + sizeof(Query) * max_nqrys` を与える
-(`BPForest::execute_in_dpus`, `host/inc/bpforest.ipp`)。全 DPU で同じ値にすることで、
+(`BPForest::execute_in_dpus`, `bpforest/inc/bpforest.ipp`)。全 DPU で同じ値にすることで、
 結果の一括転送を単一のオフセットからおこなえる。
 
-現行プロトコルの最も読みやすい参照実装は `host/inc/fake_dpu.ipp` (fake_dpu ビルド用の
+現行プロトコルの最も読みやすい参照実装は `bpforest/inc/fake_dpu.ipp` (fake_dpu ビルド用の
 DPU エミュレータ)。DPU 側の実体は `dpu/src/bplustree.c`。
 
 ## 実装済みのタスク

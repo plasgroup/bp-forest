@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
 project(bp-forest C CXX)
 
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+find_package(NUMA REQUIRED)
+
 if(NOT DEFINED targets)
     list(APPEND targets fake_dpu upmem upmem_simulator dpu_on_cpu)
 endif(NOT DEFINED targets)
@@ -35,6 +38,7 @@ add_subdirectory(util)
 add_subdirectory(dpu)
 add_subdirectory(dpu_on_cpu)
 add_subdirectory(workload_mgmt)
+add_subdirectory(bpforest)
 add_subdirectory(tester_host)
 add_subdirectory(host)
 add_subdirectory(workload_gen)

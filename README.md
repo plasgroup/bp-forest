@@ -3,8 +3,12 @@ B+-Forest is an ordered index for Processing-In-Memory (PIM) architectures. It i
 B+-Forest is based on many B+-trees and aims to handle data skew by extracting and migrating hot spots between DPUs.
 
 ## Code Structure
+- /bpforest
+  - The B+-Forest library for the host CPU (header-only; linked as the CMake target `bpforest_<target>`)
 - /host
-  - Source codes and header files for the host CPU, including `host_app_<target>`, the benchmark driver
+  - `host_app_<target>`: the benchmark driver
+- /resp_server
+  - `resp_server_<target>`: a RESP (Redis serialization protocol) server front-end
 - /dpu
   - Source codes and header files for the DPUs
 - /dpu_on_cpu
@@ -26,6 +30,8 @@ B+-Forest is based on many B+-trees and aims to handle data skew by extracting a
   - Test drivers for individual DPU tasks
 - /external
   - Bundled third-party dependencies
+- /cmake
+  - CMake find modules
 - /docs
   - Design notes referenced from the source code
 

@@ -1,6 +1,6 @@
 # pairs_range.hpp 構造メモ
 
-対象: `host/inc/pairs_range.hpp`
+対象: `bpforest/inc/pairs_range.hpp`
 
 ## 型の階層
 
@@ -57,7 +57,7 @@ hot range 切り出し結果。データ範囲 (`pairs_range`)、キー範囲 (`
 
 - `find_absolutely_hot_ranges` -- cold 領域から絶対 hot を切り出す
 - `find_relatively_hot_ranges` -- cold 領域から相対 hot を切り出す
-- `split_hot_range_equal_load` (`host/inc/split_hot_range.hpp`) -- 既存 hot が過熱したとき、
+- `split_hot_range_equal_load` (`bpforest/inc/split_hot_range.hpp`) -- 既存 hot が過熱したとき、
   それを負荷が均等になるよう分割する
 
 いずれも切り出した piece を hook 経由で呼び出し側に渡すだけで、
