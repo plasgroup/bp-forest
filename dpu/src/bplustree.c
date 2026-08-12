@@ -8,6 +8,7 @@
 #include "div_by_const.h"
 #include "dpu_params.h"
 #include "input_header.h"
+#include "iram_overlay.h"
 #include "node_ptr.h"
 #include "sync.h"
 #include "workload_types.h"
@@ -129,6 +130,7 @@ __attribute__((unused)) static bool check_tree_structure(const Node* root, unsig
 
 //! @sa /docs/tree_initialization.md
 //! @return Sum of nr. of KV pairs that [0, idx_leaf)-th leaves have
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static unsigned TREE_CONSTRUCT_idx_leaf_to_idx_pair(unsigned idx_leaf, unsigned nr_leaves, bool is_2nd_last_leaf_not_full, unsigned nr_pairs)
 {
     return (idx_leaf + is_2nd_last_leaf_not_full < nr_leaves ? idx_leaf * MAX_NR_PAIRS
@@ -137,6 +139,7 @@ static unsigned TREE_CONSTRUCT_idx_leaf_to_idx_pair(unsigned idx_leaf, unsigned 
 }
 //! @sa /docs/tree_initialization.md
 //! @return Sum of nr. of children that [0, idx_parent)-th parents have
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static unsigned TREE_CONSTRUCT_idx_parent_to_idx_child(unsigned idx_parent, unsigned nr_parents, bool is_2nd_last_parent_not_full, unsigned nr_children)
 {
     return (idx_parent + is_2nd_last_parent_not_full < nr_parents ? idx_parent * MAX_NR_CHILDREN
@@ -145,6 +148,7 @@ static unsigned TREE_CONSTRUCT_idx_parent_to_idx_child(unsigned idx_parent, unsi
 }
 //! @sa /docs/tree_initialization.md
 //! @return max{ i | TREE_CONSTRUCT_idx_parent_to_idx_child(i, nr_parents, _) <= idx_chlid }
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static unsigned TREE_CONSTRUCT_idx_child_to_idx_parent(unsigned idx_child, unsigned nr_children, unsigned nr_parents)
 {
     return (idx_child + MIN_NR_CHILDREN < nr_children ? DIV_NR_NODES_BY_MAX_NR_CHILDREN(idx_child)
@@ -152,6 +156,7 @@ static unsigned TREE_CONSTRUCT_idx_child_to_idx_parent(unsigned idx_child, unsig
                                                                                  : nr_parents));
 }
 
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static void TREE_CONSTRUCT_receive_lifted_links_from_junior(unsigned nr_children_received, Node* dest_node, key_uint64_t* key_min_subtree)
 {
     unsigned idx_junior = me() - 1, nr_lift_left_in_this_junior = workspace.tree.init[idx_junior].out.nr_cached_lift;
@@ -174,6 +179,7 @@ static void TREE_CONSTRUCT_receive_lifted_links_from_junior(unsigned nr_children
 
 //! @sa /docs/tree_initialization.md
 //! @return number of the allocated nodes
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static unsigned construct_tree(const uintptr_t initial_pairs, const uint32_t nr_pairs,
     uint8_t* root_numKeys, Node* root, uint8_t* height, key_uint64_t* min_key, uint32_t* p_nr_pairs, NodePtr (*allocator)(unsigned))
 {
@@ -487,16 +493,18 @@ static void TREE_CONSTRUCT_barrier(void)
     }
 }
 
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static NodePtr INIT_cold_allocator(unsigned idx_node)
 {
     return idx_node;
 }
 unsigned node_idx_shift;
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static NodePtr INIT_hot_allocator(unsigned idx_node)
 {
     return idx_node + node_idx_shift;
 }
-void task_init(void)
+OVERLAY_TASK(OVL_SLOT_RESHARD, task_init, (void), ())
 {
     _Static_assert(TREE_CONSTRUCT_NR_TASKLETS > 0, "TREE_CONSTRUCT_NR_TASKLETS > 0");
     if (me() < TREE_CONSTRUCT_NR_TASKLETS) {
@@ -534,6 +542,7 @@ void task_init(void)
 }
 
 
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
 static KVPair* INSERT_fetch_next_qry(InsertWorkspace* wks)
 {
     if (wks->idx_qry_in_cache == TASK_INSERT_NR_CACHED_QRYS) {
@@ -543,6 +552,7 @@ static KVPair* INSERT_fetch_next_qry(InsertWorkspace* wks)
     }
     return &wks->qrys[wks->idx_qry_in_cache++];
 }
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
 static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const height, uint8_t* const root_numKeys, const KVPair* const qry)
 {
     InsertWorkspace* const wks_me = loop_invariant(&workspace.tree.insert[me()]);
@@ -979,6 +989,7 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
         }
     }
 }
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
 static void INSERT_execute_batch(Node* const root, uint8_t* const height, uint8_t* const root_numKeys, uint32_t* const p_nr_pairs,
     const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
 {
@@ -996,7 +1007,7 @@ static void INSERT_execute_batch(Node* const root, uint8_t* const height, uint8_
     *p_nr_pairs = tmp_nr_pairs;
 }
 #if SUPPORT_INSERT
-void task_insert(void)
+OVERLAY_TASK(OVL_SLOT_INSERT, task_insert, (void), ())
 {
     _Static_assert(TASK_INSERT_NR_TASKLETS == 1, "TASK_INSERT_NR_TASKLETS == 1");
     if (me() < TASK_INSERT_NR_TASKLETS) {
@@ -1021,6 +1032,7 @@ void task_insert(void)
 
 
 #if SUPPORT_DELETE
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 __attribute__((unused)) static void DELETE_barrier(void)
 {
     if (me() != 0) {
@@ -1034,6 +1046,7 @@ __attribute__((unused)) static void DELETE_barrier(void)
         notify_prev_of_readiness();
     }
 }
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static key_uint64_t* DELETE_fetch_next_qry(DeleteWorkspace* wks)
 {
     if (wks->idx_qry_in_cache == TASK_INSERT_NR_CACHED_QRYS) {
@@ -1043,6 +1056,7 @@ static key_uint64_t* DELETE_fetch_next_qry(DeleteWorkspace* wks)
     }
     return &wks->qrys[wks->idx_qry_in_cache++];
 }
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static uint32_t /* # of deleted pairs */ DELETE_execute(Node* const root, const uint8_t height, const uint8_t root_numKeys,
     const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
 {
@@ -1086,7 +1100,7 @@ static uint32_t /* # of deleted pairs */ DELETE_execute(Node* const root, const 
 
     return nr_deleted;
 }
-void task_delete(void)
+OVERLAY_TASK(OVL_SLOT_QUERY, task_delete, (void), ())
 {
     if (me() < TASK_DELETE_NR_TASKLETS) {
         const uint32_t nr_cold_qrys = input_header.qrys.nr_cold_qrys, nr_hot_qrys = input_header.qrys.nr_hot_qrys;
@@ -1138,6 +1152,7 @@ void task_delete(void)
 
 
 #if SUPPORT_GET
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static void GET_prepare_next_qry(key_uint64_t* qrys_cache, unsigned* idx_qry_in_cache, uintptr_t* cursor_on_qrys, uintptr_t* cursor_on_results)
 {
     if (*idx_qry_in_cache == TASK_GET_NR_CACHED_QRYS) {
@@ -1149,6 +1164,7 @@ static void GET_prepare_next_qry(key_uint64_t* qrys_cache, unsigned* idx_qry_in_
         *idx_qry_in_cache = 0;
     }
 }
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static void GET_execute(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
     const uintptr_t results, const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
 {
@@ -1201,7 +1217,7 @@ static void GET_execute(const Node* const root, const uint8_t height, const uint
         mram_write(&wks_me->qrys[0], (__mram_ptr void*)cursor_on_results, sizeof(value_uint64_t) * idx_qry_in_cache);
     }
 }
-void task_get(void)
+OVERLAY_TASK(OVL_SLOT_QUERY, task_get, (void), ())
 {
     if (me() < TASK_GET_NR_TASKLETS) {
         const uint32_t nr_cold_qrys = input_header.qrys.nr_cold_qrys, nr_hot_qrys = input_header.qrys.nr_hot_qrys;
@@ -1230,6 +1246,7 @@ void task_get(void)
 
 
 #if SUPPORT_PRED
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static key_uint64_t PRED_pop_qry(PredWorkspace* wks)
 {
     if (wks->idx_qry_in_cache == TASK_PRED_NR_CACHED_QRYS) {
@@ -1239,6 +1256,7 @@ static key_uint64_t PRED_pop_qry(PredWorkspace* wks)
     }
     return wks->qrys[wks->idx_qry_in_cache++];
 }
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static void PRED_push_result(PredWorkspace* wks, KVPair result)
 {
     wks->results[wks->idx_result_in_cache] = result;
@@ -1249,6 +1267,7 @@ static void PRED_push_result(PredWorkspace* wks, KVPair result)
         wks->idx_result_in_cache = 0;
     }
 }
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static void PRED_flush_results_cache(PredWorkspace* wks)
 {
     if (wks->idx_result_in_cache != 0) {
@@ -1263,6 +1282,7 @@ static void PRED_flush_results_cache(PredWorkspace* wks)
 //! child that contains the global predecessor.  Host-side lower_bound routing
 //! guarantees the query reaches a tree that owns the predecessor, hence the
 //! reached leaf always has idx_pair > 0 (no idx_pair==0 path is needed).
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static KVPair PRED_search_one(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
     const key_uint64_t key)
 {
@@ -1283,6 +1303,7 @@ static KVPair PRED_search_one(const Node* const root, const uint8_t height, cons
     const uint16_t idx_pair = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, key);
     return (KVPair){wks_me->node_cache.lf.keys[idx_pair - 1], NthValue(wks_me->node_cache.lf, idx_pair - 1)};
 }
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static void PRED_execute(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
     const uintptr_t results, const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
 {
@@ -1304,7 +1325,7 @@ static void PRED_execute(const Node* const root, const uint8_t height, const uin
     }
     PRED_flush_results_cache(wks_me);
 }
-void task_pred(void)
+OVERLAY_TASK(OVL_SLOT_QUERY, task_pred, (void), ())
 {
     if (me() < TASK_PRED_NR_TASKLETS) {
         const uint32_t nr_cold_qrys = input_header.qrys.nr_cold_qrys, nr_hot_qrys = input_header.qrys.nr_hot_qrys;
@@ -1557,6 +1578,7 @@ void task_range_min(void)
 
 
 #if SUPPORT_RANGE_COUNT
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static RangeCountQuery* RANGE_COUNT_pop_qry(RangeCountQuery* qrys_cache, unsigned* idx_qry_in_cache, uintptr_t* cursor_on_qrys)
 {
     if (*idx_qry_in_cache == TASK_RANGE_COUNT_NR_CACHED_QRYS) {
@@ -1566,6 +1588,7 @@ static RangeCountQuery* RANGE_COUNT_pop_qry(RangeCountQuery* qrys_cache, unsigne
     }
     return &qrys_cache[(*idx_qry_in_cache)++];
 }
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static void RANGE_COUNT_push_result(uint64_t result, uint64_t* results_cache, unsigned* idx_result_in_cache, uintptr_t* cursor_on_results)
 {
     results_cache[*idx_result_in_cache] = result;
@@ -1576,6 +1599,7 @@ static void RANGE_COUNT_push_result(uint64_t result, uint64_t* results_cache, un
         *idx_result_in_cache = 0;
     }
 }
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static void RANGE_COUNT_flush_results_cache(uint64_t* results_cache, unsigned* idx_result_in_cache, uintptr_t* cursor_on_results)
 {
     if (*idx_result_in_cache != 0) {
@@ -1584,6 +1608,7 @@ static void RANGE_COUNT_flush_results_cache(uint64_t* results_cache, unsigned* i
         *idx_result_in_cache = 0;
     }
 }
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static uint64_t RANGE_COUNT_impl(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
     const RangeCountQuery* const qry)
 {
@@ -1639,6 +1664,7 @@ static uint64_t RANGE_COUNT_impl(const Node* const root, const uint8_t height, c
         return count;
     }
 }
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static void RANGE_COUNT_execute(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
     const uintptr_t results, const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
 {
@@ -1660,7 +1686,7 @@ static void RANGE_COUNT_execute(const Node* const root, const uint8_t height, co
     }
     RANGE_COUNT_flush_results_cache(&wks_me->results[0], &idx_result_in_cache, &cursor_on_results);
 }
-void task_range_count(void)
+OVERLAY_TASK(OVL_SLOT_QUERY, task_range_count, (void), ())
 {
     if (me() < TASK_RANGE_COUNT_NR_TASKLETS) {
         const uint32_t nr_cold_qrys = input_header.qrys.nr_cold_qrys, nr_hot_qrys = input_header.qrys.nr_hot_qrys;
@@ -1689,6 +1715,7 @@ void task_range_count(void)
 
 
 #if SUPPORT_RANGE_MAX
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static KeyRange* RANGE_MAX_pop_qry(KeyRange* qrys_cache, unsigned* idx_qry_in_cache, uintptr_t* cursor_on_qrys)
 {
     if (*idx_qry_in_cache == TASK_RANGE_MAX_NR_CACHED_QRYS) {
@@ -1698,6 +1725,7 @@ static KeyRange* RANGE_MAX_pop_qry(KeyRange* qrys_cache, unsigned* idx_qry_in_ca
     }
     return &qrys_cache[(*idx_qry_in_cache)++];
 }
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static void RANGE_MAX_push_result(value_uint64_t result, value_uint64_t* results_cache, unsigned* idx_result_in_cache, uintptr_t* cursor_on_results)
 {
     results_cache[*idx_result_in_cache] = result;
@@ -1708,6 +1736,7 @@ static void RANGE_MAX_push_result(value_uint64_t result, value_uint64_t* results
         *idx_result_in_cache = 0;
     }
 }
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static void RANGE_MAX_flush_results_cache(value_uint64_t* results_cache, unsigned* idx_result_in_cache, uintptr_t* cursor_on_results)
 {
     if (*idx_result_in_cache != 0) {
@@ -1716,6 +1745,7 @@ static void RANGE_MAX_flush_results_cache(value_uint64_t* results_cache, unsigne
         *idx_result_in_cache = 0;
     }
 }
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static value_uint64_t RANGE_MAX_impl(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
     const KeyRange* const qry)
 {
@@ -1770,6 +1800,7 @@ static value_uint64_t RANGE_MAX_impl(const Node* const root, const uint8_t heigh
         return max;
     }
 }
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static void RANGE_MAX_execute(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
     const uintptr_t results, const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
 {
@@ -1791,7 +1822,7 @@ static void RANGE_MAX_execute(const Node* const root, const uint8_t height, cons
     }
     RANGE_MAX_flush_results_cache(&wks_me->results[0], &idx_result_in_cache, &cursor_on_results);
 }
-void task_range_max(void)
+OVERLAY_TASK(OVL_SLOT_QUERY, task_range_max, (void), ())
 {
     if (me() < TASK_RANGE_MAX_NR_TASKLETS) {
         const uint32_t nr_cold_qrys = input_header.qrys.nr_cold_qrys, nr_hot_qrys = input_header.qrys.nr_hot_qrys;
@@ -1819,12 +1850,14 @@ void task_range_max(void)
 #endif /* if SUPPORT_RANGE_MAX */
 
 
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static void SERIALIZE_init_pair_cache(SerializeWorkspace* wks, uintptr_t result_pairs)
 {
     wks->nr_pairs = 0;
     wks->idx_pair_in_cache = 0;
     wks->cursor_on_pairs = result_pairs;
 }
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static KVPair* SERIALIZE_prepare_pair_cache(SerializeWorkspace* wks)
 {
     if (wks->idx_pair_in_cache == TASK_SERIALIZE_NR_CACHED_KVPAIRS) {
@@ -1835,18 +1868,21 @@ static KVPair* SERIALIZE_prepare_pair_cache(SerializeWorkspace* wks)
     wks->nr_pairs++;
     return &wks->pairs[wks->idx_pair_in_cache++];
 }
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static void SERIALIZE_flush_pair_cache(SerializeWorkspace* wks)
 {
     if (wks->idx_pair_in_cache != 0) {
         mram_write(&wks->pairs[0], (__mram_ptr void*)wks->cursor_on_pairs, sizeof(KVPair) * wks->idx_pair_in_cache);
     }
 }
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static void SERIALIZE_init_delim_cache(SerializeWorkspace* wks, uint32_t nr_delims, uintptr_t delims)
 {
     wks->nr_delims = nr_delims;
     wks->idx_delim_in_cache = TASK_SERIALIZE_NR_CACHED_DELIMS;
     wks->cursor_on_delims = delims;
 }
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static key_uint64_t* SERIALIZE_fetch_next_delim(SerializeWorkspace* wks)
 {
     if (wks->nr_delims == 0) {
@@ -1860,11 +1896,13 @@ static key_uint64_t* SERIALIZE_fetch_next_delim(SerializeWorkspace* wks)
     wks->nr_delims--;
     return &wks->delims[wks->idx_delim_in_cache++];
 }
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static void SERIALIZE_init_incision_cache(SerializeWorkspace* wks, uintptr_t result_incisions)
 {
     wks->idx_incision_in_cache = 0;
     wks->cursor_on_incisions = result_incisions;
 }
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static uint32_t* SERIALIZE_prepare_incision_cache(SerializeWorkspace* wks)
 {
     if (wks->idx_incision_in_cache == TASK_SERIALIZE_NR_CACHED_INCISIONS) {
@@ -1874,18 +1912,21 @@ static uint32_t* SERIALIZE_prepare_incision_cache(SerializeWorkspace* wks)
     }
     return &wks->incisions[wks->idx_incision_in_cache++];
 }
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static void SERIALIZE_flush_incision_cache(SerializeWorkspace* wks)
 {
     if (wks->idx_incision_in_cache != 0) {
         mram_write(&wks->incisions[0], (__mram_ptr void*)wks->cursor_on_incisions, sizeof(uint32_t) * ((wks->idx_incision_in_cache + 1) / 2 * 2));
     }
 }
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static void SERIALIZE_mark_incision(SerializeWorkspace* wks, key_uint64_t** p_delim)
 {
     uint32_t* const incision = SERIALIZE_prepare_incision_cache(wks);
     *incision = wks->nr_pairs;
     *p_delim = SERIALIZE_fetch_next_delim(wks);
 }
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static void SERIALIZE_execute(uint8_t root_numKeys, const Node* root, uint8_t height,
     uintptr_t result_pairs,
     uint32_t nr_delims, uintptr_t delims,
@@ -1956,7 +1997,7 @@ static void SERIALIZE_execute(uint8_t root_numKeys, const Node* root, uint8_t he
     SERIALIZE_flush_pair_cache(wks);
     SERIALIZE_flush_incision_cache(wks);
 }
-void task_serialize(void)
+OVERLAY_TASK(OVL_SLOT_RESHARD, task_serialize, (void), ())
 {
     _Static_assert(TASK_SERIALIZE_NR_TASKLETS == 1, "TASK_SERIALIZE_NR_TASKLETS == 1");
     if (me() < TASK_SERIALIZE_NR_TASKLETS) {
@@ -1978,6 +2019,7 @@ void task_serialize(void)
 }
 
 
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static void tree_clear(uint8_t* const p_root_numKeys, const Node* const root, uint8_t* const p_height)
 {
     static ClearTreeWorkspace* const wks = &workspace.tree.clear;
@@ -2048,17 +2090,19 @@ static void tree_clear(uint8_t* const p_root_numKeys, const Node* const root, ui
         *p_root_numKeys = *p_height = 0;
     }
 }
+OVERLAY_LOCAL(OVL_SLOT_RESHARD)
 static NodePtr MOVE_HOT_allocator(unsigned idx_node)
 {
     (void)idx_node;
     return Allocate_node();
 }
-void task_move_hot(void)
+/*
+ * TASK_MOVE_HOT だけは reshard と insert の両スロットを使い得るため、
+ * 本体を常駐に置き、スロットを使う区間をフェーズ関数として切り出して
+ * ディスパッチ関数越しに呼ぶ。フェーズの区切りは従来のまま。
+ */
+OVERLAY_TASK_STATIC(OVL_SLOT_RESHARD, MOVE_HOT_clear_phase, (void), ())
 {
-    if (input_header.move_hot.renew_cold && input_header.move_hot.renew_hot) {
-        return task_init();
-    }
-
     if (input_header.move_hot.renew_cold) {
         tree_clear(&cold_root_numKeys, &cold_root, &cold_height);
     }
@@ -2066,53 +2110,80 @@ void task_move_hot(void)
         tree_clear(&hot_root_numKeys, &hot_root, &hot_height);
     }
 
-    _Static_assert(TREE_CONSTRUCT_NR_TASKLETS > 0, "TREE_CONSTRUCT_NR_TASKLETS > 0");
     if (me() < TREE_CONSTRUCT_NR_TASKLETS) {
-        if (input_header.move_hot.renew_cold || input_header.move_hot.renew_hot) {
-            TREE_CONSTRUCT_barrier();
-        }
-
+        TREE_CONSTRUCT_barrier();
+    }
+}
+OVERLAY_TASK_STATIC(OVL_SLOT_RESHARD, MOVE_HOT_construct_phase, (bool cold_tree), (cold_tree))
+{
+    if (me() < TREE_CONSTRUCT_NR_TASKLETS) {
         static const uintptr_t cold_pairs = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader);
 
-        if (input_header.move_hot.nr_cold_pairs > 0) {
-            if (input_header.move_hot.renew_cold) {
-                construct_tree(cold_pairs, input_header.move_hot.nr_cold_pairs,
-                    &cold_root_numKeys, &cold_root, &cold_height, &cold_min_key, &nr_pairs.cold, MOVE_HOT_allocator);
-            } else {
-                _Static_assert(TASK_INSERT_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS, "TASK_INSERT_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS");
-                if (me() < TASK_INSERT_NR_TASKLETS) {
-                    INSERT_execute_batch(&cold_root, &cold_height, &cold_root_numKeys, &nr_pairs.cold,
-                        0, input_header.move_hot.nr_cold_pairs);
-                }
-            }
+        if (cold_tree) {
+            construct_tree(cold_pairs, input_header.move_hot.nr_cold_pairs,
+                &cold_root_numKeys, &cold_root, &cold_height, &cold_min_key, &nr_pairs.cold, MOVE_HOT_allocator);
+        } else {
+            const uintptr_t hot_pairs = cold_pairs + sizeof(KVPair) * input_header.move_hot.nr_cold_pairs;
 
+            construct_tree(hot_pairs, input_header.move_hot.nr_hot_pairs,
+                &hot_root_numKeys, &hot_root, &hot_height, &hot_min_key, &nr_pairs.hot, MOVE_HOT_allocator);
+        }
+    }
+}
+OVERLAY_TASK_STATIC(OVL_SLOT_INSERT, MOVE_HOT_upsert_phase, (bool cold_tree), (cold_tree))
+{
+    _Static_assert(TASK_INSERT_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS, "TASK_INSERT_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS");
+    if (me() < TASK_INSERT_NR_TASKLETS) {
+        if (cold_tree) {
+            INSERT_execute_batch(&cold_root, &cold_height, &cold_root_numKeys, &nr_pairs.cold,
+                0, input_header.move_hot.nr_cold_pairs);
+        } else {
+            INSERT_execute_batch(&hot_root, &hot_height, &hot_root_numKeys, &nr_pairs.hot,
+                input_header.move_hot.nr_cold_pairs, input_header.move_hot.nr_hot_pairs);
+        }
+    }
+}
+void task_move_hot(void)
+{
+    if (input_header.move_hot.renew_cold && input_header.move_hot.renew_hot) {
+        return task_init();
+    }
+
+    if (input_header.move_hot.renew_cold || input_header.move_hot.renew_hot) {
+        MOVE_HOT_clear_phase();
+    }
+
+    _Static_assert(TREE_CONSTRUCT_NR_TASKLETS > 0, "TREE_CONSTRUCT_NR_TASKLETS > 0");
+    if (input_header.move_hot.nr_cold_pairs > 0) {
+        if (input_header.move_hot.renew_cold) {
+            MOVE_HOT_construct_phase(true);
+        } else {
+            MOVE_HOT_upsert_phase(true);
+        }
+
+        if (me() < TREE_CONSTRUCT_NR_TASKLETS) {
             TREE_CONSTRUCT_barrier();
         }
+    }
 
-        if (input_header.move_hot.nr_hot_pairs > 0) {
-            if (input_header.move_hot.renew_hot) {
-                const uintptr_t hot_pairs = cold_pairs + sizeof(KVPair) * input_header.move_hot.nr_cold_pairs;
-
-                construct_tree(hot_pairs, input_header.move_hot.nr_hot_pairs,
-                    &hot_root_numKeys, &hot_root, &hot_height, &hot_min_key, &nr_pairs.hot, MOVE_HOT_allocator);
-            } else {
-                _Static_assert(TASK_INSERT_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS, "TASK_INSERT_NR_TASKLETS <= TREE_CONSTRUCT_NR_TASKLETS");
-                if (me() < TASK_INSERT_NR_TASKLETS) {
-                    INSERT_execute_batch(&hot_root, &hot_height, &hot_root_numKeys, &nr_pairs.hot,
-                        input_header.move_hot.nr_cold_pairs, input_header.move_hot.nr_hot_pairs);
-                }
-            }
+    if (input_header.move_hot.nr_hot_pairs > 0) {
+        if (input_header.move_hot.renew_hot) {
+            MOVE_HOT_construct_phase(false);
+        } else {
+            MOVE_HOT_upsert_phase(false);
         }
+    }
 
 #ifdef TASK_MOVE_HOT_CHECK
-        _Static_assert(TREE_CONSTRUCT_NR_TASKLETS >= TASK_INSERT_NR_TASKLETS, "TREE_CONSTRUCT_NR_TASKLETS >= TASK_INSERT_NR_TASKLETS");
+    _Static_assert(TREE_CONSTRUCT_NR_TASKLETS >= TASK_INSERT_NR_TASKLETS, "TREE_CONSTRUCT_NR_TASKLETS >= TASK_INSERT_NR_TASKLETS");
+    if (me() < TREE_CONSTRUCT_NR_TASKLETS) {
         TREE_CONSTRUCT_barrier();
         if (me() == 0) {
             check_tree_structure(&cold_root, cold_height, cold_root_numKeys);
             check_tree_structure(&hot_root, hot_height, hot_root_numKeys);
         }
-#endif
     }
+#endif
 }
 
 
