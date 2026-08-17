@@ -612,7 +612,7 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
                     }
                     new_sibling->lf.keys[idx_pair - old_root_numKeys] = qry->key;
                     NthValue(new_sibling->lf, idx_pair - old_root_numKeys) = qry->value;
-                    for (unsigned i = idx_pair; i < new_sibling_numKeys; i++) {
+                    for (unsigned i = idx_pair; i < MAX_NR_PAIRS; i++) {
                         new_sibling->lf.keys[i - (old_root_numKeys - 1)] = root->lf.keys[i];
                         NthValue(new_sibling->lf, i - (old_root_numKeys - 1)) = NthValue(root->lf, i);
                     }
