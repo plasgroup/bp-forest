@@ -91,6 +91,18 @@ inline void QueryDataPerRange<Query, void>::clear_for_thread(unsigned tid)
 {
     qrys[tid].clear();
 }
+inline void QueryDataPerRange<key_uint64_t, uint8_t>::clear()
+{
+    for (unsigned tid = 0; tid < qrys.size(); tid++) {
+        clear_for_thread(tid);
+    }
+}
+inline void QueryDataPerRange<key_uint64_t, uint8_t>::clear_for_thread(unsigned tid)
+{
+    qrys[tid].clear();
+    orig_idxs[tid].clear();
+    min_hits[tid].clear();
+}
 template <typename Query, typename Result>
 inline QueryData<Query, Result>::QueryData(dpu_id_t nr_dpus, unsigned nr_threads)
     : cold{[&] {
@@ -154,6 +166,10 @@ constexpr bool IsPointQuery = std::is_invocable_v<PointQueryToKey<Query>, Query>
 // not_found specializations do not collide.
 template <typename Query, typename Result>
 constexpr bool IsPredecessorQuery = std::is_same_v<Query, key_uint64_t>&& std::is_same_v<Result, KVPair>;
+
+// delete query: key in, "was it there" flag out.
+template <typename Query, typename Result>
+constexpr bool IsDeleteQuery = std::is_same_v<Query, key_uint64_t>&& std::is_same_v<Result, uint8_t>;
 
 template <typename RangeQuery>
 struct RangeQueryToRange {
@@ -246,10 +262,12 @@ inline void BPForest::distribute_equal_data(const KVPair sorted_pairs[], const s
         nr_pairs[idx_base].get() = {nr_cold_pairs, 0};
 
         pairs_for_each_dpus[idx_base] = begin;
-        cold_delims[idx_base] = delims.emplace_hint(delims.cend(), begin->key, BasePartitionDelim{idx_base});
+        if (nr_cold_pairs > 0) {
+            parts.assign_from(begin->key, {idx_base, false}, idx_base);
+        }
     }
 
-    combine_delims();
+    rebuild_part_indices();
 
 #ifdef SYNCHRONOUS_DPU_EXEC
     {
@@ -280,102 +298,75 @@ inline void BPForest::load_partitioning(const std::vector<Partition>& partitioni
 {
     ASSERT(partitioning.size() == nr_base_parts * 2);
 
-    delims.clear();
-
-    key_uint64_t next_delim;
-    for (dpu_id_t idx_dpu = nr_base_parts - 1; idx_dpu < nr_base_parts; idx_dpu--) {
-        const auto& base_partition = partitioning[idx_dpu];
-        if (base_partition.length != 0) {
-            const key_uint64_t begin = key_int64_to_uint64(base_partition.left_key);
-            cold_delims[idx_dpu] = delims.emplace_hint(delims.cbegin(), begin, BasePartitionDelim{idx_dpu});
-            next_delim = begin;
-        } else {
-            ASSERT(idx_dpu != nr_base_parts - 1);
-            cold_delims[idx_dpu] = delims.emplace_hint(delims.cbegin(), next_delim, BasePartitionDelim{idx_dpu});
-        }
-    }
-
+    // The given hot partitions are indexed by their host DPU, whereas the
+    // table wants them in key order.
+    std::vector<std::pair<KeyRange, dpu_id_t>> hots;
+    hots.reserve(nr_base_parts);
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-        const auto& hot_partition = partitioning[nr_base_parts + idx_dpu];
+        const Partition& hot_partition = partitioning[nr_base_parts + idx_dpu];
         if (hot_partition.length != 0) {
             const key_uint64_t begin = key_int64_to_uint64(hot_partition.left_key);
-            hot_delims[idx_dpu] = delims.emplace(begin, HotPartitionDelim{begin + hot_partition.length - 1, idx_dpu}).first;
+            hots.emplace_back(KeyRange{begin, begin + hot_partition.length - 1}, idx_dpu);
         }
     }
+    std::sort(hots.begin(), hots.end(), [](const auto& lhs, const auto& rhs) { return lhs.first.begin < rhs.first.begin; });
 
-    combine_delims();
+    parts.clear();
+    size_t idx_hot = 0;
+    for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
+        const Partition& base_partition = partitioning[idx_base];
+        if (base_partition.length == 0) {
+            continue;
+        }
+        const key_uint64_t begin = key_int64_to_uint64(base_partition.left_key),
+                           end = begin + base_partition.length - 1;
+
+        parts.assign_from(begin, {idx_base, false}, idx_base);
+        for (; idx_hot < hots.size() && hots[idx_hot].first.begin <= end; idx_hot++) {
+            parts.assign_from(hots[idx_hot].first.begin, {hots[idx_hot].second, true}, idx_base);
+            if (hots[idx_hot].first.end < end) {
+                parts.assign_from(hots[idx_hot].first.end + 1, {idx_base, false}, idx_base);
+            }
+        }
+    }
+    ASSERT(idx_hot == hots.size());
+
+    rebuild_part_indices();
 }
 inline void BPForest::distribute_data_based_on_partitions(const KVPair sorted_pairs[], size_t nr_total_pairs)
 {
-    const KVPair* cursor = &sorted_pairs[0];
-
     std::fill(&hot_ranges[0], &hot_ranges[nr_base_parts], PairsRange{nullptr, nullptr});
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-        nr_pairs[idx_dpu].get()[1] = 0;
+        nr_pairs[idx_dpu].get() = {0, 0};
+        InputHeader& input_header = input_headers[idx_dpu];
+        input_header.task_no = TASK_INIT;
+        input_header.init.nr_cold_pairs = input_header.init.nr_hot_pairs = 0;
     }
 
-    dpu_id_t idx_base = 0, cold_count = 0;
-    uint32_t nr_cold_pairs_in_this_base = 0;
-    assert(!delims.empty());
-    for (DelimIter iter = std::next(delims.cbegin()); iter != delims.cend(); iter++) {
-        const key_uint64_t key = iter->first;
-        const auto& delim = iter->second;
+    const KVPair* cursor = &sorted_pairs[0];
+    dpu_id_t cold_count = 0;
+    for (size_t idx_part = 0; idx_part < parts.size(); idx_part++) {
+        const KVPair* const begin = cursor;
+        cursor = idx_part + 1 < parts.size()
+                     ? std::lower_bound(cursor, &sorted_pairs[nr_total_pairs], parts.begins[idx_part + 1], compare_kvpair_key)
+                     : &sorted_pairs[nr_total_pairs];
+        const PairsRange passed{begin, cursor};
+        // Every partition begins at its smallest live key, which the given
+        // partitioning is expected to respect already.
+        ASSERT(passed.npairs() > 0 && passed.begin()->key == parts.begins[idx_part]);
 
-        const KVPair* const prev_cursor = cursor;
-        cursor = std::lower_bound(cursor, &sorted_pairs[nr_total_pairs], key, compare_kvpair_key);
-        const PairsRange passed{prev_cursor, cursor};
-
-        std::visit(overload(
-                       [&](const BasePartitionDelim&) {
-                           if (passed.npairs() > 0) {
-                               LinkedPairsRange& cold_range = cold_ranges[cold_count++];
-                               cold_range = passed;
-                               cold_ranges_lists[idx_base].push_back(cold_range);
-
-                               nr_cold_pairs_in_this_base += static_cast<uint32_t>(passed.npairs());
-                           }
-
-                           input_headers[idx_base].task_no = TASK_INIT;
-                           input_headers[idx_base].init.nr_cold_pairs = nr_cold_pairs_in_this_base;
-                           nr_pairs[idx_base].get()[0] = nr_cold_pairs_in_this_base;
-
-                           idx_base++;
-                           nr_cold_pairs_in_this_base = 0;
-                       },
-                       [&](const HotPartitionDelim& delim) {
-                           if (passed.npairs() > 0) {
-                               LinkedPairsRange& cold_range = cold_ranges[cold_count++];
-                               cold_range = passed;
-                               cold_ranges_lists[idx_base].push_back(cold_range);
-
-                               nr_cold_pairs_in_this_base += static_cast<uint32_t>(passed.npairs());
-                           }
-
-                           const KVPair* const prev_cursor = cursor;
-                           cursor = std::upper_bound(cursor, &sorted_pairs[nr_total_pairs], delim.max_key, compare_key_kvpair);
-                           const PairsRange passed{prev_cursor, cursor};
-
-                           hot_ranges[delim.dpu] = passed;
-                           nr_pairs[idx_base].get()[1] = input_headers[delim.dpu].init.nr_hot_pairs = static_cast<uint32_t>(passed.npairs());
-                       }),
-            delim);
-    }
-    {  // last cold range
-        const KVPair* const prev_cursor = cursor;
-        cursor = &sorted_pairs[nr_total_pairs];
-        const PairsRange passed{prev_cursor, cursor};
-
-        if (passed.npairs() > 0) {
+        const QueryDest& dest = parts.dests[idx_part];
+        if (dest.is_hot) {
+            hot_ranges[dest.dpu] = passed;
+            nr_pairs[dest.dpu].get()[1] = input_headers[dest.dpu].init.nr_hot_pairs = static_cast<uint32_t>(passed.npairs());
+        } else {
             LinkedPairsRange& cold_range = cold_ranges[cold_count++];
             cold_range = passed;
-            cold_ranges_lists[idx_base].push_back(cold_range);
+            cold_ranges_lists[dest.dpu].push_back(cold_range);
 
-            nr_cold_pairs_in_this_base += static_cast<uint32_t>(passed.npairs());
+            nr_pairs[dest.dpu].get()[0] += static_cast<uint32_t>(passed.npairs());
+            input_headers[dest.dpu].init.nr_cold_pairs = nr_pairs[dest.dpu].get()[0];
         }
-
-        input_headers[idx_base].task_no = TASK_INIT;
-        input_headers[idx_base].init.nr_cold_pairs = nr_cold_pairs_in_this_base;
-        nr_pairs[idx_base].get()[0] = nr_cold_pairs_in_this_base;
     }
 
     initialize_in_dpu(&input_headers[0], &cold_ranges_lists[0], &hot_ranges[0]);
@@ -485,44 +476,105 @@ inline void BPForest::initialize_in_dpu(const InputHeader input_headers[], const
 #endif
 }
 
-inline void BPForest::combine_delims()
+inline void BPForest::rebuild_part_indices()
 {
     ScopedTimer t{Timer, "table"};
 
-    combined_delims.clear();
-    combined_delims_dest.clear();
+    assert(parts.size() <= max_nr_parts(nr_base_parts));
 
-    dpu_id_t base_idx;
-
-    DelimIter it = delims.cbegin();
-    while (it != delims.cend()) {
-        const DelimIter next = std::next(it);
-        {
-            const key_uint64_t key = it->first;
-            const auto& delim = it->second;
-
-            std::visit(overload(
-                           [&](const BasePartitionDelim& delim) {
-                               base_idx = delim.dpu;
-                               if (next == delims.cend() || next->first != key) {
-                                   combined_delims.emplace_back(key);
-                                   combined_delims_dest.push_back({base_idx, false});
-                               }
-                           },
-                           [&](const HotPartitionDelim& delim) {
-                               assert(key <= delim.max_key);
-                               combined_delims.emplace_back(key);
-                               combined_delims_dest.push_back({delim.dpu, true});
-                               if (delim.max_key != KEY_MAX
-                                   && (next == delims.cend() || delim.max_key + 1 < next->first)) {
-                                   combined_delims.emplace_back(delim.max_key + 1);
-                                   combined_delims_dest.push_back({base_idx, false});
-                               }
-                           }),
-                delim);
-        }
-        it = next;
+    if (parts.size() == 0) {
+        // Deleting the last live pair leaves nothing to route to, but an
+        // insert still needs a tree to land in.  One partition parks where no
+        // query selects it, for the next insert to bring back down.
+        parts.assign_from(KEY_MAX, {0, false}, 0);
     }
+
+    std::fill(&hot_part[0], &hot_part[nr_base_parts], INVALID_DPU_ID);
+    nr_hot_parts = 0;
+
+    dpu_id_t idx_part = 0;
+    for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
+        base_part[idx_base] = idx_part;
+        for (; idx_part < parts.size() && parts.origins[idx_part] == idx_base; idx_part++) {
+            assert(idx_part == 0
+                   || (parts.begins[idx_part - 1] < parts.begins[idx_part]
+                       && !(parts.dests[idx_part - 1] == parts.dests[idx_part])));
+            if (parts.dests[idx_part].is_hot) {
+                assert(hot_part[parts.dests[idx_part].dpu] == INVALID_DPU_ID);
+                hot_part[parts.dests[idx_part].dpu] = idx_part;
+                nr_hot_parts++;
+            }
+        }
+    }
+    base_part[nr_base_parts] = idx_part;
+    // Every entry belongs to a base partition, in base order: only then is a
+    // base's run of entries the contiguous one `base_part` says it is.
+    assert(idx_part == parts.size());
+}
+inline dpu_id_t BPForest::cut_points_of_cold_tree(dpu_id_t idx_base, key_uint64_t incisions[], KeyRange key_ranges[]) const
+{
+    dpu_id_t nr_pieces = 0;
+    for (size_t idx_part = base_part[idx_base]; idx_part < base_part[idx_base + 1]; idx_part++) {
+        if (parts.dests[idx_part].is_hot) {
+            continue;
+        }
+        if (nr_pieces > 0) {
+            incisions[nr_pieces - 1] = parts.begins[idx_part];
+        }
+        key_ranges[nr_pieces++] = {parts.begins[idx_part], parts.end_of(idx_part)};
+    }
+    return nr_pieces;
+}
+template <typename Renewed>
+inline void BPForest::rebuild_parts(dpu_id_t nr_hot_entries, Renewed&& renewed)
+{
+    rebuilt_parts.clear();
+
+    dpu_id_t idx_hot = 0;
+    for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
+        dpu_id_t nr_colds = 0;
+        if (renewed(idx_base)) {
+            for (const ChunkedPairsRange& piece : chunked_cold_ranges_lists[idx_base]) {
+                if (piece.npairs() > 0) {
+                    cold_begins[nr_colds++] = piece.PairsRange::begin()->key;
+                }
+            }
+        } else {
+            for (size_t idx_part = base_part[idx_base]; idx_part < base_part[idx_base + 1]; idx_part++) {
+                if (!parts.dests[idx_part].is_hot) {
+                    cold_begins[nr_colds++] = parts.begins[idx_part];
+                }
+            }
+        }
+
+        // Merge, both sequences being in key order.
+        dpu_id_t idx_cold = 0;
+        for (;;) {
+            const bool has_hot = idx_hot < nr_hot_entries && hot_entries[idx_hot].origin == idx_base;
+            if (idx_cold < nr_colds && (!has_hot || cold_begins[idx_cold] < hot_entries[idx_hot].begin)) {
+                rebuilt_parts.assign_from(cold_begins[idx_cold++], {idx_base, false}, idx_base);
+            } else if (has_hot) {
+                rebuilt_parts.assign_from(hot_entries[idx_hot].begin, {hot_entries[idx_hot].host, true}, idx_base);
+                idx_hot++;
+            } else {
+                break;
+            }
+        }
+    }
+    assert(idx_hot == nr_hot_entries);
+
+    parts.swap(rebuilt_parts);
+    rebuild_part_indices();
+}
+//! @brief The partition holding the strict predecessor of `key`: the rightmost
+//! one that begins below `key`.  Returns -1 when no live pair precedes `key`.
+//!
+//! Every partition begins at its own smallest live key, so that partition is
+//! certain to hold a live pair below `key` while every partition to its right
+//! holds none, which is why one round always answers.
+inline ptrdiff_t BPForest::locate_pred_partition(key_uint64_t key) const
+{
+    return std::lower_bound(parts.begins.begin(), parts.begins.end(), key) - parts.begins.begin() - 1;
 }
 
 
@@ -618,22 +670,37 @@ inline void BPForest::route_single_point_query(
     unsigned tid)
 {
     const key_uint64_t key = PointQueryToKey<Query>{}(qry);
-    const auto one_after_the_target = [&] {
-        if constexpr (IsPredecessorQuery<Query, Result>) {
-            return std::lower_bound(combined_delims.begin(), combined_delims.end(), key);
-        } else {
-            return std::upper_bound(combined_delims.begin(), combined_delims.end(), key);
-        }
-    }();
 
-    if (one_after_the_target == combined_delims.begin()) {
+    if constexpr (IsPredecessorQuery<Query, Result>) {
+        const ptrdiff_t idx_part = locate_pred_partition(key);
+        if (idx_part < 0) {
+            not_found_in_point_query(idx_qry, qry, result, routed, tid);
+        } else {
+            const QueryDest& dest = parts.dests[static_cast<size_t>(idx_part)];
+            auto& out = dest.is_hot ? routed.hot[dest.dpu] : routed.cold[dest.dpu];
+            out.qrys[tid].emplace_back(qry);
+            out.orig_idxs[tid].emplace_back(idx_qry);
+        }
+        return;
+    }
+
+    const auto one_after_the_target = std::upper_bound(parts.begins.begin(), parts.begins.end(), key);
+
+    if (one_after_the_target == parts.begins.begin()) {
         not_found_in_point_query(idx_qry, qry, result, routed, tid);
 
     } else {
-        const size_t idx_part = static_cast<size_t>(one_after_the_target - combined_delims.begin()) - 1;
-        const QueryDest& dest = combined_delims_dest[idx_part];
+        const size_t idx_part = static_cast<size_t>(one_after_the_target - parts.begins.begin()) - 1;
+
+        const QueryDest& dest = parts.dests[idx_part];
         auto& out = dest.is_hot ? routed.hot[dest.dpu] : routed.cold[dest.dpu];
         out.qrys[tid].emplace_back(qry);
+
+        if constexpr (IsDeleteQuery<Query, Result>) {
+            if (key == parts.begins[idx_part]) {
+                out.min_hits[tid].push_back(static_cast<uint32_t>(idx_part));
+            }
+        }
 
         if constexpr (!std::is_same_v<Result, void>) {
             out.orig_idxs[tid].emplace_back(idx_qry);
@@ -657,17 +724,18 @@ inline void BPForest::not_found_in_point_query<KVPair, void>(
     unsigned tid)
 {
     new_min_keys[tid].get() = std::min({pair.key, new_min_keys[tid].get()});
-    const QueryDest& dest = combined_delims_dest[0];
+    const QueryDest& dest = parts.dests[0];
     auto& out = dest.is_hot ? routed.hot[dest.dpu] : routed.cold[dest.dpu];
     out.qrys[tid].emplace_back(pair);
 }
 // DELETE
 template <>
-inline void BPForest::not_found_in_point_query<key_uint64_t, void>(
-    uint32_t, const key_uint64_t&, void*,
-    QueryData<key_uint64_t, void>&,
+inline void BPForest::not_found_in_point_query<key_uint64_t, uint8_t>(
+    uint32_t, const key_uint64_t&, uint8_t* result,
+    QueryData<key_uint64_t, uint8_t>&,
     unsigned)
 {
+    *result = 0;  // no pair below the first partition, so nothing to delete
 }
 // PRED
 template <>
@@ -689,43 +757,45 @@ inline void BPForest::route_single_range_query(
     KeyRange& range = RangeQueryToRange<Query>{}(tmp_qry);
     const key_uint64_t orig_qry_end = range.end;
 
-    if (orig_qry_end < combined_delims[0]) {
+    if (orig_qry_end < parts.begins[0]) {
         return;
     }
 
-    auto it = std::upper_bound(combined_delims.begin(), combined_delims.end(), range.begin);
+    auto it = std::upper_bound(parts.begins.begin(), parts.begins.end(), range.begin);
     size_t idx;
-    if (it != combined_delims.begin()) {
-        idx = static_cast<size_t>(it - combined_delims.begin()) - 1;  // points to the partition that contains qry.range.begin
+    if (it != parts.begins.begin()) {
+        idx = static_cast<size_t>(it - parts.begins.begin()) - 1;  // points to the partition that contains qry.range.begin
     } else {
         idx = 0;
     }
 
     for (;;) {
-        const QueryDest& dest = combined_delims_dest[idx];
+        const QueryDest& dest = parts.dests[idx];
         auto& out = dest.is_hot ? routed.hot[dest.dpu] : routed.cold[dest.dpu];
         ++idx;
-        if (idx == combined_delims.size() || orig_qry_end < combined_delims[idx]) {
+        if (idx == parts.begins.size() || orig_qry_end < parts.begins[idx]) {
             range.end = orig_qry_end;
             out.qrys[tid].push_back(tmp_qry);
             out.orig_idxs[tid].push_back(idx_qry);
             return;
         } else {
-            range.end = combined_delims[idx] - 1;
+            range.end = parts.begins[idx] - 1;
             out.qrys[tid].push_back(tmp_qry);
             out.orig_idxs[tid].push_back(idx_qry);
-            range.begin = combined_delims[idx];
+            range.begin = parts.begins[idx];
         }
     }
 }
 
-template <typename Query, typename Result>
+template <typename Query, typename Result, typename Tail>
 struct QuerySender {
     const uint32_t TaskNo;
     const uint32_t result_offset;
     const QueryData<Query, Result>* const queries;
+    const Tail* const tail;
 
-    QuerySender(uint32_t TaskNo, uint32_t result_offset, const QueryData<Query, Result>* queries) : TaskNo{TaskNo}, result_offset{result_offset}, queries{queries} {}
+    QuerySender(uint32_t TaskNo, uint32_t result_offset, const QueryData<Query, Result>* queries, const Tail* tail)
+        : TaskNo{TaskNo}, result_offset{result_offset}, queries{queries}, tail{tail} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
     {
@@ -755,102 +825,210 @@ struct QuerySender {
             }
             block_index -= queries->cold[dpu_index].qrys.size();
 
-            if (queries->hot[dpu_index].nr_qrys != 0 && block_index < queries->hot[dpu_index].qrys.size()) {
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<Query*>(&queries->hot[dpu_index].qrys[block_index][0])));
-                out->length = static_cast<uint32_t>(sizeof(Query) * queries->hot[dpu_index].qrys[block_index].size());
-                return true;
+            if (queries->hot[dpu_index].nr_qrys != 0) {
+                if (block_index < queries->hot[dpu_index].qrys.size()) {
+                    out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<Query*>(&queries->hot[dpu_index].qrys[block_index][0])));
+                    out->length = static_cast<uint32_t>(sizeof(Query) * queries->hot[dpu_index].qrys[block_index].size());
+                    return true;
+                }
+                block_index -= queries->hot[dpu_index].qrys.size();
             }
-            return false;
+            return (*tail)(out, dpu_index, block_index);
         }
         }
     }
     size_t bytes_for_dpu(dpu_id_t dpu) const
     {
-        return sizeof(InputHeader) + sizeof(Query) * (size_t{queries->cold[dpu].nr_qrys} + queries->hot[dpu].nr_qrys);
+        return sizeof(InputHeader) + sizeof(Query) * (size_t{queries->cold[dpu].nr_qrys} + queries->hot[dpu].nr_qrys)
+               + tail->bytes_for_dpu(dpu);
     }
 };
-template <typename Query, typename Result, typename Func>
+//! @brief A result section is rounded up to this, so that no two of them share
+//! an 8-byte word and the DPU's tasklets can write theirs independently.
+constexpr size_t result_section_bytes(size_t nr_qrys, size_t result_size) { return (nr_qrys * result_size + 7u) / 8u * 8u; }
+
+template <typename Query, typename Result, typename Tail>
 struct ResultReceiver {
     QueryData<Query, Result>* const queries;
-    Func* const func;
+    const Tail* const tail;
 
-    ResultReceiver(QueryData<Query, Result>* queries, Func* func) : queries{queries}, func{func} {}
+    ResultReceiver(QueryData<Query, Result>* queries, const Tail* tail) : queries{queries}, tail{tail} {}
 
-    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
+    //! @brief The results of one tree, as one block per host thread followed
+    //! by the block that absorbs the section's padding.
+    //!
+    //! The DPU writes them in the order it received the queries, which is
+    //! exactly the concatenation of the per-thread blocks QuerySender emits,
+    //! so each thread's results land in its own buffer and postprocessing
+    //! needs no offset table.
+    static bool result_blocks_of_tree(sg_block_info* out, block_id_t& block_index, QueryDataPerRange<Query, Result>& query_data)
     {
-        if ((*func)(out, dpu_index, block_index)) {
+        if (block_index < query_data.qrys.size()) {
+            if constexpr (std::is_same_v<Query, Result>) {
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(&query_data.qrys[block_index][0]));
+            } else {
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(&query_data.results[block_index][0]));
+            }
+            out->length = static_cast<uint32_t>(sizeof(Result) * query_data.qrys[block_index].size());
             return true;
         }
+        block_index -= query_data.qrys.size();
 
-        if (block_index < queries->cold[dpu_index].qrys.size()) {
-            if constexpr (std::is_same_v<Query, Result>) {
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(&queries->cold[dpu_index].qrys[block_index][0]));
-            } else {
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(&queries->cold[dpu_index].results[block_index][0]));
+        if constexpr (sizeof(Result) < 8) {
+            if (block_index == 0) {
+                out->addr = &query_data.result_pad[0];
+                out->length = static_cast<uint32_t>(result_section_bytes(query_data.nr_qrys, sizeof(Result)) - sizeof(Result) * query_data.nr_qrys);
+                return true;
             }
-            out->length = static_cast<uint32_t>(sizeof(Result) * queries->cold[dpu_index].qrys[block_index].size());
-            return true;
-        }
-        block_index -= queries->cold[dpu_index].qrys.size();
-
-        if (queries->hot[dpu_index].nr_qrys != 0 && block_index < queries->hot[dpu_index].qrys.size()) {
-            if constexpr (std::is_same_v<Query, Result>) {
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(&queries->hot[dpu_index].qrys[block_index][0]));
-            } else {
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(&queries->hot[dpu_index].results[block_index][0]));
-            }
-            out->length = static_cast<uint32_t>(sizeof(Result) * queries->hot[dpu_index].qrys[block_index].size());
-            return true;
+            block_index--;
         }
         return false;
     }
+
+    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index)
+    {
+        if constexpr (!std::is_same_v<Result, void>) {
+            if (result_blocks_of_tree(out, block_index, queries->cold[dpu_index])) {
+                return true;
+            }
+            if (queries->hot[dpu_index].nr_qrys != 0 && result_blocks_of_tree(out, block_index, queries->hot[dpu_index])) {
+                return true;
+            }
+        }
+        return (*tail)(out, dpu_index, block_index);
+    }
     size_t bytes_for_dpu(dpu_id_t dpu) const
     {
-        return sizeof(Result) * (size_t{queries->cold[dpu].nr_qrys} + queries->hot[dpu].nr_qrys);
+        size_t bytes = tail->bytes_for_dpu(dpu);
+        if constexpr (!std::is_same_v<Result, void>) {
+            bytes += result_section_bytes(queries->cold[dpu].nr_qrys, sizeof(Result))
+                     + result_section_bytes(queries->hot[dpu].nr_qrys, sizeof(Result));
+        }
+        return bytes;
     }
+};
+//! @brief Nothing follows the per-query payload.
+struct NoTailBlocks {
+    bool operator()(sg_block_info*, dpu_id_t, block_id_t&) const { return false; }
+    size_t bytes_for_dpu(dpu_id_t) const { return 0; }
+    size_t max_bytes() const { return 0; }
+};
+//! @brief The live-pair counts TASK_INSERT and TASK_DELETE publish once they
+//! are done, after whatever else they return.
+struct BPForest::NrPairsTail {
+    CachelineAligned<std::array<uint32_t, 2>>* const nr_pairs;
+
+    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t& block_index) const
+    {
+        if (block_index == 0) {
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(&nr_pairs[dpu_index].get()[0]));
+            out->length = sizeof(uint32_t[2]);
+            return true;
+        }
+        block_index--;
+        return false;
+    }
+    size_t bytes_for_dpu(dpu_id_t) const { return sizeof(uint32_t[2]); }
+    size_t max_bytes() const { return sizeof(uint32_t[2]); }
+};
+//! @brief The min-refresh questions TASK_DELETE takes after the keys.
+struct BPForest::RefreshRequestTail {
+    const BPForest* const forest;
+
+    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t& block_index) const
+    {
+        if (block_index == 0) {
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(&forest->refresh_nr_requests[dpu_index][0]));
+            out->length = sizeof(uint32_t[2]);
+            return true;
+        }
+        block_index--;
+
+        const uint32_t nr_requests = forest->nr_refreshes_of(dpu_index);
+        if (block_index == 0 && nr_requests != 0) {
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(&forest->refresh_ranges[forest->refresh_begin[dpu_index]]));
+            out->length = static_cast<uint32_t>(sizeof(KeyRange) * nr_requests);
+            return true;
+        }
+        block_index--;
+        return false;
+    }
+    size_t bytes_for_dpu(dpu_id_t dpu) const { return sizeof(uint32_t[2]) + sizeof(KeyRange) * forest->nr_refreshes_of(dpu); }
+    size_t max_bytes() const
+    {
+        uint32_t max_nr_requests = 0;
+        for (dpu_id_t idx_dpu = 0; idx_dpu < forest->nr_base_parts; idx_dpu++) {
+            max_nr_requests = std::max(max_nr_requests, forest->nr_refreshes_of(idx_dpu));
+        }
+        return sizeof(uint32_t[2]) + sizeof(KeyRange) * max_nr_requests;
+    }
+};
+//! @brief What TASK_DELETE returns after the flags.
+struct BPForest::RefreshResponseTail {
+    BPForest* const forest;
+
+    bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t& block_index) const
+    {
+        if (NrPairsTail{&forest->nr_pairs[0]}(out, dpu_index, block_index)) {
+            return true;
+        }
+
+        const uint32_t nr_requests = forest->nr_refreshes_of(dpu_index);
+        if (block_index == 0 && nr_requests != 0) {
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(&forest->refresh_responses[forest->refresh_begin[dpu_index]]));
+            out->length = static_cast<uint32_t>(sizeof(KVPair) * nr_requests);
+            return true;
+        }
+        block_index--;
+        return false;
+    }
+    size_t bytes_for_dpu(dpu_id_t dpu) const { return sizeof(uint32_t[2]) + sizeof(KVPair) * forest->nr_refreshes_of(dpu); }
 };
 template <typename Query, typename Result>
 inline void BPForest::execute_in_dpus(TaskID task_no, QueryData<Query, Result>& query_data)
 {
-    execute_in_dpus(task_no, query_data, [](sg_block_info*, dpu_id_t, block_id_t&) { return false; });
+    execute_in_dpus(task_no, query_data, NoTailBlocks{}, NoTailBlocks{});
 }
-template <typename Query, typename Result, typename Func>
-inline void BPForest::execute_in_dpus(TaskID task_no, QueryData<Query, Result>& query_data, Func&& func)
+template <typename Query, typename Result, typename SendTail, typename RecvTail>
+inline void BPForest::execute_in_dpus(TaskID task_no, QueryData<Query, Result>& query_data,
+    const SendTail& send_tail, const RecvTail& recv_tail)
 {
     last_qry_type = task_no;
 
+    // The result region starts past the whole payload, the same distance in on
+    // every DPU, so that one offset drives the transfer back.
     uint32_t max_nqrys = 0;
-    if constexpr (!std::is_same_v<Result, void>) {
-        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-            max_nqrys = std::max({max_nqrys, query_data.cold[idx_dpu].nr_qrys + query_data.hot[idx_dpu].nr_qrys});
-        }
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+        max_nqrys = std::max({max_nqrys, query_data.cold[idx_dpu].nr_qrys + query_data.hot[idx_dpu].nr_qrys});
     }
-    const uint32_t result_offset = sizeof(InputHeader) + sizeof(Query) * max_nqrys;
+    const uint32_t result_offset = static_cast<uint32_t>(sizeof(InputHeader) + sizeof(Query) * max_nqrys + send_tail.max_bytes());
+
+    constexpr bool receives = !std::is_same_v<Result, void> || !std::is_same_v<RecvTail, NoTailBlocks>;
 
 #ifdef SYNCHRONOUS_DPU_EXEC
     {
         ScopedTimer t{Timer, "send"};
         UPMEM_AsyncDuration async;
-        gather_to_dpu(all_dpu, 0, QuerySender{task_no, result_offset, &query_data}, async);
+        gather_to_dpu(all_dpu, 0, QuerySender{task_no, result_offset, &query_data, &send_tail}, async);
     }
     {
         ScopedTimer t{Timer, "exec"};
         UPMEM_AsyncDuration async;
         execute(all_dpu, async);
     }
-    if constexpr (!std::is_same_v<Result, void>) {
+    if constexpr (receives) {
         ScopedTimer t{Timer, "recv"};
         UPMEM_AsyncDuration async;
-        scatter_from_dpu(all_dpu, result_offset, ResultReceiver{&query_data, &func}, async);
+        scatter_from_dpu(all_dpu, result_offset, ResultReceiver{&query_data, &recv_tail}, async);
     }
 #else /* SYNCHRONOUS_DPU_EXEC */
     {
         ScopedTimer t{Timer, "send_exec_recv"};
         UPMEM_AsyncDuration async;
-        gather_to_dpu(all_dpu, 0, QuerySender{task_no, result_offset, &query_data}, async);
+        gather_to_dpu(all_dpu, 0, QuerySender{task_no, result_offset, &query_data, &send_tail}, async);
         execute(all_dpu, async);
-        if constexpr (!std::is_same_v<Result, void>) {
-            scatter_from_dpu(all_dpu, result_offset, ResultReceiver{&query_data, &func}, async);
+        if constexpr (receives) {
+            scatter_from_dpu(all_dpu, result_offset, ResultReceiver{&query_data, &recv_tail}, async);
         }
     }
 #endif
@@ -921,11 +1099,10 @@ inline void BPForest::postprocess_of_pred_impl(unsigned tid)
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
         for (const auto& tmp : {std::ref(pred_queries.cold), std::ref(pred_queries.hot)}) {
             const auto& query_data = tmp.get();
-            const auto& qrys = query_data[idx_dpu].qrys[tid];
             const auto& partial_results = query_data[idx_dpu].results[tid];
             const auto& orig_idxs = query_data[idx_dpu].orig_idxs[tid];
 
-            const size_t n_qrys = qrys.size();
+            const size_t n_qrys = orig_idxs.size();
             for (size_t i = 0; i < n_qrys; i++) {
                 results[orig_idxs[i]] = partial_results[i];
             }
@@ -943,48 +1120,136 @@ inline void BPForest::batch_insert(uint32_t nr_queries, const KVPair pairs[])
 
     route_queries(nr_queries, pairs, (void*){nullptr}, insert_queries);
 
-    const key_uint64_t new_min_key = *std::min_element(&new_min_keys[0], &new_min_keys[get_parallelism()]),
-                       old_min_key = combined_delims[0];
-    if (new_min_key < old_min_key) {
-        DelimIter iter = delims.cbegin();
-        do {
-            const DelimIter next = std::next(iter);
-
-            std::set<PartitionDelim>::node_type node = delims.extract(iter);
-            node.value().first = new_min_key;
-            delims.insert(next, std::move(node));
-
-            iter = next;
-        } while (iter->first <= old_min_key);
-
-        combined_delims[0] = new_min_key;
+    // The first partition takes in whatever falls below it, so it is the only
+    // one an insert can make begin lower: a key routed to partition i lies in
+    // [parts.begins[i], parts.begins[i + 1]), and the left end is that
+    // partition's smallest live key.
+    const key_uint64_t new_min_key = *std::min_element(&new_min_keys[0], &new_min_keys[get_parallelism()]);
+    if (new_min_key < parts.begins[0]) {
+        parts.begins[0] = new_min_key;
     }
 
-    execute_in_dpus(TASK_INSERT, insert_queries, [this](sg_block_info* out, dpu_id_t dpu_index, block_id_t& block_index) {
-        if (block_index-- == 0) {
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<uint32_t*>(&nr_pairs[dpu_index].get()[0])));
-            out->length = sizeof(uint32_t[2]);
-            return true;
-        }
-        return false;
-    });
+    execute_in_dpus(TASK_INSERT, insert_queries, NoTailBlocks{}, NrPairsTail{&nr_pairs[0]});
 }
 
-inline void BPForest::batch_delete(uint32_t nr_queries, const key_uint64_t keys[])
+inline void BPForest::batch_delete(uint32_t nr_queries, const key_uint64_t keys[], uint8_t existed[])
 {
     ScopedTimer t{Timer, "batch"};
 
-    route_queries(nr_queries, keys, (void*){nullptr}, delete_queries);
-    execute_in_dpus(TASK_DELETE, delete_queries, [this](sg_block_info* out, dpu_id_t dpu_index, block_id_t& block_index) {
-        if (block_index-- == 0) {
-            out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<uint32_t*>(&nr_pairs[dpu_index].get()[0])));
-            out->length = sizeof(uint32_t[2]);
-            return true;
-        }
-        return false;
-    });
+    route_queries(nr_queries, keys, existed, delete_queries);
+    build_delete_refresh_requests();
+    execute_in_dpus(TASK_DELETE, delete_queries, RefreshRequestTail{this}, RefreshResponseTail{this});
+    postprocess_of_delete(existed);
+    apply_delete_refresh_responses();
+}
+inline void BPForest::build_delete_refresh_requests()
+{
+    ScopedTimer t{Timer, "refresh"};
 
-    // TODO: When the first data of each partition is deleted, shift the partition boundary to the next key
+    const size_t nr_parts = parts.size();
+
+    // The routed lists repeat a partition once per query that deleted its
+    // begin, so they only mark; the count each tree is asked comes from the
+    // pass over the partitions below.
+    std::fill(&refresh_asked[0], &refresh_asked[nr_parts], uint8_t{0});
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+        refresh_nr_requests[idx_dpu] = {0, 0};
+        for (const bool is_hot : {false, true}) {
+            for (const auto& per_thread : (is_hot ? delete_queries.hot : delete_queries.cold)[idx_dpu].min_hits) {
+                for (const uint32_t idx_part : per_thread) {
+                    refresh_asked[idx_part] = 1;
+                }
+            }
+        }
+    }
+    for (size_t idx_part = 0; idx_part < nr_parts; idx_part++) {
+        if (refresh_asked[idx_part] != 0) {
+            const QueryDest& dest = parts.dests[idx_part];
+            refresh_nr_requests[dest.dpu][dest.is_hot]++;
+        }
+    }
+
+    uint32_t nr_requests = 0;
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+        const std::array<uint32_t, 2>& per_tree = refresh_nr_requests[idx_dpu];
+        refresh_begin[idx_dpu] = nr_requests;
+        refresh_cursor[idx_dpu] = {nr_requests, nr_requests + per_tree[0]};
+        nr_requests += per_tree[0] + per_tree[1];
+    }
+    refresh_begin[nr_base_parts] = nr_requests;
+
+    for (size_t idx_part = 0; idx_part < nr_parts; idx_part++) {
+        if (refresh_asked[idx_part] == 0) {
+            continue;
+        }
+        const QueryDest& dest = parts.dests[idx_part];
+        const uint32_t slot = refresh_cursor[dest.dpu][dest.is_hot]++;
+        refresh_slot[idx_part] = slot;
+        refresh_ranges[slot] = KeyRange{parts.begins[idx_part],
+            idx_part + 1 < nr_parts ? parts.begins[idx_part + 1] - 1 : KEY_MAX};
+    }
+}
+inline void BPForest::postprocess_of_delete(uint8_t existed[])
+{
+    ScopedTimer t{Timer, "postproc"};
+
+    any_tmp_data = existed;
+    parallel_run(&BPForest::postprocess_of_delete_impl);
+    any_tmp_data.reset();
+}
+inline void BPForest::postprocess_of_delete_impl(unsigned tid)
+{
+    uint8_t* existed = std::any_cast<uint8_t*>(any_tmp_data);
+
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+        for (const bool is_hot : {false, true}) {
+            const auto& query_data = (is_hot ? delete_queries.hot : delete_queries.cold)[idx_dpu];
+            const auto& orig_idxs = query_data.orig_idxs[tid];
+            const auto& flags = query_data.results[tid];
+
+            for (size_t i = 0; i < orig_idxs.size(); i++) {
+                existed[orig_idxs[i]] = flags[i];
+            }
+        }
+    }
+}
+inline void BPForest::apply_delete_refresh_responses()
+{
+    if (refresh_begin[nr_base_parts] == 0) {
+        return;
+    }
+
+    // Compacted in place: a partition left holding nothing is dropped, which
+    // hands its keys to the partition before it.  That has to move the key
+    // range itself and not merely the routing, so that a later insert into the
+    // vacated range lands in the tree that now answers for it.
+    {
+        ScopedTimer t{Timer, "refresh"};
+
+        size_t nr_survivors = 0;
+        for (size_t idx_part = 0; idx_part < parts.size(); idx_part++) {
+            key_uint64_t begin = parts.begins[idx_part];
+            if (refresh_asked[idx_part] != 0) {
+                const KVPair& response = refresh_responses[refresh_slot[idx_part]];
+                if (response.value == 0) {
+                    continue;
+                }
+                assert(begin <= response.key && response.key <= parts.end_of(idx_part));
+                begin = response.key;
+            }
+
+            if (nr_survivors != 0 && parts.dests[nr_survivors - 1] == parts.dests[idx_part]) {
+                continue;
+            }
+            parts.begins[nr_survivors] = begin;
+            parts.dests[nr_survivors] = parts.dests[idx_part];
+            parts.origins[nr_survivors] = parts.origins[idx_part];
+            nr_survivors++;
+        }
+        parts.resize(nr_survivors);
+    }
+
+    rebuild_part_indices();
 }
 
 inline void BPForest::batch_range_count(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t results[])
@@ -1117,11 +1382,11 @@ inline std::vector<std::array<uint32_t, 2>> BPForest::last_query_dist() const
 
 struct SerializationCommander {
     const InputHeader* const input_headers;
-    const key_uint64_t* const hot_delim_keys;
-    const dpu_id_t* const base_to_nr_hot_psum;
+    const key_uint64_t* const incision_keys;
+    const dpu_id_t* const base_to_nr_incisions_psum;
 
-    SerializationCommander(const InputHeader* input_headers, const key_uint64_t* hot_delim_keys, const dpu_id_t* base_to_nr_hot_psum)
-        : input_headers{input_headers}, hot_delim_keys{hot_delim_keys}, base_to_nr_hot_psum{base_to_nr_hot_psum} {}
+    SerializationCommander(const InputHeader* input_headers, const key_uint64_t* incision_keys, const dpu_id_t* base_to_nr_incisions_psum)
+        : input_headers{input_headers}, incision_keys{incision_keys}, base_to_nr_incisions_psum{base_to_nr_incisions_psum} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index) const
     {
@@ -1132,7 +1397,7 @@ struct SerializationCommander {
             return true;
         case 1:
             if (input_headers[dpu_index].serialize.nr_delims > 0) {
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<key_uint64_t*>(&hot_delim_keys[base_to_nr_hot_psum[dpu_index]])));
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(const_cast<key_uint64_t*>(&incision_keys[base_to_nr_incisions_psum[dpu_index]])));
                 out->length = static_cast<uint32_t>(input_headers[dpu_index].serialize.nr_delims * sizeof(key_uint64_t));
                 return true;
             }
@@ -1147,18 +1412,18 @@ struct SerializationCommander {
     }
 };
 struct SerializaionNrPairsReceiver {
-    const dpu_id_t* const base_to_nr_hot_psum;
+    const dpu_id_t* const base_to_nr_incisions_psum;
     uint32_t* const incision_indices;
 
-    SerializaionNrPairsReceiver(const dpu_id_t* base_to_nr_hot_psum, uint32_t* incision_indices)
-        : base_to_nr_hot_psum{base_to_nr_hot_psum}, incision_indices{incision_indices} {}
+    SerializaionNrPairsReceiver(const dpu_id_t* base_to_nr_incisions_psum, uint32_t* incision_indices)
+        : base_to_nr_incisions_psum{base_to_nr_incisions_psum}, incision_indices{incision_indices} {}
 
     bool operator()(sg_block_info* out, dpu_id_t dpu_index, block_id_t block_index) const
     {
         if (block_index == 0) {
-            const dpu_id_t nr_extracted = base_to_nr_hot_psum[dpu_index + 1] - base_to_nr_hot_psum[dpu_index];
+            const dpu_id_t nr_extracted = base_to_nr_incisions_psum[dpu_index + 1] - base_to_nr_incisions_psum[dpu_index];
             if (nr_extracted > 0) {
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(&incision_indices[base_to_nr_hot_psum[dpu_index]]));
+                out->addr = static_cast<uint8_t*>(static_cast<void*>(&incision_indices[base_to_nr_incisions_psum[dpu_index]]));
                 out->length = static_cast<uint32_t>(nr_extracted * sizeof(uint32_t));
                 return true;
             }
@@ -1167,7 +1432,7 @@ struct SerializaionNrPairsReceiver {
     }
     size_t bytes_for_dpu(dpu_id_t dpu) const
     {
-        return sizeof(uint32_t) * (base_to_nr_hot_psum[dpu + 1] - base_to_nr_hot_psum[dpu]);
+        return sizeof(uint32_t) * (base_to_nr_incisions_psum[dpu + 1] - base_to_nr_incisions_psum[dpu]);
     }
 };
 template <typename PairsRangeLike>
@@ -1196,34 +1461,20 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
     ScopedTimer t{Timer, "ret_all"};
 
     {
+        dpu_id_t incision_count = 0, piece_count = 0;
+        base_to_nr_incisions_psum[0] = 0;
         for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
-            nr_extracted_hots[idx_base] = 0;
-        }
-        dpu_id_t idx_base, hot_count = 0;
-        for (const auto& key_delim : delims) {
-            const key_uint64_t key = key_delim.first;
-            const auto& delim = key_delim.second;
+            const dpu_id_t nr_pieces = cut_points_of_cold_tree(idx_base,
+                &incision_keys[incision_count], &cold_key_ranges[piece_count]);
+            if (nr_pieces > 0) {
+                incision_count += nr_pieces - 1;
+                piece_count += nr_pieces;
+            }
+            base_to_nr_incisions_psum[idx_base + 1] = incision_count;
 
-            std::visit(overload(
-                           [&](const BasePartitionDelim& delim) {
-                               idx_base = delim.dpu;
-                           },
-                           [&](const HotPartitionDelim&) {
-                               hot_delim_keys[hot_count++] = key;
-                               nr_extracted_hots[idx_base]++;
-                           }),
-                delim);
-        }
-
-        base_to_nr_hot_psum[0] = hot_count = 0;
-        for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
-            base_to_nr_hot_psum[idx_base + 1] = (hot_count += nr_extracted_hots[idx_base]);
-        }
-
-        for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-            InputHeader& input = input_headers[idx_dpu];
+            InputHeader& input = input_headers[idx_base];
             input.task_no = TASK_SERIALIZE;
-            input.serialize.nr_delims = nr_extracted_hots[idx_dpu];
+            input.serialize.nr_delims = base_to_nr_incisions_psum[idx_base + 1] - base_to_nr_incisions_psum[idx_base];
             input.serialize.max_nr_delims = nr_base_parts;
             input.serialize.do_cold = input.serialize.do_hot = true;
         }
@@ -1233,7 +1484,7 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
     {
         ScopedTimer t{Timer, "command"};
         UPMEM_AsyncDuration async;
-        gather_to_dpu(all_dpu, 0, SerializationCommander{&input_headers[0], &hot_delim_keys[0], &base_to_nr_hot_psum[0]}, async);
+        gather_to_dpu(all_dpu, 0, SerializationCommander{&input_headers[0], &incision_keys[0], &base_to_nr_incisions_psum[0]}, async);
     }
     {
         ScopedTimer t{Timer, "exec"};
@@ -1243,15 +1494,15 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
     {
         ScopedTimer t{Timer, "recv_npairs"};
         UPMEM_AsyncDuration async;
-        scatter_from_dpu(all_dpu, sizeof(InputHeader), SerializaionNrPairsReceiver{&base_to_nr_hot_psum[0], &incision_indices[0]}, async);
+        scatter_from_dpu(all_dpu, sizeof(InputHeader), SerializaionNrPairsReceiver{&base_to_nr_incisions_psum[0], &incision_indices[0]}, async);
     }
 #else
     {
         ScopedTimer t{Timer, "command_exec_recv_npairs"};
         UPMEM_AsyncDuration async;
-        gather_to_dpu(all_dpu, 0, SerializationCommander{&input_headers[0], &hot_delim_keys[0], &base_to_nr_hot_psum[0]}, async);
+        gather_to_dpu(all_dpu, 0, SerializationCommander{&input_headers[0], &incision_keys[0], &base_to_nr_incisions_psum[0]}, async);
         execute(all_dpu, async);
-        scatter_from_dpu(all_dpu, sizeof(InputHeader), SerializaionNrPairsReceiver{&base_to_nr_hot_psum[0], &incision_indices[0]}, async);
+        scatter_from_dpu(all_dpu, sizeof(InputHeader), SerializaionNrPairsReceiver{&base_to_nr_incisions_psum[0], &incision_indices[0]}, async);
     }
 #endif
 #if !defined(FAKE_DPU) && defined(PRINT_DEBUG)
@@ -1279,49 +1530,28 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
 
         std::fill(&hot_ranges[0], &hot_ranges[nr_base_parts], PairsRange{nullptr, nullptr});
 
-        dpu_id_t idx_base = 0, cold_count = 0, hot_count = 0;
-        uint32_t nr_cold_pairs_in_this_base = 0;
-        assert(!delims.empty());
-        for (DelimIter iter = std::next(delims.cbegin()); iter != delims.cend(); iter++) {
-            const auto& delim = iter->second;
+        // In key order, so that the buffer ends up globally sorted.  Each base
+        // sends its cold pairs as one blob, which the positions it reported
+        // for the cuts it was told to make split back into the pieces.
+        dpu_id_t cold_count = 0;
+        for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
+            dpu_id_t idx_incision = base_to_nr_incisions_psum[idx_base];
+            uint32_t consumed = 0;
+            for (size_t idx_part = base_part[idx_base]; idx_part < base_part[idx_base + 1]; idx_part++) {
+                const QueryDest& dest = parts.dests[idx_part];
+                if (dest.is_hot) {
+                    hot_ranges[dest.dpu] = PairsRange{cursor, cursor += nr_pairs[dest.dpu].get()[1]};
+                    continue;
+                }
 
-            std::visit(overload(
-                           [&](const BasePartitionDelim&) {
-                               const uint32_t nr_cold_pairs = nr_pairs[idx_base].get()[0] - nr_cold_pairs_in_this_base;
-                               if (nr_cold_pairs > 0) {
-                                   LinkedPairsRange& cold_range = cold_ranges[cold_count++];
-                                   cold_range = PairsRange{cursor, cursor += nr_cold_pairs};
-                                   cold_ranges_lists[idx_base].push_back(cold_range);
-                               }
-
-                               idx_base++;
-                               nr_cold_pairs_in_this_base = 0;
-                           },
-                           [&](const HotPartitionDelim& delim) {
-                               const uint32_t incision_pos = incision_indices[hot_count],
-                                              nr_cold_pairs = incision_pos - nr_cold_pairs_in_this_base;
-                               if (nr_cold_pairs > 0) {
-                                   LinkedPairsRange& cold_range = cold_ranges[cold_count++];
-                                   cold_range = PairsRange{cursor, cursor += nr_cold_pairs};
-                                   cold_ranges_lists[idx_base].push_back(cold_range);
-
-                                   nr_cold_pairs_in_this_base = incision_pos;
-                               }
-
-                               const uint32_t nr_hot_pairs = nr_pairs[delim.dpu].get()[1];
-                               hot_ranges[delim.dpu] = PairsRange{cursor, cursor += nr_hot_pairs};
-
-                               hot_count++;
-                           }),
-                delim);
-        }
-
-        // last cold range
-        const uint32_t nr_cold_pairs = nr_pairs[idx_base].get()[0] - nr_cold_pairs_in_this_base;
-        if (nr_cold_pairs > 0) {
-            LinkedPairsRange& cold_range = cold_ranges[cold_count++];
-            cold_range = PairsRange{cursor, cursor += nr_cold_pairs};
-            cold_ranges_lists[idx_base].push_back(cold_range);
+                const uint32_t piece_end = idx_incision < base_to_nr_incisions_psum[idx_base + 1]
+                                               ? incision_indices[idx_incision++]
+                                               : nr_pairs[idx_base].get()[0];
+                LinkedPairsRange& cold_range = cold_ranges[cold_count++];
+                cold_range = PairsRange{cursor, cursor += piece_end - consumed};
+                cold_ranges_lists[idx_base].push_back(cold_range);
+                consumed = piece_end;
+            }
         }
     }
 
@@ -1597,24 +1827,24 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
 
     const size_t nr_total_pairs = retrieve_all_data(data_buf);
 
-    delims.clear();
-    std::fill(hot_delims.begin(), hot_delims.end(), DelimIter{});
-
     const RAII raii{[&] {
         for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
             chunked_cold_ranges_lists[idx_dpu].clear();
         }
     }};
 
+    parts.clear();
     for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
         LinkedChunkedPairsRange& range = chunked_cold_ranges[idx_base];
         range = ChunkedPairsRange{{&data_buf[nr_total_pairs * idx_base / nr_base_parts], &data_buf[nr_total_pairs * (idx_base + 1) / nr_base_parts]}};
         chunked_cold_ranges_lists[idx_base].push_back(range);
 
-        cold_delims[idx_base] = delims.emplace_hint(delims.cend(), range.PairsRange::begin()->key, BasePartitionDelim{idx_base});
+        if (range.npairs() > 0) {
+            parts.assign_from(range.PairsRange::begin()->key, {idx_base, false}, idx_base);
+        }
     }
 
-    combine_delims();
+    rebuild_part_indices();
     route_queries(nr_queries, queries, results, routed);
 
     {
@@ -1641,15 +1871,16 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
 
             for (dpu_id_t idx_hot = 0; idx_hot < tmp_data.hot_count; idx_hot++) {
                 const dpu_id_t idx_dpu = cold_loads[idx_hot].first;
-                const PairsRange& pairs_range = new_hots[idx_hot].pairs_range;
-                const KeyRange& key_range = new_hots[idx_hot].key_range;
+                const NewHotRange& new_hot = new_hots[idx_hot];
 
-                hot_ranges[idx_dpu] = pairs_range;
-                nr_pairs[idx_dpu].get()[1] = static_cast<uint32_t>(pairs_range.npairs());
-                hot_delims[idx_dpu] = delims.emplace(key_range.begin, HotPartitionDelim{key_range.end, idx_dpu}).first;
+                hot_ranges[idx_dpu] = new_hot.pairs_range;
+                nr_pairs[idx_dpu].get()[1] = static_cast<uint32_t>(new_hot.pairs_range.npairs());
+                hot_entries[idx_hot] = {new_hot.key_range.begin, idx_dpu, new_hot.origin};
             }
+            std::sort(&hot_entries[0], &hot_entries[tmp_data.hot_count],
+                [](const HotEntry& lhs, const HotEntry& rhs) { return lhs.begin < rhs.begin; });
 
-            combine_delims();
+            rebuild_parts(tmp_data.hot_count, [](dpu_id_t) { return true; });
 
             {
                 ScopedTimer t{Timer, "re"};
@@ -1706,7 +1937,7 @@ inline void BPForest::full_repartition_worker(unsigned /* tid */)
         // Counts, for each original range query, how many of its two endpoints (begin/end)
         // fall inside this base's cold key range. This is a different metric from
         // `routed.cold[d].nr_qrys` (which counts routed fragments after splitting at
-        // combined-delim boundaries); do not mix the two.
+        // partition boundaries); do not mix the two.
         uint32_t cold_endpoint_cnt = 0;
         {
             const size_t nr_chunks = base.nchunks();
@@ -1774,6 +2005,7 @@ inline void BPForest::full_repartition_worker(unsigned /* tid */)
                     new_hot.key_range = {new_hot.pairs_range.begin()->key,
                         (new_hot.pairs_range.end() == &data_buf[nr_total_pairs] ? KEY_MAX : new_hot.pairs_range.end()->key - 1)};
                     new_hot.load = load;
+                    new_hot.origin = idx_base;
 
                     cold_npairs -= new_hot.pairs_range.npairs();
                     cold_endpoint_cnt -= load;
@@ -1801,6 +2033,7 @@ inline void BPForest::full_repartition_worker(unsigned /* tid */)
                         new_hot.key_range = {range.begin()->key,
                             (range.end() == &data_buf[nr_total_pairs] ? KEY_MAX : range.end()->key - 1)};
                         new_hot.load = load;
+                        new_hot.origin = idx_base;
 
                         cold_npairs -= new_hot.pairs_range.npairs();
                         cold_endpoint_cnt -= new_hot.load;
@@ -1932,7 +2165,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         .nr_queries = nr_queries,
         .queries = queries,
         .routed = &routed,
-        .nr_existing_hots = static_cast<dpu_id_t>(delims.size()) - nr_base_parts};
+        .nr_existing_hots = nr_hot_parts};
     tmp_data.idx_dpu = 0;
     tmp_data.cold_count = 0;  // # of meaningful entries in chunked_cold_ranges
     tmp_data.hot_count = 0;
@@ -1958,7 +2191,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             bool trigger = false;
             for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
                 InputHeader& input = input_headers[idx_dpu];
-                const dpu_id_t orig_incision_count = (base_to_nr_hot_psum[idx_dpu] = incision_count);
+                const dpu_id_t orig_incision_count = (base_to_nr_incisions_psum[idx_dpu] = incision_count);
 
                 const bool trigger_cold = routed.cold[idx_dpu].nr_qrys > cold_cnt_threshold,
                            trigger_hot = param.enable_hot_split && routed.hot[idx_dpu].nr_qrys > hot_cnt_threshold;
@@ -1979,25 +2212,11 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 }
 
                 if (do_cold) {
-                    DelimIter iter = cold_delims[idx_dpu];
-                    key_uint64_t begin_key = iter->first;
-                    for (iter++; iter != cold_delims[idx_dpu + 1]; iter++) {
-                        const key_uint64_t delim_key = iter->first;
-                        const auto& delim = std::get<HotPartitionDelim>(iter->second);
-
-                        if (begin_key != delim_key) {
-                            cold_key_ranges[serialized_cold_count++] = {begin_key, delim_key - 1};
-                            hot_delim_keys[incision_count++] = delim_key;
-                        }
-                        begin_key = delim.max_key + 1;
-                    }
-                    if (begin_key != KEY_MAX + 1) {
-                        const key_uint64_t max_key = iter == delims.cend() ? KEY_MAX : iter->first - 1;
-                        if (begin_key <= max_key) {
-                            cold_key_ranges[serialized_cold_count++] = {begin_key, max_key};
-                        } else {
-                            incision_count--;
-                        }
+                    const dpu_id_t nr_pieces = cut_points_of_cold_tree(idx_dpu,
+                        &incision_keys[incision_count], &cold_key_ranges[serialized_cold_count]);
+                    if (nr_pieces > 0) {
+                        incision_count += nr_pieces - 1;
+                        serialized_cold_count += nr_pieces;
                     }
                 }
 
@@ -2007,7 +2226,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 input.serialize.do_cold = do_cold;
                 input.serialize.do_hot = do_hot;
             }
-            base_to_nr_hot_psum[nr_base_parts] = incision_count;
+            base_to_nr_incisions_psum[nr_base_parts] = incision_count;
 
             if (!trigger) {
                 return Balanced::Yes;
@@ -2024,11 +2243,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                             log << "trigger cold " << idx_dpu << " nqrys " << routed.cold[idx_dpu].nr_qrys << " size " << nr_pairs[idx_dpu].get()[0] << std::endl;
                         }
                         if (input_headers[idx_dpu].serialize.do_hot) {
-                            const key_uint64_t key = hot_delims[idx_dpu]->first;
-                            const auto cold_idx = std::upper_bound(&cold_delims[0], &cold_delims[nr_base_parts], key,
-                                                      [](key_uint64_t key, const DelimIter& delim) { return key < delim->first; })
-                                                  - &cold_delims[1];
-                            log << "trigger hot " << idx_dpu << " from " << cold_idx << " nqrys " << routed.hot[idx_dpu].nr_qrys << " size " << nr_pairs[idx_dpu].get()[1] << std::endl;
+                            log << "trigger hot " << idx_dpu << " from " << parts.origins[hot_part[idx_dpu]] << " nqrys " << routed.hot[idx_dpu].nr_qrys << " size " << nr_pairs[idx_dpu].get()[1] << std::endl;
                         }
                     }
                 }
@@ -2039,7 +2254,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         {
             ScopedTimer t{Timer, "command"};
             UPMEM_AsyncDuration async;
-            gather_to_dpu(all_dpu, 0, SerializationCommander{&input_headers[0], &hot_delim_keys[0], &base_to_nr_hot_psum[0]}, async);
+            gather_to_dpu(all_dpu, 0, SerializationCommander{&input_headers[0], &incision_keys[0], &base_to_nr_incisions_psum[0]}, async);
         }
         {
             ScopedTimer t{Timer, "exec"};
@@ -2049,15 +2264,15 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         {
             ScopedTimer t{Timer, "recv_npairs"};
             UPMEM_AsyncDuration async;
-            scatter_from_dpu(all_dpu, sizeof(InputHeader), TaskNoneFilter<SerializaionNrPairsReceiver>{&input_headers[0], &base_to_nr_hot_psum[0], &incision_indices[0]}, async);
+            scatter_from_dpu(all_dpu, sizeof(InputHeader), TaskNoneFilter<SerializaionNrPairsReceiver>{&input_headers[0], &base_to_nr_incisions_psum[0], &incision_indices[0]}, async);
         }
 #else
         {
             ScopedTimer t{Timer, "command_exec_recv_npairs"};
             UPMEM_AsyncDuration async;
-            gather_to_dpu(all_dpu, 0, SerializationCommander{&input_headers[0], &hot_delim_keys[0], &base_to_nr_hot_psum[0]}, async);
+            gather_to_dpu(all_dpu, 0, SerializationCommander{&input_headers[0], &incision_keys[0], &base_to_nr_incisions_psum[0]}, async);
             execute(all_dpu, async);
-            scatter_from_dpu(all_dpu, sizeof(InputHeader), TaskNoneFilter<SerializaionNrPairsReceiver>{&input_headers[0], &base_to_nr_hot_psum[0], &incision_indices[0]}, async);
+            scatter_from_dpu(all_dpu, sizeof(InputHeader), TaskNoneFilter<SerializaionNrPairsReceiver>{&input_headers[0], &base_to_nr_incisions_psum[0], &incision_indices[0]}, async);
         }
 #endif
 #if !defined(FAKE_DPU) && defined(PRINT_DEBUG)
@@ -2100,7 +2315,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
 
                 if (input_headers[idx_dpu].serialize.do_cold) {
                     uint32_t nr_cold_pairs_from_this_dpu = 0;
-                    for (dpu_id_t incision_idx = base_to_nr_hot_psum[idx_dpu]; incision_idx < base_to_nr_hot_psum[idx_dpu + 1]; incision_idx++) {
+                    for (dpu_id_t incision_idx = base_to_nr_incisions_psum[idx_dpu]; incision_idx < base_to_nr_incisions_psum[idx_dpu + 1]; incision_idx++) {
                         const uint32_t incision_pos = incision_indices[incision_idx],
                                        nr_cold_pairs = incision_pos - nr_cold_pairs_from_this_dpu;
                         assert(nr_cold_pairs > 0);
@@ -2159,8 +2374,8 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
 
         parallel_run(&BPForest::incremental_repartition_worker_hot<Query, Result>);
 
-        // Falling back here is safe because pass 1 has not touched delims,
-        // kept_hot, hot_delims, or new_hots.
+        // Falling back here is safe because pass 1 has not touched `parts`,
+        // kept_hot, or new_hots.
         if (tmp_data.nr_existing_hots + tmp_data.hot_count + tmp_data.nr_new_pieces > nr_base_parts) {
             return Balanced::No;
         }
@@ -2172,13 +2387,12 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             continue;
         }
 
-        delims.erase(hot_delims[idx_dpu]);
-        hot_delims[idx_dpu] = DelimIter{};
         kept_hot[idx_dpu].active = true;
         kept_hot[idx_dpu].pairs_range = pieces[0].pairs_range;
         kept_hot[idx_dpu].key_range = pieces[0].key_range;
         kept_hot[idx_dpu].load = pieces[0].load;
-        hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};  // set to piece[0] at re-insertion below
+        kept_hot[idx_dpu].origin = pieces[0].origin;
+        hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};  // set to piece[0] at re-installation below
 
         for (size_t idx_piece = 1; idx_piece < pieces.size(); idx_piece++) {
             new_hots[tmp_data.hot_count++] = pieces[idx_piece];
@@ -2196,39 +2410,45 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         if (input_headers[idx_dpu].task_no != TASK_NONE && input_headers[idx_dpu].serialize.do_cold) {
             nr_pairs[idx_dpu].get()[0] = cold_npairs_list[idx_dpu];
         }
-        // Exclude DPUs that already host a hot, including split hosts
-        // that will keep their piece[0] (delim erased, re-inserted below).
-        if (hot_delims[idx_dpu] != DelimIter{} || kept_hot[idx_dpu].active) {
+        // Exclude DPUs that already host a hot, split hosts included: they
+        // keep their piece[0].
+        if (hot_part[idx_dpu] != INVALID_DPU_ID) {
             cold_loads[idx_dpu].second = std::numeric_limits<uint32_t>::max();
         }
     }
     std::partial_sort(&cold_loads[0], &cold_loads[tmp_data.hot_count], &cold_loads[nr_base_parts], [](auto& lhs, auto& rhs) { return lhs.second < rhs.second; });
     std::sort(&new_hots[0], &new_hots[tmp_data.hot_count], [](auto& lhs, auto& rhs) { return lhs.load > rhs.load; });
 
+    dpu_id_t nr_hot_entries = 0;
     for (dpu_id_t idx_hot = 0; idx_hot < tmp_data.hot_count; idx_hot++) {
         const dpu_id_t idx_dpu = cold_loads[idx_hot].first;
-        ASSERT(hot_delims[idx_dpu] == DelimIter{});
-        const PairsRange& pairs_range = new_hots[idx_hot].pairs_range;
-        const KeyRange& key_range = new_hots[idx_hot].key_range;
+        assert(hot_part[idx_dpu] == INVALID_DPU_ID);
+        const NewHotRange& new_hot = new_hots[idx_hot];
 
-        hot_ranges[idx_dpu] = pairs_range;
-        hot_delims[idx_dpu] = delims.emplace(key_range.begin, HotPartitionDelim{key_range.end, idx_dpu}).first;
-
-        nr_pairs[idx_dpu].get()[1] = static_cast<uint32_t>(hot_ranges[idx_dpu].npairs());
+        hot_ranges[idx_dpu] = new_hot.pairs_range;
+        nr_pairs[idx_dpu].get()[1] = static_cast<uint32_t>(new_hot.pairs_range.npairs());
+        hot_entries[nr_hot_entries++] = {new_hot.key_range.begin, idx_dpu, new_hot.origin};
     }
 
-    // Re-insert each split host's piece[0]: it already holds the left edge,
-    // so rebuilding its hot tree from piece[0] needs no data movement.
+    // The hot partitions that stay where they are, and each split host's
+    // piece[0]: it already holds the left edge, so rebuilding its hot tree
+    // from piece[0] needs no data movement.
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-        if (!kept_hot[idx_dpu].active) {
-            continue;
+        if (kept_hot[idx_dpu].active) {
+            hot_ranges[idx_dpu] = kept_hot[idx_dpu].pairs_range;
+            nr_pairs[idx_dpu].get()[1] = static_cast<uint32_t>(kept_hot[idx_dpu].pairs_range.npairs());
+            hot_entries[nr_hot_entries++] = {kept_hot[idx_dpu].key_range.begin, idx_dpu, kept_hot[idx_dpu].origin};
+        } else if (hot_part[idx_dpu] != INVALID_DPU_ID) {
+            hot_entries[nr_hot_entries++] = {parts.begins[hot_part[idx_dpu]], idx_dpu, parts.origins[hot_part[idx_dpu]]};
         }
-        hot_ranges[idx_dpu] = kept_hot[idx_dpu].pairs_range;
-        hot_delims[idx_dpu] = delims.emplace(kept_hot[idx_dpu].key_range.begin, HotPartitionDelim{kept_hot[idx_dpu].key_range.end, idx_dpu}).first;
-        nr_pairs[idx_dpu].get()[1] = static_cast<uint32_t>(hot_ranges[idx_dpu].npairs());
     }
+    std::sort(&hot_entries[0], &hot_entries[nr_hot_entries],
+        [](const HotEntry& lhs, const HotEntry& rhs) { return lhs.begin < rhs.begin; });
 
-    combine_delims();
+    rebuild_parts(nr_hot_entries, [this](dpu_id_t idx_dpu) {
+        return input_headers[idx_dpu].task_no == TASK_SERIALIZE && input_headers[idx_dpu].serialize.do_cold;
+    });
+
 
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
         InputHeader& input_header = input_headers[idx_dpu];
@@ -2325,7 +2545,7 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
 
         // cold_endpoint_cnt counts original-query endpoints landing in this
         // DPU's remaining cold subranges -- a different metric from
-        // routed.cold[d].nr_qrys (routed fragments after combined-delim split).
+        // routed.cold[d].nr_qrys (routed fragments after the partition split).
         uint32_t cold_endpoint_cnt = 0;
 
         {
@@ -2374,26 +2594,26 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
                 cold_endpoint_cnt = routed.cold[idx_dpu].nr_qrys;
 
             } else {
-                // prepare delimiter keys separating a cold range and a hot range
-                //     (-inf, begin_delim[0]): out
-                //     [begin_delim[0], begin_delim[1]): begin_part[0]
-                //     [begin_delim[1], begin_delim[2]): out
-                //     [begin_delim[2], begin_delim[3]): begin_part[1]
+                // prepare the keys bounding this base's remaining cold ranges
+                //     (-inf, begin_bound[0]): out
+                //     [begin_bound[0], begin_bound[1]): begin_part[0]
+                //     [begin_bound[1], begin_bound[2]): out
+                //     [begin_bound[2], begin_bound[3]): begin_part[1]
                 //         ...
                 const dpu_id_t nr_parts = static_cast<dpu_id_t>(end_part - begin_part);
-                static thread_local ExtendableBuffer<key_uint64_t> hot_delim_keys;
-                hot_delim_keys.reserve(nr_parts * 2);
-                const key_uint64_t* const begin_delim = &hot_delim_keys[0];
-                const key_uint64_t* end_delim = &hot_delim_keys[nr_parts * 2];
+                static thread_local ExtendableBuffer<key_uint64_t> cold_range_bounds;
+                cold_range_bounds.reserve(nr_parts * 2);
+                const key_uint64_t* const begin_bound = &cold_range_bounds[0];
+                const key_uint64_t* end_bound = &cold_range_bounds[nr_parts * 2];
                 for (dpu_id_t idx_part = 0; idx_part < nr_parts; idx_part++) {
                     const dpu_id_t idx_in_ary = static_cast<dpu_id_t>(&begin_part[idx_part] - &chunked_cold_ranges[0]);
                     const KeyRange& range = cold_key_ranges[idx_in_ary];
 
-                    hot_delim_keys[idx_part * 2] = range.begin;
+                    cold_range_bounds[idx_part * 2] = range.begin;
                     if (range.end == KEY_MAX) {
-                        end_delim--;
+                        end_bound--;
                     } else {
-                        hot_delim_keys[idx_part * 2 + 1] = range.end + 1;
+                        cold_range_bounds[idx_part * 2 + 1] = range.end + 1;
                     }
                 }
 
@@ -2407,8 +2627,8 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
 
                         const KeyRange& range = RangeQueryToRange<Query>{}(queries[orig_idx]);
                         for (const auto key : {range.begin, range.end}) {
-                            const key_uint64_t* one_after_target_range = std::upper_bound(begin_delim, end_delim, key);
-                            const dpu_id_t idx_range_plus_1 = static_cast<dpu_id_t>(one_after_target_range - begin_delim);
+                            const key_uint64_t* one_after_target_range = std::upper_bound(begin_bound, end_bound, key);
+                            const dpu_id_t idx_range_plus_1 = static_cast<dpu_id_t>(one_after_target_range - begin_bound);
 
                             if (idx_range_plus_1 % 2 == 1) {
                                 const ChunkedPairsRange& part = begin_part[idx_range_plus_1 / 2];
@@ -2426,9 +2646,10 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
         uint32_t cold_npairs = static_cast<uint32_t>(std::prev(list.end())->PairsRange::end() - list.begin()->PairsRange::begin());
         const uint32_t base_npairs = [&] {
             uint32_t base_npairs = cold_npairs;
-            for (DelimIter iter = std::next(cold_delims[idx_dpu]); iter != cold_delims[idx_dpu + 1]; iter++) {
-                const auto& delim = std::get<HotPartitionDelim>(iter->second);
-                base_npairs += nr_pairs[delim.dpu].get()[1];
+            for (size_t idx_part = base_part[idx_dpu]; idx_part < base_part[idx_dpu + 1]; idx_part++) {
+                if (parts.dests[idx_part].is_hot) {
+                    base_npairs += nr_pairs[parts.dests[idx_part].dpu].get()[1];
+                }
             }
             return base_npairs;
         }();
@@ -2478,6 +2699,7 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
                         (new_hot.pairs_range.end() == part.PairsRange::end() ? cold_key_ranges[idx_in_ary].end
                                                                              : new_hot.pairs_range.end()->key - 1)};
                     new_hot.load = load;
+                    new_hot.origin = idx_dpu;
 
                     cold_npairs -= new_hot.pairs_range.npairs();
                     cold_endpoint_cnt -= load;
@@ -2511,6 +2733,7 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
                             (range.end() == part.PairsRange::end() ? cold_key_ranges[idx_in_ary].end
                                                                    : range.end()->key - 1)};
                         new_hot.load = load;
+                        new_hot.origin = idx_dpu;
 
                         cold_npairs -= new_hot.pairs_range.npairs();
                         cold_endpoint_cnt -= new_hot.load;
@@ -2594,8 +2817,10 @@ inline void BPForest::incremental_repartition_worker_hot([[maybe_unused]] unsign
     };
 
     for (dpu_id_t idx_dpu = get_next_idx_dpu(std::lock_guard{tmp.mutex}); idx_dpu < nr_base_parts;) {
-        const key_uint64_t hot_begin_key = hot_delims[idx_dpu]->first;
-        const key_uint64_t hot_max_key = std::get<HotPartitionDelim>(hot_delims[idx_dpu]->second).max_key;
+        const size_t idx_hot_part = hot_part[idx_dpu];
+        const key_uint64_t hot_begin_key = parts.begins[idx_hot_part],
+                           hot_max_key = parts.end_of(idx_hot_part);
+        const dpu_id_t hot_origin = parts.origins[idx_hot_part];
 
         ChunkedPairsRange hot_cpr{hot_ranges[idx_dpu]};
         uint32_t measured = 0;
@@ -2655,7 +2880,7 @@ inline void BPForest::incremental_repartition_worker_hot([[maybe_unused]] unsign
             auto& pieces = hot_split_plans[idx_dpu];
             const dpu_id_t emit_count = split_hot_range_equal_load(hot_cpr, measured, nr_target_pieces, hot_max_key,
                 [&](PairsRange pr, KeyRange kr, uint32_t ld, [[maybe_unused]] uint32_t mcl) {
-                    pieces.push_back(NewHotRange{pr, kr, ld});
+                    pieces.push_back(NewHotRange{pr, kr, ld, hot_origin});
                 });
             if (emit_count <= 1) {
                 // A single dominant chunk cannot be subdivided: keep the hot whole.
@@ -2698,7 +2923,10 @@ inline void BPForest::partition_with_insert_batch(uint32_t nr_queries, const KVP
 inline void BPForest::partition_with_delete_batch(uint32_t nr_queries, const key_uint64_t keys[])
 {
     ScopedTimer t{Timer, "partition"};
-    full_repartition(nr_queries, keys, (void*){nullptr}, delete_queries);
+    // The routing inside full_repartition writes an "absent" flag for keys
+    // below the first partition, so give it a real buffer.
+    std::vector<uint8_t> existed(nr_queries);
+    full_repartition(nr_queries, keys, existed.data(), delete_queries);
 }
 inline void BPForest::partition_with_range_count_batch(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[])
 {
@@ -2798,16 +3026,15 @@ inline std::vector<Partition> BPForest::dump_partitions() const
 {
     std::vector<Partition> result(nr_base_parts * 2, {0, 0});
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-        if (idx_dpu + 1 != nr_base_parts) {
-            result[idx_dpu] = {key_uint64_to_int64(cold_delims[idx_dpu]->first), cold_delims[idx_dpu + 1]->first - cold_delims[idx_dpu]->first};
-        } else {
-            result[idx_dpu] = {key_uint64_to_int64(cold_delims[idx_dpu]->first), KEY_MAX - cold_delims[idx_dpu]->first + 1};
+        if (base_part[idx_dpu] != base_part[idx_dpu + 1]) {
+            const key_uint64_t begin = parts.begins[base_part[idx_dpu]],
+                               end = parts.end_of(base_part[idx_dpu + 1] - 1);
+            result[idx_dpu] = {key_uint64_to_int64(begin), end - begin + 1};
         }
-    }
-    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-        const DelimIter hot = hot_delims[idx_dpu];
-        if (hot != DelimIter{}) {
-            result[idx_dpu + nr_base_parts] = {key_uint64_to_int64(hot->first), std::get<HotPartitionDelim>(hot->second).max_key - hot->first + 1};
+        if (hot_part[idx_dpu] != INVALID_DPU_ID) {
+            const key_uint64_t begin = parts.begins[hot_part[idx_dpu]],
+                               end = parts.end_of(hot_part[idx_dpu]);
+            result[idx_dpu + nr_base_parts] = {key_uint64_to_int64(begin), end - begin + 1};
         }
     }
     return result;

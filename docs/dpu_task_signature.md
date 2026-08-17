@@ -32,9 +32,15 @@ DPU プログラム (`dpu/src/dpumain.c`) は 1 回の起動で 1 種類のタ�
 
 `qrys.result_offset` は、返り値を書き込む位置をヒープ先頭からのバイトオフセットで表す。
 ホストは全 DPU 中の最大クエリ数 `max_nqrys` を使って
-`sizeof(InputHeader) + sizeof(Query) * max_nqrys` を与える
+`sizeof(InputHeader) + sizeof(Query) * max_nqrys` に、クエリ列の後ろに続くもの
+(TASK_DELETE の min-refresh 要求) の最大長を足した値を与える
 (`BPForest::execute_in_dpus`, `bpforest/inc/bpforest.ipp`)。全 DPU で同じ値にすることで、
 結果の一括転送を単一のオフセットからおこなえる。
+
+クエリごとの返り値は `[cold | hot]` の順に置き、**各セクションを 8 バイト境界に切り上げる**
+(1 バイトの返り値を返す TASK_DELETE でのみ効く)。こうすると 2 つの木の結果が
+8 バイト DMA 語を共有しないので、tasklet が互いを気にせず書き出せる。
+生存ペア数のようにクエリと 1 対 1 でない返り値は、その後ろに置く。
 
 現行プロトコルの最も読みやすい参照実装は `bpforest/inc/fake_dpu.ipp` (fake_dpu ビルド用の
 DPU エミュレータ)。DPU 側の実体は `dpu/src/bplustree.c`。
@@ -70,8 +76,12 @@ DPU バイナリに含まれる。
  Key[nr_cold_qrys + nr_hot_qrys]) -> KVPair[nr_cold_qrys + nr_hot_qrys]
 ```
 
-クエリキー**未満**で最大のキーを持つペア (strict predecessor) を返す。
-ホスト側のクエリ振り分けが「答えはこの木の中にある」ことを保証する。
+クエリキー**未満**で最大のキーを持つ**生きている** (値が `NOT_FOUND_VALUE` でない)
+ペア (strict predecessor) を返す。tombstone (TASK_DELETE 参照) は葉内の左方向
+スキャンと葉の再降下で読み飛ばす。木の中にクエリキー未満の生きたペアが
+1 つも無ければ番兵 `{KEY_MIN, NOT_FOUND_VALUE}` を返す。ホストは各パーティションが
+その最小の生存キーから始まるよう保つので、正しく振り分けられたクエリがこの番兵を
+受け取ることはない (`BPForest::locate_pred_partition` のコメント参照)。
 `BPForest::batch_pred` の返り値がキーと値の組なので、DPU も `KVPair` を返す。
 
 ### TASK_RANGE_COUNT (`SUPPORT_RANGE_COUNT`)
@@ -100,17 +110,48 @@ DPU バイナリに含まれる。
  KVPair[nr_cold_qrys + nr_hot_qrys]) -> uint32_t[2]
 ```
 
-既存キーなら値を上書き、無ければ挿入する。返り値は挿入後の (cold 木のペア数, hot 木のペア数)。
-ホストはこれで DPU ごとのペア数の記録を更新する (rebalancing の負荷計算や retrieve バッファの確保が参照する)。
+既存キーなら値を上書き、無ければ挿入する。tombstone (TASK_DELETE 参照) への上書きは
+ペアの復活であり、生存数を +1 する。
+
+挿入クエリのうち何個が新規キーだったかは DPU にしか分からないため、返り値の
+(cold 木の生存ペア数, hot 木の生存ペア数) をホストが受信して `nr_pairs` に反映する。
+本タスクはクエリごとの返り値を持たないので、これが `result_offset` の先頭に来る
+(生存ペア数を返すのは本タスクと TASK_DELETE だけ。他のタスクの後はホストが
+自力で正しい値を計算できる)。
 
 ### TASK_DELETE (`SUPPORT_DELETE`)
 
 ```
 (uint32_t nr_cold_qrys, uint32_t nr_hot_qrys, uint32_t result_offset,
- Key[nr_cold_qrys + nr_hot_qrys]) -> uint32_t[2]
+ Key[nr_cold_qrys + nr_hot_qrys],
+ uint32_t nr_cold_refreshes, uint32_t nr_hot_refreshes,
+ KeyRange[nr_cold_refreshes + nr_hot_refreshes])
+-> (uint8_t[nr_cold_qrys] (+pad), uint8_t[nr_hot_qrys] (+pad), uint32_t[2],
+    KVPair[nr_cold_refreshes + nr_hot_refreshes])
 ```
 
-返り値は削除後の (cold 木のペア数, hot 木のペア数)。TASK_INSERT と同形式。
+削除は tombstone 方式: キーは木から外さず、値を `NOT_FOUND_VALUE` に書き換える
+(物理回収は TASK_SERIALIZE が tombstone をスキップすることで rebalancing 時に
+起こる)。クエリごとに「削除直前にペアが生きていたか」を 0/1 で返し、
+生きていた場合だけ削除としてカウントする (tombstone の再削除は 0)。
+同一キーがバッチ内に重複した場合、値スロットの read-modify-write を
+mutex pool で直列化することで、ちょうど 1 つのクエリだけが 1 を返す。
+
+*   引数の `KeyRange[]` (min-refresh 要求) はキー列の直後に置く。各要求は
+    「範囲内 (両端 inclusive) の最小の生きたキー」を尋ねるもので、ホストが
+    パーティションの始端キーを最小の生存キーに保つために使う。
+    全 tasklet の削除完了後に単一 tasklet で処理される。
+*   返り値の配置 (`result_offset` からの相対、各セクション 8 バイト境界):
+    1.  `uint8_t[nr_cold_qrys]`: cold クエリの 0/1 フラグ
+    2.  `uint8_t[nr_hot_qrys]`: hot クエリの 0/1 フラグ
+    3.  `uint32_t[2]`: (cold 木の生存ペア数, hot 木の生存ペア数)
+    4.  `KVPair[]`: min-refresh 応答。見つかれば `{キー, 1}`、範囲内に生きた
+        キーが無ければ `{0, 0}`
+*   生存ペア数は TASK_INSERT と同じ理由 (何個が実際に消えたかは DPU にしか
+    分からない) で返す。全 tasklet の削除完了後に単一 tasklet が書くので、
+    min-refresh 応答と同じタイミングで確定する。
+*   1 バイトフラグの書き出しが 8 バイト DMA 語を tasklet 間で共有しないよう、
+    末尾以外の tasklet のクエリ数は 8 の倍数に切り上げたクオータで分配する。
 
 ### TASK_SERIALIZE
 
@@ -121,12 +162,12 @@ DPU バイナリに含まれる。
 
 木の中身を KV ペア列として書き出す。rebalancing でペアを DPU 間で移すときに使う。
 
-*   引数の `Key[nr_delims]` は cold 領域の切れ目 (= hot range の始点キー) を昇順に並べたもの。
+*   引数の `Key[nr_delims]` は cold 領域の切れ目を昇順に並べたもの。ホストは
+    連続する cold partition の境目に置く (= 次の cold partition の始端キー)。
 *   `do_cold` / `do_hot` で書き出す対象を選ぶ (cold+hot / cold のみ / hot のみ の 3 形態)。
 *   返り値の `uint32_t[nr_delims]` (incisions) は、切れ目が書き出した cold ペア配列の何番目に
-    あたるかを示す。厳密には `incisions[i]` = 「キーが `delims[i]` より大きい最初のペアの位置」
-    (cold 木は切れ目キー自身を含まないので、実質的には切れ目より手前のペア数)。
-    **引数の delim 領域を上書きする形で**、ペイロード先頭に書く。
+    あたるかを示す。`incisions[i]` = 「キーが `delims[i]` **以上**の最初のペアの位置」
+    (= 切れ目より手前のペア数)。**引数の delim 領域を上書きする形で**、ペイロード先頭に書く。
 *   返り値の `KVPair[]` は `[cold | hot]` の連続で、ヒープ先頭 +
     `sizeof(InputHeader) + sizeof(Key) * max_nr_delims` から始まる。`nr_delims` ではなく
     DPU 間で共通の `max_nr_delims` を使うことで、ペア配列の開始位置を全 DPU で揃えている。

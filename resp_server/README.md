@@ -8,10 +8,14 @@ BPForest を Redis クライアントから使えるようにする RESP2 サー
 
 ```bash
 SUP="-DSUPPORT_GET -DSUPPORT_PRED -DSUPPORT_INSERT -DSUPPORT_DELETE -DSUPPORT_RANGE_COUNT -DSUPPORT_RANGE_MAX"
-cmake -Dtargets=upmem -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+cmake -Dtargets=upmem -DDPU_IRAM_OVERLAY=ON -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
       -DCMAKE_C_FLAGS="$SUP" -DCMAKE_CXX_FLAGS="$SUP" -S . -B build
 cmake --build build --target resp_server_upmem
 ```
+
+複数操作を含める実機ビルドは IRAM overlay (`-DDPU_IRAM_OVERLAY=ON`,
+`docs/dpu_iram_overlay.md`) を前提とする。overlay なしでは 5 操作以上が
+IRAM に収まらない。
 
 BPForest はバルクロード構築のみのため、起動時に初期データを与える:
 
@@ -45,6 +49,7 @@ $ redis-cli -p 6399 GET 2
 ## 意味論
 
 - 同一接続のコマンド列は、送信順に直列実行したのと同じ結果と応答順を保証する。
-- 別接続のコマンドとの相対順序は保証しない (Redis もクライアント間の順序は保証しない)。さらに、別接続の書き込みと同一バッチ・同一キーで衝突した場合に限り、`DEL` の応答値がどの直列実行順とも整合しないことがありうる (最終状態は決定的で一貫)。
+- 別接続のコマンドとの相対順序は保証しないが (Redis もクライアント間の順序は保証しない)、全応答と最終状態はコマンド全体の何らかの直列実行順と整合する。
 - 値 0 は `NOT_FOUND_VALUE` と衝突し miss と区別できないため、`SET` が拒否する。
 - `BPF.PRED k` は、生きているペアのうち key が k 未満で最大のものを返す。削除済みキーを返すことはなく、該当ペアがなければ nil。
+- `DBSIZE` は生きているペアの総数を返す (削除済みのキーは数えない)。

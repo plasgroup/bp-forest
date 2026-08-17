@@ -17,6 +17,7 @@
 #include <attributes.h>
 #include <defs.h>
 #include <mram.h>
+#include <mutex_pool.h>
 
 #include <assert.h>
 #include <stdbool.h>
@@ -66,6 +67,19 @@ uint8_t cold_root_numKeys, hot_root_numKeys;
 __dma_aligned struct {
     uint32_t cold, hot;
 } nr_pairs;
+
+//! @brief Publishes the live-pair counts of both trees at `dest`, which the
+//! task puts after whatever it returns per query.
+//!
+//! Only TASK_INSERT and TASK_DELETE need this: how many of the keys they were
+//! handed were new, or were still there to remove, is something only the DPU
+//! learns, whereas after every other task the host can work the counts out for
+//! itself.
+static void report_nr_pairs(uintptr_t dest)
+{
+    mram_write(&nr_pairs, (__mram_ptr void*)dest, sizeof(nr_pairs));
+}
+
 
 
 static uint16_t search_for_child_index(const key_uint64_t* delim_keys, uint8_t nr_keys, key_uint64_t query)
@@ -553,7 +567,7 @@ static KVPair* INSERT_fetch_next_qry(InsertWorkspace* wks)
     return &wks->qrys[wks->idx_qry_in_cache++];
 }
 OVERLAY_LOCAL(OVL_SLOT_INSERT)
-static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const height, uint8_t* const root_numKeys, const KVPair* const qry)
+static bool /* did the number of live pairs grow? */ INSERT_execute(Node* const root, uint8_t* const height, uint8_t* const root_numKeys, const KVPair* const qry)
 {
     InsertWorkspace* const wks_me = loop_invariant(&workspace.tree.insert[me()]);
 
@@ -561,8 +575,11 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
         // Insert into the leaf
         const uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], *root_numKeys, qry->key);
         if (idx_pair < *root_numKeys && root->lf.keys[idx_pair] == qry->key) {
+            // Overwriting a tombstone (a pair deleted by TASK_DELETE) revives
+            // the pair, growing the live count kept in `nr_pairs`.
+            const bool revived = NthValue(root->lf, idx_pair) == NOT_FOUND_VALUE;
             NthValue(root->lf, idx_pair) = qry->value;  // update
-            return false;
+            return revived;
         } else {
             if (*root_numKeys < MAX_NR_PAIRS) {
                 // No split
@@ -844,11 +861,13 @@ static bool /* inserted? */ INSERT_execute(Node* const root, uint8_t* const heig
 
         const uint16_t idx_pair = search_for_pair_index(&leaf->lf.keys[0], child_link.numKeys, qry->key);
         if (idx_pair < child_link.numKeys && leaf->lf.keys[idx_pair] == qry->key) {
+            // Revives a tombstone, as in the root-leaf case above.
+            const bool revived = NthValue(leaf->lf, idx_pair) == NOT_FOUND_VALUE;
             mram_write(&qry->value, &NthValue(Deref(child_link.ptr).lf, idx_pair), sizeof(value_uint64_t));  // update
             if (is_cache_dirty) {
                 mram_write(node, &Deref(node_link->ptr), sizeof(Node));
             }
-            return false;
+            return revived;
         } else {
             if (child_link.numKeys < MAX_NR_PAIRS) {
                 // No split
@@ -1025,13 +1044,18 @@ OVERLAY_TASK(OVL_SLOT_INSERT, task_insert, (void), ())
         check_tree_structure(&hot_root, hot_height, hot_root_numKeys);
 #endif
 
-        mram_write(&nr_pairs, (__mram_ptr void*)((uintptr_t)DPU_MRAM_HEAP_POINTER + input_header.qrys.result_offset), sizeof(uint32_t[2]));
+        report_nr_pairs((uintptr_t)DPU_MRAM_HEAP_POINTER + input_header.qrys.result_offset);
     }
 }
 #endif
 
 
 #if SUPPORT_DELETE
+// Serializes the concurrent read-modify-write of a value slot when the same
+// key is deleted by two tasklets (duplicate keys within one batch).  The pool
+// is indexed by the low bits of the key, so distinct keys rarely contend.
+MUTEX_POOL_INIT(DELETE_value_mutexes, 16);
+
 OVERLAY_LOCAL(OVL_SLOT_QUERY)
 __attribute__((unused)) static void DELETE_barrier(void)
 {
@@ -1049,20 +1073,71 @@ __attribute__((unused)) static void DELETE_barrier(void)
 OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static key_uint64_t* DELETE_fetch_next_qry(DeleteWorkspace* wks)
 {
-    if (wks->idx_qry_in_cache == TASK_INSERT_NR_CACHED_QRYS) {
-        mram_read((__mram_ptr void*)wks->cursor_on_qrys, wks->qrys, sizeof(key_uint64_t) * TASK_INSERT_NR_CACHED_QRYS);
-        wks->cursor_on_qrys += sizeof(key_uint64_t) * TASK_INSERT_NR_CACHED_QRYS;
+    if (wks->idx_qry_in_cache == TASK_DELETE_NR_CACHED_QRYS) {
+        mram_read((__mram_ptr void*)wks->cursor_on_qrys, wks->qrys, sizeof(key_uint64_t) * TASK_DELETE_NR_CACHED_QRYS);
+        wks->cursor_on_qrys += sizeof(key_uint64_t) * TASK_DELETE_NR_CACHED_QRYS;
         wks->idx_qry_in_cache = 0;
     }
     return &wks->qrys[wks->idx_qry_in_cache++];
 }
 OVERLAY_LOCAL(OVL_SLOT_QUERY)
-static uint32_t /* # of deleted pairs */ DELETE_execute(Node* const root, const uint8_t height, const uint8_t root_numKeys,
-    const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
+static void DELETE_push_result(DeleteWorkspace* wks, uint8_t existed)
+{
+    wks->results[wks->idx_result_in_cache++] = existed;
+    if (wks->idx_result_in_cache == TASK_DELETE_NR_CACHED_RESULTS) {
+        mram_write(wks->results, (__mram_ptr void*)wks->cursor_on_results, TASK_DELETE_NR_CACHED_RESULTS);
+        wks->cursor_on_results += TASK_DELETE_NR_CACHED_RESULTS;
+        wks->idx_result_in_cache = 0;
+    }
+}
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
+static void DELETE_flush_results_cache(DeleteWorkspace* wks)
+{
+    if (wks->idx_result_in_cache != 0) {
+        // Rounding up may spill a few bytes past this tasklet's slice.  Only
+        // the last (partially filled) slice of a section can have a non-8
+        // remainder, and each section is padded to 8 bytes, so the spill only
+        // ever lands in the padding.
+        mram_write(wks->results, (__mram_ptr void*)wks->cursor_on_results, (wks->idx_result_in_cache + 7u) / 8u * 8u);
+    }
+}
+//! @brief Tombstones the pair whose value slot lives in WRAM (the root leaf).
+//! @return 1 if the pair was live (not already tombstoned) before this call.
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
+static uint8_t DELETE_tombstone_wram(value_uint64_t* const slot, const key_uint64_t key)
+{
+    mutex_pool_lock(&DELETE_value_mutexes, (uint16_t)key);
+    const uint8_t existed = (*slot != NOT_FOUND_VALUE);
+    *slot = NOT_FOUND_VALUE;
+    mutex_pool_unlock(&DELETE_value_mutexes, (uint16_t)key);
+    return existed;
+}
+//! @brief Tombstones the pair whose value slot lives in MRAM.
+//! @return 1 if the pair was live (not already tombstoned) before this call.
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
+static uint8_t DELETE_tombstone_mram(DeleteWorkspace* const wks, __mram_ptr value_uint64_t* const slot, const key_uint64_t key)
+{
+    mutex_pool_lock(&DELETE_value_mutexes, (uint16_t)key);
+    mram_read(slot, &wks->old_value, sizeof(value_uint64_t));
+    const uint8_t existed = (wks->old_value != NOT_FOUND_VALUE);
+    if (existed) {
+        // Reuse the read buffer as the write source: it is one of the
+        // statically aligned ones DeleteWorkspace keeps for this reason.
+        wks->old_value = NOT_FOUND_VALUE;
+        mram_write(&wks->old_value, slot, sizeof(value_uint64_t));
+    }
+    mutex_pool_unlock(&DELETE_value_mutexes, (uint16_t)key);
+    return existed;
+}
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
+static uint32_t /* # of pairs that turned live -> tombstoned */ DELETE_execute(Node* const root, const uint8_t height, const uint8_t root_numKeys,
+    const uint32_t idx_qry_begin, const uint32_t idx_qry_end, const uintptr_t results)
 {
     DeleteWorkspace* const wks_me = loop_invariant(&workspace.tree.delete[me()]);
-    wks_me->idx_qry_in_cache = TASK_INSERT_NR_CACHED_QRYS;  // to trigger the first fetch
+    wks_me->idx_qry_in_cache = TASK_DELETE_NR_CACHED_QRYS;  // to trigger the first fetch
     wks_me->cursor_on_qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader) + sizeof(key_uint64_t) * idx_qry_begin;
+    wks_me->idx_result_in_cache = 0;
+    wks_me->cursor_on_results = results;
 
     uint32_t nr_deleted = 0;
 
@@ -1070,15 +1145,16 @@ static uint32_t /* # of deleted pairs */ DELETE_execute(Node* const root, const 
         for (unsigned idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
             const key_uint64_t key = *DELETE_fetch_next_qry(wks_me);
 
+            uint8_t existed = 0;
             const uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, key);
             if (idx_pair < root_numKeys && root->lf.keys[idx_pair] == key) {
-                NthValue(root->lf, idx_pair) = NOT_FOUND_VALUE;  // mark as deleted
-                nr_deleted++;
+                existed = DELETE_tombstone_wram(&NthValue(root->lf, idx_pair), key);
+                nr_deleted += existed;
             }
+            DELETE_push_result(wks_me, existed);
         }
 
     } else {
-        __dma_aligned const value_uint64_t tombstone = NOT_FOUND_VALUE;
         for (unsigned idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
             const key_uint64_t key = *DELETE_fetch_next_qry(wks_me);
 
@@ -1091,35 +1167,116 @@ static uint32_t /* # of deleted pairs */ DELETE_execute(Node* const root, const 
             fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
             const uint16_t idx_pair = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, key);
 
+            uint8_t existed = 0;
             if (idx_pair < link.numKeys && wks_me->node_cache.lf.keys[idx_pair] == key) {
-                mram_write(&tombstone, &NthValue(Deref(link.ptr).lf, idx_pair), sizeof(value_uint64_t));
-                nr_deleted++;
+                existed = DELETE_tombstone_mram(wks_me, &NthValue(Deref(link.ptr).lf, idx_pair), key);
+                nr_deleted += existed;
             }
+            DELETE_push_result(wks_me, existed);
         }
     }
 
+    DELETE_flush_results_cache(wks_me);
     return nr_deleted;
+}
+//! @brief The smallest live key in `range` (both ends inclusive), for the
+//! host's per-partition minimum bookkeeping.
+//! @return {key, 1} if found, {0, 0} if no live key is in the range.
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
+static KVPair DELETE_refresh_one(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
+    const KeyRange range)
+{
+    DeleteWorkspace* const wks_me = loop_invariant(&workspace.tree.delete[me()]);
+
+    if (height == 0) {
+        const value_uint64_t* const rev_values = RevValues(root->lf);
+        for (uint16_t i = search_for_pair_index(&root->lf.keys[0], root_numKeys, range.begin); i < root_numKeys; i++) {
+            if (root->lf.keys[i] > range.end) {
+                break;
+            }
+            if (rev_values[-(int32_t)i] != NOT_FOUND_VALUE) {
+                return (KVPair){root->lf.keys[i], 1};
+            }
+        }
+        return (KVPair){0, 0};
+    }
+
+    NodeLink link = NthChild(root->inl, search_for_child_index(&root->inl.keys[0], root_numKeys, range.begin));
+    for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
+        fetch_internal_filled(&Deref(link.ptr).inl, &wks_me->node_cache.inl, link.numKeys);
+        const uint16_t idx_child = search_for_child_index(&wks_me->node_cache.inl.keys[0], link.numKeys, range.begin);
+        link = NthChild(wks_me->node_cache.inl, idx_child);
+    }
+
+    const value_uint64_t* const rev_values = loop_invariant(RevValues(wks_me->node_cache.lf));
+    const key_uint64_t* const cached_keys = loop_invariant(&wks_me->node_cache.lf.keys[0]);
+    for (;;) {
+        fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
+        for (uint16_t i = search_for_pair_index(cached_keys, link.numKeys, range.begin); i < link.numKeys; i++) {
+            if (cached_keys[i] > range.end) {
+                return (KVPair){0, 0};
+            }
+            if (rev_values[-(int32_t)i] != NOT_FOUND_VALUE) {
+                return (KVPair){cached_keys[i], 1};
+            }
+        }
+        link = wks_me->node_cache.lf.right;
+        if (link.ptr == NODELINK_NULLPTR.ptr && link.numKeys == NODELINK_NULLPTR.numKeys) {
+            return (KVPair){0, 0};
+        }
+    }
+}
+//! @brief Answers the min-refresh requests appended after the key payload.
+//! Runs on a single tasklet after all deletions have completed.
+OVERLAY_LOCAL(OVL_SLOT_QUERY)
+static void DELETE_refresh_mins(const uintptr_t refresh_results)
+{
+    DeleteWorkspace* const wks_me = loop_invariant(&workspace.tree.delete[me()]);
+
+    const uintptr_t counts_addr = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader)
+                                  + sizeof(key_uint64_t) * (input_header.qrys.nr_cold_qrys + input_header.qrys.nr_hot_qrys);
+    mram_read((__mram_ptr void*)counts_addr, &wks_me->nr_refreshes[0], sizeof(uint32_t[2]));
+
+    const uintptr_t requests = counts_addr + sizeof(uint32_t[2]);
+    const uint32_t nr_total = wks_me->nr_refreshes[0] + wks_me->nr_refreshes[1];
+    for (uint32_t i = 0; i < nr_total; i++) {
+        mram_read((__mram_ptr void*)(requests + sizeof(KeyRange) * i), &wks_me->refresh_range, sizeof(KeyRange));
+        if (i < wks_me->nr_refreshes[0]) {
+            wks_me->refresh_response = DELETE_refresh_one(&cold_root, cold_height, cold_root_numKeys, wks_me->refresh_range);
+        } else {
+            wks_me->refresh_response = DELETE_refresh_one(&hot_root, hot_height, hot_root_numKeys, wks_me->refresh_range);
+        }
+        mram_write(&wks_me->refresh_response, (__mram_ptr void*)(refresh_results + sizeof(KVPair) * i), sizeof(KVPair));
+    }
 }
 OVERLAY_TASK(OVL_SLOT_QUERY, task_delete, (void), ())
 {
     if (me() < TASK_DELETE_NR_TASKLETS) {
         const uint32_t nr_cold_qrys = input_header.qrys.nr_cold_qrys, nr_hot_qrys = input_header.qrys.nr_hot_qrys;
 
+        // Result layout: docs/dpu_task_signature.md, TASK_DELETE.
+        const uintptr_t result_base = (uintptr_t)DPU_MRAM_HEAP_POINTER + input_header.qrys.result_offset;
+        const uintptr_t cold_results = result_base;
+        const uintptr_t hot_results = cold_results + (nr_cold_qrys + 7u) / 8u * 8u;
+        const uintptr_t counts_result = hot_results + (nr_hot_qrys + 7u) / 8u * 8u;
+        const uintptr_t refresh_results = counts_result + sizeof(nr_pairs);
+
+        // Per-tasklet quotas are rounded up to a multiple of 8 so that no two
+        // tasklets share an 8-byte word of the 1-byte result flags.
         const uint32_t nr_cold_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_DELETE_NR_TASKLETS(nr_cold_qrys),
-                       nr_remainder_cold_qrys = nr_cold_qrys - nr_cold_qrys_per_tasklet * TASK_DELETE_NR_TASKLETS,
-                       nr_cold_qrys_for_me = nr_cold_qrys_per_tasklet + (me() < nr_remainder_cold_qrys);
-        const uint32_t idx_cold_qry_begin = nr_cold_qrys_per_tasklet * me() + (me() <= nr_remainder_cold_qrys ? me() : nr_remainder_cold_qrys),
-                       idx_cold_qry_end = idx_cold_qry_begin + nr_cold_qrys_for_me;
+                       cold_quota = (nr_cold_qrys_per_tasklet + (nr_cold_qrys_per_tasklet * TASK_DELETE_NR_TASKLETS != nr_cold_qrys) + 7u) / 8u * 8u;
+        const uint32_t idx_cold_qry_begin = cold_quota * me() < nr_cold_qrys ? cold_quota * me() : nr_cold_qrys,
+                       idx_cold_qry_end = idx_cold_qry_begin + cold_quota < nr_cold_qrys ? idx_cold_qry_begin + cold_quota : nr_cold_qrys;
 
         const uint32_t nr_hot_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_DELETE_NR_TASKLETS(nr_hot_qrys),
-                       nr_remainder_hot_qrys = nr_hot_qrys - nr_hot_qrys_per_tasklet * TASK_DELETE_NR_TASKLETS,
-                       nr_hot_qrys_for_me = nr_hot_qrys_per_tasklet + (me() < nr_remainder_hot_qrys);
-        const uint32_t idx_hot_qry_begin = nr_hot_qrys_per_tasklet * me() + (me() <= nr_remainder_hot_qrys ? me() : nr_remainder_hot_qrys)
-                                           + nr_cold_qrys,
-                       idx_hot_qry_end = idx_hot_qry_begin + nr_hot_qrys_for_me;
+                       hot_quota = (nr_hot_qrys_per_tasklet + (nr_hot_qrys_per_tasklet * TASK_DELETE_NR_TASKLETS != nr_hot_qrys) + 7u) / 8u * 8u;
+        const uint32_t idx_hot_qry_begin = (hot_quota * me() < nr_hot_qrys ? hot_quota * me() : nr_hot_qrys) + nr_cold_qrys,
+                       idx_hot_qry_end = (idx_hot_qry_begin - nr_cold_qrys) + hot_quota < nr_hot_qrys
+                                             ? idx_hot_qry_begin + hot_quota
+                                             : nr_hot_qrys + nr_cold_qrys;
 
         const uint32_t nr_deleted_cold = DELETE_execute(&cold_root, cold_height, cold_root_numKeys,
-            idx_cold_qry_begin, idx_cold_qry_end);
+            idx_cold_qry_begin, idx_cold_qry_end, cold_results + idx_cold_qry_begin);
 #ifdef TASK_DELETE_CHECK
         DELETE_barrier();
         if (me() == 0) {
@@ -1128,7 +1285,7 @@ OVERLAY_TASK(OVL_SLOT_QUERY, task_delete, (void), ())
 #endif
 
         const uint32_t nr_deleted_hot = DELETE_execute(&hot_root, hot_height, hot_root_numKeys,
-            idx_hot_qry_begin, idx_hot_qry_end);
+            idx_hot_qry_begin, idx_hot_qry_end, hot_results + (idx_hot_qry_begin - nr_cold_qrys));
 #ifdef TASK_DELETE_CHECK
         DELETE_barrier();
         if (me() == 0) {
@@ -1144,7 +1301,12 @@ OVERLAY_TASK(OVL_SLOT_QUERY, task_delete, (void), ())
         if (me() != TASK_DELETE_NR_TASKLETS - 1) {
             notify_next_of_readiness();
         } else {
-            mram_write(&nr_pairs, (__mram_ptr void*)((uintptr_t)DPU_MRAM_HEAP_POINTER + input_header.qrys.result_offset), sizeof(uint32_t[2]));
+            // The chain above doubles as a barrier: reaching this point means
+            // every tasklet has finished its deletions, so the counts are
+            // final and the min-refresh scans below see the final state of
+            // this batch.
+            report_nr_pairs(counts_result);
+            DELETE_refresh_mins(refresh_results);
         }
     }
 }
@@ -1276,32 +1438,59 @@ static void PRED_flush_results_cache(PredWorkspace* wks)
         wks->idx_result_in_cache = 0;
     }
 }
-//! @brief Strict predecessor: the pair with the largest key < `key`.
+//! @brief Strict predecessor among live pairs: the pair with the largest key
+//! < `key` whose value is not a tombstone (NOT_FOUND_VALUE).
 //! Internal-node descent uses search_for_pair_index (= #{delim < key}), so we
 //! always descend the rightmost child whose subtree minimum is < key, i.e. the
-//! child that contains the global predecessor.  Host-side lower_bound routing
-//! guarantees the query reaches a tree that owns the predecessor, hence the
-//! reached leaf always has idx_pair > 0 (no idx_pair==0 path is needed).
+//! child that contains the physical predecessor.  Tombstoned pairs are skipped
+//! by scanning the leaf leftward; when a whole leaf prefix is dead, the search
+//! restarts from the leaf's smallest key, which strictly decreases and thus
+//! terminates.  Returns the sentinel {KEY_MIN, NOT_FOUND_VALUE} when the tree
+//! has no live pair below `key`, which a correctly routed query never sees
+//! (docs/dpu_task_signature.md, TASK_PRED).
 OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static KVPair PRED_search_one(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
-    const key_uint64_t key)
+    key_uint64_t key)
 {
     PredWorkspace* const wks_me = loop_invariant(&workspace.tree.pred[me()]);
 
     if (height == 0) {
-        const uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, key);
-        return (KVPair){root->lf.keys[idx_pair - 1], NthValue(root->lf, idx_pair - 1)};
+        const value_uint64_t* const rev_values = RevValues(root->lf);
+        for (uint16_t i = search_for_pair_index(&root->lf.keys[0], root_numKeys, key); i > 0;) {
+            i--;
+            const value_uint64_t value = rev_values[-(int32_t)i];
+            if (value != NOT_FOUND_VALUE) {
+                return (KVPair){root->lf.keys[i], value};
+            }
+        }
+        return (KVPair){KEY_MIN, NOT_FOUND_VALUE};
     }
 
-    NodeLink link = NthChild(root->inl, search_for_pair_index(&root->inl.keys[0], root_numKeys, key));
-    for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
-        fetch_internal_filled(&Deref(link.ptr).inl, &wks_me->node_cache.inl, link.numKeys);
-        const uint16_t idx_child = search_for_pair_index(&wks_me->node_cache.inl.keys[0], link.numKeys, key);
-        link = NthChild(wks_me->node_cache.inl, idx_child);
+    const value_uint64_t* const rev_values = loop_invariant(RevValues(wks_me->node_cache.lf));
+    const key_uint64_t* const cached_keys = loop_invariant(&wks_me->node_cache.lf.keys[0]);
+    for (;;) {
+        NodeLink link = NthChild(root->inl, search_for_pair_index(&root->inl.keys[0], root_numKeys, key));
+        for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
+            fetch_internal_filled(&Deref(link.ptr).inl, &wks_me->node_cache.inl, link.numKeys);
+            const uint16_t idx_child = search_for_pair_index(&wks_me->node_cache.inl.keys[0], link.numKeys, key);
+            link = NthChild(wks_me->node_cache.inl, idx_child);
+        }
+        fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
+        const uint16_t idx_first_ge = search_for_pair_index(cached_keys, link.numKeys, key);
+        for (uint16_t i = idx_first_ge; i > 0;) {
+            i--;
+            const value_uint64_t value = rev_values[-(int32_t)i];
+            if (value != NOT_FOUND_VALUE) {
+                return (KVPair){cached_keys[i], value};
+            }
+        }
+        if (idx_first_ge == 0) {
+            // No key < `key` exists in this tree.
+            return (KVPair){KEY_MIN, NOT_FOUND_VALUE};
+        }
+        // keys[0 .. idx_first_ge) are all tombstones; continue strictly left.
+        key = cached_keys[0];
     }
-    fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
-    const uint16_t idx_pair = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, key);
-    return (KVPair){wks_me->node_cache.lf.keys[idx_pair - 1], NthValue(wks_me->node_cache.lf, idx_pair - 1)};
 }
 OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static void PRED_execute(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
@@ -2103,11 +2292,20 @@ static NodePtr MOVE_HOT_allocator(unsigned idx_node)
  */
 OVERLAY_TASK_STATIC(OVL_SLOT_RESHARD, MOVE_HOT_clear_phase, (void), ())
 {
+    // Clearing a tree drops its pairs, so its live count goes with them.  A
+    // renewed tree that receives no pair is otherwise never visited again in
+    // this task, and would keep reporting the count it had before the reshard.
     if (input_header.move_hot.renew_cold) {
         tree_clear(&cold_root_numKeys, &cold_root, &cold_height);
+        if (me() == 0) {
+            nr_pairs.cold = 0;
+        }
     }
     if (input_header.move_hot.renew_hot) {
         tree_clear(&hot_root_numKeys, &hot_root, &hot_height);
+        if (me() == 0) {
+            nr_pairs.hot = 0;
+        }
     }
 
     if (me() < TREE_CONSTRUCT_NR_TASKLETS) {

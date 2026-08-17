@@ -19,7 +19,7 @@
 ///   `void` を返し自分で `full_repartition_naive` を呼ぶが、最終状態は同じ。
 ///
 /// v1 の方針: **対象 DPU から cold + 既存 hot を「丸ごと」回収** する。
-///           これにより incision_indices / hot_delim_keys / base_to_nr_hot_psum
+///           これにより incision_indices / incision_keys / base_to_nr_incisions_psum
 ///           のような「DPU 側 serialize プロトコル」用の補助データを
 ///           一切使わずに cold 区間列を host 側で復元できる。
 ///
@@ -44,15 +44,15 @@
 ///       vector から毎回 build-from-scratch で再構築する。
 ///   (e) BPForest 側の「一時データ用」メンバ
 ///       (`chunked_cold_ranges[,_lists]`, `new_hots`, `cold_loads`,
-///        `cold_npairs_list`, `input_headers`, `hot_delim_keys`,
-///        `base_to_nr_hot_psum`, `nr_extracted_hots`, `incision_indices`,
+///        `cold_npairs_list`, `input_headers`, `incision_keys`,
+///        `base_to_nr_incisions_psum`, `incision_indices`,
 ///        `cold_key_ranges`, `hot_ranges`, `data_buf`, worker 間受け渡しの
 ///        `any_tmp_data`、および per-thread scratch の `chunk2load`
 ///        = `inline static thread_local`) を全てローカル変数に置換。
 ///   (f) **DPU 側 partial serialize プロトコルを廃止** (v1 独自):
-///       対象 DPU から cold+hot を丸ごと回収し、host 側で
-///       既存 hot delim の key 境界で cold 区間列を復元する。
-///       incision_indices / hot_delim_keys / base_to_nr_hot_psum の
+///       対象 DPU から cold+hot を丸ごと回収し、host 側で `parts` の
+///       cold 片の KeyRange で cold 区間列を復元する。
+///       incision_indices / incision_keys / base_to_nr_incisions_psum の
 ///       計算と受け渡しが全て消える。
 ///
 /// 保っている意味論 (= 最適化版と同じもの):
@@ -66,7 +66,7 @@
 ///   - 段間と hot_hook 内の `cold_endpoint_cnt > goal` 判定
 ///   - `nr_existing_hots + new_hots > nr_base_parts` での full 委譲
 ///   - 既存 hot を持つ DPU は新規 hot の配置先候補から除外
-///   - `delims` / `hot_delims` / `nr_pairs` の最終状態
+///   - `parts` / `nr_pairs` の最終状態
 ///   - 末尾の `route_queries` 再実行
 
 #pragma once
@@ -194,7 +194,7 @@ inline void BPForest::incremental_repartition_naive(
     // ── 1. Phase 1: 対象 DPU の選別 ─────────────────────
     //
     // 最適化版 `incremental_repartition` の Phase 1 (ScopedTimer{"retrieve"}
-    // 冒頭のループ) に対応。incision_count / hot_delim_keys[] 等の
+    // 冒頭のループ) に対応。incision_count / incision_keys[] 等の
     // 書き出しは v1 では全廃し (愚直化 (f))、判定だけを残す。
     //
     // 判定は 2 層 (README §3.3.1):
@@ -207,8 +207,7 @@ inline void BPForest::incremental_repartition_naive(
     //
     // `param.balancing` は CLI で `>= 1` が強制されるので 0 分岐は無い。
     //
-    const dpu_id_t nr_existing_hots
-        = static_cast<dpu_id_t>(delims.size()) - nr_base_parts;
+    const dpu_id_t nr_existing_hots = nr_hot_parts;
     // Bonferroni 補正用の検定数 (1 バッチあたり)。
     const unsigned bonferroni_family
         = static_cast<unsigned>(nr_base_parts) + static_cast<unsigned>(nr_existing_hots);
@@ -256,7 +255,7 @@ inline void BPForest::incremental_repartition_naive(
     // goal が `× param.balancing` の式に切り替わる。下の式が数値一致
     // するのはデフォルト値のときだけ (README §0.1, §1.3)。
     //
-    // (`nr_existing_hots` は Phase 1 で算出済み。delims はここまで
+    // (`nr_existing_hots` は Phase 1 で算出済み。`parts` はここまで
     //  一切変更していないので同じ値。)
     constexpr uint32_t W = IsPointQuery<Query> ? 1 : 2;
     const uint32_t hot_load
@@ -289,9 +288,9 @@ inline void BPForest::incremental_repartition_naive(
         // retrieved[idx_dpu] の前半 `nr_pairs[idx_dpu][0]` 個が cold。
         // 後半は DPU が保持する「他 base の hot」で incremental の対象外。
         //
-        // 既存 hot delim の key 境界で cold KV 配列を分割する。各片に
-        // 対応する KeyRange もここで決定する (最適化版 Phase 1 の
-        // `cold_key_ranges[]` / `hot_delim_keys[]` 構築に相当)。
+        // `parts` の cold 片の KeyRange で cold KV 配列を分割する
+        // (最適化版 Phase 1 の `cold_key_ranges[]` / `incision_keys[]`
+        //  構築に相当)。
         //
         const uint32_t nr_cold = nr_pairs[idx_dpu].get()[0];
         const KVPair* const cold_begin = retrieved[idx_dpu].data();
@@ -299,38 +298,20 @@ inline void BPForest::incremental_repartition_naive(
 
         auto& origins_here = origins[idx_dpu];
         {
-            const key_uint64_t base_min = cold_delims[idx_dpu]->first;
-            const key_uint64_t base_max
-                = (std::next(cold_delims[idx_dpu]) == delims.cend()
-                          || cold_delims[idx_dpu + 1] == delims.cend())
-                      ? KEY_MAX
-                      : cold_delims[idx_dpu + 1]->first - 1;
-
             const KVPair* cursor = cold_begin;
-            key_uint64_t cur_kr_begin = base_min;
-
-            for (auto it = std::next(cold_delims[idx_dpu]);
-                 it != cold_delims[idx_dpu + 1]; ++it) {
-                const auto& hd = std::get<HotPartitionDelim>(it->second);
-                const key_uint64_t hot_lo = it->first;
-                const key_uint64_t hot_hi = hd.max_key;
+            for (dpu_id_t i = base_part[idx_dpu]; i < base_part[idx_dpu + 1]; i++) {
+                if (parts.dests[i].is_hot) {
+                    continue;
+                }
+                const KeyRange kr{parts.begins[i], parts.end_of(i)};
 
                 const KVPair* split = cursor;
-                while (split != cold_end && split->key < hot_lo) ++split;
+                while (split != cold_end && split->key <= kr.end) ++split;
                 if (cursor < split) {
                     origins_here.push_back(IncrementalOriginPiece{
-                        PairsRange{cursor, split},
-                        {cur_kr_begin, hot_lo - 1},
-                        nullptr});
+                        PairsRange{cursor, split}, kr, nullptr});
                 }
                 cursor = split;
-                cur_kr_begin = hot_hi + 1;
-            }
-            if (cursor < cold_end) {
-                origins_here.push_back(IncrementalOriginPiece{
-                    PairsRange{cursor, cold_end},
-                    {cur_kr_begin, base_max},
-                    nullptr});
             }
         }
 
@@ -372,10 +353,10 @@ inline void BPForest::incremental_repartition_naive(
             cold_npairs += static_cast<uint32_t>(p.npairs());
         }
         uint32_t base_npairs = cold_npairs;
-        for (auto iter = std::next(cold_delims[idx_dpu]);
-             iter != cold_delims[idx_dpu + 1]; ++iter) {
-            const auto& hd = std::get<HotPartitionDelim>(iter->second);
-            base_npairs += nr_pairs[hd.dpu].get()[1];
+        for (dpu_id_t i = base_part[idx_dpu]; i < base_part[idx_dpu + 1]; i++) {
+            if (parts.dests[i].is_hot) {
+                base_npairs += nr_pairs[parts.dests[i].dpu].get()[1];
+            }
         }
         const uint32_t hot_npairs
             = (base_npairs + param.balancing - 1) / param.balancing;
@@ -384,7 +365,7 @@ inline void BPForest::incremental_repartition_naive(
         //
         // 最適化版 (`incremental_repartition_worker_cold` の chunk load
         // populate ブロック) は cold 片境界の探索表 (同ブロック内の
-        // thread_local `hot_delim_keys`) への upper_bound で
+        // thread_local `cold_range_bounds`) への upper_bound で
         // 「key がどの cold 片のどの chunk か」と「出るか (= 既存 hot 側)」
         // を判定する。愚直版は cold 片を 1 本ずつ走査し、どの片にも
         // 入らなければ捨てる (= 既存 hot 側に落ちた endpoint)。
@@ -560,12 +541,12 @@ inline void BPForest::incremental_repartition_naive(
 
     // ── 5. Phase 4: hot を低負荷 DPU に割り当て ─────────
     //   最適化版 `incremental_repartition` の partial_sort / sort +
-    //   delims.emplace ループに対応。
+    //   hot_entries 収集ループに対応。
     //
     // 既に hot を持つ DPU は second = UINT32_MAX にして候補から除外。
     //
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-        if (hot_delims[idx_dpu] != DelimIter{}) {
+        if (hot_part[idx_dpu] != INVALID_DPU_ID) {
             cold_loads_local[idx_dpu].second
                 = std::numeric_limits<uint32_t>::max();
         }
@@ -578,13 +559,12 @@ inline void BPForest::incremental_repartition_naive(
 
     std::vector<PairsRange> hot_ranges_local(
         nr_base_parts, PairsRange{nullptr, nullptr});
+    std::vector<HotEntry> hot_entries_local;
     for (dpu_id_t idx_hot = 0; idx_hot < hot_count; idx_hot++) {
         const dpu_id_t idx_dpu = cold_loads_local[idx_hot].first;
         const NewHotRange& nh = new_hots_local[idx_hot];
         hot_ranges_local[idx_dpu] = nh.pairs_range;
-        hot_delims[idx_dpu] = delims.emplace(
-            nh.key_range.begin,
-            HotPartitionDelim{nh.key_range.end, idx_dpu}).first;
+        hot_entries_local.push_back({nh.key_range.begin, idx_dpu, nh.origin});
         nr_pairs[idx_dpu].get()[1]
             = static_cast<uint32_t>(nh.pairs_range.npairs());
     }
@@ -600,7 +580,7 @@ inline void BPForest::incremental_repartition_naive(
             nr_pairs[idx_dpu].get()[0] = cold_npairs_after[idx_dpu];
         }
     }
-    combine_delims();
+    rebuild_parts_naive(cold_lists, hot_entries_local, touch);
     initialize_touched_dpus_naive(touch, cold_lists, hot_ranges_local);
 
     route_queries(nr_queries, queries, results, routed);
@@ -618,7 +598,7 @@ inline void BPForest::incremental_repartition_naive(
 //  愚直版ステップ                      | 最適化版
 // ────────────────────────────────────┼──────────────────────────
 //  1 対象 DPU 選別 (trigger / do_cold) | I: Phase 1 = ScopedTimer{"retrieve"}
-//    (hot_delim_keys 書き出し省略)     |    冒頭のループ
+//    (incision_keys 書き出し省略)      |    冒頭のループ
 //  2 retrieve_dpu_all_pairs_naive      | I: 同ブロックの TASK_SERIALIZE
 //                                      |    gather/exec/scatter + "alloc" +
 //                                      |    "recv" を (f) で置換
@@ -657,19 +637,19 @@ inline void BPForest::incremental_repartition_naive(
 //                                      |    nr_new_pieces 込み bailout,
 //                                      |    hot_split_plans の commit
 //  5  hot → DPU マッチング             | I: partial_sort / sort +
-//                                      |    delims.emplace ループ
+//                                      |    hot_entries 収集 + rebuild_parts
 //  6  DPU 更新 & re-route              | I: TASK_MOVE_HOT 設定 +
 //                                      |    UpdatedPartitionsSender +
 //                                      |    末尾の route_queries
 //
-// 意味論: hot 集合 / delims / hot_delims / nr_pairs / DPU 側 B+ tree
+// 意味論: hot 集合 / parts / nr_pairs / DPU 側 B+ tree
 //         いずれも最適化版と一致する (ソート tie-break の違いを除けば)。
 //         `cold_endpoint_cnt` の scalar 追跡も最適化版と同じ値を取る。
 //         ただし成立するのは冒頭 / README §0.1 のスコープ内でのみ。
 //
 // v2 (incremental_repartition_serialize_naive.hpp) との違い:
-//   - v1: 対象 DPU から cold+hot を丸ごと取得し、host 側で既存 hot delim
-//         の key 境界で cold 区間列を復元する。incision_indices は使わない。
+//   - v1: 対象 DPU から cold+hot を丸ごと取得し、host 側で `parts` の
+//         cold 片の KeyRange で cold 区間列を復元する。incision_indices は使わない。
 //   - v2: 最適化版と同じ TASK_SERIALIZE プロトコルで cold 片だけを
 //         受け取る (host 側 key 境界分割は不要)。ただし host 側ロジック
 //         は引き続き愚直化する。

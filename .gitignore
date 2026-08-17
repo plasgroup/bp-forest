@@ -48,3 +48,6 @@ build*/
 workload/
 .vscode/
 data/
+
+# Python
+__pycache__/

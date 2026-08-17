@@ -256,7 +256,7 @@ enum class CmdClass { None, Read, Insert, Delete };
 //! handed to the batch_* calls as-is.  SET and DEL are deduplicated by key;
 //! the last admitted SET of a key wins.
 struct Epoch {
-    std::vector<key_uint64_t> get_keys;  // GET, and existence probes of EXISTS/DEL
+    std::vector<key_uint64_t> get_keys;  // GET, and existence probes of EXISTS
     std::vector<value_uint64_t> get_results;
     std::vector<key_uint64_t> pred_keys;
     std::vector<KVPair> pred_results;
@@ -267,6 +267,7 @@ struct Epoch {
     std::vector<KVPair> ins_pairs;
     std::unordered_map<key_uint64_t, uint32_t> ins_pos;
     std::vector<key_uint64_t> del_keys;
+    std::vector<uint8_t> del_results;
     std::unordered_set<key_uint64_t> del_set;
 
     bool empty() const
@@ -287,21 +288,20 @@ struct Epoch {
         ins_pairs.clear();
         ins_pos.clear();
         del_keys.clear();
+        del_results.clear();
         del_set.clear();
     }
 };
 
 //! One queued reply of a connection.  Text replies are pre-formatted at
 //! admission; the others are resolved from the epoch results (DbSize from the
-//! host-side pair counters) after the epoch executes.  PredRetry is a
-//! BPF.PRED that hit a tombstone and re-queries in the next epoch.
+//! host-side pair counters) after the epoch executes.
 struct Reply {
-    enum class Kind : uint8_t { Text, Get, Exists, Del, Pred, PredRetry, Count, Max, DbSize };
+    enum class Kind : uint8_t { Text, Get, Exists, Del, Pred, Count, Max, DbSize };
 
     Kind kind;
     uint32_t idx = 0;   // index into the corresponding epoch array
-    uint32_t n = 0;     // #probes (Exists/Del)
-    uint64_t key = 0;   // tombstone key to walk down from (PredRetry)
+    uint32_t n = 0;     // #epoch-array entries (Exists probes / Del keys)
     std::string text;   // Text
 };
 
@@ -333,11 +333,8 @@ public:
         size_t max_pipeline = 1u << 20;  // max parsed-but-unadmitted commands per connection
     };
 
-    //! `min_key` must be a lower bound of the keys currently in `forest`; it
-    //! guards BPF.PRED queries that have no strict predecessor, which the DPU
-    //! program must not receive.
-    RespServer(BPForest& forest, key_uint64_t min_key, const Options& opt)
-        : forest_{forest}, known_min_key_{min_key}, opt_{opt}
+    RespServer(BPForest& forest, const Options& opt)
+        : forest_{forest}, opt_{opt}
     {
         listen_fd_ = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
         if (listen_fd_ < 0)
@@ -397,7 +394,6 @@ public:
                 resolve_replies();
                 epoch_.clear();
                 nr_epoch_queries_ = 0;
-                readmit_pred_retries();
             }
             emit_ready_replies();
             flush_all();
@@ -707,7 +703,6 @@ private:
             epoch_.ins_pairs.push_back(KVPair{key, value});
         else
             epoch_.ins_pairs[it->second].value = value;  // last SET in the epoch wins
-        known_min_key_ = std::min(known_min_key_, key);
         nr_epoch_queries_++;
         push_text(c, [](std::string& o) { put_simple(o, "OK"); });
         return true;
@@ -716,7 +711,7 @@ private:
 
     bool admit_del(Conn& c, const std::string& cmd, const std::vector<std::string>& args)
     {
-#if !defined(SUPPORT_DELETE) || !defined(SUPPORT_GET)  // the reply count needs get probes
+#ifndef SUPPORT_DELETE
         (void)args;
         push_unsupported(c, cmd);
         return true;
@@ -738,21 +733,21 @@ private:
         }
         if (!class_allows(c, CmdClass::Delete))
             return false;
-        // Keys already deleted earlier in this epoch surely no longer exist, so
-        // they contribute 0 to the reply without a probe; probing them anyway
-        // would wrongly count them again (the probe sees the epoch-start state).
-        const uint32_t idx_probes = static_cast<uint32_t>(epoch_.get_keys.size());
-        uint32_t nr_probes = 0;
+        // batch_delete reports per key whether a live pair was deleted, which
+        // is exactly this reply's count.  Keys already deleted earlier in the
+        // epoch are not re-sent (del_set): they surely contribute 0, and the
+        // first deleter must keep the credit for the serial order.
+        const uint32_t idx_keys = static_cast<uint32_t>(epoch_.del_keys.size());
+        uint32_t nr_new_keys = 0;
         for (const uint64_t key : keys) {
             if (epoch_.del_set.insert(key).second) {
                 epoch_.del_keys.push_back(key);
-                epoch_.get_keys.push_back(key);  // existence probe for the reply count
-                nr_probes++;
+                nr_new_keys++;
             }
         }
-        c.replies.push_back(Reply{Reply::Kind::Del, idx_probes, nr_probes});
+        c.replies.push_back(Reply{Reply::Kind::Del, idx_keys, nr_new_keys});
         nr_pending_replies_++;
-        nr_epoch_queries_ += nr_probes * 2;
+        nr_epoch_queries_ += nr_new_keys;
         return true;
 #endif
     }
@@ -771,12 +766,6 @@ private:
         uint64_t key;
         if (!parse_u64(args[1], &key)) {
             push_key_error(c);
-            return true;
-        }
-        // The DPU program requires a strict predecessor to exist; keys at or
-        // below the tracked minimum certainly have none.
-        if (key <= known_min_key_) {
-            push_text(c, [](std::string& o) { o += NIL_ARRAY; });
             return true;
         }
         if (!class_allows(c, CmdClass::Read))
@@ -872,15 +861,14 @@ private:
         }
         if (!ep.ins_pairs.empty())
             forest_.batch_insert(static_cast<uint32_t>(ep.ins_pairs.size()), ep.ins_pairs.data());
-        if (!ep.del_keys.empty())
-            forest_.batch_delete(static_cast<uint32_t>(ep.del_keys.size()), ep.del_keys.data());
+        if (!ep.del_keys.empty()) {
+            ep.del_results.resize(ep.del_keys.size());
+            forest_.batch_delete(static_cast<uint32_t>(ep.del_keys.size()), ep.del_keys.data(), ep.del_results.data());
+        }
     }
 
     //! Resolves every reply the just-executed epoch can answer into
-    //! pre-formatted text, in place.  A BPF.PRED that found a tombstone (the
-    //! DPU delete keeps the key with value NOT_FOUND_VALUE, and the DPU pred
-    //! does not skip such pairs) becomes a PredRetry, which walks further
-    //! down by re-querying the tombstone key in the next epoch.
+    //! pre-formatted text, in place.
     void resolve_replies()
     {
         const Epoch& ep = epoch_;
@@ -890,7 +878,6 @@ private:
                 std::string text;
                 switch (r.kind) {
                     case Reply::Kind::Text:
-                    case Reply::Kind::PredRetry:
                         continue;
                     case Reply::Kind::Get: {
                         const value_uint64_t v = ep.get_results[r.idx];
@@ -900,20 +887,25 @@ private:
                             put_bulk_u64(text, v);
                         break;
                     }
-                    case Reply::Kind::Exists:
-                    case Reply::Kind::Del: {
+                    case Reply::Kind::Exists: {
                         uint64_t nr_found = 0;
                         for (uint32_t i = 0; i < r.n; i++)
                             nr_found += ep.get_results[r.idx + i] != NOT_FOUND_VALUE;
                         put_int(text, nr_found);
                         break;
                     }
+                    case Reply::Kind::Del: {
+                        uint64_t nr_deleted = 0;
+                        for (uint32_t i = 0; i < r.n; i++)
+                            nr_deleted += ep.del_results[r.idx + i] != 0;
+                        put_int(text, nr_deleted);
+                        break;
+                    }
                     case Reply::Kind::Pred: {
                         const KVPair p = ep.pred_results[r.idx];
                         if (p.value == NOT_FOUND_VALUE) {
-                            r.kind = Reply::Kind::PredRetry;
-                            r.key = p.key;
-                            continue;
+                            text += NIL_ARRAY;  // no live strict predecessor
+                            break;
                         }
                         text += "*2\r\n";
                         put_bulk_u64(text, p.key);
@@ -946,33 +938,8 @@ private:
         }
     }
 
-    //! Feeds every PredRetry into the (fresh) next epoch.  The walked key
-    //! decreases strictly, so each BPF.PRED terminates: at a live pair, or at
-    //! the known-minimum guard when only tombstones remain below the query.
-    //! This also absorbs the fake_dpu backend's no-predecessor sentinel
-    //! (KEY_MIN, NOT_FOUND_VALUE).
-    void readmit_pred_retries()
-    {
-        for (auto& [fd, conn] : conns_) {
-            for (Reply& r : conn->replies) {
-                if (r.kind != Reply::Kind::PredRetry)
-                    continue;
-                if (r.key <= known_min_key_) {
-                    r.kind = Reply::Kind::Text;
-                    r.text = NIL_ARRAY;
-                } else {
-                    r.kind = Reply::Kind::Pred;
-                    r.idx = static_cast<uint32_t>(epoch_.pred_keys.size());
-                    epoch_.pred_keys.push_back(r.key);
-                    nr_epoch_queries_++;
-                }
-            }
-        }
-    }
-
-    //! Moves each connection's longest resolved prefix into its output
-    //! buffer; replies behind an unresolved BPF.PRED wait to keep the
-    //! per-connection reply order.
+    //! Moves each connection's resolved replies into its output buffer in
+    //! order.
     void emit_ready_replies()
     {
         for (auto& [fd, conn] : conns_) {
@@ -1043,7 +1010,6 @@ private:
     }
 
     BPForest& forest_;
-    key_uint64_t known_min_key_;  // lower bound of the keys in the forest
     Options opt_;
     int listen_fd_ = -1;
     int epfd_ = -1;
@@ -1132,7 +1098,6 @@ int main(int argc, char* argv[])
     }
 
     BPForest forest{init_pairs.data(), init_pairs.size(), forest_opt.param};
-    const key_uint64_t min_key = init_pairs.front().key;
 
     struct sigaction sa{};
     sa.sa_handler = handle_stop_signal;
@@ -1140,7 +1105,7 @@ int main(int argc, char* argv[])
     sigaction(SIGTERM, &sa, nullptr);
     signal(SIGPIPE, SIG_IGN);
 
-    RespServer server{forest, min_key, sopt};
+    RespServer server{forest, sopt};
     std::printf("resp_server: listening on %s:%d (%u DPUs, %zu initial pairs)\n",
         sopt.bind_addr.c_str(), sopt.port, upmem_get_nr_dpus(), init_pairs.size());
     std::fflush(stdout);

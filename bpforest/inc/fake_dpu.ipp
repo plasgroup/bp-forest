@@ -67,18 +67,40 @@ inline void FakeDPU::execute()
         const KVPair* const pairs = std::launder(reinterpret_cast<KVPair*>(payload));
         task_insert(cold_tree, nr_cold_qrys, pairs);
         task_insert(hot_tree, nr_hot_qrys, pairs + nr_cold_qrys);
-        uint32_t* const nr_pairs = new (&mram[header.qrys.result_offset]) uint32_t[2];
-        nr_pairs[0] = static_cast<uint32_t>(cold_tree.size());
-        nr_pairs[1] = static_cast<uint32_t>(hot_tree.size());
+        // Counterpart of report_nr_pairs() in dpu/src/bplustree.c
+        uint32_t* const counts = new (&mram[header.qrys.result_offset]) uint32_t[2];
+        counts[0] = static_cast<uint32_t>(cold_tree.size());
+        counts[1] = static_cast<uint32_t>(hot_tree.size());
     } break;
     case TASK_DELETE: {
+        // Layout: docs/dpu_task_signature.md, TASK_DELETE.
         const uint32_t nr_cold_qrys = header.qrys.nr_cold_qrys, nr_hot_qrys = header.qrys.nr_hot_qrys;
         const key_uint64_t* const keys = std::launder(reinterpret_cast<key_uint64_t*>(payload));
-        task_delete(cold_tree, nr_cold_qrys, keys);
-        task_delete(hot_tree, nr_hot_qrys, keys + nr_cold_qrys);
-        uint32_t* const nr_pairs = new (&mram[header.qrys.result_offset]) uint32_t[2];
-        nr_pairs[0] = static_cast<uint32_t>(cold_tree.size());
-        nr_pairs[1] = static_cast<uint32_t>(hot_tree.size());
+
+        const size_t cold_flag_bytes = (nr_cold_qrys + 7u) / 8u * 8u, hot_flag_bytes = (nr_hot_qrys + 7u) / 8u * 8u;
+        uint32_t nr_refreshes[2];
+        std::memcpy(&nr_refreshes[0], payload + sizeof(key_uint64_t) * (nr_cold_qrys + nr_hot_qrys), sizeof(uint32_t[2]));
+        std::vector<KeyRange> refresh_ranges(nr_refreshes[0] + size_t{nr_refreshes[1]});
+        std::memcpy(refresh_ranges.data(),
+            payload + sizeof(key_uint64_t) * (nr_cold_qrys + nr_hot_qrys) + sizeof(uint32_t[2]),
+            sizeof(KeyRange) * refresh_ranges.size());
+
+        const size_t counts_offset = header.qrys.result_offset + cold_flag_bytes + hot_flag_bytes,
+                     refresh_offset = counts_offset + sizeof(uint32_t[2]);
+        ASSERT(refresh_offset + sizeof(KVPair) * refresh_ranges.size() <= MRAMSize);
+        uint8_t* const cold_flags = new (&mram[header.qrys.result_offset]) uint8_t[cold_flag_bytes];
+        uint8_t* const hot_flags = new (&mram[header.qrys.result_offset + cold_flag_bytes]) uint8_t[hot_flag_bytes];
+        // Counterpart of report_nr_pairs() in dpu/src/bplustree.c
+        uint32_t* const counts = new (&mram[counts_offset]) uint32_t[2];
+        KVPair* const refresh_responses = new (&mram[refresh_offset]) KVPair[refresh_ranges.size()];
+
+        task_delete(cold_tree, nr_cold_qrys, keys, cold_flags);
+        task_delete(hot_tree, nr_hot_qrys, keys + nr_cold_qrys, hot_flags);
+        counts[0] = static_cast<uint32_t>(cold_tree.size());
+        counts[1] = static_cast<uint32_t>(hot_tree.size());
+        for (size_t i = 0; i < refresh_ranges.size(); i++) {
+            refresh_responses[i] = refresh_min(i < nr_refreshes[0] ? cold_tree : hot_tree, refresh_ranges[i]);
+        }
     } break;
     case TASK_MOVE_HOT: {
         const uint32_t nr_cold_pairs = header.move_hot.nr_cold_pairs, nr_hot_pairs = header.move_hot.nr_hot_pairs;
@@ -244,9 +266,19 @@ inline void FakeDPU::task_insert(Tree& tree, const uint32_t nr_queries, const KV
         tree.insert_or_assign(pairs[i].key, pairs[i].value);
     }
 }
-inline void FakeDPU::task_delete(Tree& tree, const uint32_t nr_queries, const key_uint64_t keys[])
+inline void FakeDPU::task_delete(Tree& tree, const uint32_t nr_queries, const key_uint64_t keys[], uint8_t existed[])
 {
     for (uint32_t i = 0; i < nr_queries; i++) {
-        tree.erase(keys[i]);
+        existed[i] = tree.erase(keys[i]) != 0;
     }
+}
+//! @brief The smallest live key in `range` (both ends inclusive):
+//! {key, 1} if found, {0, 0} otherwise.
+inline KVPair FakeDPU::refresh_min(const Tree& tree, const KeyRange range)
+{
+    const auto iter = tree.lower_bound(range.begin);
+    if (iter != tree.end() && iter->first <= range.end) {
+        return KVPair{iter->first, 1};
+    }
+    return KVPair{0, 0};
 }

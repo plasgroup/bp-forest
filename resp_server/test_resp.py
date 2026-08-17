@@ -245,6 +245,16 @@ def test_basic(port, sup):
         check("restore 4", c.cmd("SET", "4", "4"), "OK")
         check("restore 8", c.cmd("SET", "8", "8"), "OK")
 
+    # DBSIZE counts live pairs, so a new key and its deletion both show up
+    k = 70_000_001  # odd, so outside every other test's key range
+    n0 = c.cmd("DBSIZE")
+    check("set for dbsize", c.cmd("SET", k, 1), "OK")
+    check("dbsize after set", c.cmd("DBSIZE"), n0 + 1)
+    check("set again for dbsize", c.cmd("SET", k, 2), "OK")
+    check("dbsize after overwrite", c.cmd("DBSIZE"), n0 + 1)
+    check("del for dbsize", c.cmd("DEL", k), 1)
+    check("dbsize after del", c.cmd("DBSIZE"), n0)
+
     # inline command
     c.send_raw(b"PING\r\n")
     check("inline ping", c.read_reply(), "PONG")
@@ -376,6 +386,67 @@ def test_multi_conn(port):
         print(f"multi_conn: 4 connections x 3000 commands OK")
 
 
+def test_write_collision(port, sup):
+    """SET and DEL of the same key raced from two connections.  Whether or not
+    they land in the same epoch, the epoch order (inserts before deletes)
+    serializes them as SET-then-DEL: the DEL must report 1 and the key must be
+    gone.  The retired probe-based DEL replied 0 whenever both landed in one
+    epoch, contradicting every serialization."""
+    if "del" not in sup:
+        return
+    a = Client(port)
+    b = Client(port)
+    nr_bad = 0
+    nr_rounds = 0
+    t0 = time.time()
+    # Every round costs a few epochs, which dominates on slow backends
+    # (dpu_on_cpu), so run at least 20 rounds within a 60-second budget.
+    while nr_rounds < 200 and (nr_rounds < 20 or time.time() - t0 < 60.0):
+        k = 90_000_000 + nr_rounds
+        a.send("SET", k, 7)
+        b.send("DEL", k)
+        got_set = a.read_reply()
+        got_del = b.read_reply()
+        got_get = a.cmd("GET", k)
+        if got_set != "OK" or got_del != 1 or got_get is not None:
+            nr_bad += 1
+            if nr_bad <= 5:
+                print(f"FAIL write_collision[{nr_rounds}]: SET={got_set!r} DEL={got_del!r} GET={got_get!r}")
+        nr_rounds += 1
+    a.close()
+    b.close()
+    if nr_bad:
+        failures.append(f"write_collision: {nr_bad}/{nr_rounds} rounds bad")
+    else:
+        print(f"write_collision: {nr_rounds} rounds OK")
+
+
+def test_deleted_run_pred(port, sup):
+    """Deletes a run of adjacent fresh keys front-to-back while querying
+    BPF.PRED just above the dead prefix.  Exercises tombstone skipping and,
+    whenever a deleted key is a partition minimum, the min bookkeeping.  All
+    checks are relative to a reference predecessor taken below the block, so
+    the test is independent of what other tests left in the server."""
+    if not {"del", "pred", "set"} <= sup:
+        return
+    c = Client(port)
+    base = 70_000_000  # a key range no other test touches
+    ks = [base + 4 * i for i in range(10)]
+    for k in ks:
+        check("run setup", c.cmd("SET", k, k), "OK")
+    ref = c.cmd("BPF.PRED", ks[0])  # the block's predecessor, whatever it is
+    for i, k in enumerate(ks[:-1]):
+        check(f"del run {k}", c.cmd("DEL", k), 1)
+        # everything of the block at or below k is dead: pred falls through
+        check(f"pred skips run upto {k}", c.cmd("BPF.PRED", k + 1), ref)
+        check(f"pred next alive {k}", c.cmd("BPF.PRED", ks[i + 1] + 1), [str(ks[i + 1]), str(ks[i + 1])])
+    check("del run last", c.cmd("DEL", ks[-1]), 1)
+    check("pred whole run dead", c.cmd("BPF.PRED", ks[-1] + 1), ref)
+    check("run resurrect", c.cmd("SET", ks[3], 1616), "OK")
+    check("pred resurrected", c.cmd("BPF.PRED", ks[-1] + 1), [str(ks[3]), "1616"])
+    c.close()
+
+
 def test_throughput(port):
     """Deep-pipeline sanity: bulk SETs then GETs on one connection."""
     n = 100000
@@ -395,6 +466,44 @@ def test_throughput(port):
     c.close()
 
 
+def test_sweep_to_empty(port, extra, sup):
+    """Deletes the whole key space front to back, checking BPF.PRED as it goes,
+    then refills the emptied forest.  Every batch takes out the smallest live
+    keys, so each round moves the leading partitions' begins and in the end
+    empties every partition.  Runs against a server of its own, both
+    because it destroys the initial data and because it wants a small one."""
+    if not {"del", "pred", "set", "get"} <= sup:
+        return
+    nr, stride, chunk = 4000, 4, 97
+    proc = start_server(port, "--init-nr", str(nr), "--init-stride", str(stride), *extra)
+    try:
+        keys = [(i + 1) * stride for i in range(nr)]
+        alive = set(keys)
+        c = Client(port)
+        for start in range(0, nr, chunk):
+            batch = keys[start:start + chunk]
+            got = c.pipeline([("DEL", k) for k in batch])
+            check(f"sweep del {start}", got, [1] * len(batch))
+            alive.difference_update(batch)
+            # just past the dead prefix, well inside the live remainder, and
+            # past the last key
+            probes = [batch[-1] + 1, keys[min(nr - 1, start + chunk + 500)], keys[-1] + 1]
+            got = c.pipeline([("BPF.PRED", p) for p in probes])
+            want = []
+            for p in probes:
+                live = [k for k in alive if k < p]
+                want.append([str(max(live))] * 2 if live else None)
+            check(f"sweep pred {start}", got, want)
+        check("sweep pred on empty", c.cmd("BPF.PRED", keys[-1] + 1), None)
+        check("sweep get on empty", c.cmd("GET", keys[0]), None)
+        check("sweep refill", c.cmd("SET", 12345, 999), "OK")
+        check("sweep get refilled", c.cmd("GET", 12345), "999")
+        check("sweep pred refilled", c.cmd("BPF.PRED", 12346), ["12345", "999"])
+        c.close()
+    finally:
+        proc.kill()
+
+
 def run_all(port, extra, label):
     print(f"=== server {label} ===")
     proc = start_server(port, *extra)
@@ -411,7 +520,10 @@ def run_all(port, extra, label):
         model[12] = 12
         test_pipeline_serial(port, model, sup)
         test_multi_conn(port)
+        test_write_collision(port, sup)
+        test_deleted_run_pred(port, sup)
         test_throughput(port)
+        test_sweep_to_empty(port + 50, extra, sup)
         c = Client(port)
         c.send("SHUTDOWN")
         time.sleep(0.2)

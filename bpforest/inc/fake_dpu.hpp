@@ -46,7 +46,8 @@ private:
     static void task_range_count(const Tree& tree, uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
     static void task_range_max(const Tree& tree, uint32_t nr_queries, const KeyRange queries[], value_uint64_t result[]);
     static void task_insert(Tree& tree, uint32_t nr_queries, const KVPair pairs[]);
-    static void task_delete(Tree& tree, uint32_t nr_queries, const key_uint64_t keys[]);
+    static void task_delete(Tree& tree, uint32_t nr_queries, const key_uint64_t keys[], uint8_t existed[]);
+    static KVPair refresh_min(const Tree& tree, KeyRange range);
 };
 
 

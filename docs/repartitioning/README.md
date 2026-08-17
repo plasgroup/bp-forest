@@ -59,18 +59,14 @@
 呼ぶ形にしているが、最終状態は同じ。
 
 どちらも副作用として以下を atomic に更新する。外部観測できる本質的な
-状態は以下の 5 つ (DPU 側 tree 含む)。愚直版はこの 5 つを最適化版と
-一致させれば合格。ほかに派生キャッシュとして、`delims` の base partition
-先頭 iterator の配列 `cold_delims` と、`combined_delims` と対になる
-引き先配列 `combined_delims_dest` も同時に再構築される (どちらも上記から
-一意に決まる)。
+状態は以下の 3 つ (DPU 側 tree 含む)。愚直版はこの 3 つを最適化版と
+一致させれば合格。`parts` から一意に決まる派生索引 `base_part` /
+`hot_part` / `nr_hot_parts` も `rebuild_part_indices()` で同時に作り直す。
 
 | メンバ | 内容 |
 |---|---|
-| `delims` | `std::map<key_uint64_t, PartitionDelim>` — base/hot 境界 |
-| `hot_delims[]` | 各 base partition に対応する hot の iterator (nullopt 可) |
+| `parts` | 鍵順の平坦なパーティション表 (`BPForest::PartitionTable`)。エントリ i は `[begins[i], begins[i+1])` を `dests[i]` が担当し、`origins[i]` が切り出し元の base partition |
 | `nr_pairs[d]` | 各 DPU の `{cold_npairs, hot_npairs}` |
-| `combined_delims` | `delims` を key → DPU で引ける形に flatten したもの |
 | DPU 側 B+ tree | `initialize_in_dpu` / `TASK_MOVE_HOT` が作る tree 本体 |
 
 **意味論の中心**: 各 base partition 内で "クエリ負荷が高い subrange =
@@ -131,8 +127,8 @@ incremental は**事後**の bailout を持ち、超過したら `Balanced::No` 
 - hot pass (`parallel_run(incremental_repartition_worker_hot)`) の直後 —
   `nr_existing_hots + hot_count + nr_new_pieces > nr_base_parts`
   (hot split で増える piece 数を足した版。hot pass はここまで split 計画
-  `hot_split_plans` を作るだけで `delims` / `kept_hot` / `hot_delims` /
-  `new_hots` を触っていないので、ここでの fallback も安全)
+  `hot_split_plans` を作るだけで `parts` / `kept_hot` / `new_hots` を
+  触っていないので、ここでの fallback も安全)
 
 加えて incremental の各 worker の `get_next_idx_dpu` 冒頭にも
 同じ上限 check があり、超えていたら新しい DPU を配らずループを畳む。
@@ -207,8 +203,8 @@ lock 下での DPU 配り出しと、その先頭にある
 (e) が指すメンバの現行一覧 (`host/inc/bpforest.hpp`):
 `data_buf`, `chunked_cold_ranges` / `chunked_cold_ranges_lists`,
 `cold_key_ranges`, `cold_loads`, `cold_npairs_list`, `new_hots`,
-`input_headers`, `hot_delim_keys`, `base_to_nr_hot_psum`,
-`nr_extracted_hots`, `incision_indices`, `cold_ranges` /
+`input_headers`, `incision_keys`, `base_to_nr_incisions_psum`,
+`incision_indices`, `cold_ranges` /
 `cold_ranges_lists`, `hot_ranges`, `chunk2load`, および
 worker 間受け渡し用の `any_tmp_data`。
 hot split 用の `hot_stage1_fired` / `kept_hot` / `hot_split_plans` も
@@ -219,11 +215,11 @@ hot split 用の `hot_stage1_fired` / `kept_hot` / `hot_split_plans` も
 - `chunk2load` だけは `inline static thread_local ExtendableBuffer<uint32_t>`
   (per-thread の scratch)。他のメンバのように「DPU 番号で引く共有配列」では
   ないので、愚直版では単なるローカル `std::vector` になる。
-- `hot_delim_keys` という名前は 2 箇所にある。メンバの方は Phase 1 が
-  DPU へ送る incision key 列 (`SerializationCommander` が読む)。
+- メンバの `incision_keys` は Phase 1 が DPU へ送る切れ目の key 列
+  (`SerializationCommander` が読む)。
   `incremental_repartition_worker_cold` の range query 用 load 推定
-  ブロックにある同名の `static thread_local` はそれをシャドウする
-  別物で、cold 片の境界 key を並べた探索表。
+  ブロックにある `static thread_local cold_range_bounds` は別物で、
+  cold 片の境界 key を並べた探索表。
 
 ### 3.1.1 orchestration 層の構造 — 逐次ループ vs 並列 worker
 
@@ -395,7 +391,7 @@ struct IncrementalOriginPiece {
 };
 ```
 
-v1 では cold_delims を key で walk して origin を作り、v2 では
+v1 では `parts` の cold 片の KeyRange で切って origin を作り、v2 では
 incision_indices で配列 offset スライスして origin を作る。作り方は
 違うが、**出来上がった origin の interface は共通** なので、その後の
 carve ループと rebuild helper を完全に共有できる。
@@ -482,38 +478,14 @@ hot.key_range.end
 
 ### 5.4 Phase 1 の `kranges.size() == pieces`, `hkeys.size() == pieces - 1`
 
-v2 の Phase 1 は cold_delims を walk して以下の 2 つを並行構築する:
+v2 の Phase 1 は `parts` の base の run を walk して以下の 2 つを並行構築する:
 
 - `per_dpu_cold_key_ranges[idx_dpu]` — 各 cold 片の KeyRange
-- `per_dpu_hot_delim_keys[idx_dpu]` — cold 片と cold 片の間にある
-  **内部** 既存 hot の先頭 key
+- `per_dpu_hot_delim_keys[idx_dpu]` — 隣り合う cold 片の境目 (= 次の
+  cold 片の始端キー)
 
-不変条件: `kranges.size() == pieces`, `hkeys.size() == pieces - 1`
-(= 非空 cold 片の数, 内部境界の数)。
-
-#### 5.4.1 `base_max == KEY_MAX` オーバーフロー
-
-末尾 hot が base partition の末尾まで届くケースで、`cur_begin = hd.max_key + 1`
-が KEY_MAX から 0 にオーバーフローし、`cur_begin <= base_max` が偽陽性
-になる。`incremental_repartition_serialize_naive.hpp` では **専用 flag
-`tail_taken_by_hot`** で検出する:
-
-```cpp
-bool tail_taken_by_hot = false;
-for (...) {
-    ...
-    if (hd.max_key == base_max) tail_taken_by_hot = true;
-    cur_begin = hd.max_key + 1;
-}
-if (tail_taken_by_hot) {
-    if (!hkeys.empty()) hkeys.pop_back();  // "末尾の飾り" を除去
-} else if (cur_begin <= base_max) {
-    kranges.push_back({cur_begin, base_max});
-}
-```
-
-v1 は cold KV 配列を直接 linear split する方式 (`cursor < cold_end` で
-tail 判定) なのでこのオーバーフローは踏まない。
+不変条件: `kranges.size() == pieces`, `hkeys.size() == pieces - 1`。
+`parts` のエントリはどれも非空なので、片数の数え方に例外は無い。
 
 ### 5.5 incision_indices の解釈
 
@@ -521,8 +493,7 @@ v2 の Phase 3a で cold 片を復元する部分の semantics:
 
 - `incisions[idx_dpu][k]` = k 番目 incision までの cold pair **累積数**
 - 片の境界 = incision 位置 (先頭は 0, 末尾は `nr_cold_total`)
-- 片数は cold-ending なら `incisions.size() + 1`, hot-ending なら
-  `incisions.size()` (= 末尾 incision がちょうど `nr_cold_total` と一致)
+- 片数は `incisions.size() + 1`
 
 ```cpp
 for (incision_pos : incisions[idx_dpu]) {
@@ -586,17 +557,17 @@ worker 分割により行単位の対応は付かないので、**関数名 + ph
 
 | Phase | full | incremental |
 |---|---|---|
-| 1 DPU 選別 | `full_repartition_worker` の `get_next_idx_base` pre-filter (point query のみ) | `incremental_repartition` Phase 1 = `ScopedTimer{"retrieve"}` 冒頭のループ (trigger / do_cold / do_hot 判定 + `cold_key_ranges` / `hot_delim_keys` / `base_to_nr_hot_psum` 構築) |
+| 1 DPU 選別 | `full_repartition_worker` の `get_next_idx_base` pre-filter (point query のみ) | `incremental_repartition` Phase 1 = `ScopedTimer{"retrieve"}` 冒頭のループ (trigger / do_cold / do_hot 判定 + `cut_points_of_cold_tree` による `cold_key_ranges` / `incision_keys` / `base_to_nr_incisions_psum` 構築) |
 | 2 データ回収 | `full_repartition` の `retrieve_all_data(data_buf)` | 同ブロックの `SerializationCommander` gather → execute → `SerializaionNrPairsReceiver` scatter → `"alloc"` ブロックの incision スライス → `"recv"` ブロックの `SerializedKVPairReceiver` |
-| 2' 初回ルーティング | `full_repartition` の base ループ (等分 `chunked_cold_ranges[]` + `cold_delims` 再構築) 直後の `combine_delims` + `route_queries` | 無 (既存 partition を保つのが incremental) |
+| 2' 初回ルーティング | `full_repartition` の base ループ (等分 `chunked_cold_ranges[]` + `parts` 再構築) 直後の `rebuild_part_indices` + `route_queries` | 無 (既存 partition を保つのが incremental) |
 | 3a 閾値定数 | `full_repartition_worker` 冒頭の `hot_load` / `cold_endpoint_cnt_goal` | `incremental_repartition_worker_cold` 冒頭の同名 2 定数 |
-| 3b load estimation | `full_repartition_worker` の `chunk2load` populate ブロック | `incremental_repartition_worker_cold` の同 populate ブロック (cold 片の特定 + `hot_delim_keys` 探索表) |
+| 3b load estimation | `full_repartition_worker` の `chunk2load` populate ブロック | `incremental_repartition_worker_cold` の同 populate ブロック (cold 片の特定 + 境界 key の探索表) |
 | 3c abs stage | `find_absolutely_hot_ranges(&base, &base + 1, ...)` 呼出し + 直後の空 piece 除去 | `find_absolutely_hot_ranges(begin_part, end_part, ...)` 呼出し + 直後の `npairs() == 0` erase ループ |
 | 3d rel stage | `find_relatively_hot_ranges(list.begin(), list.end(), ...)` + `carved_cold_range` による splice | 同上 (同じ形の splice) |
 | 3e bailout | 無 | `incremental_repartition` の cold pass 直後 (`hot_count`) と hot pass 直後 (`+ nr_new_pieces`) の 2 段 (§1.4) |
-| 4 hot → DPU 割当 | `full_repartition` の `partial_sort` / `sort` + `delims.emplace` ループ | `incremental_repartition` の同形ループ (+ 既存 hot / `kept_hot` 保有 DPU を `UINT32_MAX` で除外, + split host の piece[0] 再挿入) |
+| 4 hot → DPU 割当 | `full_repartition` の `partial_sort` / `sort` + `hot_entries` 収集ループ | `incremental_repartition` の同形ループ (+ 既存 hot / `kept_hot` 保有 DPU を `UINT32_MAX` で除外, + split host の piece[0] 再登録) |
 | 5 DPU 送信 | `full_repartition` 末尾の `initialize_in_dpu` | `incremental_repartition` の `input_header.task_no = TASK_MOVE_HOT` 設定 + `UpdatedPartitionsSender` gather → execute |
-| 6 re-route | Phase 4 の `if (hot_count > 0)` 内、`combine_delims` + `ScopedTimer{"re"}` の `route_queries` (hot が 1 つも出なければ Phase 2' の routing のまま) | 末尾 `ScopedTimer{"re"}` の `route_queries` |
+| 6 re-route | Phase 4 の `if (hot_count > 0)` 内、`rebuild_parts` + `ScopedTimer{"re"}` の `route_queries` (hot が 1 つも出なければ Phase 2' の routing のまま) | 末尾 `ScopedTimer{"re"}` の `route_queries` |
 
 ---
 
@@ -621,7 +592,7 @@ naive 参照実装を書き換える / 新しいパターンを追加すると�
       する順序 (`partial_sort` → `sort`) を崩していないか
 - [ ] 既に hot を持つ DPU を `cold_loads[idx].second = UINT32_MAX` にして
       matching 候補から除外しているか (incremental のみ)
-- [ ] Phase 5 後に `combine_delims()` → `route_queries()` を呼び直して
+- [ ] Phase 5 後に `rebuild_parts_naive()` → `route_queries()` を呼び直して
       いるか
 - [ ] `rebalancing-algorithm.md §3` の不変条件 ($P$ 以下の hot total)
       が破れる経路を作っていないか

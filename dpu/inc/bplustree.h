@@ -122,9 +122,21 @@ typedef struct {
 typedef struct {
     __dma_aligned Node node_cache;
     __dma_aligned key_uint64_t qrys[TASK_DELETE_NR_CACHED_QRYS];
+    __dma_aligned uint8_t results[TASK_DELETE_NR_CACHED_RESULTS];
+    __dma_aligned value_uint64_t old_value;
+    // DMA buffers of the min-refresh phase.  Static so that the 8-byte
+    // alignment is guaranteed: the DMA engine masks the low bits of the WRAM
+    // address, so a stack local, whose alignment the compiler is free to
+    // weaken, must never be handed to it.
+    __dma_aligned uint32_t nr_refreshes[2];
+    __dma_aligned KeyRange refresh_range;
+    __dma_aligned KVPair refresh_response;
     uint32_t idx_qry_in_cache;
     uintptr_t cursor_on_qrys;
+    uint32_t idx_result_in_cache;
+    uintptr_t cursor_on_results;
 } DeleteWorkspace;
+_Static_assert(TASK_DELETE_NR_CACHED_RESULTS % 8 == 0, "TASK_DELETE_NR_CACHED_RESULTS % 8 == 0");
 
 
 #if SUPPORT_RANGE_MIN

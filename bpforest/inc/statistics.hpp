@@ -53,10 +53,12 @@ inline TimerTree Timer{
                                   {"exec"},
                                   {"re", {{"route"}}},
                               }},
+                  {"refresh"},
                   {"send"},
                   {"exec"},
                   {"recv"},
                   {"postproc"},
+                  {"table"},
               }}};
 #else
 inline TimerTree Timer{
@@ -100,7 +102,9 @@ inline TimerTree Timer{
                                   {"send_exec"},
                                   {"re", {{"route"}}},
                               }},
+                  {"refresh"},
                   {"send_exec_recv"},
                   {"postproc"},
+                  {"table"},
               }}};
 #endif

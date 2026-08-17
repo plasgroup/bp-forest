@@ -8,8 +8,10 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <fstream>
 #include <functional>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -35,8 +37,12 @@ public:
         const KVPair pairs[])
         = 0;
 
+    // existed[i] != 0 iff keys[i] was present just before its deletion.  When
+    // the same key appears more than once in one batch, exactly one of the
+    // duplicates reports the deletion (which one is unspecified).
     virtual void batch_delete(uint64_t n,
-        const key_uint64_t keys[])
+        const key_uint64_t keys[],
+        uint8_t existed[])
         = 0;
 
     virtual void batch_range_minimum(uint64_t n,
@@ -187,8 +193,23 @@ public:
     }
 
     void batch_delete(uint64_t n,
-        const key_uint64_t keys[])
+        const key_uint64_t keys[],
+        uint8_t existed[])
     {
+        // The first occurrence of each key reports whether the pair existed.
+        for (size_t i = 0; i < n; i++) {
+            auto it = find(keys[i]);
+            existed[i] = it != data.end() && it->key == keys[i];
+        }
+        {
+            std::unordered_set<key_uint64_t> seen;
+            for (size_t i = 0; i < n; i++) {
+                if (!seen.insert(keys[i]).second) {
+                    existed[i] = 0;
+                }
+            }
+        }
+
         std::vector<key_uint64_t> keys_to_delete(&keys[0], &keys[n]);
         std::sort(keys_to_delete.begin(), keys_to_delete.end());
 

@@ -8,9 +8,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -262,6 +264,7 @@ class DeleteBenchmark : public Benchmark
     WorkloadBuffer<key_uint64_t> workload_buf;
 
     key_uint64_t* last_queries;
+    std::vector<uint8_t> results, verify_results;
 
 public:
     DeleteBenchmark(const std::string& workload_file)
@@ -274,7 +277,8 @@ protected:
     {
         const auto [queries, size] = workload_buf.take(batch_size);
         if (size == batch_size) {
-            db->batch_delete(batch_size, queries);
+            results.resize(batch_size);
+            db->batch_delete(batch_size, queries, results.data());
 
             last_queries = queries;
             last_batch_size_ = batch_size;
@@ -290,7 +294,19 @@ protected:
 
     void do_verify() override
     {
-        verify_db->batch_delete(last_batch_size_, last_queries);
+        verify_results.resize(last_batch_size_);
+        verify_db->batch_delete(last_batch_size_, last_queries, verify_results.data());
+
+        // Which duplicate of a key reports the deletion is unspecified, so
+        // compare the duplicate-insensitive total instead of each flag.
+        const size_t nr_deleted = static_cast<size_t>(std::count_if(
+                         results.begin(), results.end(), [](uint8_t f) { return f != 0; })),
+                     nr_expected = static_cast<size_t>(std::count_if(
+                         verify_results.begin(), verify_results.end(), [](uint8_t f) { return f != 0; }));
+        if (nr_deleted != nr_expected) {
+            std::cout << "batch_delete existence mismatch: got " << nr_deleted
+                      << " deletions, expected " << nr_expected << std::endl;
+        }
     }
 
     void partition_with_workload(Database* db, const std::string& workload_file) override

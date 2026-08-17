@@ -96,6 +96,12 @@ _Static_assert(TASK_SUMMARIZE_NR_TASKLETS <= NR_TASKLETS, "TASK_SUMMARIZE_NR_TAS
 #define TASK_DELETE_NR_CACHED_QRYS 1
 #endif
 
+// The per-query results are 1-byte flags, so they are cached and flushed in
+// 8-byte-aligned chunks.  Must be a multiple of 8 (the MRAM DMA granularity).
+#ifndef TASK_DELETE_NR_CACHED_RESULTS
+#define TASK_DELETE_NR_CACHED_RESULTS 32
+#endif
+
 
 #ifndef TASK_INSERT_NR_TASKLETS
 #define TASK_INSERT_NR_TASKLETS 1  // NR_TASKLETS

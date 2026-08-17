@@ -226,9 +226,9 @@ public:
         forest.batch_insert(static_cast<uint32_t>(nr_queries), pairs);
     }
 
-    void batch_delete(size_t nr_queries, const key_uint64_t keys[]) override
+    void batch_delete(size_t nr_queries, const key_uint64_t keys[], uint8_t existed[]) override
     {
-        forest.batch_delete(static_cast<uint32_t>(nr_queries), keys);
+        forest.batch_delete(static_cast<uint32_t>(nr_queries), keys, existed);
     }
 
     void batch_range_minimum(size_t, const KeyRange[], value_uint64_t[]) override

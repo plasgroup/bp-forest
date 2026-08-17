@@ -237,10 +237,10 @@ public:
         ScopedTimer timer{Timer, "batch"};
         InitData::batch_insert(n, pairs);
     }
-    void batch_delete(uint64_t n, const key_uint64_t keys[]) override
+    void batch_delete(uint64_t n, const key_uint64_t keys[], uint8_t existed[]) override
     {
         ScopedTimer timer{Timer, "batch"};
-        InitData::batch_delete(n, keys);
+        InitData::batch_delete(n, keys, existed);
     }
 
     int get_parallelism() const override

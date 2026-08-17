@@ -39,8 +39,8 @@
 ///        `input_headers`, `hot_ranges`, および per-thread scratch の
 ///        `chunk2load` = `inline static thread_local`) を使わず、
 ///       ローカル変数で完結させる。
-///       `delims` / `cold_delims` / `hot_delims` / `nr_pairs` は
-///       呼び出し間で持ち越す「状態」なのでメンバのまま更新する。
+///       `parts` / `nr_pairs` は呼び出し間で持ち越す「状態」なので
+///       メンバのまま更新する。
 ///   (g) `get_next_idx_base` の pre-filter skip (point query で
 ///       `routed.cold[b].nr_qrys <= goal` の base を load 推定ごと飛ばし、
 ///       `nr_pairs` / `cold_loads` だけ埋める) を持たず、全 base を
@@ -52,7 +52,7 @@
 ///   - find_absolutely → find_relatively の 2 段構えの適用順と入力
 ///   - `cold_endpoint_cnt` の scalar 追跡 (carve 時に `load` を引き算)
 ///   - 選出した hot を load 降順で低負荷 DPU に割り当てる matching
-///   - 最終的な delims / hot_delims / nr_pairs の内容
+///   - 最終的な `parts` / `nr_pairs` の内容
 ///   - `initialize_in_dpu` 呼び出しで再構築される DPU 側の状態
 ///   - 末尾の `route_queries` 再実行
 
@@ -324,6 +324,63 @@ inline void rebuild_cold_list_from_hots_naive(
 
 
 // ─────────────────────────────────────────────────────────────
+// helper: パーティション表を作り直す (愚直版)
+// ─────────────────────────────────────────────────────────────
+//
+// 最適化版 `BPForest::rebuild_parts` に対応。base ごとに cold 片の先頭キーと
+// その base から切り出された hot の始端キーを集め、鍵順に並べて `parts` を
+// 積み直す。最適化版は 2 列を線形マージするが、愚直版は集めてソートする。
+//
+// `renewed[b]` が偽の base は cold 片を作り直していないので、いま `parts` に
+// あるエントリを使う。据え置きの hot も `parts` から拾うので、呼び出し側が
+// 渡すのは新設の hot だけでよい。
+inline void BPForest::rebuild_parts_naive(
+    const std::vector<std::list<ChunkedPairsRange>>& cold_lists,
+    const std::vector<HotEntry>& new_hots,
+    const std::vector<bool>& renewed)
+{
+    std::vector<HotEntry> hots = new_hots;
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+        if (hot_part[idx_dpu] != INVALID_DPU_ID) {
+            hots.push_back({parts.begins[hot_part[idx_dpu]], idx_dpu, parts.origins[hot_part[idx_dpu]]});
+        }
+    }
+
+    PartitionTable rebuilt{max_nr_parts(nr_base_parts)};
+    for (dpu_id_t idx_base = 0; idx_base < nr_base_parts; idx_base++) {
+        std::vector<std::pair<key_uint64_t, QueryDest>> entries;
+        if (renewed[idx_base]) {
+            for (const ChunkedPairsRange& piece : cold_lists[idx_base]) {
+                if (piece.npairs() > 0) {
+                    entries.emplace_back(piece.PairsRange::begin()->key, QueryDest{idx_base, false});
+                }
+            }
+        } else {
+            for (dpu_id_t i = base_part[idx_base]; i < base_part[idx_base + 1]; i++) {
+                if (!parts.dests[i].is_hot) {
+                    entries.emplace_back(parts.begins[i], parts.dests[i]);
+                }
+            }
+        }
+        for (const HotEntry& hot : hots) {
+            if (hot.origin == idx_base) {
+                entries.emplace_back(hot.begin, QueryDest{hot.host, true});
+            }
+        }
+
+        std::sort(entries.begin(), entries.end(),
+            [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+        for (const auto& [begin, dest] : entries) {
+            rebuilt.assign_from(begin, dest, idx_base);
+        }
+    }
+
+    parts.swap(rebuilt);
+    rebuild_part_indices();
+}
+
+
+// ─────────────────────────────────────────────────────────────
 // Main: full_repartition の愚直版
 // ─────────────────────────────────────────────────────────────
 template <typename Query, typename Result>
@@ -336,9 +393,8 @@ inline void BPForest::full_repartition_naive(
     const size_t nr_total_pairs = retrieve_all_data_into(local_data_buf);
     const KVPair* const data_end = local_data_buf.data() + nr_total_pairs;
 
-    // ── 2. delim / hot_delim を全クリア ─────────────────
-    delims.clear();
-    std::fill(hot_delims.begin(), hot_delims.end(), DelimIter{});
+    // ── 2. パーティション表を全クリア ───────────────────
+    parts.clear();
 
     // ── 3. 各 base partition の cold list と chunk load 配列を
     //       ローカルに確保 (愚直化 (c), (e)) ──
@@ -366,12 +422,13 @@ inline void BPForest::full_repartition_naive(
         piece.set_load_ary(chunk_loads[idx_base].data());
         cold_lists[idx_base].push_back(piece);
 
-        cold_delims[idx_base] = delims.emplace_hint(
-            delims.cend(), pb->key, BasePartitionDelim{idx_base});
+        if (pb < pe) {
+            parts.assign_from(pb->key, QueryDest{idx_base, false}, idx_base);
+        }
     }
 
     // ── 4. 初回ルーティング ─────────────────────────────
-    combine_delims();
+    rebuild_part_indices();
     route_queries(nr_queries, queries, results, routed);
 
     std::vector<std::array<uint32_t, 2>> nr_pairs_local(nr_base_parts, {0, 0});
@@ -498,7 +555,7 @@ inline void BPForest::full_repartition_naive(
 
     // ── 7. hot を低負荷 DPU に割り当て ──────────────────
     //   最適化版 `full_repartition` の partial_sort / sort +
-    //   delims.emplace ループに対応。
+    //   hot_entries 収集ループに対応。
     for (dpu_id_t idx = 0; idx < nr_base_parts; idx++) {
         nr_pairs_local[idx] = {cold_npairs_after[idx], 0};
     }
@@ -511,18 +568,17 @@ inline void BPForest::full_repartition_naive(
         std::sort(new_hots_local.begin(), new_hots_local.end(),
             [](auto& l, auto& r) { return l.load > r.load; });
 
+        std::vector<HotEntry> hot_entries_local;
         for (dpu_id_t idx_hot = 0; idx_hot < hot_count; idx_hot++) {
             const dpu_id_t idx_dpu = cold_loads_local[idx_hot].first;
             const NewHotRange& nh = new_hots_local[idx_hot];
 
             hot_ranges_local[idx_dpu] = nh.pairs_range;
             nr_pairs_local[idx_dpu][1] = static_cast<uint32_t>(nh.pairs_range.npairs());
-            hot_delims[idx_dpu] = delims.emplace(
-                nh.key_range.begin,
-                HotPartitionDelim{nh.key_range.end, idx_dpu}).first;
+            hot_entries_local.push_back({nh.key_range.begin, idx_dpu, nh.origin});
         }
 
-        combine_delims();
+        rebuild_parts_naive(cold_lists, hot_entries_local, std::vector<bool>(nr_base_parts, true));
         route_queries(nr_queries, queries, results, routed);
     }
 
@@ -541,12 +597,12 @@ inline void BPForest::full_repartition_naive(
 // ────────────────────────────────────────┼──────────────────────────
 //  1 retrieve_all_data                    | full_repartition:
 //                                         |   retrieve_all_data(data_buf)
-//  2 delims / hot_delims クリア           | 同上 直後の clear / fill
+//  2 パーティション表クリア               | 同上 直後の parts.clear()
 //  3 cold_lists / chunk_loads 初期化      | 同上 chunked_cold_ranges[] と
 //                                         | chunked_cold_ranges_lists[] を
 //                                         | 埋める base ループ
 //                                         | (プール / chunk2load をローカルに)
-//  4 初回 route_queries                   | 同上 combine_delims +
+//  4 初回 route_queries                   | 同上 rebuild_part_indices +
 //                                         |   route_queries
 //  5 閾値定数                             | full_repartition_worker 冒頭
 //                                         | (more_hotness / greedy_only 分岐
@@ -571,10 +627,10 @@ inline void BPForest::full_repartition_naive(
 //                                         | splice を置換 (愚直化 (d))
 //  7  hot → DPU マッチング                | full_repartition の
 //                                         | partial_sort / sort +
-//                                         | delims.emplace ループ
+//                                         | hot_entries 収集 + rebuild_parts
 //  8  initialize_in_dpu                   | full_repartition 末尾
 //
-// 意味論: hot 集合 / delims / hot_delims / nr_pairs / DPU 側 B+ tree
+// 意味論: hot 集合 / parts / nr_pairs / DPU 側 B+ tree
 //         いずれも最適化版と一致する (ソート tie-break の違いを除けば)。
 //         `cold_endpoint_cnt` の scalar 追跡も最適化版と同じ値を取る
 //         (段ごとに `-= load` を累積するため)。

@@ -24,7 +24,7 @@ DPU 間のクエリ負荷を均す。論文では "Query Density-Driven Partitio
 と呼ぶ (body.tex)。
 
 - 入力: 今バッチのクエリ (keys / range queries) と各 DPU の現 partition
-- 出力: 更新後の `delims`, `hot_ranges`, `hot_delims` と、DPU に送る `TASK_MOVE_HOT` 指示
+- 出力: 更新後のパーティション表 `parts` と `hot_ranges`、DPU に送る `TASK_MOVE_HOT` 指示
 - 性質:
   - hot は cold から取り除かれるので "複製" ではなく **移動**
   - 高負荷な base partition の中から hot を最大 $P$ (= DPU 数) 個まで
@@ -116,7 +116,7 @@ begin/end の各 endpoint が対象範囲に落ちた場合のみ chunk の `loa
 +1 する。full 側 (`full_repartition_worker` の load estimation ブロック)
 は `[base_min, base_max]` で判定、incremental 側
 (`incremental_repartition_worker_cold`) は `cold_key_ranges` から作った
-delimiter 列で「残存 cold subrange に落ちた endpoint」だけ計上し、同一
+`cold_range_bounds` 列で「残存 cold subrange に落ちた endpoint」だけ計上し、同一
 query が同じ DPU の複数 fragment に routed されていても `orig_idx` で
 dedup する。対象範囲の外に飛び出した endpoint は計上されない。
 
@@ -128,7 +128,8 @@ dedup する。対象範囲の外に飛び出した endpoint は計上されな�
 
 - `PairsRange` / `ChunkedPairsRange` — cold subrange を表す非所有ビュー
 - `DataChunkIterator` — 256 ペア単位の chunk iterator。sliding window 走査の単位
-- `NewHotRange = {PairsRange, KeyRange, load}` — 抜き出した hot のスロット
+- `BPForest::parts` — 鍵順のパーティション表。rebalancing の出力そのもの
+- `NewHotRange = {PairsRange, KeyRange, load, origin}` — 抜き出した hot のスロット。`origin` は切り出し元の base partition で、`parts` を組み直すときに要る
 - `LinkedList<ChunkedPairsRange>` — 各 DPU の cold range 集合。hot 抜出しに伴う分割を erase/insert で扱う (iterator stable)
 - `BPForest::new_hots` — `ExtendableBuffer<NewHotRange>{nr_base_parts}` の **固定サイズバッファ**。後述の不変条件を前提にしている
 - `BPForest::kept_hot` / `BPForest::hot_split_plans` — hot partition split (§7.2) の中間データ。split 元 DPU に残す piece[0] と、再配置する pieces[1..] の受け渡しに使う
@@ -343,18 +344,17 @@ mutex と共有カウンタ (`idx_base` / `cold_count` / `hot_count`) で排他
 `full_repartition` 本体:
 
 1. `retrieve_all_data(data_buf)` で全 DPU から KV ペア pull
-2. `delims` / `hot_delims` をクリアし、`chunked_cold_ranges_lists[]` の
-   クリアを RAII cleanup として仕込む
+2. `chunked_cold_ranges_lists[]` のクリアを RAII cleanup として仕込む
 3. `data_buf` を `nr_base_parts` 等分、各 base partition を
-   `chunked_cold_ranges[]` に詰め、base delim を `delims` に登録
-4. `combine_delims()` → `route_queries()` で新 partition に re-route
+   `chunked_cold_ranges[]` に詰め、`parts` を base partition だけで作り直す
+4. `rebuild_part_indices()` → `route_queries()` で新 partition に re-route
 5. **find_hot 段**: `parallel_run(&full_repartition_worker)` (下記)
 6. `hot_count > 0` の場合のみ、`new_hots[0..hot_count)` を低負荷 DPU に
    割当:
    - `partial_sort` で `cold_loads` 前 `hot_count` 個を負荷昇順
    - `new_hots` を load 降順 sort
-   - 負荷の低い DPU ← 負荷の高い hot の対応付け、hot delim 登録
-   - `combine_delims()` → `route_queries()` で更新後 delim に再 route
+   - 負荷の低い DPU ← 負荷の高い hot の対応付け、`hot_entries[]` に記録
+   - `rebuild_parts()` → `route_queries()` で更新後の partition に再 route
 7. `initialize_in_dpu(...)` で DPU 側 tree 再構築
 
 `full_repartition_worker` (各スレッド、`get_next_idx_base` で base を
@@ -416,9 +416,9 @@ cold からの hot 選出 (cold pass) と過熱 hot の分割計画 (hot pass)�
      起動時には goal を超えただけの DPU もまとめて処理される
    - `trigger_hot` / `do_hot` は `param.enable_hot_split`
      (CLI `--hot-split`) が前提
-   - `do_cold` の DPU は `cold_delims` を走査して既存 hot との境界キーを
-     `hot_delim_keys[]`, `cold_key_ranges[]` に記録し `TASK_SERIALIZE`
-     を設定
+   - `do_cold` の DPU は `cut_points_of_cold_tree()` で自分の cold
+     partition 群を走査し、その境目を `incision_keys[]` に、各 partition
+     の鍵範囲を `cold_key_ranges[]` に記録して `TASK_SERIALIZE` を設定
    - トリガが立っていて `param.enable_incremental == false` なら
      `Balanced::No` を返す (呼出し側が full へ)
    - 全 DPU 走査後、トリガ無しなら `Balanced::Yes` で early return
@@ -434,20 +434,20 @@ cold からの hot 選出 (cold pass) と過熱 hot の分割計画 (hot pass)�
      (§7.1)。直後に bailout check #1 (§3) — 超過なら `Balanced::No`
    - **hot pass**: `parallel_run(&incremental_repartition_worker_hot)`
      (§7.2)。直後に bailout check #2 (`nr_new_pieces` 込み; §3) — 超過
-     なら `Balanced::No`。hot pass は `delims` / `kept_hot` /
-     `hot_delims` / `new_hots` に触れないので、この時点の fallback は
-     安全
+     なら `Balanced::No`。hot pass は `parts` / `kept_hot` / `new_hots`
+     に触れないので、この時点の fallback は安全
 4. **hot split 計画の確定**: `hot_split_plans[idx_dpu]` が非空の DPU に
-   ついて、旧 hot delim を erase し、piece[0] を `kept_hot[idx_dpu]` に
-   残置予約、pieces[1..] を `new_hots[hot_count++]` に積む
+   ついて、piece[0] を `kept_hot[idx_dpu]` に残置予約、pieces[1..] を
+   `new_hots[hot_count++]` に積む
 5. `hot_count == 0` なら `Balanced::Yes` で return
 6. `new_hots` を低負荷 DPU に割当。既に hot を持つ DPU (split して
    piece[0] を残す DPU 含む) は `cold_loads[idx].second = UINT32_MAX`
    にして候補から除外した上で `partial_sort`。割当後、kept piece[0] を
    元 DPU に再挿入 — 左端のデータを既に持っているので移動なしで hot 木
    を再構築できる
-7. `combine_delims()` 更新、各 DPU の `input_header` を `TASK_MOVE_HOT`
-   用に設定
+7. 据え置きの hot・kept piece[0]・新規割当の hot を `hot_entries[]` に
+   集めて鍵順に並べ、`rebuild_parts()` で `parts` を作り直す。各 DPU の
+   `input_header` を `TASK_MOVE_HOT` 用に設定
 8. DPU への更新 partition 送信と実行
 9. `route_queries()` で再 route し、`Balanced::Yes` を返す
 
@@ -488,7 +488,7 @@ hot partition を複数片に割って捌き直す**機構。対象は `TASK_SER
   ずつ) に切る。細分不能な単一巨大 chunk があると emit 数は目標より
   減り、1 個なら split を断念して hot を保持
 - pieces は `hot_split_plans[idx_dpu]` に記録し、`nr_new_pieces` に
-  `emit_count - 1` を加算するだけ — `delims` / `new_hots` への反映は
+  `emit_count - 1` を加算するだけ — `parts` / `new_hots` への反映は
   bailout check #2 の通過後に本体が行う (piece[0] は `kept_hot` として
   元 DPU に残置、pieces[1..] は `new_hots` 経由で再配置)
 - 関連メンバは `hot_stage1_fired` / `kept_hot` / `hot_split_plans`

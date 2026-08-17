@@ -143,6 +143,8 @@ struct NewHotRange {
     PairsRange pairs_range;
     KeyRange key_range;
     uint32_t load;
+    //! The base partition out of whose key range this one is carved.
+    dpu_id_t origin;
 };
 
 using LinkedPairsRange = LinkedElement<PairsRange>;

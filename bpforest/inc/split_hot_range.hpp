@@ -14,8 +14,8 @@
 // `set_load_ary` + accumulation, like cold Stage2). `total_load` is the
 // hot's measured endpoint load, `target_pieces` the desired number of
 // pieces (the caller's `N`, guaranteed >= 2 for an actual split), and
-// `hot_max_key` the upper key bound of the original hot delim (KEY_MAX or
-// the delim's max key) used for the trailing piece's KeyRange.
+// `hot_max_key` the largest key the hot being split holds keys up to, used
+// for the trailing piece's KeyRange.
 //
 // Pieces fully cover the hot with no gaps and contiguous KeyRanges. A
 // piece is closed only when its accumulated load reaches `target_load`;
