@@ -2135,7 +2135,7 @@ static void SERIALIZE_execute(uint8_t root_numKeys, const Node* root, uint8_t he
             if (value != NOT_FOUND_VALUE) {
                 const key_uint64_t key = root->lf.keys[i];
 
-                while (delim != NULL && *delim < key) {
+                while (delim != NULL && *delim <= key) {
                     SERIALIZE_mark_incision(wks, &delim);
                 }
 
@@ -2163,7 +2163,7 @@ static void SERIALIZE_execute(uint8_t root_numKeys, const Node* root, uint8_t he
                 if (value != NOT_FOUND_VALUE) {
                     const key_uint64_t key = cached_keys[i];
 
-                    while (delim != NULL && *delim < key) {
+                    while (delim != NULL && *delim <= key) {
                         SERIALIZE_mark_incision(wks, &delim);
                     }
 
