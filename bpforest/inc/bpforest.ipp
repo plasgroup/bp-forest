@@ -2577,6 +2577,8 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
                                     [](key_uint64_t key, const PairsRange& range) { return key < range.begin()->key; });
                             }
                         }();
+                        // 添字 -1 は負荷配列の手前を黙って壊すので、ここで落とす。
+                        assert(one_after_target_part != begin_part);
                         const ChunkedPairsRange& part = one_after_target_part[-1];
 
                         DataChunkIterator one_after_target_chunk = [&] {
@@ -2588,6 +2590,7 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
                                     [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
                             }
                         }();
+                        assert(one_after_target_chunk != part.begin());
                         (--one_after_target_chunk)->load()++;
                     }
                 }
@@ -2847,6 +2850,10 @@ inline void BPForest::incremental_repartition_worker_hot([[maybe_unused]] unsign
                                     [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
                             }
                         }();
+                        // 始端キーが最小生存キーであることに依存する。
+                        // 添字 -1 は負荷配列の手前を黙って壊す。
+                        assert(hot_begin_key <= key && key <= hot_max_key);
+                        assert(one_after_target_chunk != hot_cpr.begin());
                         (--one_after_target_chunk)->load()++;
                     }
                 }
