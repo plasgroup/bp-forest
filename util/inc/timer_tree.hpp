@@ -115,18 +115,23 @@ class TimerTree
 
     struct LabelPrinter {
         const TimerTree* tree;
-        friend std::ostream& operator<<(std::ostream& ostr, const LabelPrinter& printer)
+        void print_to(std::ostream& ostr) const
         {
             std::string prefix;
-            printer.tree->breakdown.print_labels(ostr, prefix);
+            tree->breakdown.print_labels(ostr, prefix);
+        }
+        friend std::ostream& operator<<(std::ostream& ostr, const LabelPrinter& printer)
+        {
+            printer.print_to(ostr);
             return ostr;
         }
     };
     struct Printer {
         const TimerTree* tree;
+        void print_to(std::ostream& ostr) const { tree->breakdown.print(ostr); }
         friend std::ostream& operator<<(std::ostream& ostr, const Printer& printer)
         {
-            printer.tree->breakdown.print(ostr);
+            printer.print_to(ostr);
             return ostr;
         }
     };
