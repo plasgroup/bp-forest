@@ -2193,11 +2193,12 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 InputHeader& input = input_headers[idx_dpu];
                 const dpu_id_t orig_incision_count = (base_to_nr_incisions_psum[idx_dpu] = incision_count);
 
+                const bool hot_splittable = nr_pairs[idx_dpu].get()[1] > KVPairsChunkSize;
                 const bool trigger_cold = routed.cold[idx_dpu].nr_qrys > cold_cnt_threshold,
-                           trigger_hot = param.enable_hot_split && routed.hot[idx_dpu].nr_qrys > hot_cnt_threshold;
+                           trigger_hot = param.enable_hot_split && hot_splittable && routed.hot[idx_dpu].nr_qrys > hot_cnt_threshold;
                 trigger = trigger || trigger_cold || trigger_hot;
                 const bool do_cold = routed.cold[idx_dpu].nr_qrys > cold_cnt_goal;
-                const bool do_hot = param.enable_hot_split && routed.hot[idx_dpu].nr_qrys > hot_cnt_goal;
+                const bool do_hot = param.enable_hot_split && hot_splittable && routed.hot[idx_dpu].nr_qrys > hot_cnt_goal;
 
                 hot_stage1_fired[idx_dpu] = do_hot;
                 kept_hot[idx_dpu].active = false;
