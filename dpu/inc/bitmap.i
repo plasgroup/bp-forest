@@ -80,7 +80,7 @@ static void bitmap_init(bitmap_word_ptr bitmap, const unsigned nr_bits, const un
                     nr_words_written += 1;
                     workspace.bitmap[TASK_INIT_NR_CACHED_WORDS_M1] = BITMAP_WORD_MAX >> (BITS_IN_BMPWD - nr_remained_bits);
                 }
-                if (nr_remained_allones != 0) {
+                if (nr_words_written != 0) {
                     mram_write(&workspace.bitmap[TASK_INIT_NR_CACHED_WORDS_M1 - nr_remained_allones],
                         &bitmap[idx_dest], sizeof(bitmap_word_t) * nr_words_written);
                 }
