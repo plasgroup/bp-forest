@@ -448,6 +448,11 @@ private:
     void full_repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed);
 
     template <typename Query, typename Result>
+    void log_hot_partitions(const QueryData<Query, Result>& routed, dpu_id_t nr_existing_hots, uint32_t hot_cnt_threshold) const;
+    template <typename Query, typename Result>
+    void log_serialize_targets(const QueryData<Query, Result>& routed, uint32_t cold_cnt_goal, uint32_t cold_cnt_threshold, uint32_t hot_cnt_goal, uint32_t hot_cnt_threshold) const;
+
+    template <typename Query, typename Result>
     void incremental_repartition_worker_cold(unsigned tid);
     template <typename Query, typename Result>
     void incremental_repartition_worker_hot(unsigned tid);

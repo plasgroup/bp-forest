@@ -1823,7 +1823,7 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
     ScopedTimer t{Timer, "full_reb"};
 
     if (partitioning_log) {
-        *partitioning_log << "start full resharding" << std::endl;
+        *partitioning_log << "start full resharding" << '\n';
     }
 
     const size_t nr_total_pairs = retrieve_all_data(data_buf);
@@ -1987,13 +1987,12 @@ inline void BPForest::full_repartition_worker(unsigned /* tid */)
         }
 
         std::lock_guard lock{tmp.mutex};
+        uint32_t nhots_carved = 0;
 
         if (cold_endpoint_cnt > cold_endpoint_cnt_goal) {
             find_absolutely_hot_ranges(&base, &base + 1, hot_npairs, hot_load,
                 [&](ChunkedPairsRange& part, DataChunkIterator begin, DataChunkIterator end, uint32_t load) {
-                    if (partitioning_log) {
-                        *partitioning_log << "abs hot from " << idx_base << " load " << load << std::endl;
-                    }
+                    nhots_carved++;
 
                     if (part.begin() != begin) {
                         LinkedChunkedPairsRange& new_cold = chunked_cold_ranges[tmp.cold_count++];
@@ -2026,9 +2025,7 @@ inline void BPForest::full_repartition_worker(unsigned /* tid */)
                 carved_cold_range
                 = find_relatively_hot_ranges(list.begin(), list.end(), hot_npairs, nr_relative_hots,
                     [&]([[maybe_unused]] const ChunkedPairsRange& part, const PairsRange& range, uint32_t load) {
-                        if (partitioning_log) {
-                            *partitioning_log << "rel hot from " << idx_base << " load " << load << std::endl;
-                        }
+                        nhots_carved++;
 
                         NewHotRange& new_hot = new_hots[tmp.hot_count++];
                         new_hot.pairs_range = range;
@@ -2079,6 +2076,10 @@ inline void BPForest::full_repartition_worker(unsigned /* tid */)
                     list.erase(left_range);
                 }
             }
+        }
+
+        if (partitioning_log && nhots_carved != 0) {
+            *partitioning_log << "carved cold " << idx_base << " nhots " << nhots_carved << '\n';
         }
 
         nr_pairs[idx_base].get() = {cold_npairs, 0};
@@ -2189,6 +2190,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             const uint32_t cold_cnt_threshold = overload_threshold.threshold_for(nr_queries, cold_cnt_goal, bonferroni_family);
             const uint32_t hot_cnt_goal = (param.more_hotness * 2u * nr_queries + nr_base_parts - 1) / nr_base_parts;
             const uint32_t hot_cnt_threshold = overload_threshold.threshold_for(nr_queries, hot_cnt_goal, bonferroni_family);
+            const bool logging = static_cast<bool>(partitioning_log);
             dpu_id_t serialized_cold_count = 0, incision_count = 0;
             bool trigger = false;
             for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
@@ -2205,6 +2207,10 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 kept_hot[idx_dpu].active = false;
 
                 if (trigger && !param.enable_incremental) {
+                    if (logging) {
+                        log_hot_partitions(routed, tmp_data.nr_existing_hots, hot_cnt_threshold);
+                        log_serialize_targets(routed, cold_cnt_goal, cold_cnt_threshold, hot_cnt_goal, hot_cnt_threshold);
+                    }
                     return Balanced::No;
                 }
                 if (!do_cold && !do_hot) {
@@ -2230,25 +2236,17 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             }
             base_to_nr_incisions_psum[nr_base_parts] = incision_count;
 
+            if (logging) {
+                log_hot_partitions(routed, tmp_data.nr_existing_hots, hot_cnt_threshold);
+            }
+
             if (!trigger) {
                 return Balanced::Yes;
             }
 
-            if (partitioning_log) {
-                std::ostream& log = *partitioning_log;
-                log << "start partial resharding" << std::endl;
-                log << "threshold cold " << cold_cnt_threshold << " hot " << hot_cnt_threshold << std::endl;
-
-                for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
-                    if (input_headers[idx_dpu].task_no == TASK_SERIALIZE) {
-                        if (input_headers[idx_dpu].serialize.do_cold) {
-                            log << "trigger cold " << idx_dpu << " nqrys " << routed.cold[idx_dpu].nr_qrys << " size " << nr_pairs[idx_dpu].get()[0] << std::endl;
-                        }
-                        if (input_headers[idx_dpu].serialize.do_hot) {
-                            log << "trigger hot " << idx_dpu << " from " << parts.origins[hot_part[idx_dpu]] << " nqrys " << routed.hot[idx_dpu].nr_qrys << " size " << nr_pairs[idx_dpu].get()[1] << std::endl;
-                        }
-                    }
-                }
+            if (logging) {
+                *partitioning_log << "start partial resharding" << '\n';
+                log_serialize_targets(routed, cold_cnt_goal, cold_cnt_threshold, hot_cnt_goal, hot_cnt_threshold);
             }
         }
 
@@ -2500,6 +2498,37 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
     return Balanced::Yes;
 }
 template <typename Query, typename Result>
+inline void BPForest::log_hot_partitions(const QueryData<Query, Result>& routed, dpu_id_t nr_existing_hots, uint32_t hot_cnt_threshold) const
+{
+    uint32_t exempt_over = 0, exempt_max = 0;
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+        const uint32_t nr_hot_pairs = nr_pairs[idx_dpu].get()[1];
+        if (nr_hot_pairs != 0 && nr_hot_pairs <= KVPairsChunkSize && routed.hot[idx_dpu].nr_qrys > hot_cnt_threshold) {
+            exempt_over++;
+            exempt_max = std::max(exempt_max, routed.hot[idx_dpu].nr_qrys);
+        }
+    }
+    *partitioning_log << "hots " << nr_existing_hots
+                      << " exempt_over " << exempt_over
+                      << " exempt_max " << exempt_max << '\n';
+}
+template <typename Query, typename Result>
+inline void BPForest::log_serialize_targets(const QueryData<Query, Result>& routed, uint32_t cold_cnt_goal, uint32_t cold_cnt_threshold, uint32_t hot_cnt_goal, uint32_t hot_cnt_threshold) const
+{
+    std::ostream& log = *partitioning_log;
+    log << "threshold cold " << cold_cnt_threshold << " hot " << hot_cnt_threshold << '\n';
+
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+        const uint32_t nr_hot_pairs = nr_pairs[idx_dpu].get()[1];
+        if (routed.cold[idx_dpu].nr_qrys > cold_cnt_goal) {
+            log << "serialize cold " << idx_dpu << " nqrys " << routed.cold[idx_dpu].nr_qrys << " size " << nr_pairs[idx_dpu].get()[0] << '\n';
+        }
+        if (param.enable_hot_split && nr_hot_pairs > KVPairsChunkSize && routed.hot[idx_dpu].nr_qrys > hot_cnt_goal) {
+            log << "serialize hot " << idx_dpu << " origin " << parts.origins[hot_part[idx_dpu]] << " nqrys " << routed.hot[idx_dpu].nr_qrys << " size " << nr_hot_pairs << " split_failed " << hot_split_failed[idx_dpu] << '\n';
+        }
+    }
+}
+template <typename Query, typename Result>
 inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsigned tid)
 {
     using TmpData = TmpDataForIncRepartition<Query, Result>;
@@ -2674,14 +2703,13 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
         }
 
         std::lock_guard lock{tmp.mutex};
+        uint32_t nhots_carved = 0;
 
         {
             LinkedList<ChunkedPairsRange>::iterator iter_cold = list.begin();
             find_absolutely_hot_ranges(begin_part, end_part, hot_npairs, hot_load,
                 [&](LinkedChunkedPairsRange& part, DataChunkIterator begin, DataChunkIterator end, uint32_t load) {
-                    if (partitioning_log) {
-                        *partitioning_log << "abs hot from " << idx_dpu << " load " << load << std::endl;
-                    }
+                    nhots_carved++;
 
                     const dpu_id_t idx_in_ary = static_cast<dpu_id_t>(&part - &chunked_cold_ranges[0]);
                     while (&*iter_cold != &part) {
@@ -2730,9 +2758,7 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
                     [&](const ChunkedPairsRange& part, const PairsRange& range, uint32_t load) {
                         const dpu_id_t idx_in_ary = static_cast<dpu_id_t>(&static_cast<const LinkedChunkedPairsRange&>(part) - &chunked_cold_ranges[0]);
 
-                        if (partitioning_log) {
-                            *partitioning_log << "rel hot from " << idx_dpu << " load " << load << std::endl;
-                        }
+                        nhots_carved++;
 
                         NewHotRange& new_hot = new_hots[tmp.hot_count++];
                         new_hot.pairs_range = range;
@@ -2784,6 +2810,10 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
                     list.erase(left_range);
                 }
             }
+        }
+
+        if (partitioning_log && nhots_carved != 0) {
+            *partitioning_log << "carved cold " << idx_dpu << " nhots " << nhots_carved << '\n';
         }
 
         cold_npairs_list[idx_dpu] = cold_npairs;
@@ -2883,22 +2913,36 @@ inline void BPForest::incremental_repartition_worker_hot([[maybe_unused]] unsign
         const dpu_id_t nr_target_pieces = static_cast<dpu_id_t>(measured / hot_load);
         if (nr_target_pieces < 2) {
             hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};
-            idx_dpu = get_next_idx_dpu(std::lock_guard{tmp.mutex});
+            std::lock_guard lock{tmp.mutex};
+            if (partitioning_log) {
+                *partitioning_log << "nosplit hot " << idx_dpu << " reason too_few_pieces load " << measured << '\n';
+            }
+            idx_dpu = get_next_idx_dpu(lock);
             continue;
         }
 
         {
             auto& pieces = hot_split_plans[idx_dpu];
+            uint32_t maxchunk_load = 0;
             const dpu_id_t emit_count = split_hot_range_equal_load(hot_cpr, measured, nr_target_pieces, hot_max_key,
-                [&](PairsRange pr, KeyRange kr, uint32_t ld, [[maybe_unused]] uint32_t mcl) {
+                [&](PairsRange pr, KeyRange kr, uint32_t ld, uint32_t mcl) {
                     pieces.push_back(NewHotRange{pr, kr, ld, hot_origin});
+                    maxchunk_load = mcl;
                 });
             if (emit_count <= 1) {
                 // A single dominant chunk cannot be subdivided: keep the hot whole.
                 pieces.clear();
                 hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};
                 hot_split_failed[idx_dpu] = true;
-                idx_dpu = get_next_idx_dpu(std::lock_guard{tmp.mutex});
+                std::lock_guard lock{tmp.mutex};
+                if (partitioning_log) {
+                    const KVPair* const maxchunk = hot_cpr.PairsRange::begin()
+                        + (hot_cpr.nchunks() - 1) * KVPairsChunkSize;
+                    *partitioning_log << "nosplit hot " << idx_dpu << " reason no_cut_point load " << measured
+                                      << " maxchunk_load " << maxchunk_load
+                                      << " keyrange " << maxchunk->key << ' ' << hot_max_key << '\n';
+                }
+                idx_dpu = get_next_idx_dpu(lock);
                 continue;
             }
 
@@ -2908,7 +2952,7 @@ inline void BPForest::incremental_repartition_worker_hot([[maybe_unused]] unsign
 
             if (partitioning_log) {
                 for (const auto& piece : pieces) {
-                    *partitioning_log << "split hot from " << idx_dpu << " load " << piece.load << std::endl;
+                    *partitioning_log << "split hot " << idx_dpu << " load " << piece.load << '\n';
                 }
             }
 
@@ -3021,6 +3065,7 @@ inline void BPForest::print_params(std::ostream& ostr) const
             "EXTRACT_BY_INITIALIZATION: 0\n"
 #endif
             "param.balancing: " << param.balancing << "\n"
+            "param.more_hotness: " << param.more_hotness << "\n"
             "param.greedy_only: " << param.greedy_only << "\n"
             "param.enable_dynamic_repartition: " << param.enable_dynamic_repartition << "\n"
             "param.enable_incremental: " << param.enable_incremental << "\n"
