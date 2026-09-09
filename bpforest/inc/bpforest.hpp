@@ -266,7 +266,7 @@ private:
     const Param param;
 
     const OverloadThreshold overload_threshold{param.overload_threshold_spec};
-    ExtendableBuffer<bool> hot_stage1_fired{nr_base_parts};
+    ExtendableBuffer<bool> hot_split_failed{nr_base_parts};
     // The split piece kept on the original host.  A separate buffer rather
     // than InputHeader fields: InputHeader's union is clobbered by the
     // TASK_MOVE_HOT rewrite before this is consumed.  `active` is reset every

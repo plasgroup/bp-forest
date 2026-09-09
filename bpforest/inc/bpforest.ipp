@@ -359,6 +359,7 @@ inline void BPForest::distribute_data_based_on_partitions(const KVPair sorted_pa
         if (dest.is_hot) {
             hot_ranges[dest.dpu] = passed;
             nr_pairs[dest.dpu].get()[1] = input_headers[dest.dpu].init.nr_hot_pairs = static_cast<uint32_t>(passed.npairs());
+            hot_split_failed[dest.dpu] = false;
         } else {
             LinkedPairsRange& cold_range = cold_ranges[cold_count++];
             cold_range = passed;
@@ -1875,6 +1876,7 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
 
                 hot_ranges[idx_dpu] = new_hot.pairs_range;
                 nr_pairs[idx_dpu].get()[1] = static_cast<uint32_t>(new_hot.pairs_range.npairs());
+                hot_split_failed[idx_dpu] = false;
                 hot_entries[idx_hot] = {new_hot.key_range.begin, idx_dpu, new_hot.origin};
             }
             std::sort(&hot_entries[0], &hot_entries[tmp_data.hot_count],
@@ -2195,12 +2197,11 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
 
                 const bool hot_splittable = nr_pairs[idx_dpu].get()[1] > KVPairsChunkSize;
                 const bool trigger_cold = routed.cold[idx_dpu].nr_qrys > cold_cnt_threshold,
-                           trigger_hot = param.enable_hot_split && hot_splittable && routed.hot[idx_dpu].nr_qrys > hot_cnt_threshold;
+                           trigger_hot = param.enable_hot_split && hot_splittable && !hot_split_failed[idx_dpu] && routed.hot[idx_dpu].nr_qrys > hot_cnt_threshold;
                 trigger = trigger || trigger_cold || trigger_hot;
                 const bool do_cold = routed.cold[idx_dpu].nr_qrys > cold_cnt_goal;
                 const bool do_hot = param.enable_hot_split && hot_splittable && routed.hot[idx_dpu].nr_qrys > hot_cnt_goal;
 
-                hot_stage1_fired[idx_dpu] = do_hot;
                 kept_hot[idx_dpu].active = false;
 
                 if (trigger && !param.enable_incremental) {
@@ -2428,6 +2429,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
 
         hot_ranges[idx_dpu] = new_hot.pairs_range;
         nr_pairs[idx_dpu].get()[1] = static_cast<uint32_t>(new_hot.pairs_range.npairs());
+        hot_split_failed[idx_dpu] = false;
         hot_entries[nr_hot_entries++] = {new_hot.key_range.begin, idx_dpu, new_hot.origin};
     }
 
@@ -2438,6 +2440,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         if (kept_hot[idx_dpu].active) {
             hot_ranges[idx_dpu] = kept_hot[idx_dpu].pairs_range;
             nr_pairs[idx_dpu].get()[1] = static_cast<uint32_t>(kept_hot[idx_dpu].pairs_range.npairs());
+            hot_split_failed[idx_dpu] = false;
             hot_entries[nr_hot_entries++] = {kept_hot[idx_dpu].key_range.begin, idx_dpu, kept_hot[idx_dpu].origin};
         } else if (hot_part[idx_dpu] != INVALID_DPU_ID) {
             hot_entries[nr_hot_entries++] = {parts.begins[hot_part[idx_dpu]], idx_dpu, parts.origins[hot_part[idx_dpu]]};
@@ -2894,6 +2897,7 @@ inline void BPForest::incremental_repartition_worker_hot([[maybe_unused]] unsign
                 // A single dominant chunk cannot be subdivided: keep the hot whole.
                 pieces.clear();
                 hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};
+                hot_split_failed[idx_dpu] = true;
                 idx_dpu = get_next_idx_dpu(std::lock_guard{tmp.mutex});
                 continue;
             }
