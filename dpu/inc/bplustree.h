@@ -236,6 +236,7 @@ typedef struct {
     __dma_aligned KeyRange refresh_range;
     __dma_aligned KVPair refresh_response;
 } DeleteResultWorkspace;
+_Static_assert(sizeof(key_uint64_t) * TASK_DELETE_NR_CACHED_QRYS <= 2048, "sizeof(key_uint64_t) * TASK_DELETE_NR_CACHED_QRYS <= 2048");
 
 typedef struct {
     __dma_aligned key_uint64_t buf[TASK_DELETE_SORT_NR_TASKLETS][TASK_DELETE_SORT_RUN];

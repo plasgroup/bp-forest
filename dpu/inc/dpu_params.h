@@ -97,7 +97,7 @@ _Static_assert(TASK_DELETE_NR_TASKLETS <= NR_TASKLETS, "TASK_DELETE_NR_TASKLETS 
 // result flags are all cached this many at a time.  The flags are 1 byte each,
 // so a multiple of 8 (the MRAM DMA granularity) keeps every flush aligned.
 #ifndef TASK_DELETE_NR_CACHED_QRYS
-#define TASK_DELETE_NR_CACHED_QRYS 32
+#define TASK_DELETE_NR_CACHED_QRYS 216
 #endif
 _Static_assert(TASK_DELETE_NR_CACHED_QRYS % 8 == 0, "TASK_DELETE_NR_CACHED_QRYS % 8 == 0");
 
@@ -113,7 +113,7 @@ _Static_assert(TASK_DELETE_NR_TASKLETS <= TASK_DELETE_SORT_NR_TASKLETS, "TASK_DE
 #endif
 
 #ifndef TASK_DELETE_SORT_RUN
-#define TASK_DELETE_SORT_RUN 50
+#define TASK_DELETE_SORT_RUN 64
 #endif
 
 #ifndef TASK_DELETE_SORT_DIGIT_BUF
