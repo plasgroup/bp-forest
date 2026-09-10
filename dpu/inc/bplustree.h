@@ -8,6 +8,7 @@
 
 #include <attributes.h>
 #include <limits.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -66,9 +67,14 @@ _Static_assert(sizeof(Node) == SIZEOF_NODE, "sizeof(Node) == SIZEOF_NODE");
 // HEIGHT <= log_{MIN_NR_CHILDREN} [ (MAX_NR_NODES - 1) * (MIN_NR_CHILDREN - 1) / 2.0 + 1 ]
 #define MAX_HEIGHT ((CEIL_LOG2_UINT32((MAX_NR_NODES - 1) * (MIN_NR_CHILDREN - 1) + 2) - 1) / FLOOR_LOG2_UINT32(MIN_NR_CHILDREN))
 
+#define MAX_INSERT_DEPTH (MAX_HEIGHT - 1)
+
 #define TASK_INSERT_SORT_NR_PIECES (1u << TASK_INSERT_SORT_RADIX_BITS)
 #define TASK_INSERT_SORT_NR_LEVELS ((KEY_WIDTH + TASK_INSERT_SORT_RADIX_BITS - 1) / TASK_INSERT_SORT_RADIX_BITS)
 #define TASK_INSERT_SORT_STACK_CAPACITY (TASK_INSERT_SORT_NR_PIECES + (TASK_INSERT_SORT_NR_LEVELS - 1) * (TASK_INSERT_SORT_NR_PIECES - 1))
+
+// make it positive, since it will be array length
+#define TASK_INSERT_MAX_NR_FORK (TASK_INSERT_NR_TASKLETS == 1 ? 1 : TASK_INSERT_NR_TASKLETS / 2)
 
 
 typedef struct {
@@ -128,17 +134,83 @@ typedef struct {
     uint32_t prev_shift;
     __mram_ptr KVPair* src;
 } InsertSortStackEntry;
+
 typedef struct {
-    __dma_aligned Node node_cache[2];
+    uint8_t end_child;
+    uint8_t nr_tasklets;
+} TaskletAssignmentToChildren;
+
+typedef struct {
+    // input
+    // @{
+    uint32_t idx_qry_begin, idx_qry_end;
+    uint8_t node_numKeys;
+    uint8_t nr_tasklets;
+    // @}
+
+    uint32_t backet_ends[MAX_NR_CHILDREN - 1];
+
+    uint32_t nr_backet_qrys[MAX_NR_CHILDREN];
+    TaskletAssignmentToChildren assignments[TASK_INSERT_NR_TASKLETS];
+    uint8_t forks[TASK_INSERT_MAX_NR_FORK];  // indices in `assignments`
+    uint8_t nr_forks;
+} InsertPartitioning;
+
+typedef struct {
+#define TASK_INSERT_PARTITIONING_LEADER(height) (UINT8_MAX - (height))
+    // 0 if empty partition, TASK_INSERT_PARTITIONING_LEADER(height) if me() is a partitioning leader at the height
+    uint8_t idx_child_end;
+
+    uint8_t idx_child_begin;
+    uint8_t idx_partitioning;
+    uint8_t parent_height;
+    uint32_t idx_qry_begin, idx_qry_end;
+    key_uint64_t min_key;
+} InsertPartition;
+
+typedef struct {
+#define TASK_INSERT_MAX_NR_PARTITIONINGS (TASK_INSERT_NR_TASKLETS == 1 ? 1 : TASK_INSERT_NR_TASKLETS - 1)
+    InsertPartitioning partitionings[TASK_INSERT_MAX_NR_PARTITIONINGS];
+    unsigned nr_partitionings;
+    InsertPartition partitions[TASK_INSERT_NR_TASKLETS];
+} InsertPartitionWorkspace;
+
+//! @brief One level of the path an insertion took, level 0 being the leaf.
+typedef struct {
+    key_uint64_t max_key;
+    NodeLink link;
+    unsigned idx_in_parent;
+} PathLevel;
+
+typedef struct {
     __dma_aligned KVPair qrys[TASK_INSERT_NR_CACHED_QRYS];
-    uint32_t idx_qry_in_cache;
-    uintptr_t cursor_on_qrys;
+    PathLevel path[MAX_HEIGHT + 1];
+    bool leaf_loaded, leaf_dirty, parent_loaded;
+    uint32_t nr_new_pairs;
+} TaskletLocalInsertWorkspace;
+_Static_assert(sizeof(KVPair) * TASK_INSERT_NR_CACHED_QRYS <= 2048, "sizeof(KVPair) * TASK_INSERT_NR_CACHED_QRYS <= 2048");
+
+typedef struct {
+    InsertPartitionWorkspace part;
+    __dma_aligned Node node_cache[TASK_INSERT_NR_TASKLETS][4];
+
+    NodeLink task_tree[TASK_INSERT_NR_TASKLETS];
+    uint8_t task_tree_height[TASK_INSERT_NR_TASKLETS];
+    key_uint64_t task_min_key[TASK_INSERT_NR_TASKLETS];
+    //! The ends of each tree's chain of leaves, which the joining keeps up to
+    //! date: a tree's chain stays closed until the tree is joined.
+    NodeLink leftmost_leaf[TASK_INSERT_NR_TASKLETS], rightmost_leaf[TASK_INSERT_NR_TASKLETS];
+
+    TaskletLocalInsertWorkspace th[TASK_INSERT_NR_TASKLETS];
 } InsertPhysWorkspace;
 
+//! @brief The stages run one after another in a single launch, so they share
+//! the workspace.  The top digit of the sort outlives the stage that fills it,
+//! since the handout reads it, so it sits outside the union.
 typedef struct {
     union {
         InsertSortWorkspace sort;
-        InsertPhysWorkspace phys[TASK_INSERT_NR_TASKLETS];
+        InsertPhysWorkspace phys;
     };
     InsertSortTopDigit sort_top_digit;
 } InsertWorkspace;
