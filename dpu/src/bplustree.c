@@ -43,6 +43,7 @@ static DEFINE_DIV_BY(TASK_INSERT_SORT_NR_TASKLETS, 32, _NR_QRYS);
 
 #ifdef SUPPORT_DELETE
 static DEFINE_DIV_BY(TASK_DELETE_NR_TASKLETS, 32, _NR_QRYS);
+static DEFINE_DIV_BY(TASK_DELETE_SORT_NR_TASKLETS, 32, _NR_QRYS);
 #endif
 
 #ifdef SUPPORT_GET
@@ -150,6 +151,7 @@ static inline void* loop_invariant(void* p)
 #if defined(TASK_INIT_CHECK) || defined(TASK_INSERT_CHECK) || defined(TASK_DELETE_CHECK) || defined(TASK_MOVE_HOT_CHECK)
 #define TASK_TREE_CHECK
 #endif
+OVERLAY_LOCAL(OVL_SLOT_CHECK)
 __attribute__((unused)) static bool check_tree_structure(const Node* root, unsigned height, unsigned root_numKeys);
 #ifdef TASK_TREE_CHECK
 static void CHECK_trees(void);
@@ -1225,12 +1227,9 @@ static bool INSERT_execute(TaskletLocalInsertWorkspace* const restrict wks, Node
     const uint16_t idx_pair = search_for_pair_index(&leaf->lf.keys[0], (uint8_t)nr_pairs_in_leaf, qry->key);
 
     if (idx_pair < nr_pairs_in_leaf && leaf->lf.keys[idx_pair] == qry->key) {
-        // Overwriting a tombstone (a pair deleted by TASK_DELETE) revives the
-        // pair, growing the live count kept in `nr_pairs`.
-        const bool revived = (NthValue(leaf->lf, idx_pair) == NOT_FOUND_VALUE);
         NthValue(leaf->lf, idx_pair) = qry->value;
         wks->leaf_dirty = true;
-        return revived;
+        return false;
     }
 
     if (nr_pairs_in_leaf < MAX_NR_PAIRS) {
@@ -2230,152 +2229,2108 @@ void task_insert(void)
 
 
 #if SUPPORT_DELETE
-// Serializes the concurrent read-modify-write of a value slot when the same
-// key is deleted by two tasklets (duplicate keys within one batch).  The pool
-// is indexed by the low bits of the key, so distinct keys rarely contend.
+/* ---------------------------------------------------------------------- *
+ *  TASK_DELETE.  @sa /docs/parallel_delete.md
+ * ---------------------------------------------------------------------- */
+
+// Serializes the read-modify-write of a value slot when the same key is deleted
+// by two tasklets (duplicate keys within one batch).
 MUTEX_POOL_INIT(DELETE_value_mutexes, 16);
 
-OVERLAY_LOCAL(OVL_SLOT_QUERY)
-__attribute__((unused)) static void DELETE_barrier(void)
+// The marks the first stage writes into a value slot, all below the range a
+// user may store.  `DELETE_CLAIM(t)` says that tasklet `t` is to report the
+// deletion; the tombstone is what the reporting tasklet leaves behind.
+#define DELETE_TOMBSTONE NOT_FOUND_VALUE
+#define DELETE_CLAIM(t) ((value_int64_t)(NOT_FOUND_VALUE + 1 + (int64_t)(t)))
+_Static_assert(DELETE_CLAIM(TASK_DELETE_NR_TASKLETS - 1) < VALUE_MIN, "the marks stay out of the range a user may store");
+
+//! No pair with this key, so the second pass has nothing to read.
+#define DELETE_NO_SLOT UINTPTR_MAX
+//! The bytes one value-slot address per query takes, rounded up so that the
+//! slice of the array a tasklet owns starts and ends on an 8-byte boundary.
+#define DELETE_SLOT_BYTES(nr_qrys) (((nr_qrys) * sizeof(uintptr_t) + 7u) / 8u * 8u)
+
+//! @pre Called by one tasklet, before a barrier that the rest go through.
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static void DELETE_layout(void)
+{
+    DeleteLayout* const out = &workspace.tree.delete.layout;
+    const uint32_t nr_cold_qrys = input_header.qrys.nr_cold_qrys, nr_hot_qrys = input_header.qrys.nr_hot_qrys;
+    out->qrys = (__mram_ptr key_uint64_t*)((uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader));
+    out->nr_cold_qrys = nr_cold_qrys;
+    out->nr_hot_qrys = nr_hot_qrys;
+
+    const uintptr_t nr_refreshes_addr = (uintptr_t)out->qrys + sizeof(key_uint64_t) * (nr_cold_qrys + nr_hot_qrys);
+    mram_read((__mram_ptr void*)nr_refreshes_addr, &out->nr_refreshes[0], sizeof(uint32_t[2]));
+    out->refresh_requests = nr_refreshes_addr + sizeof(uint32_t[2]);
+
+    out->cold_results = (uintptr_t)DPU_MRAM_HEAP_POINTER + input_header.qrys.result_offset;
+    out->hot_results = out->cold_results + (nr_cold_qrys + 7u) / 8u * 8u;
+    out->counts_result = out->hot_results + (nr_hot_qrys + 7u) / 8u * 8u;
+    out->refresh_results = out->counts_result + sizeof(nr_pairs);
+
+    out->cold_slots = out->refresh_results + sizeof(KVPair) * (out->nr_refreshes[0] + out->nr_refreshes[1]);
+    out->hot_slots = out->cold_slots + DELETE_SLOT_BYTES(nr_cold_qrys);
+    out->sort_scratch = (__mram_ptr key_uint64_t*)(out->hot_slots + DELETE_SLOT_BYTES(nr_hot_qrys));
+}
+
+// A function belongs to one overlay slot, so each half of the task needs its
+// own copy of the chain barrier.
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static void DELETE_wait_for_all_prev(const unsigned nr_tasklets)
 {
     if (me() != 0) {
         wait_for_prev_ready();
     }
-    if (me() != TASK_DELETE_NR_TASKLETS - 1) {
+    if (me() != nr_tasklets - 1) {
         notify_next_of_readiness();
+    }
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static void DELETE_wait_for_all_next(const unsigned nr_tasklets)
+{
+    if (me() != nr_tasklets - 1) {
         wait_for_next_ready();
     }
     if (me() != 0) {
         notify_prev_of_readiness();
     }
 }
-OVERLAY_LOCAL(OVL_SLOT_QUERY)
-static key_uint64_t* DELETE_fetch_next_qry(DeleteWorkspace* wks)
+//! Over the tasklets that have a slice of the result array.
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static void DELETE_result_barrier(void)
 {
-    if (wks->idx_qry_in_cache == TASK_DELETE_NR_CACHED_QRYS) {
-        mram_read((__mram_ptr void*)wks->cursor_on_qrys, wks->qrys, sizeof(key_uint64_t) * TASK_DELETE_NR_CACHED_QRYS);
-        wks->cursor_on_qrys += sizeof(key_uint64_t) * TASK_DELETE_NR_CACHED_QRYS;
-        wks->idx_qry_in_cache = 0;
-    }
-    return &wks->qrys[wks->idx_qry_in_cache++];
+    DELETE_wait_for_all_next(TASK_DELETE_NR_TASKLETS);
+    DELETE_wait_for_all_prev(TASK_DELETE_NR_TASKLETS);
 }
-OVERLAY_LOCAL(OVL_SLOT_QUERY)
-static void DELETE_push_result(DeleteWorkspace* wks, uint8_t existed)
+//! Over the tasklets that sort the batch.
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static void DELETE_sort_barrier(void)
 {
-    wks->results[wks->idx_result_in_cache++] = existed;
-    if (wks->idx_result_in_cache == TASK_DELETE_NR_CACHED_RESULTS) {
-        mram_write(wks->results, (__mram_ptr void*)wks->cursor_on_results, TASK_DELETE_NR_CACHED_RESULTS);
-        wks->cursor_on_results += TASK_DELETE_NR_CACHED_RESULTS;
-        wks->idx_result_in_cache = 0;
-    }
+    DELETE_wait_for_all_next(TASK_DELETE_SORT_NR_TASKLETS);
+    DELETE_wait_for_all_prev(TASK_DELETE_SORT_NR_TASKLETS);
 }
-OVERLAY_LOCAL(OVL_SLOT_QUERY)
-static void DELETE_flush_results_cache(DeleteWorkspace* wks)
-{
-    if (wks->idx_result_in_cache != 0) {
-        // Rounding up may spill a few bytes past this tasklet's slice.  Only
-        // the last (partially filled) slice of a section can have a non-8
-        // remainder, and each section is padded to 8 bytes, so the spill only
-        // ever lands in the padding.
-        mram_write(wks->results, (__mram_ptr void*)wks->cursor_on_results, (wks->idx_result_in_cache + 7u) / 8u * 8u);
-    }
-}
-//! @brief Tombstones the pair whose value slot lives in WRAM (the root leaf).
-//! @return 1 if the pair was live (not already tombstoned) before this call.
-OVERLAY_LOCAL(OVL_SLOT_QUERY)
-static uint8_t DELETE_tombstone_wram(value_int64_t* const slot, const key_uint64_t key)
-{
-    mutex_pool_lock(&DELETE_value_mutexes, (uint16_t)key);
-    const uint8_t existed = (*slot != NOT_FOUND_VALUE);
-    *slot = NOT_FOUND_VALUE;
-    mutex_pool_unlock(&DELETE_value_mutexes, (uint16_t)key);
-    return existed;
-}
-//! @brief Tombstones the pair whose value slot lives in MRAM.
-//! @return 1 if the pair was live (not already tombstoned) before this call.
-OVERLAY_LOCAL(OVL_SLOT_QUERY)
-static uint8_t DELETE_tombstone_mram(DeleteWorkspace* const wks, __mram_ptr value_int64_t* const slot, const key_uint64_t key)
-{
-    mutex_pool_lock(&DELETE_value_mutexes, (uint16_t)key);
-    mram_read(slot, &wks->old_value, sizeof(value_int64_t));
-    const uint8_t existed = (wks->old_value != NOT_FOUND_VALUE);
-    if (existed) {
-        // Reuse the read buffer as the write source: it is one of the
-        // statically aligned ones DeleteWorkspace keeps for this reason.
-        wks->old_value = NOT_FOUND_VALUE;
-        mram_write(&wks->old_value, slot, sizeof(value_int64_t));
-    }
-    mutex_pool_unlock(&DELETE_value_mutexes, (uint16_t)key);
-    return existed;
-}
-OVERLAY_LOCAL(OVL_SLOT_QUERY)
-static uint32_t /* # of pairs that turned live -> tombstoned */ DELETE_execute(Node* const root, const uint8_t height, const uint8_t root_numKeys,
-    const uint32_t idx_qry_begin, const uint32_t idx_qry_end, const uintptr_t results)
-{
-    DeleteWorkspace* const wks_me = loop_invariant(&workspace.tree.delete[me()]);
-    wks_me->idx_qry_in_cache = TASK_DELETE_NR_CACHED_QRYS;  // to trigger the first fetch
-    wks_me->cursor_on_qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader) + sizeof(key_uint64_t) * idx_qry_begin;
-    wks_me->idx_result_in_cache = 0;
-    wks_me->cursor_on_results = results;
 
-    uint32_t nr_deleted = 0;
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_tree_wait_for_all_prev(void)
+{
+    if (me() != 0) {
+        wait_for_prev_ready();
+    }
+    if (me() != TASK_DELETE_NR_TASKLETS - 1) {
+        notify_next_of_readiness();
+    }
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_tree_wait_for_all_next(void)
+{
+    if (me() != TASK_DELETE_NR_TASKLETS - 1) {
+        wait_for_next_ready();
+    }
+    if (me() != 0) {
+        notify_prev_of_readiness();
+    }
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_tree_barrier(void)
+{
+    DELETE_tree_wait_for_all_next();
+    DELETE_tree_wait_for_all_prev();
+}
+
+
+/* ---------------------------------------------------------------------- *
+ *  Stage 1: the result array.
+ * ---------------------------------------------------------------------- */
+
+//! @brief Whether the mark already in the slot outranks `my_claim`, i.e. its
+//! owner is to report the deletion.  A tombstone outranks everyone: the pair it
+//! stands for is gone already.
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static bool DELETE_yields_to(const value_int64_t value, const value_int64_t my_claim)
+{
+    return value < my_claim;
+}
+
+//! @brief Marks the value of `key` as the one this tasklet is to report as
+//! deleted, unless a tasklet with a smaller number has marked it already.
+//! @return Where this tasklet's mark went, or DELETE_NO_SLOT if it left none.
+//! The address stays good until the tree is edited, which is what lets the
+//! second pass answer without descending again.
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static uintptr_t DELETE_claim_one(DeleteResultWorkspace* const wks, Node* const root,
+    const uint8_t height, const uint8_t root_numKeys, const key_uint64_t key, const value_int64_t my_claim)
+{
+    if (height == 0) {
+        const uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, key);
+        if (!(idx_pair < root_numKeys && root->lf.keys[idx_pair] == key)) {
+            return DELETE_NO_SLOT;
+        }
+
+        value_int64_t* const p_value = &NthValue(root->lf, idx_pair);
+        uintptr_t slot = DELETE_NO_SLOT;
+        mutex_pool_lock(&DELETE_value_mutexes, (uint16_t)key);
+        if (!DELETE_yields_to(*p_value, my_claim)) {
+            *p_value = my_claim;
+            slot = (uintptr_t)p_value;
+        }
+        mutex_pool_unlock(&DELETE_value_mutexes, (uint16_t)key);
+        return slot;
+    }
+
+    NodeLink link = NthChild(root->inl, search_for_child_index(&root->inl.keys[0], root_numKeys, key));
+    for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
+        fetch_internal_filled(&Deref(link.ptr).inl, &wks->node_cache.inl, link.numKeys);
+        const uint16_t idx_child = search_for_child_index(&wks->node_cache.inl.keys[0], link.numKeys, key);
+        link = NthChild(wks->node_cache.inl, idx_child);
+    }
+    fetch_leaf_filled(&Deref(link.ptr).lf, &wks->node_cache.lf, link.numKeys);
+    const uint16_t idx_pair = search_for_pair_index(&wks->node_cache.lf.keys[0], link.numKeys, key);
+    if (!(idx_pair < link.numKeys && wks->node_cache.lf.keys[idx_pair] == key)) {
+        return DELETE_NO_SLOT;
+    }
+
+    // The cached value predates the lock, so a mark it does not show may be on
+    // the slot already.  A mark it does show settles the matter on its own:
+    // marks only ever move to smaller-numbered tasklets, so a tasklet that has
+    // once given way stays out of the running.
+    if (DELETE_yields_to(NthValue(wks->node_cache.lf, idx_pair), my_claim)) {
+        return DELETE_NO_SLOT;
+    }
+
+    __mram_ptr value_int64_t* const p_value = &NthValue(Deref(link.ptr).lf, idx_pair);
+    __dma_aligned value_int64_t value;
+    uintptr_t slot = DELETE_NO_SLOT;
+    mutex_pool_lock(&DELETE_value_mutexes, (uint16_t)key);
+    mram_read(p_value, &value, sizeof(value_int64_t));
+    if (!DELETE_yields_to(value, my_claim)) {
+        value = my_claim;
+        mram_write(&value, p_value, sizeof(value_int64_t));
+        slot = (uintptr_t)p_value;
+    }
+    mutex_pool_unlock(&DELETE_value_mutexes, (uint16_t)key);
+    return slot;
+}
+
+//! @brief Turns this tasklet's own mark on `slot` into a tombstone.
+//! @return Whether the mark was still there, which is what the query reports.
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static uint8_t DELETE_report_one(const uint8_t height, const uintptr_t slot, const value_int64_t my_claim)
+{
+    if (slot == DELETE_NO_SLOT) {
+        return 0;
+    }
 
     if (height == 0) {
-        for (unsigned idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
-            const key_uint64_t key = *DELETE_fetch_next_qry(wks_me);
+        value_int64_t* const p_value = (value_int64_t*)slot;
+        if (*p_value != my_claim) {
+            return 0;
+        }
+        *p_value = DELETE_TOMBSTONE;
+        return 1;
+    }
 
-            uint8_t existed = 0;
-            const uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, key);
-            if (idx_pair < root_numKeys && root->lf.keys[idx_pair] == key) {
-                existed = DELETE_tombstone_wram(&NthValue(root->lf, idx_pair), key);
-                nr_deleted += existed;
-            }
-            DELETE_push_result(wks_me, existed);
+    __mram_ptr value_int64_t* const p_value = (__mram_ptr value_int64_t*)slot;
+    __dma_aligned value_int64_t value;
+    mram_read(p_value, &value, sizeof(value_int64_t));
+    if (value != my_claim) {
+        return 0;
+    }
+    value = DELETE_TOMBSTONE;
+    mram_write(&value, p_value, sizeof(value_int64_t));
+    return 1;
+}
+
+//! @brief Marks a slice of the batch and records where each mark went.
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static void DELETE_claim_pass(Node* const root, const uint8_t height, const uint8_t root_numKeys,
+    const uint32_t idx_qry_begin, const uint32_t idx_qry_end, const uintptr_t slots)
+{
+    DeleteResultWorkspace* const wks_me = loop_invariant(&workspace.tree.delete.th[me()]);
+    __mram_ptr const key_uint64_t* cursor_on_qrys
+        = (__mram_ptr const key_uint64_t*)((uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader)) + idx_qry_begin;
+    uintptr_t cursor_on_slots = slots;
+    const value_int64_t my_claim = DELETE_CLAIM(me());
+    uint32_t nr_left = idx_qry_end - idx_qry_begin;
+
+    for (; nr_left >= TASK_DELETE_NR_CACHED_QRYS; nr_left -= TASK_DELETE_NR_CACHED_QRYS) {
+        mram_read(cursor_on_qrys, wks_me->qrys, sizeof(key_uint64_t) * TASK_DELETE_NR_CACHED_QRYS);
+        cursor_on_qrys += TASK_DELETE_NR_CACHED_QRYS;
+
+        for (uint32_t i = 0; i < TASK_DELETE_NR_CACHED_QRYS; i++) {
+            wks_me->slot_addrs[i] = DELETE_claim_one(wks_me, root, height, root_numKeys, wks_me->qrys[i], my_claim);
         }
 
-    } else {
-        for (unsigned idx_qry = idx_qry_begin; idx_qry < idx_qry_end; idx_qry++) {
-            const key_uint64_t key = *DELETE_fetch_next_qry(wks_me);
+        mram_write(wks_me->slot_addrs, (__mram_ptr void*)cursor_on_slots, DELETE_SLOT_BYTES(TASK_DELETE_NR_CACHED_QRYS));
+        cursor_on_slots += DELETE_SLOT_BYTES(TASK_DELETE_NR_CACHED_QRYS);
+    }
 
-            NodeLink link = NthChild(root->inl, search_for_child_index(&root->inl.keys[0], root_numKeys, key));
-            for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
-                fetch_internal_filled(&Deref(link.ptr).inl, &wks_me->node_cache.inl, link.numKeys);
-                const uint16_t idx_child = search_for_child_index(&wks_me->node_cache.inl.keys[0], link.numKeys, key);
-                link = NthChild(wks_me->node_cache.inl, idx_child);
-            }
-            fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
-            const uint16_t idx_pair = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, key);
+    if (nr_left != 0) {
+        mram_read(cursor_on_qrys, wks_me->qrys, sizeof(key_uint64_t) * nr_left);
 
-            uint8_t existed = 0;
-            if (idx_pair < link.numKeys && wks_me->node_cache.lf.keys[idx_pair] == key) {
-                existed = DELETE_tombstone_mram(wks_me, &NthValue(Deref(link.ptr).lf, idx_pair), key);
-                nr_deleted += existed;
+        for (uint32_t i = 0; i < nr_left; i++) {
+            wks_me->slot_addrs[i] = DELETE_claim_one(wks_me, root, height, root_numKeys, wks_me->qrys[i], my_claim);
+        }
+
+        // Rounding up may spill one address past this tasklet's slice, into the
+        // padding that keeps every slice 8-byte aligned.
+        mram_write(wks_me->slot_addrs, (__mram_ptr void*)cursor_on_slots, DELETE_SLOT_BYTES(nr_left));
+    }
+}
+
+//! @brief Answers a slice of the batch from the marks the first pass left.
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static void DELETE_report_pass(const uint8_t height,
+    const uint32_t idx_qry_begin, const uint32_t idx_qry_end, const uintptr_t slots, const uintptr_t results)
+{
+    DeleteResultWorkspace* const wks_me = loop_invariant(&workspace.tree.delete.th[me()]);
+    uintptr_t cursor_on_slots = slots, cursor_on_results = results;
+    const value_int64_t my_claim = DELETE_CLAIM(me());
+    uint32_t nr_left = idx_qry_end - idx_qry_begin;
+
+    for (; nr_left >= TASK_DELETE_NR_CACHED_QRYS; nr_left -= TASK_DELETE_NR_CACHED_QRYS) {
+        mram_read((__mram_ptr void*)cursor_on_slots, wks_me->slot_addrs, DELETE_SLOT_BYTES(TASK_DELETE_NR_CACHED_QRYS));
+        cursor_on_slots += DELETE_SLOT_BYTES(TASK_DELETE_NR_CACHED_QRYS);
+
+        for (uint32_t i = 0; i < TASK_DELETE_NR_CACHED_QRYS; i++) {
+            wks_me->results[i] = DELETE_report_one(height, wks_me->slot_addrs[i], my_claim);
+        }
+
+        mram_write(wks_me->results, (__mram_ptr void*)cursor_on_results, TASK_DELETE_NR_CACHED_QRYS);
+        cursor_on_results += TASK_DELETE_NR_CACHED_QRYS;
+    }
+
+    if (nr_left != 0) {
+        mram_read((__mram_ptr void*)cursor_on_slots, wks_me->slot_addrs, DELETE_SLOT_BYTES(nr_left));
+
+        for (uint32_t i = 0; i < nr_left; i++) {
+            wks_me->results[i] = DELETE_report_one(height, wks_me->slot_addrs[i], my_claim);
+        }
+
+        // Rounding up may spill past this tasklet's slice, but only the last
+        // block of the last slice can have a non-8 remainder, and sections are
+        // padded to 8.
+        mram_write(wks_me->results, (__mram_ptr void*)cursor_on_results, (nr_left + 7u) / 8u * 8u);
+    }
+}
+
+
+/* ---------------------------------------------------------------------- *
+ *  Stage 2, sorting the keys.  A copy of TASK_INSERT's batch sort
+ *  (/docs/parallel_batch_update.md) over bare keys instead of pairs.
+ * ---------------------------------------------------------------------- */
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static unsigned DSORT_digit(const key_uint64_t key, const unsigned shift)
+{
+    return (unsigned)(key >> shift) & (TASK_DELETE_SORT_NR_PIECES - 1);
+}
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static unsigned DSORT_first_shift(const key_uint64_t min_key, const key_uint64_t max_key)
+{
+    const unsigned width = KEY_WIDTH - countl_zero_uint64(min_key ^ max_key);
+    return (width > TASK_DELETE_SORT_RADIX_BITS ? width - TASK_DELETE_SORT_RADIX_BITS : 0);
+}
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static void DSORT_min_max(key_uint64_t* const p_min, key_uint64_t* const p_max, key_uint64_t (*const buf)[TASK_DELETE_SORT_RUN],
+    __mram_ptr const key_uint64_t* const qrys, const uint32_t begin, const uint32_t end)
+{
+    key_uint64_t min_key = KEY_MAX, max_key = KEY_MIN;
+
+    for (uint32_t i = begin; i < end;) {
+        __mram_ptr const key_uint64_t* const to_read = qrys + i;
+
+        uint32_t n = end - i;
+        if (n >= TASK_DELETE_SORT_RUN) {
+            n = TASK_DELETE_SORT_RUN;
+            mram_read(to_read, &(*buf)[0], sizeof(key_uint64_t) * TASK_DELETE_SORT_RUN);
+        } else {
+            mram_read(to_read, &(*buf)[0], sizeof(key_uint64_t) * n);
+        }
+
+        for (uint32_t j = 0; j < n; j++) {
+            if ((*buf)[j] < min_key) {
+                min_key = (*buf)[j];
             }
-            DELETE_push_result(wks_me, existed);
+            if ((*buf)[j] > max_key) {
+                max_key = (*buf)[j];
+            }
+        }
+        i += n;
+    }
+    *p_min = min_key;
+    *p_max = max_key;
+}
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static void DSORT_count_digits(uint32_t (*const counts_me)[TASK_DELETE_SORT_NR_PIECES], key_uint64_t (*const buf)[TASK_DELETE_SORT_RUN],
+    __mram_ptr const key_uint64_t* const src, const uint32_t begin, const uint32_t end, const unsigned shift)
+{
+    for (unsigned d = 0; d < TASK_DELETE_SORT_NR_PIECES; d++) {
+        (*counts_me)[d] = 0;
+    }
+    for (uint32_t i = begin; i < end;) {
+        __mram_ptr const key_uint64_t* const to_read = src + i;
+
+        uint32_t n = end - i;
+        if (n >= TASK_DELETE_SORT_RUN) {
+            n = TASK_DELETE_SORT_RUN;
+            mram_read(to_read, &(*buf)[0], sizeof(key_uint64_t) * TASK_DELETE_SORT_RUN);
+        } else {
+            mram_read(to_read, &(*buf)[0], sizeof(key_uint64_t) * n);
+        }
+
+        for (uint32_t j = 0; j < n; j++) {
+            (*counts_me)[DSORT_digit((*buf)[j], shift)]++;
+        }
+        i += n;
+    }
+}
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static void DSORT_scatter_by_digit(uint32_t (*const offsets_me)[TASK_DELETE_SORT_NR_PIECES], key_uint64_t (*const buf)[TASK_DELETE_SORT_RUN],
+    key_uint64_t (*const digit_buf)[TASK_DELETE_SORT_NR_PIECES][TASK_DELETE_SORT_DIGIT_BUF],
+    uint8_t (*const nr_in_digit_buf)[TASK_DELETE_SORT_NR_PIECES],
+    __mram_ptr const key_uint64_t* const src, __mram_ptr key_uint64_t* const dst,
+    const uint32_t begin, const uint32_t end, const unsigned shift)
+{
+    for (unsigned d = 0; d < TASK_DELETE_SORT_NR_PIECES; d++) {
+        (*nr_in_digit_buf)[d] = 0;
+    }
+
+    for (uint32_t i = begin; i < end;) {
+        __mram_ptr const key_uint64_t* const to_read = src + i;
+
+        uint32_t n = end - i;
+        if (n >= TASK_DELETE_SORT_RUN) {
+            n = TASK_DELETE_SORT_RUN;
+            mram_read(to_read, &(*buf)[0], sizeof(key_uint64_t) * TASK_DELETE_SORT_RUN);
+        } else {
+            mram_read(to_read, &(*buf)[0], sizeof(key_uint64_t) * n);
+        }
+
+        for (uint32_t j = 0; j < n; j++) {
+            const key_uint64_t key = (*buf)[j];
+
+            const unsigned d = DSORT_digit(key, shift);
+            const unsigned nr_buffered = (*nr_in_digit_buf)[d];
+            key_uint64_t(*const out_buf)[TASK_DELETE_SORT_DIGIT_BUF] = &(*digit_buf)[d];
+
+            if (nr_buffered >= TASK_DELETE_SORT_DIGIT_BUF) {
+                mram_write(&(*out_buf)[0], dst + (*offsets_me)[d], sizeof(key_uint64_t) * TASK_DELETE_SORT_DIGIT_BUF);
+                (*offsets_me)[d] += TASK_DELETE_SORT_DIGIT_BUF;
+
+                (*out_buf)[0] = key;
+                (*nr_in_digit_buf)[d] = 1;
+            } else {
+                (*out_buf)[nr_buffered] = key;
+                (*nr_in_digit_buf)[d] = (uint8_t)(nr_buffered + 1);
+            }
+        }
+        i += n;
+    }
+}
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static void DSORT_flush_digit_buf(uint32_t (*const offsets_me)[TASK_DELETE_SORT_NR_PIECES],
+    key_uint64_t (*const digit_buf)[TASK_DELETE_SORT_NR_PIECES][TASK_DELETE_SORT_DIGIT_BUF],
+    uint8_t (*const nr_in_digit_buf)[TASK_DELETE_SORT_NR_PIECES], __mram_ptr key_uint64_t* const dst)
+{
+    for (unsigned d = 0; d < TASK_DELETE_SORT_NR_PIECES; d++) {
+        const unsigned nr_buffered = (*nr_in_digit_buf)[d];
+        if (nr_buffered != 0) {
+            mram_write(&(*digit_buf)[d][0], dst + (*offsets_me)[d], sizeof(key_uint64_t) * nr_buffered);
+            (*offsets_me)[d] += nr_buffered;
+        }
+    }
+}
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static void DSORT_sort_short_piece_impl(key_uint64_t* const buf, const uint32_t n,
+    __mram_ptr key_uint64_t* const dst)
+{
+    for (uint32_t i = 1; i < n; i++) {
+        const key_uint64_t key = buf[i];
+        uint32_t j = i;
+        if (buf[j - 1] > key) {
+            do {
+                buf[j] = buf[j - 1];
+                j--;
+            } while (j != 0 && buf[j - 1] > key);
+            buf[j] = key;
         }
     }
 
-    DELETE_flush_results_cache(wks_me);
-    return nr_deleted;
+    mram_write(&buf[0], dst, sizeof(key_uint64_t) * n);
 }
-//! @brief The smallest live key in `range` (both ends inclusive), for the
-//! host's per-partition minimum bookkeeping.
-//! @return {key, 1} if found, {0, 0} if no live key is in the range.
-OVERLAY_LOCAL(OVL_SLOT_QUERY)
+//! @pre `[begin, end)` fits in `buf`: at most TASK_DELETE_SORT_RUN queries.
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static void DSORT_sort_short_piece(key_uint64_t (*const buf)[TASK_DELETE_SORT_RUN], __mram_ptr const key_uint64_t* const src,
+    __mram_ptr key_uint64_t* const dst, const uint32_t begin, const uint32_t end)
+{
+    const uint32_t n = end - begin;
+    mram_read(src + begin, &(*buf)[0], sizeof(key_uint64_t) * n);
+
+    DSORT_sort_short_piece_impl(&(*buf)[0], n, dst + begin);
+}
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static void DSORT_move_piece(key_uint64_t (*const buf)[TASK_DELETE_SORT_RUN], __mram_ptr const key_uint64_t* const src,
+    __mram_ptr key_uint64_t* const dst, const uint32_t begin, const uint32_t end)
+{
+    if (src == dst) {
+        return;
+    }
+    for (uint32_t i = begin; i < end;) {
+        __mram_ptr const key_uint64_t* const to_read = src + i;
+        __mram_ptr key_uint64_t* const to_write = dst + i;
+
+        uint32_t n = end - i;
+        if (end - i >= TASK_DELETE_SORT_RUN) {
+            n = TASK_DELETE_SORT_RUN;
+            mram_read(to_read, &(*buf)[0], sizeof(key_uint64_t) * TASK_DELETE_SORT_RUN);
+            mram_write(&(*buf)[0], to_write, sizeof(key_uint64_t) * TASK_DELETE_SORT_RUN);
+        } else {
+            mram_read(to_read, &(*buf)[0], sizeof(key_uint64_t) * n);
+            mram_write(&(*buf)[0], to_write, sizeof(key_uint64_t) * n);
+        }
+
+        i += n;
+    }
+}
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static void DSORT_plan_top_digit(DeleteSortTopDigit* const top_digit, const uint32_t nr_qrys)
+{
+    DeleteSortWorkspace* const wks = &workspace.tree.delete.sort;
+    uint32_t(*const piece_delims)[TASK_DELETE_SORT_NR_PIECES + 1] = &top_digit->piece_delims;
+
+    for (unsigned d = me(); d < TASK_DELETE_SORT_NR_PIECES; d += TASK_DELETE_SORT_NR_TASKLETS) {
+        uint32_t total = 0;
+        for (unsigned t = 0; t < TASK_DELETE_SORT_NR_TASKLETS; t++) {
+            total += wks->counts[t][d];
+        }
+        (*piece_delims)[d + 1] = total;
+    }
+    DELETE_wait_for_all_next(TASK_DELETE_SORT_NR_TASKLETS);
+
+    if (me() == 0) {
+        (*piece_delims)[0] = 0;
+        for (unsigned d = 1; d <= TASK_DELETE_SORT_NR_PIECES; d++) {
+            (*piece_delims)[d] += (*piece_delims)[d - 1];
+        }
+
+        uint32_t threshold = nr_qrys;
+        unsigned d = 0;
+        wks->top_digit_split[0] = 0;
+        for (unsigned t = 1; t < TASK_DELETE_SORT_NR_TASKLETS; t++, threshold += nr_qrys) {
+            while ((*piece_delims)[d + 1] * TASK_DELETE_SORT_NR_TASKLETS < threshold) {
+                d++;
+            }
+            wks->top_digit_split[t] = (uint16_t)d;
+        }
+        wks->top_digit_split[TASK_DELETE_SORT_NR_TASKLETS] = TASK_DELETE_SORT_NR_PIECES;
+    }
+    DELETE_wait_for_all_prev(TASK_DELETE_SORT_NR_TASKLETS);
+
+    for (unsigned d = me(); d < TASK_DELETE_SORT_NR_PIECES; d += TASK_DELETE_SORT_NR_TASKLETS) {
+        uint32_t acc = (*piece_delims)[d];
+        for (unsigned t = 0; t < TASK_DELETE_SORT_NR_TASKLETS; t++) {
+            const uint32_t c = wks->counts[t][d];
+            wks->counts[t][d] = acc;
+            acc += c;
+        }
+    }
+}
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static void DSORT_finish_pieces(const DeleteSortTopDigit* const top_digit,
+    __mram_ptr key_uint64_t* const qrys, __mram_ptr key_uint64_t* const scratch,
+    __mram_ptr DeleteSortStackEntry (*const stack)[TASK_DELETE_SORT_STACK_CAPACITY],
+    const unsigned first_shift)
+{
+    DeleteSortWorkspace* const wks = &workspace.tree.delete.sort;
+    key_uint64_t(*const buf)[TASK_DELETE_SORT_RUN] = &wks->buf[me()];
+    const uint32_t(*const piece_delims)[TASK_DELETE_SORT_NR_PIECES + 1] = &top_digit->piece_delims;
+    uint32_t(*const counts_me)[TASK_DELETE_SORT_NR_PIECES] = &wks->counts[me()];
+
+    uint32_t nr_stacked = 0;
+
+    for (unsigned d = wks->top_digit_split[me()]; d < wks->top_digit_split[me() + 1]; d++) {
+        if ((*piece_delims)[d] != (*piece_delims)[d + 1]) {
+            DeleteSortStackEntry entry;
+            entry.begin = (*piece_delims)[d];
+            entry.end = (*piece_delims)[d + 1];
+            entry.prev_shift = first_shift;
+            entry.src = scratch;
+            mram_write(&entry, &(*stack)[nr_stacked++], sizeof(DeleteSortStackEntry));
+        }
+    }
+
+    while (nr_stacked != 0) {
+        DeleteSortStackEntry entry;
+        mram_read(&(*stack)[--nr_stacked], &entry, sizeof(DeleteSortStackEntry));
+        const uint32_t begin = entry.begin, end = entry.end, prev_shift = entry.prev_shift;
+        __mram_ptr key_uint64_t* const src = entry.src;
+        __mram_ptr key_uint64_t* const dst = (src == qrys ? scratch : qrys);
+
+        if (prev_shift == 0) {
+            DSORT_move_piece(buf, src, qrys, begin, end);
+            continue;
+        }
+        if (end - begin <= TASK_DELETE_SORT_RUN) {
+            DSORT_sort_short_piece(buf, src, qrys, begin, end);
+            continue;
+        }
+        uint32_t shift = prev_shift >= TASK_DELETE_SORT_RADIX_BITS ? prev_shift - TASK_DELETE_SORT_RADIX_BITS : 0;
+
+        DSORT_count_digits(counts_me, buf, src, begin, end, shift);
+        uint32_t acc = begin;
+        for (unsigned d = 0; d < TASK_DELETE_SORT_NR_PIECES; d++) {
+            const uint32_t c = (*counts_me)[d];
+            (*counts_me)[d] = acc;
+            acc += c;
+        }
+        key_uint64_t(*const digit_buf)[TASK_DELETE_SORT_NR_PIECES][TASK_DELETE_SORT_DIGIT_BUF] = &wks->digit_buf[me()];
+        uint8_t(*const nr_in_digit_buf)[TASK_DELETE_SORT_NR_PIECES] = &wks->nr_in_digit_buf[me()];
+        DSORT_scatter_by_digit(counts_me, buf, digit_buf, nr_in_digit_buf,
+            src, dst, begin, end, shift);
+
+        uint32_t piece_begin = begin;
+        for (unsigned d = 0; d < TASK_DELETE_SORT_NR_PIECES; d++) {
+            key_uint64_t(*const out_buf)[TASK_DELETE_SORT_DIGIT_BUF] = &(*digit_buf)[d];
+            const unsigned nr_buffered = (*nr_in_digit_buf)[d];
+
+            const uint32_t offset = (*counts_me)[d];
+            const uint32_t piece_end = offset + nr_buffered;
+
+            if (offset == piece_begin) {
+                if (nr_buffered == 0) {
+                    continue;
+                } else if (nr_buffered > TASK_DELETE_SORT_DIGIT_BUF) {
+                    __builtin_unreachable();
+                } else {
+                    DSORT_sort_short_piece_impl(&(*out_buf)[0], nr_buffered, qrys + offset);
+                }
+            } else {
+                if (nr_buffered != 0) {
+                    mram_write(&(*out_buf)[0], dst + offset, sizeof(key_uint64_t) * nr_buffered);
+                }
+
+                DeleteSortStackEntry entry;
+                entry.begin = piece_begin;
+                entry.end = piece_end;
+                entry.prev_shift = shift;
+                entry.src = dst;
+                mram_write(&entry, &(*stack)[nr_stacked++], sizeof(DeleteSortStackEntry));
+            }
+            piece_begin = piece_end;
+        }
+    }
+}
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE)
+static void DSORT_execute_in_parallel(DeleteSortTopDigit* const top_digit,
+    __mram_ptr key_uint64_t* const qrys, const uint32_t nr_qrys, __mram_ptr key_uint64_t* const scratch)
+{
+    DeleteSortWorkspace* const wks = &workspace.tree.delete.sort;
+    key_uint64_t(*const buf)[TASK_DELETE_SORT_RUN] = &wks->buf[me()];
+
+    if (nr_qrys <= 1) {
+        return;
+    }
+    if (nr_qrys <= TASK_DELETE_SORT_RUN) {
+        if (me() == 0) {
+            DSORT_sort_short_piece(buf, qrys, qrys, 0, nr_qrys);
+        }
+        DELETE_sort_barrier();
+        return;
+    }
+
+    const uint32_t nr_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_DELETE_SORT_NR_TASKLETS(nr_qrys),
+                   nr_remainder_qrys = nr_qrys - nr_qrys_per_tasklet * TASK_DELETE_SORT_NR_TASKLETS,
+                   nr_qrys_for_me = nr_qrys_per_tasklet + (me() < nr_remainder_qrys);
+    const uint32_t my_qry_begin = nr_qrys_per_tasklet * me() + (me() < nr_remainder_qrys ? me() : nr_remainder_qrys),
+                   my_qry_end = my_qry_begin + nr_qrys_for_me;
+
+    DSORT_min_max(&wks->qry_min_key[me()], &wks->qry_max_key[me()], buf, qrys, my_qry_begin, my_qry_end);
+    DELETE_wait_for_all_next(TASK_DELETE_SORT_NR_TASKLETS);
+
+    if (me() == 0) {
+        key_uint64_t min_key = KEY_MAX, max_key = KEY_MIN;
+        for (unsigned t = 0; t < TASK_DELETE_SORT_NR_TASKLETS; t++) {
+            if (wks->qry_min_key[t] < min_key) {
+                min_key = wks->qry_min_key[t];
+            }
+            if (wks->qry_max_key[t] > max_key) {
+                max_key = wks->qry_max_key[t];
+            }
+        }
+        top_digit->qry_min_key = min_key;
+        top_digit->qry_max_key = max_key;
+        top_digit->shift = DSORT_first_shift(min_key, max_key);
+    }
+    DELETE_wait_for_all_prev(TASK_DELETE_SORT_NR_TASKLETS);
+    const unsigned first_shift = top_digit->shift;
+
+    uint32_t(*const counts_me)[TASK_DELETE_SORT_NR_PIECES] = &wks->counts[me()];
+    DSORT_count_digits(counts_me, buf, qrys, my_qry_begin, my_qry_end, first_shift);
+    DELETE_sort_barrier();
+
+    DSORT_plan_top_digit(top_digit, nr_qrys);
+    DELETE_sort_barrier();
+
+    key_uint64_t(*const digit_buf)[TASK_DELETE_SORT_NR_PIECES][TASK_DELETE_SORT_DIGIT_BUF] = &wks->digit_buf[me()];
+    uint8_t(*const nr_in_digit_buf)[TASK_DELETE_SORT_NR_PIECES] = &wks->nr_in_digit_buf[me()];
+
+    DSORT_scatter_by_digit(counts_me, buf, digit_buf, nr_in_digit_buf,
+        qrys, scratch, my_qry_begin, my_qry_end, first_shift);
+    DSORT_flush_digit_buf(counts_me, digit_buf, nr_in_digit_buf, scratch);
+    DELETE_sort_barrier();
+
+    DSORT_finish_pieces(top_digit, qrys, scratch, (__mram_ptr DeleteSortStackEntry(*)[TASK_DELETE_SORT_STACK_CAPACITY])(scratch + nr_qrys) + me(), first_shift);
+    DELETE_sort_barrier();
+}
+
+
+/* ---------------------------------------------------------------------- *
+ *  Stage 2, splitting the batch among the tasklets by key range.
+ *  A copy of TASK_INSERT's handout (/docs/insert_handout.md).
+ * ---------------------------------------------------------------------- */
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static uint32_t DELETE_lower_bound(__mram_ptr const key_uint64_t* const qrys, uint32_t begin, uint32_t end,
+    const key_uint64_t key)
+{
+    while (begin < end) {
+        const uint32_t mid = (begin + end) / 2;
+        __dma_aligned key_uint64_t probe;
+        mram_read(&qrys[mid], &probe, sizeof(key_uint64_t));
+        if (probe < key) {
+            begin = mid + 1;
+        } else {
+            end = mid;
+        }
+    }
+    return begin;
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static unsigned DELETE_find_bucket_begins(const DeleteSortTopDigit* const top_digit,
+    __mram_ptr const key_uint64_t* const qrys, uint32_t begin, uint32_t end,
+    const key_uint64_t (*const keys)[MAX_NR_CHILDREN - 1], const unsigned nr_keys,
+    uint32_t (*const restrict out)[MAX_NR_CHILDREN - 1], const unsigned idx_key_offset)
+{
+    const key_uint64_t qry_min_key = top_digit->qry_min_key, qry_max_key = top_digit->qry_max_key;
+    const uint32_t shift = top_digit->shift;
+    const uint32_t(*const piece_delims)[TASK_DELETE_SORT_NR_PIECES + 1] = &top_digit->piece_delims;
+
+    unsigned idx_key = idx_key_offset;
+    for (; idx_key < nr_keys; idx_key += TASK_DELETE_NR_TASKLETS) {
+        const key_uint64_t key = (*keys)[idx_key];
+
+        uint32_t floor_pos;
+        if (key <= qry_min_key) {
+            floor_pos = begin;
+        } else if (key > qry_max_key) {
+            floor_pos = end;
+        } else {
+            const unsigned digit = DSORT_digit(key, shift);
+            const uint32_t piece_begin = (*piece_delims)[digit], piece_end = (*piece_delims)[digit + 1];
+            if (begin < piece_begin) {
+                begin = piece_begin;
+            }
+            const uint32_t tmp_end = piece_end < end ? piece_end : end;
+            floor_pos = DELETE_lower_bound(qrys, begin, tmp_end, key);
+        }
+
+        begin = floor_pos;
+        (*out)[idx_key] = floor_pos;
+    }
+    return idx_key - nr_keys;
+}
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_nr_backet_qrys(const uint32_t (*const backet_ends)[MAX_NR_CHILDREN - 1], const unsigned nr_keys,
+    uint32_t (*const nr_qrys)[MAX_NR_CHILDREN], const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
+{
+    uint32_t prev_backet_end = (*backet_ends)[0];
+    (*nr_qrys)[0] = prev_backet_end - idx_qry_begin;
+    for (unsigned idx_child = 1; idx_child < nr_keys; idx_child++) {
+        const uint32_t backet_end = (*backet_ends)[idx_child];
+        (*nr_qrys)[idx_child] = backet_end - prev_backet_end;
+        prev_backet_end = backet_end;
+    }
+    (*nr_qrys)[nr_keys] = idx_qry_end - prev_backet_end;
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static unsigned DELETE_nr_sharers(const uint32_t total, const uint32_t limit)
+{
+    unsigned k = 1;
+    for (uint32_t covered = limit; covered < total; covered += limit) {
+        k++;
+    }
+    return k;
+}
+//! @return `need(limit)` (/docs/insert_handout.md §3).
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static unsigned DELETE_nr_tasklets_needed(const uint32_t (*const nr_qrys)[MAX_NR_CHILDREN], const unsigned nr_children,
+    const uint32_t nqrys_limit, const bool is_child_leaf)
+{
+    const uint32_t* nr_qrys_cursor = &(*nr_qrys)[0];
+    const uint32_t* const end_nr_qrys = nr_qrys_cursor + nr_children;
+    unsigned result = 0;
+
+    uint32_t next_nr_qrys = *nr_qrys_cursor;
+    for (;;) {
+        nr_qrys_cursor++;
+
+        if (next_nr_qrys > nqrys_limit) {
+            if (is_child_leaf) {
+                return UINT_MAX;
+            }
+            result += DELETE_nr_sharers(next_nr_qrys, nqrys_limit);
+
+            if (nr_qrys_cursor >= end_nr_qrys) {
+                return result;
+            }
+            next_nr_qrys = *nr_qrys_cursor;
+
+        } else {
+            result++;
+
+            uint32_t sum_nr_qrys = next_nr_qrys;
+            for (;;) {
+                if (nr_qrys_cursor >= end_nr_qrys) {
+                    return result;
+                } else {
+                    next_nr_qrys = *nr_qrys_cursor;
+
+                    sum_nr_qrys += next_nr_qrys;
+                    if (sum_nr_qrys <= nqrys_limit) {
+                        nr_qrys_cursor++;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static unsigned DELETE_min_max_nqrys_per_tasklet(const uint32_t (*const nr_qrys)[MAX_NR_CHILDREN],
+    const unsigned nr_children, const uint32_t total_nr_qrys,
+    const unsigned nr_tasklets, const bool is_child_leaf,
+    unsigned* const restrict p_nr_assigned_tasklets)
+{
+    uint32_t lo = (total_nr_qrys + nr_tasklets - 1) / nr_tasklets, hi = total_nr_qrys;
+    unsigned nr_tasklets_at_hi = 1;
+
+    while (lo < hi) {
+        const uint32_t mid = (lo + hi) / 2;
+        const unsigned nr_tasklets_at_mid = DELETE_nr_tasklets_needed(nr_qrys, nr_children, mid, is_child_leaf);
+        if (nr_tasklets_at_mid <= nr_tasklets) {
+            hi = mid;
+            nr_tasklets_at_hi = nr_tasklets_at_mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    *p_nr_assigned_tasklets = nr_tasklets_at_hi;
+    return hi;
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_tasklet_assignments(const uint32_t (*const nr_qrys)[MAX_NR_CHILDREN], const unsigned nr_children,
+    const uint32_t nqrys_limit,
+    TaskletAssignmentToChildren (*const assignments)[TASK_DELETE_NR_TASKLETS], unsigned* const restrict p_nr_assignments,
+    uint8_t (*const forks)[TASK_DELETE_MAX_NR_FORK], unsigned* const restrict p_nr_forks)
+{
+    unsigned idx_child = 0, nr_assignments = 0, nr_forks = 0;
+
+    uint32_t next_nr_qrys = (*nr_qrys)[idx_child];
+    for (;;) {
+        idx_child++;
+
+        if (next_nr_qrys > nqrys_limit) {
+            (*forks)[nr_forks] = nr_assignments;
+            nr_forks++;
+
+            TaskletAssignmentToChildren assignment;
+            assignment.end_child = idx_child;
+            assignment.nr_tasklets = DELETE_nr_sharers(next_nr_qrys, nqrys_limit);
+            (*assignments)[nr_assignments] = assignment;
+            nr_assignments++;
+
+            if (idx_child >= nr_children) {
+                goto end_of_func;
+            }
+            next_nr_qrys = (*nr_qrys)[idx_child];
+
+        } else {
+            TaskletAssignmentToChildren assignment;
+            assignment.nr_tasklets = 1;
+
+            uint32_t sum_nr_qrys = next_nr_qrys;
+            for (;;) {
+                if (idx_child >= nr_children) {
+                    assignment.end_child = idx_child;
+                    (*assignments)[nr_assignments] = assignment;
+                    nr_assignments++;
+
+                    goto end_of_func;
+
+                } else {
+                    next_nr_qrys = (*nr_qrys)[idx_child];
+
+                    sum_nr_qrys += next_nr_qrys;
+                    if (sum_nr_qrys <= nqrys_limit) {
+                        idx_child++;
+                    } else {
+                        assignment.end_child = idx_child;
+                        (*assignments)[nr_assignments] = assignment;
+                        nr_assignments++;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+end_of_func:
+    *p_nr_assignments = nr_assignments;
+    *p_nr_forks = nr_forks;
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_assign_leftover_tasklets(unsigned nr_leftover_tasklets, const uint32_t (*const nr_qrys)[MAX_NR_CHILDREN],
+    TaskletAssignmentToChildren (*const assignments)[TASK_DELETE_NR_TASKLETS],
+    const uint8_t (*const forks)[TASK_DELETE_MAX_NR_FORK], const unsigned nr_forks)
+{
+    if (nr_forks > 0) {
+        for (; nr_leftover_tasklets > 0; nr_leftover_tasklets--) {
+            unsigned idx_busiest = (*forks)[0];
+            uint32_t busiest_nqrys = (*nr_qrys)[(*assignments)[idx_busiest].end_child - 1];
+            uint8_t busiest_nr_tasklets = (*assignments)[idx_busiest].nr_tasklets;
+
+            for (unsigned idx_fork = 1; idx_fork < nr_forks; idx_fork++) {
+                const unsigned idx_assignment = (*forks)[idx_fork];
+                const TaskletAssignmentToChildren* const assignment = &(*assignments)[idx_assignment];
+                const uint32_t nqrys = (*nr_qrys)[assignment->end_child - 1];
+                const uint8_t nr_tasklets = assignment->nr_tasklets;
+
+                if (nqrys * busiest_nr_tasklets > busiest_nqrys * nr_tasklets) {
+                    idx_busiest = idx_assignment;
+                    busiest_nqrys = nqrys;
+                    busiest_nr_tasklets = nr_tasklets;
+                }
+            }
+
+            (*assignments)[idx_busiest].nr_tasklets++;
+        }
+    }
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_store_partitioning_results(const unsigned idx_partitioning, DeletePartitioning* const partitioning,
+    const unsigned tasklet_begin,
+    const Node* const node, const unsigned node_height, key_uint64_t node_min_key,
+    const unsigned nr_assignments)
+{
+    const TaskletAssignmentToChildren(*const assignments)[TASK_DELETE_NR_TASKLETS] = &partitioning->assignments;
+    const uint32_t(*const backet_ends)[MAX_NR_CHILDREN - 1] = &partitioning->backet_ends;
+    uint32_t idx_qry_begin = partitioning->idx_qry_begin;
+
+    DeletePartitionWorkspace* const part_wks = &workspace.tree.delete.phys.part;
+    DeletePartition(*const partitions)[TASK_DELETE_NR_TASKLETS] = &part_wks->partitions;
+
+    unsigned tasklet = tasklet_begin, begin_child = 0;
+    for (unsigned idx_assignment = 0;;) {
+        const TaskletAssignmentToChildren* const assignment = &(*assignments)[idx_assignment];
+        const unsigned end_child = assignment->end_child, n = assignment->nr_tasklets,
+                       end_child_m1 = end_child - 1;
+
+        idx_assignment++;
+        const bool last_assignment = (idx_assignment >= nr_assignments);
+
+        const uint32_t idx_qry_end = last_assignment ? partitioning->idx_qry_end : (*backet_ends)[end_child_m1];
+
+        DeletePartition* const partition = &(*partitions)[tasklet];
+        partition->min_key = node_min_key;
+
+        if (n == 1) {
+            partition->idx_child_end = end_child;
+            partition->idx_child_begin = begin_child;
+            partition->idx_partitioning = idx_partitioning;
+            partition->parent_height = node_height;
+            partition->idx_qry_begin = idx_qry_begin;
+            partition->idx_qry_end = idx_qry_end;
+
+        } else {
+            acquire_lock();
+            const unsigned slot = part_wks->nr_partitionings;
+            part_wks->nr_partitionings++;
+            release_lock();
+
+            DeletePartitioning* const new_partitioning = &part_wks->partitionings[slot];
+
+            partition->idx_child_end = TASK_DELETE_PARTITIONING_LEADER(node_height - 1);
+            partition->idx_partitioning = slot;
+
+            new_partitioning->idx_qry_begin = idx_qry_begin;
+            new_partitioning->idx_qry_end = idx_qry_end;
+
+            const NodeLink link = NthChild(node->inl, end_child_m1);
+            const unsigned numKeys = new_partitioning->node_numKeys = link.numKeys;
+            fetch_internal_filled(&Deref(link.ptr).inl, &workspace.tree.delete.phys.node_cache[slot][0].inl, numKeys);
+            Free_node(link.ptr);
+
+            new_partitioning->nr_tasklets = n;
+        }
+
+        if (last_assignment) {
+            break;
+        }
+
+        tasklet += n;
+        begin_child = end_child;
+        node_min_key = node->inl.keys[end_child_m1];
+        idx_qry_begin = idx_qry_end;
+    }
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static unsigned DELETE_plan_partitioning_impl(DeletePartitioning* const partitioning,
+    const uint32_t idx_qry_begin, const uint32_t idx_qry_end,
+    const unsigned nr_keys, const unsigned node_height,
+    const unsigned nr_tasklets)
+{
+    const uint32_t(*const backet_ends)[MAX_NR_CHILDREN - 1] = &partitioning->backet_ends;
+    uint32_t(*const nr_qrys)[MAX_NR_CHILDREN] = &partitioning->nr_backet_qrys;
+    TaskletAssignmentToChildren(*const restrict assignments)[TASK_DELETE_NR_TASKLETS] = &partitioning->assignments;
+    uint8_t(*const restrict forks)[TASK_DELETE_MAX_NR_FORK] = &partitioning->forks;
+
+    const unsigned nr_children = nr_keys + 1;
+
+    DELETE_nr_backet_qrys(backet_ends, nr_keys, nr_qrys, idx_qry_begin, idx_qry_end);
+
+    unsigned nr_assigned_tasklets;
+    const unsigned nqrys_per_tasklet = DELETE_min_max_nqrys_per_tasklet(nr_qrys, nr_children, idx_qry_end - idx_qry_begin, nr_tasklets, node_height == 1, &nr_assigned_tasklets);
+
+    unsigned nr_assignments;
+    unsigned nr_forks;
+    DELETE_tasklet_assignments(nr_qrys, nr_children, nqrys_per_tasklet,
+        assignments, &nr_assignments,
+        forks, &nr_forks);
+    partitioning->nr_forks = nr_forks;
+
+    DELETE_assign_leftover_tasklets(nr_tasklets - nr_assigned_tasklets, nr_qrys, assignments, forks, nr_forks);
+
+    return nr_assignments;
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static unsigned DELETE_plan_partitioning(DeletePartitioning* const partitioning, const unsigned node_height)
+{
+    return DELETE_plan_partitioning_impl(partitioning,
+        partitioning->idx_qry_begin, partitioning->idx_qry_end,
+        partitioning->node_numKeys, node_height,
+        partitioning->nr_tasklets);
+}
+
+
+/* ---------------------------------------------------------------------- *
+ *  Stage 2, removing the pairs.
+ * ---------------------------------------------------------------------- */
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_write_child_link(const NodePtr ptr, const uint16_t j, const NodeLink link)
+{
+    __dma_aligned NodeLink link_pair[2];
+    mram_read(&NthChild(Deref(ptr).inl, j / 2 * 2 + 1), &link_pair[0], sizeof(NodeLink) * 2);
+    link_pair[1 - j % 2] = link;
+    mram_write(&link_pair[0], &NthChild(Deref(ptr).inl, j / 2 * 2 + 1), sizeof(NodeLink) * 2);
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_store_child_link(InternalNode* const node, const NodePtr ptr, const uint16_t j, const NodeLink link)
+{
+    NthChild(*node, j) = link;
+    mram_write(&NthChild(*node, j / 2 * 2 + 1), &NthChild(Deref(ptr).inl, j / 2 * 2 + 1), sizeof(NodeLink) * 2);
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_write_left_of_leaf(const NodeLink leaf, const NodePtr left)
+{
+    struct {
+        __dma_aligned NodePtr left;
+#ifdef DEBUG_OCCUPANCY
+        unsigned numKeys;
+#endif
+    } leaf_left;
+    leaf_left.left = left;
+#ifdef DEBUG_OCCUPANCY
+    leaf_left.numKeys = leaf.numKeys;
+#endif
+    mram_write(&leaf_left, &Deref(leaf.ptr).lf.left, 8);
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_write_right_of_leaf(const NodePtr leaf, const NodeLink right)
+{
+    __dma_aligned NodeLink link_pair[2];
+    link_pair[0] = right;
+    mram_write(&link_pair[0], &Deref(leaf).lf.right, 8);
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static NodeLink DELETE_combined_child(const InternalNode* const node, const unsigned p, const NodeLink child, const unsigned i)
+{
+    return (i < p ? NthChild(*node, i) : i == p ? child
+                                                : NthChild(*node, i - 1));
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static key_uint64_t DELETE_combined_key(const InternalNode* const node, const unsigned q, const key_uint64_t key, const unsigned i)
+{
+    return (i < q ? node->keys[i] : i == q ? key
+                                           : node->keys[i - 1]);
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static NodeLink DELETE_mram_child(const NodePtr ptr, const uint16_t j)
+{
+    __dma_aligned NodeLink link_pair[2];
+    mram_read(&NthChild(Deref(ptr).inl, j / 2 * 2 + 1), &link_pair[0], sizeof(NodeLink) * 2);
+    return link_pair[1 - j % 2];
+}
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static NodeLink DELETE_edge_leaf_under(const NodeLink subtree, const uint8_t height, const bool rightmost)
+{
+    NodeLink link = subtree;
+    for (uint8_t h = height; h > 0; h--) {
+        link = DELETE_mram_child(link.ptr, (uint16_t)(rightmost ? link.numKeys : 0));
+    }
+    return link;
+}
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static bool DELETE_is_null_link(const NodeLink link)
+{
+    return link.ptr == NODELINK_NULLPTR.ptr && link.numKeys == NODELINK_NULLPTR.numKeys;
+}
+
+//! @brief Spreads the pairs of two adjacent leaves over one leaf if they fit,
+//! and evenly over both if they do not.  Both leaves are written back, as are
+//! the sibling links that name them.
+//! @return The number of pairs the left leaf ends up with, or `nr_total` when
+//! the two merged into it.
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static unsigned DELETE_combine_leaves(LeafNode* const left, LeafNode* const right,
+    const NodePtr left_ptr, const NodePtr right_ptr, const unsigned nr_left, const unsigned nr_right)
+{
+    const unsigned nr_total = nr_left + nr_right;
+
+    if (nr_total <= MAX_NR_PAIRS) {
+        for (unsigned i = 0; i < nr_right; i++) {
+            left->keys[nr_left + i] = right->keys[i];
+            NthValue(*left, nr_left + i) = NthValue(*right, i);
+        }
+        const NodeLink right_of_right = right->right;
+        left->right = right_of_right;
+#ifdef DEBUG_OCCUPANCY
+        left->numKeys = nr_total;
+#endif
+        store_leaf_filled(left, &Deref(left_ptr).lf, nr_total);
+        Free_node(right_ptr);
+
+        const NodeLink left_link = {left_ptr, nr_total};
+        if (left->left != NODE_NULLPTR) {
+            DELETE_write_right_of_leaf(left->left, left_link);
+        }
+        if (!DELETE_is_null_link(right_of_right)) {
+            DELETE_write_left_of_leaf(right_of_right, left_ptr);
+        }
+        return nr_total;
+    }
+
+    const unsigned new_nr_left = nr_total / 2, new_nr_right = nr_total - new_nr_left;
+    if (new_nr_left < nr_left) {
+        const unsigned k = nr_left - new_nr_left;
+        for (unsigned i = nr_right; i-- > 0;) {
+            right->keys[i + k] = right->keys[i];
+            NthValue(*right, i + k) = NthValue(*right, i);
+        }
+        for (unsigned i = 0; i < k; i++) {
+            right->keys[i] = left->keys[new_nr_left + i];
+            NthValue(*right, i) = NthValue(*left, new_nr_left + i);
+        }
+    } else if (new_nr_left > nr_left) {
+        const unsigned k = new_nr_left - nr_left;
+        for (unsigned i = 0; i < k; i++) {
+            left->keys[nr_left + i] = right->keys[i];
+            NthValue(*left, nr_left + i) = NthValue(*right, i);
+        }
+        for (unsigned i = 0; i + k < nr_right; i++) {
+            right->keys[i] = right->keys[i + k];
+            NthValue(*right, i) = NthValue(*right, i + k);
+        }
+    }
+    const NodeLink left_link = {left_ptr, new_nr_left}, right_link = {right_ptr, new_nr_right};
+    left->right = right_link;
+    right->left = left_ptr;
+#ifdef DEBUG_OCCUPANCY
+    left->numKeys = new_nr_left;
+    right->numKeys = new_nr_right;
+#endif
+    store_leaf_filled(left, &Deref(left_ptr).lf, new_nr_left);
+    store_leaf_filled(right, &Deref(right_ptr).lf, new_nr_right);
+    if (left->left != NODE_NULLPTR) {
+        DELETE_write_right_of_leaf(left->left, left_link);
+    }
+    return new_nr_left;
+}
+
+//! @brief Takes the node at level `d` back up to the minimum, and keeps going
+//! while doing so leaves its parent short.  `nk` is the node's key count after
+//! it lost a child.
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_rebalance_internal(TaskletLocalDeleteWorkspace* const wks, NodeLink* const p_root, unsigned* const p_height,
+    unsigned d, unsigned nk)
+{
+    Node(*const node_cache)[4] = &workspace.tree.delete.phys.node_cache[me()];
+
+    for (;;) {
+        wks->path[d].link.numKeys = nk;
+
+        if (d == *p_height) {
+            if (nk == 0) {
+                const NodeLink child = DELETE_mram_child(wks->path[d].link.ptr, 0);
+                Free_node(wks->path[d].link.ptr);
+                *p_root = child;
+                *p_height = d - 1;
+            } else {
+                *p_root = wks->path[d].link;
+            }
+            return;
+        }
+        if (nk + 1 >= MIN_NR_CHILDREN) {
+            DELETE_write_child_link(wks->path[d + 1].link.ptr, (uint16_t)wks->path[d].idx_in_parent, wks->path[d].link);
+            return;
+        }
+
+        InternalNode* const node = &(*node_cache)[0].inl;
+        InternalNode* const parent = &(*node_cache)[1].inl;
+        InternalNode* const sibling = &(*node_cache)[2].inl;
+
+        fetch_internal_filled(&Deref(wks->path[d].link.ptr).inl, node, nk);
+        const NodeLink parent_link = wks->path[d + 1].link;
+        const unsigned parent_nk = parent_link.numKeys;
+        fetch_internal_filled(&Deref(parent_link.ptr).inl, parent, parent_nk);
+
+        const unsigned idx = wks->path[d].idx_in_parent;
+        const bool take_left = (idx != 0);
+        const unsigned idx_left = take_left ? idx - 1 : idx;
+        const NodeLink sibling_link = NthChild(*parent, take_left ? idx - 1 : idx + 1);
+        fetch_internal_filled(&Deref(sibling_link.ptr).inl, sibling, sibling_link.numKeys);
+
+        InternalNode* const left = take_left ? sibling : node;
+        InternalNode* const right = take_left ? node : sibling;
+        const NodePtr left_ptr = take_left ? sibling_link.ptr : wks->path[d].link.ptr;
+        const NodePtr right_ptr = take_left ? wks->path[d].link.ptr : sibling_link.ptr;
+        const unsigned nr_left = (take_left ? sibling_link.numKeys : nk) + 1,
+                       nr_right = (take_left ? nk : sibling_link.numKeys) + 1,
+                       nr_total = nr_left + nr_right;
+        const key_uint64_t delim = parent->keys[idx_left];
+
+        if (nr_total <= MAX_NR_CHILDREN) {
+            left->keys[nr_left - 1] = delim;
+            for (unsigned i = 0; i < nr_right; i++) {
+                NthChild(*left, nr_left + i) = NthChild(*right, i);
+                if (i + 1 != nr_right) {
+                    left->keys[nr_left + i] = right->keys[i];
+                }
+            }
+#ifdef DEBUG_OCCUPANCY
+            left->numKeys = nr_total - 1;
+#endif
+            store_internal_filled(left, &Deref(left_ptr).inl, nr_total - 1);
+            Free_node(right_ptr);
+
+            NthChild(*parent, idx_left) = (NodeLink){left_ptr, nr_total - 1};
+            for (unsigned i = idx_left; i + 1 < parent_nk; i++) {
+                parent->keys[i] = parent->keys[i + 1];
+            }
+            for (unsigned i = idx_left + 1; i < parent_nk; i++) {
+                NthChild(*parent, i) = NthChild(*parent, i + 1);
+            }
+#ifdef DEBUG_OCCUPANCY
+            parent->numKeys = parent_nk - 1;
+#endif
+            store_internal_filled(parent, &Deref(parent_link.ptr).inl, parent_nk - 1);
+
+            d++;
+            nk = parent_nk - 1;
+            continue;
+        }
+
+        const unsigned new_nr_left = nr_total / 2;
+        key_uint64_t new_delim;
+        if (new_nr_left < nr_left) {
+            const unsigned k = nr_left - new_nr_left;
+            for (unsigned i = nr_right; i-- > 0;) {
+                NthChild(*right, i + k) = NthChild(*right, i);
+            }
+            for (unsigned i = nr_right - 1; i-- > 0;) {
+                right->keys[i + k] = right->keys[i];
+            }
+            for (unsigned i = 0; i < k; i++) {
+                NthChild(*right, i) = NthChild(*left, new_nr_left + i);
+                if (i + 1 != k) {
+                    right->keys[i] = left->keys[new_nr_left + i];
+                }
+            }
+            right->keys[k - 1] = delim;
+            new_delim = left->keys[new_nr_left - 1];
+        } else if (new_nr_left == nr_left) {
+            new_delim = delim;
+        } else {
+            const unsigned k = new_nr_left - nr_left;
+            left->keys[nr_left - 1] = delim;
+            for (unsigned i = 0; i < k; i++) {
+                NthChild(*left, nr_left + i) = NthChild(*right, i);
+                if (i + 1 != k) {
+                    left->keys[nr_left + i] = right->keys[i];
+                }
+            }
+            new_delim = right->keys[k - 1];
+            for (unsigned i = 0; i + k < nr_right; i++) {
+                NthChild(*right, i) = NthChild(*right, i + k);
+            }
+            for (unsigned i = 0; i + k + 1 < nr_right; i++) {
+                right->keys[i] = right->keys[i + k];
+            }
+        }
+        const unsigned new_nr_right = nr_total - new_nr_left;
+#ifdef DEBUG_OCCUPANCY
+        left->numKeys = new_nr_left - 1;
+        right->numKeys = new_nr_right - 1;
+#endif
+        store_internal_filled(left, &Deref(left_ptr).inl, new_nr_left - 1);
+        store_internal_filled(right, &Deref(right_ptr).inl, new_nr_right - 1);
+
+        parent->keys[idx_left] = new_delim;
+        NthChild(*parent, idx_left) = (NodeLink){left_ptr, new_nr_left - 1};
+        NthChild(*parent, idx_left + 1) = (NodeLink){right_ptr, new_nr_right - 1};
+        store_internal_filled(parent, &Deref(parent_link.ptr).inl, parent_nk);
+        return;
+    }
+}
+
+//! @brief Takes the leaf held in the node cache back up to the minimum, and
+//! propagates upwards if that merges it away.
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_rebalance_leaf(TaskletLocalDeleteWorkspace* const wks, NodeLink* const p_root, unsigned* const p_height)
+{
+    Node(*const node_cache)[4] = &workspace.tree.delete.phys.node_cache[me()];
+    LeafNode* const leaf = &(*node_cache)[0].lf;
+    InternalNode* const parent = &(*node_cache)[1].inl;
+    LeafNode* const sibling = &(*node_cache)[2].lf;
+
+    const NodeLink parent_link = wks->path[1].link;
+    const unsigned parent_nk = parent_link.numKeys;
+    if (!wks->parent_loaded) {
+        fetch_internal_filled(&Deref(parent_link.ptr).inl, parent, parent_nk);
+    }
+
+    const unsigned idx = wks->path[0].idx_in_parent;
+    const bool take_left = (idx != 0);
+    const unsigned idx_left = take_left ? idx - 1 : idx;
+    const NodeLink sibling_link = NthChild(*parent, take_left ? idx - 1 : idx + 1);
+    fetch_leaf_filled(&Deref(sibling_link.ptr).lf, sibling, sibling_link.numKeys);
+
+    LeafNode* const left = take_left ? sibling : leaf;
+    LeafNode* const right = take_left ? leaf : sibling;
+    const NodePtr left_ptr = take_left ? sibling_link.ptr : wks->path[0].link.ptr;
+    const NodePtr right_ptr = take_left ? wks->path[0].link.ptr : sibling_link.ptr;
+    const unsigned nr_left_in = take_left ? sibling_link.numKeys : wks->path[0].link.numKeys,
+                   nr_right_in = take_left ? wks->path[0].link.numKeys : sibling_link.numKeys,
+                   nr_total = nr_left_in + nr_right_in;
+
+    const unsigned nr_left = DELETE_combine_leaves(left, right, left_ptr, right_ptr, nr_left_in, nr_right_in);
+
+    if (nr_left != nr_total) {
+        parent->keys[idx_left] = right->keys[0];
+        NthChild(*parent, idx_left) = (NodeLink){left_ptr, nr_left};
+        NthChild(*parent, idx_left + 1) = (NodeLink){right_ptr, nr_total - nr_left};
+        store_internal_filled(parent, &Deref(parent_link.ptr).inl, parent_nk);
+        return;
+    }
+
+    // The two leaves became one, so the parent loses a child and may itself
+    // fall short.
+    NthChild(*parent, idx_left) = (NodeLink){left_ptr, nr_total};
+    for (unsigned i = idx_left; i + 1 < parent_nk; i++) {
+        parent->keys[i] = parent->keys[i + 1];
+    }
+    for (unsigned i = idx_left + 1; i < parent_nk; i++) {
+        NthChild(*parent, i) = NthChild(*parent, i + 1);
+    }
+#ifdef DEBUG_OCCUPANCY
+    parent->numKeys = parent_nk - 1;
+#endif
+    store_internal_filled(parent, &Deref(parent_link.ptr).inl, parent_nk - 1);
+
+    DELETE_rebalance_internal(wks, p_root, p_height, 1, parent_nk - 1);
+}
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_leave_leaf(TaskletLocalDeleteWorkspace* const wks, NodeLink* const p_root, unsigned* const p_height)
+{
+    if (!wks->leaf_dirty) {
+        return;
+    }
+    wks->leaf_dirty = false;
+
+    LeafNode* const leaf = &workspace.tree.delete.phys.node_cache[me()][0].lf;
+    const NodeLink link = wks->path[0].link;
+
+    if (*p_height == 0) {
+        if (link.numKeys == 0) {
+            Free_node(link.ptr);
+            *p_root = NODELINK_NULLPTR;
+            wks->leaf_loaded = false;
+            wks->path_stale = true;
+        } else {
+            store_leaf_filled(leaf, &Deref(link.ptr).lf, link.numKeys);
+            *p_root = link;
+        }
+        return;
+    }
+
+    if (link.numKeys >= MIN_NR_PAIRS) {
+        store_leaf_filled(leaf, &Deref(link.ptr).lf, link.numKeys);
+        if (wks->parent_loaded) {
+            DELETE_store_child_link(&workspace.tree.delete.phys.node_cache[me()][1].inl, wks->path[1].link.ptr, (uint16_t)wks->path[0].idx_in_parent, link);
+        } else {
+            DELETE_write_child_link(wks->path[1].link.ptr, (uint16_t)wks->path[0].idx_in_parent, link);
+        }
+        if (leaf->left != NODE_NULLPTR) {
+            DELETE_write_right_of_leaf(leaf->left, link);
+        }
+        return;
+    }
+
+    DELETE_rebalance_leaf(wks, p_root, p_height);
+    wks->leaf_loaded = false;
+    wks->parent_loaded = false;
+    wks->path_stale = true;
+}
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_descend(TaskletLocalDeleteWorkspace* const restrict wks, NodeLink* const restrict p_root, unsigned* const restrict p_height, const key_uint64_t key)
+{
+    DELETE_leave_leaf(wks, p_root, p_height);
+    if (p_root->ptr == NODE_NULLPTR) {
+        return;  // the last pair is gone, and `leaf_loaded` says so
+    }
+
+    const unsigned height = *p_height;
+    unsigned d;
+    if (wks->path_stale) {
+        wks->path_stale = false;
+        wks->path[height].link = *p_root;
+        wks->path[height].max_key = KEY_MAX;
+        d = height;
+    } else if (key > wks->path[0].max_key) {
+        d = height;
+        for (unsigned i = 1; i < height; i++) {
+            if (key <= wks->path[i].max_key) {
+                d = i;
+                break;
+            }
+        }
+    } else {
+        d = 0;
+    }
+
+    Node(*const node_cache)[4] = &workspace.tree.delete.phys.node_cache[me()];
+
+    Node* const node = &(*node_cache)[1];
+    for (; d > 0; d--) {
+        const NodeLink link = wks->path[d].link;
+        fetch_internal_filled(&Deref(link.ptr).inl, &node->inl, link.numKeys);
+        wks->parent_loaded = (d == 1);
+
+        const uint16_t idx = search_for_child_index(&node->inl.keys[0], (uint8_t)link.numKeys, key);
+        wks->path[d - 1].link = NthChild(node->inl, idx);
+        wks->path[d - 1].idx_in_parent = idx;
+        wks->path[d - 1].max_key = (idx == link.numKeys ? wks->path[d].max_key : node->inl.keys[idx] - 1);
+    }
+
+    fetch_leaf_filled(&Deref(wks->path[0].link.ptr).lf, &(*node_cache)[0].lf, wks->path[0].link.numKeys);
+    wks->leaf_loaded = true;
+}
+
+//! @return Whether a pair was removed.
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static bool DELETE_execute(TaskletLocalDeleteWorkspace* const restrict wks, NodeLink* const restrict p_root, unsigned* const restrict p_height, const key_uint64_t key)
+{
+    if (wks->path_stale || key > wks->path[0].max_key || !wks->leaf_loaded) {
+        DELETE_descend(wks, p_root, p_height, key);
+        if (!wks->leaf_loaded) {
+            return false;
+        }
+    }
+
+    LeafNode* const leaf = &workspace.tree.delete.phys.node_cache[me()][0].lf;
+    const unsigned nr_pairs_in_leaf = wks->path[0].link.numKeys;
+    const uint16_t idx_pair = search_for_pair_index(&leaf->keys[0], (uint8_t)nr_pairs_in_leaf, key);
+
+    if (!(idx_pair < nr_pairs_in_leaf && leaf->keys[idx_pair] == key)) {
+        return false;
+    }
+    for (unsigned i = idx_pair; i + 1 < nr_pairs_in_leaf; i++) {
+        leaf->keys[i] = leaf->keys[i + 1];
+        NthValue(*leaf, i) = NthValue(*leaf, i + 1);
+    }
+#ifdef DEBUG_OCCUPANCY
+    leaf->numKeys = nr_pairs_in_leaf - 1;
+#endif
+    wks->path[0].link.numKeys = nr_pairs_in_leaf - 1;
+    wks->leaf_dirty = true;
+    return true;
+}
+
+//! @pre The batch is in key order.
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+__attribute__((noinline)) static void DELETE_execute_batch(TaskletLocalDeleteWorkspace* const restrict wks, NodeLink* const restrict p_root, unsigned* const restrict p_height,
+    uint32_t* const restrict p_nr_removed, __mram_ptr key_uint64_t* const restrict qrys, const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
+{
+    __mram_ptr key_uint64_t* cursor = qrys + idx_qry_begin;
+
+    uint32_t nr_removed = 0;
+    key_uint64_t prev_key = KEY_MIN;
+    bool has_prev = false;
+
+    for (uint32_t nr_left = idx_qry_end - idx_qry_begin; nr_left != 0;) {
+        uint32_t n = TASK_DELETE_NR_CACHED_QRYS;
+        if (nr_left >= TASK_DELETE_NR_CACHED_QRYS) {
+            mram_read(cursor, wks->qrys, sizeof(key_uint64_t) * TASK_DELETE_NR_CACHED_QRYS);
+        } else {
+            n = nr_left;
+            mram_read(cursor, wks->qrys, sizeof(key_uint64_t) * n);
+        }
+        cursor += n;
+
+        for (uint32_t i = 0; i < n; i++) {
+            const key_uint64_t key = wks->qrys[i];
+            // Sorted, so the duplicates of a key are next to one another, and
+            // the handout never splits them across tasklets.
+            if (has_prev && key == prev_key) {
+                continue;
+            }
+            prev_key = key;
+            has_prev = true;
+            nr_removed += DELETE_execute(wks, p_root, p_height, key);
+        }
+        nr_left -= n;
+    }
+    DELETE_leave_leaf(wks, p_root, p_height);
+
+    *p_nr_removed = nr_removed;
+}
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_execute_batch_wram_root(TaskletLocalDeleteWorkspace* const wks, Node* const p_root, uint8_t* const p_height,
+    uint8_t* const p_root_numKeys, uint32_t* const p_nr_pairs,
+    __mram_ptr key_uint64_t* const qrys, const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
+{
+    unsigned height = *p_height;
+
+    const NodePtr ptr = Allocate_node();
+    NodeLink link = {ptr, *p_root_numKeys};
+
+    wks->path[height].link = link;
+    wks->path[height].max_key = KEY_MAX;
+
+    if (height == 0) {
+        store_leaf_filled(&p_root->lf, &Deref(ptr).lf, *p_root_numKeys);
+    } else {
+        store_internal_filled(&p_root->inl, &Deref(ptr).inl, *p_root_numKeys);
+
+        NodeLink first_child = NthChild(p_root->inl, 0);
+        key_uint64_t max_key_of_first_child = p_root->inl.keys[0] - 1;
+        for (unsigned h = height - 1;; h--) {
+            wks->path[h].link = first_child;
+            wks->path[h].idx_in_parent = 0;
+            wks->path[h].max_key = max_key_of_first_child;
+
+            if (h == 0) {
+                break;
+            }
+
+            fetch_internal_filled(&Deref(first_child.ptr).inl, &p_root->inl, 1);
+            first_child = NthChild(p_root->inl, 0);
+            max_key_of_first_child = p_root->inl.keys[0] - 1;
+        }
+    }
+    wks->parent_loaded = false;
+    wks->leaf_loaded = false;
+    wks->leaf_dirty = false;
+    wks->path_stale = false;
+
+    uint32_t nr_removed = 0;
+    DELETE_execute_batch(wks, &link, &height, &nr_removed, qrys, idx_qry_begin, idx_qry_end);
+    *p_nr_pairs -= nr_removed;
+
+    if (link.ptr == NODE_NULLPTR) {
+        // Nothing is left of the tree; an empty leaf stands for it.
+        p_root->lf.right = NODELINK_NULLPTR;
+        p_root->lf.left = NODE_NULLPTR;
+#ifdef DEBUG_OCCUPANCY
+        p_root->lf.numKeys = 0;
+#endif
+        *p_height = 0;
+        *p_root_numKeys = 0;
+        return;
+    }
+
+    if (height == 0) {
+        fetch_leaf_filled(&Deref(link.ptr).lf, &p_root->lf, link.numKeys);
+    } else {
+        fetch_internal_filled(&Deref(link.ptr).inl, &p_root->inl, link.numKeys);
+    }
+    *p_height = (uint8_t)height;
+    *p_root_numKeys = (uint8_t)link.numKeys;
+    Free_node(link.ptr);
+}
+
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+__attribute__((noinline)) static void DELETE_build_local_tree(TaskletLocalDeleteWorkspace* const wks,
+    const DeletePartition* const partition,
+    Node* const restrict orig_root, NodeLink* const restrict p_root, unsigned* const restrict p_height)
+{
+    Node(*const node_cache)[4] = &workspace.tree.delete.phys.node_cache[me()];
+    Node* const restrict inl_cache = &(*node_cache)[1];
+
+    const unsigned idx_partitioning = partition->idx_partitioning;
+    const InternalNode* const parent = (idx_partitioning == TASK_DELETE_MAX_NR_PARTITIONINGS - 1 ? &orig_root->inl : &workspace.tree.delete.phys.node_cache[idx_partitioning][0].inl);
+
+    const unsigned parent_height = partition->parent_height, child_height = parent_height - 1;
+    const unsigned idx_child_begin = partition->idx_child_begin, idx_child_end = partition->idx_child_end,
+                   nr_keys = idx_child_end - idx_child_begin - 1;
+
+    NodeLink first_child = NthChild(*parent, idx_child_begin);
+    key_uint64_t max_key_of_first_child;
+    NodeLink last_child;
+
+    if (nr_keys == 0) {
+        max_key_of_first_child = KEY_MAX;
+        *p_root = last_child = first_child;
+        *p_height = child_height;
+    } else {
+        max_key_of_first_child = parent->keys[idx_child_begin] - 1;
+
+        NthChild(inl_cache->inl, 0) = first_child;
+        {
+            unsigned idx_child = idx_child_begin + 1;
+            do {
+                inl_cache->inl.keys[idx_child - idx_child_begin - 1] = parent->keys[idx_child - 1];
+                last_child = NthChild(inl_cache->inl, idx_child - idx_child_begin) = NthChild(*parent, idx_child);
+
+                idx_child++;
+            } while (idx_child < idx_child_end);
+        }
+#ifdef DEBUG_OCCUPANCY
+        inl_cache->inl.numKeys = nr_keys;
+#endif
+
+        const NodePtr ptr = Allocate_node();
+        store_internal_filled(&inl_cache->inl, &Deref(ptr).inl, nr_keys);
+
+        const NodeLink root = (NodeLink){ptr, nr_keys};
+        wks->path[parent_height].link = root;
+        wks->path[parent_height].max_key = KEY_MAX;
+
+        *p_root = root;
+        *p_height = parent_height;
+    }
+
+    for (unsigned h = child_height; h > 0; h--) {
+        last_child = DELETE_mram_child(last_child.ptr, last_child.numKeys);
+    }
+    DELETE_write_right_of_leaf(last_child.ptr, NODELINK_NULLPTR);
+
+    for (unsigned h = child_height;; h--) {
+        wks->path[h].link = first_child;
+        wks->path[h].idx_in_parent = 0;
+        wks->path[h].max_key = max_key_of_first_child;
+
+        if (h == 0) {
+            break;
+        }
+
+        fetch_internal_filled(&Deref(first_child.ptr).inl, &inl_cache->inl, 1);
+        first_child = NthChild(inl_cache->inl, 0);
+        max_key_of_first_child = inl_cache->inl.keys[0] - 1;
+    }
+
+    DELETE_write_left_of_leaf(first_child, NODE_NULLPTR);
+
+    wks->parent_loaded = false;
+    wks->leaf_loaded = false;
+    wks->leaf_dirty = false;
+    wks->path_stale = false;
+}
+
+//! @brief Where a join inserts: the nodes of the receiving tree from the one
+//! that takes the moved children (level 0) up to its root (level `top`).
+typedef struct {
+    NodeLink path[MAX_HEIGHT + 1];
+    uint8_t top;
+    bool at_tail;
+} DeleteJoinPath;
+
+//! @brief Inserts `child` at position `p` of the node at level `d` of `jp`, with
+//! `key` as the delimiter before it, or after it when it goes to the head.  Both
+//! node caches are used, so the caller must have written back what it holds in
+//! them; `jp` is left pointing at the nodes the insertion side now runs through.
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DJOIN_insert_child(DeleteJoinPath* const jp,
+    unsigned d, unsigned p, NodeLink child, key_uint64_t key)
+{
+    Node(*const node_cache)[4] = &workspace.tree.delete.phys.node_cache[me()];
+
+    // The new link to the level below: only a split leaves this node's copy of
+    // it stale.
+    bool has_fix = false;
+    NodeLink fix = NODELINK_NULLPTR;
+
+    for (;;) {
+        Node* const node = &(*node_cache)[0];
+        Node* const sibling = &(*node_cache)[1];
+        const unsigned n = (unsigned)jp->path[d].numKeys + 1;
+        const unsigned q = (p == 0 ? 0 : p - 1);
+
+        fetch_internal_filled(&Deref(jp->path[d].ptr).inl, &node->inl, jp->path[d].numKeys);
+        if (has_fix) {
+            NthChild(node->inl, jp->at_tail ? n - 1 : 0) = fix;
+        }
+
+        if (n < MAX_NR_CHILDREN) {
+            for (unsigned i = n; i-- > p;) {
+                NthChild(node->inl, i + 1) = NthChild(node->inl, i);
+            }
+            for (unsigned i = n - 1; i-- > q;) {
+                node->inl.keys[i + 1] = node->inl.keys[i];
+            }
+            NthChild(node->inl, p) = child;
+            node->inl.keys[q] = key;
+#ifdef DEBUG_OCCUPANCY
+            node->inl.numKeys = n;
+#endif
+            store_internal_filled(&node->inl, &Deref(jp->path[d].ptr).inl, n);
+            jp->path[d].numKeys = n;
+            if (d != jp->top) {
+                DELETE_write_child_link(jp->path[d + 1].ptr,
+                    (uint16_t)(jp->at_tail ? jp->path[d + 1].numKeys : 0), jp->path[d]);
+            }
+            return;
+        }
+
+        _Static_assert(MIN_NR_CHILDREN * 2 <= MAX_NR_CHILDREN, "MIN_NR_CHILDREN * 2 <= MAX_NR_CHILDREN");
+        const unsigned nr_left = MAX_NR_CHILDREN - MIN_NR_CHILDREN;
+        const key_uint64_t promoted = DELETE_combined_key(&node->inl, q, key, nr_left - 1);
+
+        for (unsigned i = nr_left; i <= MAX_NR_CHILDREN; i++) {
+            NthChild(sibling->inl, i - nr_left) = DELETE_combined_child(&node->inl, p, child, i);
+            if (i != nr_left) {
+                sibling->inl.keys[i - nr_left - 1] = DELETE_combined_key(&node->inl, q, key, i - 1);
+            }
+        }
+        for (unsigned i = nr_left; i-- > 0;) {
+            if (i != 0) {
+                node->inl.keys[i - 1] = DELETE_combined_key(&node->inl, q, key, i - 1);
+            }
+            NthChild(node->inl, i) = DELETE_combined_child(&node->inl, p, child, i);
+        }
+#ifdef DEBUG_OCCUPANCY
+        node->inl.numKeys = nr_left - 1;
+        sibling->inl.numKeys = MAX_NR_CHILDREN - nr_left;
+#endif
+        const NodePtr sibling_ptr = Allocate_node();
+        store_internal_filled(&node->inl, &Deref(jp->path[d].ptr).inl, nr_left - 1);
+        store_internal_filled(&sibling->inl, &Deref(sibling_ptr).inl, MAX_NR_CHILDREN - nr_left);
+
+        const NodeLink left = {jp->path[d].ptr, nr_left - 1},
+                       right = {sibling_ptr, MAX_NR_CHILDREN - nr_left};
+        jp->path[d] = (jp->at_tail ? right : left);
+
+        if (d == jp->top) {
+            node->inl.keys[0] = promoted;
+            NthChild(node->inl, 0) = left;
+            NthChild(node->inl, 1) = right;
+#ifdef DEBUG_OCCUPANCY
+            node->inl.numKeys = 1;
+#endif
+            const NodePtr root_ptr = Allocate_node();
+            store_internal_filled(&node->inl, &Deref(root_ptr).inl, 1);
+            jp->path[++jp->top] = (NodeLink){root_ptr, 1};
+            return;
+        }
+
+        d++;
+        p = (jp->at_tail ? (unsigned)jp->path[d].numKeys + 1 : 1);
+        child = right;
+        key = promoted;
+        has_fix = true;
+        fix = left;
+    }
+}
+
+//! @param[in,out] p_root, p_height  The left tree, and the tree that results.
+//! @param mid  The boundary: the smallest key the right tree's range covers.
+//! @note A local tree that shrank to one short leaf is merged into the leaf it
+//! meets here.  That is safe because the two trees are this tasklet's alone and
+//! their chains of leaves are already stitched to each other.
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+__attribute__((noinline)) static void DJOIN_trees(NodeLink* const p_root, uint8_t* const p_height,
+    NodeLink right_root, const uint8_t right_height, key_uint64_t mid)
+{
+    Node(*const node_cache)[4] = &workspace.tree.delete.phys.node_cache[me()];
+    Node* const node = &(*node_cache)[0];
+    LeafNode* const lf_left = &(*node_cache)[1].lf;
+    LeafNode* const lf_right = &(*node_cache)[3].lf;
+
+    if (*p_height == 0 && right_height == 0) {
+        // A root may hold as little as it likes, so either of these may be
+        // short.  Whichever is has to stop being short here.
+        if (p_root->numKeys < MIN_NR_PAIRS || right_root.numKeys < MIN_NR_PAIRS) {
+            const unsigned nr_total = (unsigned)p_root->numKeys + right_root.numKeys;
+            fetch_leaf_filled(&Deref(p_root->ptr).lf, lf_left, p_root->numKeys);
+            fetch_leaf_filled(&Deref(right_root.ptr).lf, lf_right, right_root.numKeys);
+            const unsigned nr_left = DELETE_combine_leaves(lf_left, lf_right, p_root->ptr, right_root.ptr,
+                p_root->numKeys, right_root.numKeys);
+            DeletePhysWorkspace* const phys = &workspace.tree.delete.phys;
+            if (nr_left == nr_total) {
+                *p_root = (NodeLink){p_root->ptr, nr_total};
+                phys->leftmost_leaf[me()] = phys->rightmost_leaf[me()] = *p_root;
+                return;
+            }
+            *p_root = (NodeLink){p_root->ptr, nr_left};
+            right_root = (NodeLink){right_root.ptr, nr_total - nr_left};
+            phys->leftmost_leaf[me()] = *p_root;
+            phys->rightmost_leaf[me()] = right_root;
+            mid = lf_right->keys[0];
+        }
+
+        node->inl.keys[0] = mid;
+        NthChild(node->inl, 0) = *p_root;
+        NthChild(node->inl, 1) = right_root;
+#ifdef DEBUG_OCCUPANCY
+        node->inl.numKeys = 1;
+#endif
+        const NodePtr ptr = Allocate_node();
+        store_internal_filled(&node->inl, &Deref(ptr).inl, 1);
+        *p_root = (NodeLink){ptr, 1};
+        *p_height = 1;
+        return;
+    }
+
+    const bool at_tail = (*p_height >= right_height);
+    NodeLink donor = (at_tail ? right_root : *p_root);
+    const NodeLink recv = (at_tail ? *p_root : right_root);
+    const uint8_t donor_height = (at_tail ? right_height : *p_height),
+                  recv_height = (at_tail ? *p_height : right_height);
+    const unsigned nr_moved = (donor_height == 0 ? 1u : (unsigned)donor.numKeys + 1);
+    const uint8_t bottom_height = (donor_height == 0 ? 1 : donor_height);
+
+    DeleteJoinPath jp;
+    jp.at_tail = at_tail;
+    jp.top = (uint8_t)(recv_height - bottom_height);
+    jp.path[jp.top] = recv;
+    for (unsigned i = jp.top; i-- > 0;) {
+        jp.path[i] = DELETE_mram_child(jp.path[i + 1].ptr,
+            (uint16_t)(at_tail ? jp.path[i + 1].numKeys : 0));
+    }
+
+    InternalNode* const donor_node = &(*node_cache)[2].inl;
+    if (donor_height != 0) {
+        fetch_internal_filled(&Deref(donor.ptr).inl, donor_node, donor.numKeys);
+    }
+    fetch_internal_filled(&Deref(jp.path[0].ptr).inl, &node->inl, jp.path[0].numKeys);
+    unsigned nr_children = (unsigned)jp.path[0].numKeys + 1;
+
+    if (donor_height == 0 && donor.numKeys < MIN_NR_PAIRS) {
+        // A local tree that shrank to one short leaf: allowed while it was that
+        // tree's root, not allowed hung under an ordinary node.  Both leaves are
+        // in the tree being built, so merging reaches nothing outside it.
+        const unsigned idx_edge = (at_tail ? nr_children - 1 : 0);
+        const NodeLink edge = NthChild(node->inl, idx_edge);
+        const NodeLink left_link = (at_tail ? edge : donor), right_link = (at_tail ? donor : edge);
+        const unsigned nr_total = (unsigned)left_link.numKeys + right_link.numKeys;
+
+        fetch_leaf_filled(&Deref(left_link.ptr).lf, lf_left, left_link.numKeys);
+        fetch_leaf_filled(&Deref(right_link.ptr).lf, lf_right, right_link.numKeys);
+        const unsigned nr_left = DELETE_combine_leaves(lf_left, lf_right, left_link.ptr, right_link.ptr,
+            left_link.numKeys, right_link.numKeys);
+
+        // Which leaf ends the joined tree's chain is only known here.
+        DeletePhysWorkspace* const phys = &workspace.tree.delete.phys;
+        NodeLink* const p_end = (at_tail ? &phys->rightmost_leaf[me()] : &phys->leftmost_leaf[me()]);
+
+        if (nr_left == nr_total) {
+            // Nothing is left to hang; the node above keeps its children.
+            NthChild(node->inl, idx_edge) = (NodeLink){left_link.ptr, nr_total};
+            store_internal_filled(&node->inl, &Deref(jp.path[0].ptr).inl, jp.path[0].numKeys);
+            *p_end = (NodeLink){left_link.ptr, nr_total};
+            *p_root = recv;
+            *p_height = recv_height;
+            return;
+        }
+
+        NthChild(node->inl, idx_edge) = (NodeLink){edge.ptr, (at_tail ? nr_left : nr_total - nr_left)};
+        donor = (NodeLink){donor.ptr, (at_tail ? nr_total - nr_left : nr_left)};
+        *p_end = donor;
+        mid = lf_right->keys[0];
+    }
+
+    for (unsigned k = 0; k < nr_moved; k++) {
+        // Nearest the boundary first, since each one goes in at the boundary end.
+        const unsigned j = (at_tail ? k : nr_moved - 1 - k);
+        NodeLink child;
+        key_uint64_t key;
+        if (donor_height == 0) {
+            child = donor;
+            key = mid;
+        } else if (at_tail) {
+            child = NthChild(*donor_node, j);
+            key = (j == 0 ? mid : donor_node->keys[j - 1]);
+        } else {
+            child = NthChild(*donor_node, j);
+            key = (j + 1 == nr_moved ? mid : donor_node->keys[j]);
+        }
+
+        if (nr_children < MAX_NR_CHILDREN) {
+            if (at_tail) {
+                node->inl.keys[nr_children - 1] = key;
+                NthChild(node->inl, nr_children) = child;
+            } else {
+                for (unsigned i = nr_children; i-- > 0;) {
+                    NthChild(node->inl, i + 1) = NthChild(node->inl, i);
+                    if (i != 0) {
+                        node->inl.keys[i] = node->inl.keys[i - 1];
+                    }
+                }
+                node->inl.keys[0] = key;
+                NthChild(node->inl, 0) = child;
+            }
+            nr_children++;
+
+        } else {
+#ifdef DEBUG_OCCUPANCY
+            node->inl.numKeys = nr_children - 1;
+#endif
+            store_internal_filled(&node->inl, &Deref(jp.path[0].ptr).inl, nr_children - 1);
+            jp.path[0].numKeys = nr_children - 1;
+            DJOIN_insert_child(&jp, 0, (at_tail ? nr_children : 0), child, key);
+            fetch_internal_filled(&Deref(jp.path[0].ptr).inl, &node->inl, jp.path[0].numKeys);
+            nr_children = (unsigned)jp.path[0].numKeys + 1;
+        }
+    }
+
+#ifdef DEBUG_OCCUPANCY
+    node->inl.numKeys = nr_children - 1;
+#endif
+    store_internal_filled(&node->inl, &Deref(jp.path[0].ptr).inl, nr_children - 1);
+    jp.path[0].numKeys = nr_children - 1;
+    if (jp.top != 0) {
+        DELETE_write_child_link(jp.path[1].ptr,
+            (uint16_t)(at_tail ? jp.path[1].numKeys : 0), jp.path[0]);
+    }
+    if (donor_height != 0) {
+        Free_node(donor.ptr);
+    }
+
+    *p_root = jp.path[jp.top];
+    *p_height = (uint8_t)(bottom_height + jp.top);
+}
+
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_execute_in_parallel(const DeleteSortTopDigit* const top_digit,
+    Node* const root, uint8_t* const p_height, uint8_t* const p_root_numKeys, uint32_t* const p_nr_pairs,
+    __mram_ptr key_uint64_t* const qrys, const uint32_t nr_qrys)
+{
+    DeletePhysWorkspace* const wks = &workspace.tree.delete.phys;
+    DeletePartitionWorkspace* const part_wks = &wks->part;
+
+    if (nr_qrys == 0) {
+        return;
+    }
+
+    TaskletLocalDeleteWorkspace* const wks_me = &wks->th[me()];
+
+    uint8_t height = *p_height;
+    // DELETE_execute_batch_wram_root writes *p_height, so the read above has to
+    // be over before any tasklet can get there.
+    DELETE_tree_barrier();
+    if (height == 0 || nr_qrys <= TASK_DELETE_SORT_RUN) {
+        if (me() == 0) {
+            DELETE_execute_batch_wram_root(wks_me, root, p_height, p_root_numKeys, p_nr_pairs, qrys, 0, nr_qrys);
+        }
+        DELETE_tree_barrier();
+        return;
+    }
+
+    const unsigned orig_root_numKeys = *p_root_numKeys;
+    DeletePartitioning* const root_partitioning = &part_wks->partitionings[TASK_DELETE_MAX_NR_PARTITIONINGS - 1];
+
+    DELETE_find_bucket_begins(top_digit, qrys, 0, nr_qrys, &root->inl.keys, orig_root_numKeys, &root_partitioning->backet_ends, me());
+
+    DeletePartition* const my_partition = &part_wks->partitions[me()];
+    my_partition->idx_child_end = 0;
+
+    DELETE_tree_wait_for_all_next();
+
+    if (me() == 0) {
+        const unsigned nr_assignments = DELETE_plan_partitioning_impl(root_partitioning,
+            0, nr_qrys,
+            orig_root_numKeys, height,
+            TASK_DELETE_NR_TASKLETS);
+
+        part_wks->nr_partitionings = 0;
+        root_partitioning->idx_qry_begin = 0;
+        root_partitioning->idx_qry_end = nr_qrys;
+        root_partitioning->node_numKeys = (uint8_t)orig_root_numKeys;
+        DELETE_store_partitioning_results(TASK_DELETE_MAX_NR_PARTITIONINGS - 1, root_partitioning, 0, root, height, KEY_MIN, nr_assignments);
+    }
+
+    DELETE_tree_wait_for_all_prev();
+
+    for (unsigned idx_partitioning = 0;;) {
+        const unsigned idx_partitioning_end = part_wks->nr_partitionings;
+        if (idx_partitioning == idx_partitioning_end) {
+            break;
+        }
+
+        height--;
+
+        unsigned idx_key = me();
+        for (; idx_partitioning < idx_partitioning_end; idx_partitioning++) {
+            DeletePartitioning* const partitioning = &part_wks->partitionings[idx_partitioning];
+            Node* const node = &wks->node_cache[idx_partitioning][0];
+
+            idx_key = DELETE_find_bucket_begins(top_digit, qrys, partitioning->idx_qry_begin, partitioning->idx_qry_end,
+                &node->inl.keys, partitioning->node_numKeys,
+                &partitioning->backet_ends, idx_key);
+        }
+
+        DELETE_tree_barrier();
+
+        if (my_partition->idx_child_end == TASK_DELETE_PARTITIONING_LEADER(height)) {
+            const unsigned idx_partitioning_of_mine = my_partition->idx_partitioning;
+            DeletePartitioning* const partitioning = &part_wks->partitionings[idx_partitioning_of_mine];
+            Node* const node = &wks->node_cache[idx_partitioning_of_mine][0];
+
+            const unsigned nr_assignments = DELETE_plan_partitioning(partitioning, height);
+
+            DELETE_store_partitioning_results(idx_partitioning_of_mine, partitioning, me(), node, height, my_partition->min_key, nr_assignments);
+        }
+
+        DELETE_tree_barrier();
+    }
+
+    if (my_partition->idx_child_end == 0) {
+        wks_me->nr_removed_pairs = 0;
+        wks->task_tree[me()] = NODELINK_NULLPTR;
+
+        DELETE_tree_barrier();
+
+    } else {
+        NodeLink subtree_root;
+        unsigned subtree_height;
+        DELETE_build_local_tree(wks_me, my_partition, root, &subtree_root, &subtree_height);
+
+        wks->task_min_key[me()] = my_partition->min_key;
+
+        DELETE_tree_barrier();
+
+        DELETE_execute_batch(wks_me, &subtree_root, &subtree_height, &wks_me->nr_removed_pairs,
+            qrys, my_partition->idx_qry_begin, my_partition->idx_qry_end);
+
+        wks->task_tree[me()] = subtree_root;
+        wks->task_tree_height[me()] = (uint8_t)subtree_height;
+
+        if (subtree_root.ptr != NODE_NULLPTR) {
+            wks->leftmost_leaf[me()] = DELETE_edge_leaf_under(subtree_root, (uint8_t)subtree_height, false);
+            wks->rightmost_leaf[me()] = DELETE_edge_leaf_under(subtree_root, (uint8_t)subtree_height, true);
+        }
+    }
+
+    for (unsigned step = 1; step < TASK_DELETE_NR_TASKLETS; step *= 2) {
+        DELETE_tree_barrier();
+        const unsigned other = me() + step;
+        if ((me() & (step * 2 - 1)) == 0 && other < TASK_DELETE_NR_TASKLETS && wks->task_tree[other].ptr != NODE_NULLPTR) {
+            if (wks->task_tree[me()].ptr == NODE_NULLPTR) {
+                wks->task_tree[me()] = wks->task_tree[other];
+                wks->task_tree_height[me()] = wks->task_tree_height[other];
+                wks->task_min_key[me()] = wks->task_min_key[other];
+                wks->leftmost_leaf[me()] = wks->leftmost_leaf[other];
+                wks->rightmost_leaf[me()] = wks->rightmost_leaf[other];
+            } else {
+                // The place the two chains of leaves meet, and the only leaf
+                // link either tree is missing.
+                DELETE_write_right_of_leaf(wks->rightmost_leaf[me()].ptr, wks->leftmost_leaf[other]);
+                DELETE_write_left_of_leaf(wks->leftmost_leaf[other], wks->rightmost_leaf[me()].ptr);
+
+                // The joining may merge a boundary leaf away, and then it puts
+                // the end that survived here itself.
+                wks->rightmost_leaf[me()] = wks->rightmost_leaf[other];
+                DJOIN_trees(&wks->task_tree[me()], &wks->task_tree_height[me()],
+                    wks->task_tree[other], wks->task_tree_height[other], wks->task_min_key[other]);
+            }
+        }
+    }
+
+    if (me() == 0) {
+        for (unsigned t = 0; t < TASK_DELETE_NR_TASKLETS; t++) {
+            *p_nr_pairs -= wks->th[t].nr_removed_pairs;
+        }
+        const NodeLink joined = wks->task_tree[0];
+        if (joined.ptr == NODE_NULLPTR) {
+            // Nothing is left of the tree; an empty leaf stands for it.
+            root->lf.right = NODELINK_NULLPTR;
+            root->lf.left = NODE_NULLPTR;
+#ifdef DEBUG_OCCUPANCY
+            root->lf.numKeys = 0;
+#endif
+            *p_root_numKeys = 0;
+            *p_height = 0;
+        } else if (wks->task_tree_height[0] == 0) {
+            fetch_leaf_filled(&Deref(joined.ptr).lf, &root->lf, joined.numKeys);
+            *p_root_numKeys = (uint8_t)joined.numKeys;
+            *p_height = 0;
+            Free_node(joined.ptr);
+        } else {
+            fetch_internal_filled(&Deref(joined.ptr).inl, &root->inl, joined.numKeys);
+            *p_root_numKeys = (uint8_t)joined.numKeys;
+            *p_height = wks->task_tree_height[0];
+            Free_node(joined.ptr);
+        }
+    }
+    DELETE_tree_barrier();
+}
+
+
+/* ---------------------------------------------------------------------- *
+ *  The host's request for the smallest live key of a range, answered once
+ *  the tree is in its final shape.
+ * ---------------------------------------------------------------------- */
+
+//! @return The smallest key in `range` (both ends inclusive) as {key, 1},
+//! or {0, 0} if the range holds none.
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
 static KVPair DELETE_refresh_one(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
     const KeyRange range)
 {
-    DeleteWorkspace* const wks_me = loop_invariant(&workspace.tree.delete[me()]);
+    DeleteResultWorkspace* const wks_me = loop_invariant(&workspace.tree.delete.th[me()]);
 
     if (height == 0) {
-        const value_int64_t* const rev_values = RevValues(root->lf);
-        for (uint16_t i = search_for_pair_index(&root->lf.keys[0], root_numKeys, range.begin); i < root_numKeys; i++) {
-            if (root->lf.keys[i] > range.end) {
-                break;
-            }
-            if (rev_values[-(int32_t)i] != NOT_FOUND_VALUE) {
-                return (KVPair){root->lf.keys[i], 1};
-            }
+        const uint16_t i = search_for_pair_index(&root->lf.keys[0], root_numKeys, range.begin);
+        if (i < root_numKeys && root->lf.keys[i] <= range.end) {
+            return (KVPair){root->lf.keys[i], 1};
         }
         return (KVPair){0, 0};
     }
@@ -2387,40 +4342,30 @@ static KVPair DELETE_refresh_one(const Node* const root, const uint8_t height, c
         link = NthChild(wks_me->node_cache.inl, idx_child);
     }
 
-    const value_int64_t* const rev_values = loop_invariant(RevValues(wks_me->node_cache.lf));
     const key_uint64_t* const cached_keys = loop_invariant(&wks_me->node_cache.lf.keys[0]);
     for (;;) {
         fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
-        for (uint16_t i = search_for_pair_index(cached_keys, link.numKeys, range.begin); i < link.numKeys; i++) {
-            if (cached_keys[i] > range.end) {
-                return (KVPair){0, 0};
-            }
-            if (rev_values[-(int32_t)i] != NOT_FOUND_VALUE) {
-                return (KVPair){cached_keys[i], 1};
-            }
+        const uint16_t i = search_for_pair_index(cached_keys, link.numKeys, range.begin);
+        if (i < link.numKeys) {
+            return (cached_keys[i] > range.end ? (KVPair){0, 0} : (KVPair){cached_keys[i], 1});
         }
+        // Only the leaf the search lands in can hold nothing at or past the
+        // start of the range, and then the answer is in the next one.
         link = wks_me->node_cache.lf.right;
-        if (link.ptr == NODELINK_NULLPTR.ptr && link.numKeys == NODELINK_NULLPTR.numKeys) {
+        if (DELETE_is_null_link(link)) {
             return (KVPair){0, 0};
         }
     }
 }
-//! @brief Answers the min-refresh requests appended after the key payload.
-//! Runs on a single tasklet after all deletions have completed.
-OVERLAY_LOCAL(OVL_SLOT_QUERY)
-static void DELETE_refresh_mins(const uintptr_t refresh_results)
+OVERLAY_LOCAL(OVL_SLOT_DELETE_TREE)
+static void DELETE_refresh_mins(const uint32_t nr_cold_refreshes, const uint32_t nr_hot_refreshes, const uintptr_t requests, const uintptr_t refresh_results)
 {
-    DeleteWorkspace* const wks_me = loop_invariant(&workspace.tree.delete[me()]);
+    DeleteResultWorkspace* const wks_me = loop_invariant(&workspace.tree.delete.th[me()]);
 
-    const uintptr_t counts_addr = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader)
-                                  + sizeof(key_uint64_t) * (input_header.qrys.nr_cold_qrys + input_header.qrys.nr_hot_qrys);
-    mram_read((__mram_ptr void*)counts_addr, &wks_me->nr_refreshes[0], sizeof(uint32_t[2]));
-
-    const uintptr_t requests = counts_addr + sizeof(uint32_t[2]);
-    const uint32_t nr_total = wks_me->nr_refreshes[0] + wks_me->nr_refreshes[1];
+    const uint32_t nr_total = nr_cold_refreshes + nr_hot_refreshes;
     for (uint32_t i = 0; i < nr_total; i++) {
         mram_read((__mram_ptr void*)(requests + sizeof(KeyRange) * i), &wks_me->refresh_range, sizeof(KeyRange));
-        if (i < wks_me->nr_refreshes[0]) {
+        if (i < nr_cold_refreshes) {
             wks_me->refresh_response = DELETE_refresh_one(&cold_root, cold_height, cold_root_numKeys, wks_me->refresh_range);
         } else {
             wks_me->refresh_response = DELETE_refresh_one(&hot_root, hot_height, hot_root_numKeys, wks_me->refresh_range);
@@ -2428,66 +4373,87 @@ static void DELETE_refresh_mins(const uintptr_t refresh_results)
         mram_write(&wks_me->refresh_response, (__mram_ptr void*)(refresh_results + sizeof(KVPair) * i), sizeof(KVPair));
     }
 }
-OVERLAY_TASK(OVL_SLOT_QUERY, task_delete, (void), ())
+
+
+OVERLAY_TASK_STATIC(OVL_SLOT_DELETE, DELETE_result_phase, (void), ())
 {
+    if (me() >= TASK_DELETE_SORT_NR_TASKLETS) {
+        return;
+    }
+    if (me() == 0) {
+        DELETE_layout();
+    }
+    DELETE_sort_barrier();
+    const DeleteLayout* const lo = &workspace.tree.delete.layout;
+
+    // A tasklet at or above TASK_DELETE_NR_TASKLETS has no slice of the result
+    // array and goes straight to the barrier that ends this stage.  The chain
+    // barrier keeps its state per adjacent pair of tasklets, so what such a
+    // tasklet touches there starts at the pair (TASK_DELETE_NR_TASKLETS - 1,
+    // TASK_DELETE_NR_TASKLETS) and never meets the pairs the rest run between.
     if (me() < TASK_DELETE_NR_TASKLETS) {
-        const uint32_t nr_cold_qrys = input_header.qrys.nr_cold_qrys, nr_hot_qrys = input_header.qrys.nr_hot_qrys;
-
-        // Result layout: docs/dpu_task_signature.md, TASK_DELETE.
-        const uintptr_t result_base = (uintptr_t)DPU_MRAM_HEAP_POINTER + input_header.qrys.result_offset;
-        const uintptr_t cold_results = result_base;
-        const uintptr_t hot_results = cold_results + (nr_cold_qrys + 7u) / 8u * 8u;
-        const uintptr_t counts_result = hot_results + (nr_hot_qrys + 7u) / 8u * 8u;
-        const uintptr_t refresh_results = counts_result + sizeof(nr_pairs);
-
         // Per-tasklet quotas are rounded up to a multiple of 8 so that no two
         // tasklets share an 8-byte word of the 1-byte result flags.
-        const uint32_t nr_cold_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_DELETE_NR_TASKLETS(nr_cold_qrys),
-                       cold_quota = (nr_cold_qrys_per_tasklet + (nr_cold_qrys_per_tasklet * TASK_DELETE_NR_TASKLETS != nr_cold_qrys) + 7u) / 8u * 8u;
-        const uint32_t idx_cold_qry_begin = cold_quota * me() < nr_cold_qrys ? cold_quota * me() : nr_cold_qrys,
-                       idx_cold_qry_end = idx_cold_qry_begin + cold_quota < nr_cold_qrys ? idx_cold_qry_begin + cold_quota : nr_cold_qrys;
+        const uint32_t nr_cold_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_DELETE_NR_TASKLETS(lo->nr_cold_qrys),
+                       cold_quota = (nr_cold_qrys_per_tasklet + (nr_cold_qrys_per_tasklet * TASK_DELETE_NR_TASKLETS != lo->nr_cold_qrys) + 7u) / 8u * 8u;
+        const uint32_t idx_cold_qry_begin = cold_quota * me() < lo->nr_cold_qrys ? cold_quota * me() : lo->nr_cold_qrys,
+                       idx_cold_qry_end = idx_cold_qry_begin + cold_quota < lo->nr_cold_qrys ? idx_cold_qry_begin + cold_quota : lo->nr_cold_qrys;
 
-        const uint32_t nr_hot_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_DELETE_NR_TASKLETS(nr_hot_qrys),
-                       hot_quota = (nr_hot_qrys_per_tasklet + (nr_hot_qrys_per_tasklet * TASK_DELETE_NR_TASKLETS != nr_hot_qrys) + 7u) / 8u * 8u;
-        const uint32_t idx_hot_qry_begin = (hot_quota * me() < nr_hot_qrys ? hot_quota * me() : nr_hot_qrys) + nr_cold_qrys,
-                       idx_hot_qry_end = (idx_hot_qry_begin - nr_cold_qrys) + hot_quota < nr_hot_qrys
+        const uint32_t nr_hot_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_DELETE_NR_TASKLETS(lo->nr_hot_qrys),
+                       hot_quota = (nr_hot_qrys_per_tasklet + (nr_hot_qrys_per_tasklet * TASK_DELETE_NR_TASKLETS != lo->nr_hot_qrys) + 7u) / 8u * 8u;
+        const uint32_t idx_hot_qry_begin = (hot_quota * me() < lo->nr_hot_qrys ? hot_quota * me() : lo->nr_hot_qrys) + lo->nr_cold_qrys,
+                       idx_hot_qry_end = (idx_hot_qry_begin - lo->nr_cold_qrys) + hot_quota < lo->nr_hot_qrys
                                              ? idx_hot_qry_begin + hot_quota
-                                             : nr_hot_qrys + nr_cold_qrys;
+                                             : lo->nr_hot_qrys + lo->nr_cold_qrys;
 
-        const uint32_t nr_deleted_cold = DELETE_execute(&cold_root, cold_height, cold_root_numKeys,
-            idx_cold_qry_begin, idx_cold_qry_end, cold_results + idx_cold_qry_begin);
-#ifdef TASK_DELETE_CHECK
-        DELETE_barrier();
-        if (me() == 0) {
-            check_tree_structure(&cold_root, cold_height, cold_root_numKeys);
-        }
-#endif
+        DELETE_claim_pass(&cold_root, cold_height, cold_root_numKeys,
+            idx_cold_qry_begin, idx_cold_qry_end, lo->cold_slots + sizeof(uintptr_t) * idx_cold_qry_begin);
+        DELETE_claim_pass(&hot_root, hot_height, hot_root_numKeys,
+            idx_hot_qry_begin, idx_hot_qry_end, lo->hot_slots + sizeof(uintptr_t) * (idx_hot_qry_begin - lo->nr_cold_qrys));
 
-        const uint32_t nr_deleted_hot = DELETE_execute(&hot_root, hot_height, hot_root_numKeys,
-            idx_hot_qry_begin, idx_hot_qry_end, hot_results + (idx_hot_qry_begin - nr_cold_qrys));
-#ifdef TASK_DELETE_CHECK
-        DELETE_barrier();
-        if (me() == 0) {
-            check_tree_structure(&hot_root, hot_height, hot_root_numKeys);
-        }
-#endif
+        DELETE_result_barrier();
 
-        if (me() != 0) {
-            wait_for_prev_ready();
-        }
-        nr_pairs.cold -= nr_deleted_cold;
-        nr_pairs.hot -= nr_deleted_hot;
-        if (me() != TASK_DELETE_NR_TASKLETS - 1) {
-            notify_next_of_readiness();
-        } else {
-            // The chain above doubles as a barrier: reaching this point means
-            // every tasklet has finished its deletions, so the counts are
-            // final and the min-refresh scans below see the final state of
-            // this batch.
-            report_nr_pairs(counts_result);
-            DELETE_refresh_mins(refresh_results);
-        }
+        DELETE_report_pass(cold_height,
+            idx_cold_qry_begin, idx_cold_qry_end, lo->cold_slots + sizeof(uintptr_t) * idx_cold_qry_begin,
+            lo->cold_results + idx_cold_qry_begin);
+        DELETE_report_pass(hot_height,
+            idx_hot_qry_begin, idx_hot_qry_end, lo->hot_slots + sizeof(uintptr_t) * (idx_hot_qry_begin - lo->nr_cold_qrys),
+            lo->hot_results + (idx_hot_qry_begin - lo->nr_cold_qrys));
     }
+
+    // The result array is what fixes the order the queries are answered in, so
+    // from here on the batch may be rearranged.
+    DELETE_sort_barrier();
+    DSORT_execute_in_parallel(&workspace.tree.delete.sort_top_digit[0], lo->qrys, lo->nr_cold_qrys, lo->sort_scratch);
+    DSORT_execute_in_parallel(&workspace.tree.delete.sort_top_digit[1], lo->qrys + lo->nr_cold_qrys, lo->nr_hot_qrys, lo->sort_scratch);
+}
+
+OVERLAY_TASK_STATIC(OVL_SLOT_DELETE_TREE, DELETE_tree_phase, (void), ())
+{
+    if (me() >= TASK_DELETE_NR_TASKLETS) {
+        return;
+    }
+    // The first half worked the layout out, and every tasklet went through a
+    // barrier after it.
+    const DeleteLayout* const lo = &workspace.tree.delete.layout;
+
+    DELETE_execute_in_parallel(&workspace.tree.delete.sort_top_digit[0],
+        &cold_root, &cold_height, &cold_root_numKeys, &nr_pairs.cold, lo->qrys, lo->nr_cold_qrys);
+    DELETE_execute_in_parallel(&workspace.tree.delete.sort_top_digit[1],
+        &hot_root, &hot_height, &hot_root_numKeys, &nr_pairs.hot, lo->qrys + lo->nr_cold_qrys, lo->nr_hot_qrys);
+
+    if (me() == 0) {
+        report_nr_pairs((__mram_ptr NrPairs*)lo->counts_result);
+        DELETE_refresh_mins(lo->nr_refreshes[0], lo->nr_refreshes[1], lo->refresh_requests, lo->refresh_results);
+    }
+}
+void task_delete(void)
+{
+    DELETE_result_phase();
+    DELETE_tree_phase();
+#ifdef TASK_DELETE_CHECK
+    CHECK_trees();
+#endif
 }
 #endif
 
@@ -2617,59 +4583,40 @@ static void PRED_flush_results_cache(PredWorkspace* wks)
         wks->idx_result_in_cache = 0;
     }
 }
-//! @brief Strict predecessor among live pairs: the pair with the largest key
-//! < `key` whose value is not a tombstone (NOT_FOUND_VALUE).
+//! @brief Strict predecessor: the pair with the largest key < `key`.
 //! Internal-node descent uses search_for_pair_index (= #{delim < key}), so we
 //! always descend the rightmost child whose subtree minimum is < key, i.e. the
-//! child that contains the physical predecessor.  Tombstoned pairs are skipped
-//! by scanning the leaf leftward; when a whole leaf prefix is dead, the search
-//! restarts from the leaf's smallest key, which strictly decreases and thus
-//! terminates.  Returns the sentinel {KEY_MIN, NOT_FOUND_VALUE} when the tree
-//! has no live pair below `key`, which a correctly routed query never sees
+//! child that contains the predecessor.  Reaching a leaf whose keys are all
+//! >= `key` therefore means the descent never left the leftmost child, and the
+//! tree holds no smaller key.  Returns the sentinel {KEY_MIN, NOT_FOUND_VALUE}
+//! then, which a correctly routed query never sees
 //! (docs/dpu_task_signature.md, TASK_PRED).
 OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static KVPair PRED_search_one(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
-    key_uint64_t key)
+    const key_uint64_t key)
 {
     PredWorkspace* const wks_me = loop_invariant(&workspace.tree.pred[me()]);
 
     if (height == 0) {
-        const value_int64_t* const rev_values = RevValues(root->lf);
-        for (uint16_t i = search_for_pair_index(&root->lf.keys[0], root_numKeys, key); i > 0;) {
-            i--;
-            const value_int64_t value = rev_values[-(int32_t)i];
-            if (value != NOT_FOUND_VALUE) {
-                return (KVPair){root->lf.keys[i], value};
-            }
-        }
-        return (KVPair){KEY_MIN, NOT_FOUND_VALUE};
-    }
-
-    const value_int64_t* const rev_values = loop_invariant(RevValues(wks_me->node_cache.lf));
-    const key_uint64_t* const cached_keys = loop_invariant(&wks_me->node_cache.lf.keys[0]);
-    for (;;) {
-        NodeLink link = NthChild(root->inl, search_for_pair_index(&root->inl.keys[0], root_numKeys, key));
-        for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
-            fetch_internal_filled(&Deref(link.ptr).inl, &wks_me->node_cache.inl, link.numKeys);
-            const uint16_t idx_child = search_for_pair_index(&wks_me->node_cache.inl.keys[0], link.numKeys, key);
-            link = NthChild(wks_me->node_cache.inl, idx_child);
-        }
-        fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
-        const uint16_t idx_first_ge = search_for_pair_index(cached_keys, link.numKeys, key);
-        for (uint16_t i = idx_first_ge; i > 0;) {
-            i--;
-            const value_int64_t value = rev_values[-(int32_t)i];
-            if (value != NOT_FOUND_VALUE) {
-                return (KVPair){cached_keys[i], value};
-            }
-        }
+        const uint16_t idx_first_ge = search_for_pair_index(&root->lf.keys[0], root_numKeys, key);
         if (idx_first_ge == 0) {
-            // No key < `key` exists in this tree.
             return (KVPair){KEY_MIN, NOT_FOUND_VALUE};
         }
-        // keys[0 .. idx_first_ge) are all tombstones; continue strictly left.
-        key = cached_keys[0];
+        return (KVPair){root->lf.keys[idx_first_ge - 1], NthValue(root->lf, idx_first_ge - 1)};
     }
+
+    NodeLink link = NthChild(root->inl, search_for_pair_index(&root->inl.keys[0], root_numKeys, key));
+    for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
+        fetch_internal_filled(&Deref(link.ptr).inl, &wks_me->node_cache.inl, link.numKeys);
+        const uint16_t idx_child = search_for_pair_index(&wks_me->node_cache.inl.keys[0], link.numKeys, key);
+        link = NthChild(wks_me->node_cache.inl, idx_child);
+    }
+    fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
+    const uint16_t idx_first_ge = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, key);
+    if (idx_first_ge == 0) {
+        return (KVPair){KEY_MIN, NOT_FOUND_VALUE};
+    }
+    return (KVPair){wks_me->node_cache.lf.keys[idx_first_ge - 1], NthValue(wks_me->node_cache.lf, idx_first_ge - 1)};
 }
 OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static void PRED_execute(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
@@ -2993,7 +4940,7 @@ static uint64_t RANGE_COUNT_impl(const Node* const root, const uint8_t height, c
 
         const value_int64_t* const rev_values = RevValues(root->lf);
         for (; idx_pair < root_numKeys && root->lf.keys[idx_pair] <= range_end; idx_pair++) {
-            if (rev_values[-(int32_t)idx_pair] != NOT_FOUND_VALUE && rev_values[-(int32_t)idx_pair] == needle) {
+            if (rev_values[-(int32_t)idx_pair] == needle) {
                 count++;
             }
         }
@@ -3016,7 +4963,7 @@ static uint64_t RANGE_COUNT_impl(const Node* const root, const uint8_t height, c
                 if (cached_keys[idx_pair] > range_end) {
                     goto end_of_range;
                 }
-                if (rev_values[-(int32_t)idx_pair] != NOT_FOUND_VALUE && rev_values[-(int32_t)idx_pair] == needle) {
+                if (rev_values[-(int32_t)idx_pair] == needle) {
                     count++;
                 }
             }
@@ -3310,17 +5257,14 @@ static void SERIALIZE_execute(uint8_t root_numKeys, const Node* root, uint8_t he
     if (height == 0) {
         const value_int64_t* const rev_values = RevValues(root->lf);
         for (uint8_t i = 0; i < root_numKeys; i++) {
-            const value_int64_t value = rev_values[-(int32_t)i];
-            if (value != NOT_FOUND_VALUE) {
-                const key_uint64_t key = root->lf.keys[i];
+            const key_uint64_t key = root->lf.keys[i];
 
-                while (delim != NULL && *delim <= key) {
-                    SERIALIZE_mark_incision(wks, &delim);
-                }
-
-                KVPair* const pair = SERIALIZE_prepare_pair_cache(wks);
-                *pair = (KVPair){key, value};
+            while (delim != NULL && *delim <= key) {
+                SERIALIZE_mark_incision(wks, &delim);
             }
+
+            KVPair* const pair = SERIALIZE_prepare_pair_cache(wks);
+            *pair = (KVPair){key, rev_values[-(int32_t)i]};
         }
     } else {
         NodeLink cursor = NthChild(root->inl, 0);
@@ -3337,17 +5281,14 @@ static void SERIALIZE_execute(uint8_t root_numKeys, const Node* root, uint8_t he
             fetch_leaf_filled(&Deref(cursor.ptr).lf, &wks->leaf_cache, cursor.numKeys);
 
             for (uint8_t i = 0; i < cursor.numKeys; i++) {
-                const value_int64_t value = rev_values[-(int32_t)i];
-                if (value != NOT_FOUND_VALUE) {
-                    const key_uint64_t key = cached_keys[i];
+                const key_uint64_t key = cached_keys[i];
 
-                    while (delim != NULL && *delim <= key) {
-                        SERIALIZE_mark_incision(wks, &delim);
-                    }
-
-                    KVPair* const pair = SERIALIZE_prepare_pair_cache(wks);
-                    *pair = (KVPair){key, value};
+                while (delim != NULL && *delim <= key) {
+                    SERIALIZE_mark_incision(wks, &delim);
                 }
+
+                KVPair* const pair = SERIALIZE_prepare_pair_cache(wks);
+                *pair = (KVPair){key, rev_values[-(int32_t)i]};
             }
 
             cursor = wks->leaf_cache.right;
@@ -3555,6 +5496,7 @@ void task_move_hot(void)
 }
 
 
+OVERLAY_LOCAL(OVL_SLOT_CHECK)
 static bool checkLeaf(NodeLink link)
 {
     bool success = true;
@@ -3613,6 +5555,7 @@ static bool checkLeaf(NodeLink link)
     return success;
 }
 
+OVERLAY_LOCAL(OVL_SLOT_CHECK)
 static bool checkInternal(NodeLink link, bool is_child_leaf)
 {
     bool success = true;
@@ -3673,6 +5616,7 @@ static bool checkInternal(NodeLink link, bool is_child_leaf)
     return success;
 }
 
+OVERLAY_LOCAL(OVL_SLOT_CHECK)
 static bool check_tree_structure(const Node* root, unsigned height, unsigned root_numKeys)
 {
     bool success = true;
@@ -3780,8 +5724,9 @@ static bool check_tree_structure(const Node* root, unsigned height, unsigned roo
 #ifdef TASK_TREE_CHECK
 //! @brief Checks both trees and stops the DPU if either of them is broken: the
 //! DPU log is only read when a DPU faults, so a broken tree has to fault.
-static void CHECK_trees(void)
+OVERLAY_TASK_STATIC(OVL_SLOT_CHECK, CHECK_trees, (void), ())
 {
+    // A build without the overlay loads nothing, so the wait is asked for here.
     barrier_wait(&tasklet_barrier);
     if (me() == 0) {
         const bool cold_ok = check_tree_structure(&cold_root, cold_height, cold_root_numKeys),

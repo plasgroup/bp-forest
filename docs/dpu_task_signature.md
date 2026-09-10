@@ -76,10 +76,8 @@ DPU バイナリに含まれる。
  Key[nr_cold_qrys + nr_hot_qrys]) -> KVPair[nr_cold_qrys + nr_hot_qrys]
 ```
 
-クエリキー**未満**で最大のキーを持つ**生きている** (値が `NOT_FOUND_VALUE` でない)
-ペア (strict predecessor) を返す。tombstone (TASK_DELETE 参照) は葉内の左方向
-スキャンと葉の再降下で読み飛ばす。木の中にクエリキー未満の生きたペアが
-1 つも無ければ番兵 `{KEY_MIN, NOT_FOUND_VALUE}` を返す。ホストは各パーティションが
+クエリキー**未満**で最大のキーを持つペア (strict predecessor) を返す。木の中に
+クエリキー未満のペアが 1 つも無ければ番兵 `{KEY_MIN, NOT_FOUND_VALUE}` を返す。ホストは各パーティションが
 その最小の生存キーから始まるよう保つので、正しく振り分けられたクエリがこの番兵を
 受け取ることはない (`BPForest::locate_pred_partition` のコメント参照)。
 `BPForest::batch_pred` の返り値がキーと値の組なので、DPU も `KVPair` を返す。
@@ -101,7 +99,7 @@ DPU バイナリに含まれる。
  KeyRange[nr_cold_qrys + nr_hot_qrys]) -> Value[nr_cold_qrys + nr_hot_qrys]
 ```
 
-キー範囲 (両端 inclusive) 内の値の最大値を返す。範囲内にペアが無ければ `NOT_FOUND_VALUE` (= 0)。
+キー範囲 (両端 inclusive) 内の値の最大値を返す。範囲内にペアが無ければ `NOT_FOUND_VALUE`。
 
 ### TASK_INSERT (`SUPPORT_INSERT`)
 
@@ -110,8 +108,7 @@ DPU バイナリに含まれる。
  KVPair[nr_cold_qrys + nr_hot_qrys]) -> uint32_t[2]
 ```
 
-既存キーなら値を上書き、無ければ挿入する。tombstone (TASK_DELETE 参照) への上書きは
-ペアの復活であり、生存数を +1 する。
+既存キーなら値を上書き、無ければ挿入する。
 
 挿入クエリのうち何個が新規キーだったかは DPU にしか分からないため、返り値の
 (cold 木の生存ペア数, hot 木の生存ペア数) をホストが受信して `nr_pairs` に反映する。
@@ -130,12 +127,9 @@ DPU バイナリに含まれる。
     KVPair[nr_cold_refreshes + nr_hot_refreshes])
 ```
 
-削除は tombstone 方式: キーは木から外さず、値を `NOT_FOUND_VALUE` に書き換える
-(物理回収は TASK_SERIALIZE が tombstone をスキップすることで rebalancing 時に
-起こる)。クエリごとに「削除直前にペアが生きていたか」を 0/1 で返し、
-生きていた場合だけ削除としてカウントする (tombstone の再削除は 0)。
-同一キーがバッチ内に重複した場合、値スロットの read-modify-write を
-mutex pool で直列化することで、ちょうど 1 つのクエリだけが 1 を返す。
+キーを木から外す。クエリごとに「削除直前にペアがあったか」を 0/1 で返し、
+同一キーがバッチ内に重複した場合は先頭側の 1 件だけが 1 を返す。設計は
+`docs/parallel_delete.md`。
 
 *   引数の `KeyRange[]` (min-refresh 要求) はキー列の直後に置く。各要求は
     「範囲内 (両端 inclusive) の最小の生きたキー」を尋ねるもので、ホストが
@@ -152,6 +146,9 @@ mutex pool で直列化することで、ちょうど 1 つのクエリだけが
     min-refresh 応答と同じタイミングで確定する。
 *   1 バイトフラグの書き出しが 8 バイト DMA 語を tasklet 間で共有しないよう、
     末尾以外の tasklet のクエリ数は 8 の倍数に切り上げたクオータで分配する。
+*   min-refresh 応答の後ろは DPU 専用の作業領域である (クエリ 1 件あたりの値スロットの
+    アドレス、キー列の複製、tasklet ごとのソートスタック)。ホストは読まないが、
+    MRAM ヒープにはこの分の余地が要る。
 
 ### TASK_SERIALIZE
 
@@ -272,10 +269,10 @@ TASK_SERIALIZE で吸い出したペアを移送先 DPU に流し込む。`renew
 ## tasklet による並列化の可否
 
 現行の各タスクの tasklet 数は `dpu/inc/dpu_params.h` の `TASK_*_NR_TASKLETS` で決まる。
-既定では TASK_GET / TASK_PRED / TASK_DELETE / TASK_RANGE_COUNT / TASK_RANGE_MAX と
-木の構築 (`TREE_CONSTRUCT_NR_TASKLETS`) が `NR_TASKLETS` 並列、
-TASK_INSERT と TASK_SERIALIZE は 1 tasklet に固定されている
-(`_Static_assert(TASK_INSERT_NR_TASKLETS == 1)` / `_Static_assert(TASK_SERIALIZE_NR_TASKLETS == 1)`)。
+既定では TASK_GET / TASK_PRED / TASK_INSERT / TASK_DELETE / TASK_RANGE_COUNT /
+TASK_RANGE_MAX と木の構築 (`TREE_CONSTRUCT_NR_TASKLETS`) が `NR_TASKLETS` 並列、
+TASK_SERIALIZE は 1 tasklet に固定されている
+(`_Static_assert(TASK_SERIALIZE_NR_TASKLETS == 1)`)。
 
 返り値の個数がクエリごとに 1 つでないタスクは、並列化が難しい。
 先頭以外の tasklet は、自分の結果を返り値配列のどのオフセットから書き始めればいいか分からないため。
@@ -289,8 +286,8 @@ TASK_INSERT と TASK_SERIALIZE は 1 tasklet に固定されている
 この問題に該当するタスク: TASK_SCAN, TASK_SUMMARIZE, TASK_EXTRACT, TASK_FLATTEN_HOT。
 TASK_SERIALIZE も同種の問題を持ち、現状は対策 1 (単一 tasklet) を採っている。
 
-TASK_INSERT が単一 tasklet なのは別の理由による (ノード分割の競合)。並列化の設計案は
-`docs/batch_insert_proposal.md`。
+TASK_INSERT はこの問題を持たず (返り値は生存ペア数 1 組だけ)、全 tasklet で並列化
+されている。設計は `docs/parallel_batch_update.md`。
 
 TASK_SUMMARIZE は単一 tasklet でも上記の問題が残るため、`uint16_t[4]` + `Key[4]` の
 ブロック (`SummaryBlock`) 単位で書き出し、並べ替え情報を別に返す設計になっている。

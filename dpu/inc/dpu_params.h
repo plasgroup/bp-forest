@@ -91,15 +91,33 @@ _Static_assert(TASK_SUMMARIZE_NR_TASKLETS <= NR_TASKLETS, "TASK_SUMMARIZE_NR_TAS
 #ifndef TASK_DELETE_NR_TASKLETS
 #define TASK_DELETE_NR_TASKLETS NR_TASKLETS
 #endif
+_Static_assert(TASK_DELETE_NR_TASKLETS <= NR_TASKLETS, "TASK_DELETE_NR_TASKLETS <= NR_TASKLETS");
 
+// One block of the batch: the queries, their value-slot addresses and their
+// result flags are all cached this many at a time.  The flags are 1 byte each,
+// so a multiple of 8 (the MRAM DMA granularity) keeps every flush aligned.
 #ifndef TASK_DELETE_NR_CACHED_QRYS
-#define TASK_DELETE_NR_CACHED_QRYS 1
+#define TASK_DELETE_NR_CACHED_QRYS 32
+#endif
+_Static_assert(TASK_DELETE_NR_CACHED_QRYS % 8 == 0, "TASK_DELETE_NR_CACHED_QRYS % 8 == 0");
+
+#ifndef TASK_DELETE_SORT_NR_TASKLETS
+#define TASK_DELETE_SORT_NR_TASKLETS NR_TASKLETS
+#endif
+_Static_assert(TASK_DELETE_SORT_NR_TASKLETS <= NR_TASKLETS, "TASK_DELETE_SORT_NR_TASKLETS <= NR_TASKLETS");
+_Static_assert(TASK_DELETE_NR_TASKLETS <= TASK_DELETE_SORT_NR_TASKLETS, "TASK_DELETE_NR_TASKLETS <= TASK_DELETE_SORT_NR_TASKLETS");
+
+// バッチをキー順に並べる基数ソートの、1 段で見るキーの桁幅。
+#ifndef TASK_DELETE_SORT_RADIX_BITS
+#define TASK_DELETE_SORT_RADIX_BITS 6
 #endif
 
-// The per-query results are 1-byte flags, so they are cached and flushed in
-// 8-byte-aligned chunks.  Must be a multiple of 8 (the MRAM DMA granularity).
-#ifndef TASK_DELETE_NR_CACHED_RESULTS
-#define TASK_DELETE_NR_CACHED_RESULTS 32
+#ifndef TASK_DELETE_SORT_RUN
+#define TASK_DELETE_SORT_RUN 50
+#endif
+
+#ifndef TASK_DELETE_SORT_DIGIT_BUF
+#define TASK_DELETE_SORT_DIGIT_BUF 2
 #endif
 
 
@@ -113,6 +131,7 @@ _Static_assert(TASK_INSERT_NR_TASKLETS <= NR_TASKLETS, "TASK_INSERT_NR_TASKLETS 
 #endif
 
 // #define TASK_INSERT_CHECK
+
 
 // #define TASK_INSERT_SORT_CHECK
 

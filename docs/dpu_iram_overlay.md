@@ -15,12 +15,22 @@ IRAM 末尾の同一領域 (窓) に重ねて配置する (`dpu/inc/iram_overlay
 
 | スロット | 中身 |
 | --- | --- |
-| `OVL_SLOT_INSERT` | task_insert と upsert エンジン (今後の肥大化を見込み独立) |
+| `OVL_SLOT_INSERT` | task_insert (バッチの並べ替えと分担を含む)・TASK_MOVE_HOT の upsert |
 | `OVL_SLOT_RESHARD` | rebalancing 系: 木の構築 (task_init 含む)・直列化・破棄 |
-| `OVL_SLOT_QUERY` | その他のクエリ処理: get / pred / delete / range_count / range_max |
+| `OVL_SLOT_QUERY` | その他のクエリ処理: get / pred / range_count / range_max |
+| `OVL_SLOT_CHECK` | 木の構造検査 (`TASK_*_CHECK` を定義したビルドでのみ中身がある) |
+| `OVL_SLOT_DELETE` | task_delete の前半: 結果配列づくりとキーの並べ替え |
+| `OVL_SLOT_DELETE_TREE` | task_delete の後半: 木からペアを外す (分担と連結を含む) |
 
-常駐に残るのは main のディスパッチ、タスク間で共有される関数 (allocator・
-二分探索・同期プリミティブ)、TASK_MOVE_HOT の骨格、ローダなど。
+窓に載せず IRAM に置いたままにする部分 (以下**常駐**) に残るのは、main のタスク
+振り分け、複数のスロットから呼ぶ関数 (ノードの確保と解放・二分探索・同期プリミティブ・
+ノードの転送)、各タスクのフェーズ制御部 (`task_insert`・`task_delete`・`task_init`・
+`task_move_hot` の本体)、ローダなど。別スロットの関数は呼べないので、共有するには
+常駐に置くか各スロットに複製するかで、前者を採った。
+
+木の構造検査 (`check_tree_structure`) を専用スロットに分けているのは、検査ルーチンが
+3 KB 台と大きく、常駐に置くと全スロットの窓がそのぶん狭まるためである。検査は各タスクが
+木を触り終えた後に、常駐のフェーズ制御部から `CHECK_trees` を呼んで行う。
 
 常駐と全スロットは 1 つの ELF にリンクされるため、スロット内の関数から
 常駐の関数・データを普通に (型検査付きで) 参照でき、ホストから見ても
@@ -47,8 +57,9 @@ IRAM 末尾の同一領域 (窓) に重ねて配置する (`dpu/inc/iram_overlay
 
 *   dpu-lldb はスロット内コードをデバッグできない (窓に何が載っているか
     知らないため)。デバッグは overlay 無効ビルドか dpu_on_cpu ビルドで行う。
-*   スロット切り替えごとにイメージの DMA (8-10KB で数 µs) + barrier が
-    かかる。同じスロットが連続する限りロードは省略される。
+*   スロット切り替えごとにイメージの DMA (10〜20KB = DMA エンジンを
+    5,000〜10,000 サイクル占有する) + barrier がかかる。同じスロットが
+    連続する限りロードは省略される。
 *   `SUPPORT_RANGE_MIN` (未修理タスク) は overlay 化していない。
 
 ## 仕組み

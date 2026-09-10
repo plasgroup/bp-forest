@@ -216,24 +216,146 @@ typedef struct {
 } InsertWorkspace;
 
 
+#define TASK_DELETE_SORT_NR_PIECES (1u << TASK_DELETE_SORT_RADIX_BITS)
+#define TASK_DELETE_SORT_NR_LEVELS ((KEY_WIDTH + TASK_DELETE_SORT_RADIX_BITS - 1) / TASK_DELETE_SORT_RADIX_BITS)
+#define TASK_DELETE_SORT_STACK_CAPACITY (TASK_DELETE_SORT_NR_PIECES + (TASK_DELETE_SORT_NR_LEVELS - 1) * (TASK_DELETE_SORT_NR_PIECES - 1))
+
+// make it positive, since it will be array length
+#define TASK_DELETE_MAX_NR_FORK (TASK_DELETE_NR_TASKLETS == 1 ? 1 : TASK_DELETE_NR_TASKLETS / 2)
+#define TASK_DELETE_MAX_NR_PARTITIONINGS (TASK_DELETE_NR_TASKLETS == 1 ? 1 : TASK_DELETE_NR_TASKLETS - 1)
+
+//! @brief Stage 1: what one tasklet needs to turn its slice of the batch into
+//! the result flags.  @sa /docs/parallel_delete.md
 typedef struct {
     __dma_aligned Node node_cache;
     __dma_aligned key_uint64_t qrys[TASK_DELETE_NR_CACHED_QRYS];
-    __dma_aligned uint8_t results[TASK_DELETE_NR_CACHED_RESULTS];
-    __dma_aligned value_int64_t old_value;
-    // DMA buffers of the min-refresh phase.  Static so that the 8-byte
-    // alignment is guaranteed: the DMA engine masks the low bits of the WRAM
-    // address, so a stack local, whose alignment the compiler is free to
-    // weaken, must never be handed to it.
-    __dma_aligned uint32_t nr_refreshes[2];
+    //! MRAM (or, for a height-0 tree, WRAM) addresses of the value slots the
+    //! first pass found, one per query, so the second pass need not descend.
+    __dma_aligned uintptr_t slot_addrs[TASK_DELETE_NR_CACHED_QRYS];
+    __dma_aligned uint8_t results[TASK_DELETE_NR_CACHED_QRYS];
     __dma_aligned KeyRange refresh_range;
     __dma_aligned KVPair refresh_response;
-    uint32_t idx_qry_in_cache;
-    uintptr_t cursor_on_qrys;
-    uint32_t idx_result_in_cache;
-    uintptr_t cursor_on_results;
+} DeleteResultWorkspace;
+
+typedef struct {
+    __dma_aligned key_uint64_t buf[TASK_DELETE_SORT_NR_TASKLETS][TASK_DELETE_SORT_RUN];
+    __dma_aligned key_uint64_t digit_buf[TASK_DELETE_SORT_NR_TASKLETS][TASK_DELETE_SORT_NR_PIECES][TASK_DELETE_SORT_DIGIT_BUF];
+    uint8_t nr_in_digit_buf[TASK_DELETE_SORT_NR_TASKLETS][TASK_DELETE_SORT_NR_PIECES];
+    union {
+        struct {
+            key_uint64_t qry_min_key[TASK_DELETE_SORT_NR_TASKLETS], qry_max_key[TASK_DELETE_SORT_NR_TASKLETS];
+        };
+        struct {
+            uint32_t counts[TASK_DELETE_SORT_NR_TASKLETS][TASK_DELETE_SORT_NR_PIECES];
+            uint16_t top_digit_split[TASK_DELETE_SORT_NR_TASKLETS + 1];
+        };
+    };
+} DeleteSortWorkspace;
+_Static_assert(sizeof(key_uint64_t) * TASK_DELETE_SORT_RUN <= 2048, "sizeof(key_uint64_t) * TASK_DELETE_SORT_RUN <= 2048");
+
+typedef struct {
+    key_uint64_t qry_min_key, qry_max_key;
+    uint32_t shift;
+    uint32_t piece_delims[TASK_DELETE_SORT_NR_PIECES + 1];
+} DeleteSortTopDigit;
+
+typedef struct {
+    __dma_aligned uint32_t begin;
+    uint32_t end;
+    uint32_t prev_shift;
+    __mram_ptr key_uint64_t* src;
+} DeleteSortStackEntry;
+
+typedef struct {
+    // input
+    // @{
+    uint32_t idx_qry_begin, idx_qry_end;
+    uint8_t node_numKeys;
+    uint8_t nr_tasklets;
+    // @}
+
+    uint32_t backet_ends[MAX_NR_CHILDREN - 1];
+
+    uint32_t nr_backet_qrys[MAX_NR_CHILDREN];
+    TaskletAssignmentToChildren assignments[TASK_DELETE_NR_TASKLETS];
+    uint8_t forks[TASK_DELETE_MAX_NR_FORK];  // indices in `assignments`
+    uint8_t nr_forks;
+} DeletePartitioning;
+
+typedef struct {
+#define TASK_DELETE_PARTITIONING_LEADER(height) (UINT8_MAX - (height))
+    // 0 if empty partition, TASK_DELETE_PARTITIONING_LEADER(height) if me() is a partitioning leader at the height
+    uint8_t idx_child_end;
+
+    uint8_t idx_child_begin;
+    uint8_t idx_partitioning;
+    uint8_t parent_height;
+    uint32_t idx_qry_begin, idx_qry_end;
+    key_uint64_t min_key;
+} DeletePartition;
+
+typedef struct {
+    DeletePartitioning partitionings[TASK_DELETE_MAX_NR_PARTITIONINGS];
+    unsigned nr_partitionings;
+    DeletePartition partitions[TASK_DELETE_NR_TASKLETS];
+} DeletePartitionWorkspace;
+
+typedef struct {
+    __dma_aligned key_uint64_t qrys[TASK_DELETE_NR_CACHED_QRYS];
+    PathLevel path[MAX_HEIGHT + 1];
+    bool leaf_loaded, leaf_dirty, parent_loaded, path_stale;
+    uint32_t nr_removed_pairs;
+} TaskletLocalDeleteWorkspace;
+
+//! @brief Stage 2: the workspace of the physical deletion.
+typedef struct {
+    DeletePartitionWorkspace part;
+    __dma_aligned Node node_cache[TASK_DELETE_NR_TASKLETS][4];
+
+    NodeLink task_tree[TASK_DELETE_NR_TASKLETS];
+    uint8_t task_tree_height[TASK_DELETE_NR_TASKLETS];
+    key_uint64_t task_min_key[TASK_DELETE_NR_TASKLETS];
+    //! The ends of each tree's chain of leaves, which the joining keeps up to
+    //! date: a tree's chain stays closed until the tree is joined.
+    NodeLink leftmost_leaf[TASK_DELETE_NR_TASKLETS], rightmost_leaf[TASK_DELETE_NR_TASKLETS];
+
+    TaskletLocalDeleteWorkspace th[TASK_DELETE_NR_TASKLETS];
+} DeletePhysWorkspace;
+
+//! @brief Where everything TASK_DELETE reads and writes sits in MRAM: the parts
+//! the host lays out (docs/dpu_task_signature.md) and, after them, the scratch
+//! the DPU keeps to itself.  One tasklet works it out and the rest read it.
+typedef struct {
+    //! How many smallest-live-key requests each tree got, which is what says
+    //! where the host-visible results end and the DPU's own scratch starts.
+    __dma_aligned uint32_t nr_refreshes[2];
+    __mram_ptr key_uint64_t* qrys;
+    uint32_t nr_cold_qrys, nr_hot_qrys;
+    uintptr_t refresh_requests;
+    //! One byte per query, the two trees' sections padded apart to 8 bytes.
+    uintptr_t cold_results, hot_results;
+    uintptr_t counts_result, refresh_results;
+    //! One value-slot address per query, handed from the first pass of stage 1
+    //! to the second.  Padded to an even count so every slice stays aligned.
+    uintptr_t cold_slots, hot_slots;
+    //! Room for a second copy of the keys of whichever tree has more, and for
+    //! one sort stack per tasklet after it.
+    __mram_ptr key_uint64_t* sort_scratch;
+} DeleteLayout;
+
+//! @brief The stages run one after another in a single launch, so they share
+//! the workspace.  What outlives the stage that fills it lives outside the
+//! union: the MRAM layout, and the top digit of each tree's sort, which the
+//! handout reads.
+typedef struct {
+    union {
+        DeleteResultWorkspace th[TASK_DELETE_NR_TASKLETS];
+        DeleteSortWorkspace sort;
+        DeletePhysWorkspace phys;
+    };
+    DeleteLayout layout;
+    DeleteSortTopDigit sort_top_digit[2];
 } DeleteWorkspace;
-_Static_assert(TASK_DELETE_NR_CACHED_RESULTS % 8 == 0, "TASK_DELETE_NR_CACHED_RESULTS % 8 == 0");
 
 
 #if SUPPORT_RANGE_MIN
@@ -363,7 +485,7 @@ typedef union {
     GetWorkspace get[TASK_GET_NR_TASKLETS];
     PredWorkspace pred[TASK_PRED_NR_TASKLETS];
     InsertWorkspace insert;
-    DeleteWorkspace delete[TASK_DELETE_NR_TASKLETS];
+    DeleteWorkspace delete;
     RCQWorkspace rcq[TASK_RANGE_COUNT_NR_TASKLETS];
     RMaxQWorkspace rmaxq[TASK_RANGE_MAX_NR_TASKLETS];
 #if SUPPORT_RANGE_MIN

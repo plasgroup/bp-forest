@@ -63,6 +63,10 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
                                      "TASK_PRED_NR_CACHED_QRYS: " EXPAND_STRINGIFY(TASK_PRED_NR_CACHED_QRYS) "\n"
                                      "TASK_DELETE_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_DELETE_NR_TASKLETS) "\n"
                                      "TASK_DELETE_NR_CACHED_QRYS: " EXPAND_STRINGIFY(TASK_DELETE_NR_CACHED_QRYS) "\n"
+                                     "TASK_DELETE_SORT_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_DELETE_SORT_NR_TASKLETS) "\n"
+                                     "TASK_DELETE_SORT_RADIX_BITS: " EXPAND_STRINGIFY(TASK_DELETE_SORT_RADIX_BITS) "\n"
+                                     "TASK_DELETE_SORT_RUN: " EXPAND_STRINGIFY(TASK_DELETE_SORT_RUN) "\n"
+                                     "TASK_DELETE_SORT_DIGIT_BUF: " EXPAND_STRINGIFY(TASK_DELETE_SORT_DIGIT_BUF) "\n"
                                      "TASK_INSERT_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_INSERT_NR_TASKLETS) "\n"
                                      "TASK_INSERT_NR_CACHED_QRYS: " EXPAND_STRINGIFY(TASK_INSERT_NR_CACHED_QRYS) "\n"
 #ifdef TASK_INSERT_CHECK
