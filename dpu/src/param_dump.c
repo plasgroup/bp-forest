@@ -32,6 +32,11 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
 #else
                                      "BITMAP_IN_MRAM: 0\n"
 #endif
+#if NODE_DMA_TABLE
+                                     "NODE_DMA_TABLE: 1\n"
+#else
+                                     "NODE_DMA_TABLE: 0\n"
+#endif
                                      "SIZEOF_NODE: " EXPAND_STRINGIFY(SIZEOF_NODE) "\n"
                                      "TREE_CONSTRUCT_NR_TASKLETS: " EXPAND_STRINGIFY(TREE_CONSTRUCT_NR_TASKLETS) "\n"
                                      "TREE_CONSTRUCT_NR_CACHED_KVPAIRS: " EXPAND_STRINGIFY(TREE_CONSTRUCT_NR_CACHED_KVPAIRS) "\n"

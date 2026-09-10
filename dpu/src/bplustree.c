@@ -111,30 +111,90 @@ static __attribute__((unused)) uint16_t search_for_pair_index(const key_uint64_t
 }
 
 
+#define NODE_DMA_BEGIN_MASK UINT32_C(0xffffff)
+#define NODE_DMA_SPEC(begin, nr_bytes) ((uint32_t)((nr_bytes) / 8 - 1) << 24 | (uint32_t)(begin))
+
+#define LEAF_FILLED_BEGIN(nr_keys) (offsetof(LeafNode, values) + sizeof(value_int64_t) * (MAX_NR_PAIRS - (nr_keys)))
+#define LEAF_FILLED_END(nr_keys) (offsetof(LeafNode, keys) + sizeof(key_uint64_t) * (nr_keys))
+#define LEAF_DMA_SPEC(nr_keys) NODE_DMA_SPEC(LEAF_FILLED_BEGIN(nr_keys), LEAF_FILLED_END(nr_keys) - LEAF_FILLED_BEGIN(nr_keys))
+#define INTERNAL_FILLED_BEGIN(nr_keys) ((offsetof(InternalNode, children) + sizeof(NodeLink) * (MAX_NR_CHILDREN - ((nr_keys) + 1))) & ~(uintptr_t)7)
+#define INTERNAL_FILLED_END(nr_keys) (offsetof(InternalNode, keys) + sizeof(key_uint64_t) * (nr_keys))
+#define INTERNAL_DMA_SPEC(nr_keys) NODE_DMA_SPEC(INTERNAL_FILLED_BEGIN(nr_keys), INTERNAL_FILLED_END(nr_keys) - INTERNAL_FILLED_BEGIN(nr_keys))
+_Static_assert(SIZEOF_NODE <= 2048, "a node fetch fits in one DMA");
+
+#ifdef DPU_ON_CPU
+static inline void dma_node_from_mram(const __mram_ptr void* src, void* dst, uint32_t spec)
+{
+    const uint32_t begin = spec & NODE_DMA_BEGIN_MASK;
+    mram_read((const __mram_ptr void*)((uintptr_t)src + begin), (void*)((uintptr_t)dst + begin), ((spec >> 24) + 1) * 8);
+}
+static inline void dma_node_to_mram(const void* src, __mram_ptr void* dst, uint32_t spec)
+{
+    const uint32_t begin = spec & NODE_DMA_BEGIN_MASK;
+    mram_write((const void*)((uintptr_t)src + begin), (__mram_ptr void*)((uintptr_t)dst + begin), ((spec >> 24) + 1) * 8);
+}
+#else
+static inline void dma_node_from_mram(const __mram_ptr void* src, void* dst, uint32_t spec)
+{
+    __asm__ volatile("ldma %[wram], %[mram], 0"
+                     :
+                     : [wram] "r"((uintptr_t)dst + spec), [mram] "r"((uintptr_t)src + (spec & NODE_DMA_BEGIN_MASK))
+                     : "memory");
+}
+static inline void dma_node_to_mram(const void* src, __mram_ptr void* dst, uint32_t spec)
+{
+    __asm__ volatile("sdma %[wram], %[mram], 0"
+                     :
+                     : [wram] "r"((uintptr_t)src + spec), [mram] "r"((uintptr_t)dst + (spec & NODE_DMA_BEGIN_MASK))
+                     : "memory");
+}
+#endif /* DPU_ON_CPU */
+
+#if NODE_DMA_TABLE
+#define NODE_DMA_IDX(n, last) ((n) <= (last) ? (n) : 0)
+#define NODE_DMA_R1(F, base) F(base)
+#define NODE_DMA_R2(F, base) NODE_DMA_R1(F, base), NODE_DMA_R1(F, (base) + 1)
+#define NODE_DMA_R4(F, base) NODE_DMA_R2(F, base), NODE_DMA_R2(F, (base) + 2)
+#define NODE_DMA_R8(F, base) NODE_DMA_R4(F, base), NODE_DMA_R4(F, (base) + 4)
+#define NODE_DMA_R16(F, base) NODE_DMA_R8(F, base), NODE_DMA_R8(F, (base) + 8)
+#define NODE_DMA_R32(F, base) NODE_DMA_R16(F, base), NODE_DMA_R16(F, (base) + 16)
+#define NODE_DMA_R64(F, base) NODE_DMA_R32(F, base), NODE_DMA_R32(F, (base) + 32)
+#define NODE_DMA_R128(F, base) NODE_DMA_R64(F, base), NODE_DMA_R64(F, (base) + 64)
+#define NODE_DMA_R256(F) NODE_DMA_R128(F, 0), NODE_DMA_R128(F, 128)
+#define LEAF_DMA_ENTRY(n) [NODE_DMA_IDX(n, MAX_NR_PAIRS)] = LEAF_DMA_SPEC(NODE_DMA_IDX(n, MAX_NR_PAIRS))
+#define INTERNAL_DMA_ENTRY(n) [NODE_DMA_IDX(n, MAX_NR_CHILDREN - 1)] = INTERNAL_DMA_SPEC(NODE_DMA_IDX(n, MAX_NR_CHILDREN - 1))
+
+_Static_assert(MAX_NR_PAIRS < 256 && MAX_NR_CHILDREN <= 256, "the tables cover occupancies below 256");
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winitializer-overrides"
+static const uint32_t LeafDma[MAX_NR_PAIRS + 1] = {NODE_DMA_R256(LEAF_DMA_ENTRY)};
+static const uint32_t InternalDma[MAX_NR_CHILDREN] = {NODE_DMA_R256(INTERNAL_DMA_ENTRY)};
+#pragma clang diagnostic pop
+
+#define LEAF_DMA_OF(nr_keys) LeafDma[nr_keys]
+#define INTERNAL_DMA_OF(nr_keys) InternalDma[nr_keys]
+#else
+#define LEAF_DMA_OF(nr_keys) LEAF_DMA_SPEC(nr_keys)
+#define INTERNAL_DMA_OF(nr_keys) INTERNAL_DMA_SPEC(nr_keys)
+#endif
+
 __attribute__((noinline)) static void fetch_leaf_filled(const __mram_ptr LeafNode* src, LeafNode* dst, unsigned numKeys)
 {
-    const uintptr_t begin = offsetof(LeafNode, values) + sizeof(value_int64_t) * (MAX_NR_PAIRS - numKeys),
-                    end = offsetof(LeafNode, keys) + sizeof(key_uint64_t) * numKeys;
-    mram_read((const __mram_ptr void*)((uintptr_t)src + begin), (void*)((uintptr_t)dst + begin), end - begin);
+    dma_node_from_mram(src, dst, LEAF_DMA_OF(numKeys));
 }
 __attribute__((noinline)) static void store_leaf_filled(const LeafNode* src, __mram_ptr LeafNode* dst, unsigned numKeys)
 {
-    const uintptr_t begin = offsetof(LeafNode, values) + sizeof(value_int64_t) * (MAX_NR_PAIRS - numKeys),
-                    end = offsetof(LeafNode, keys) + sizeof(key_uint64_t) * numKeys;
-    mram_write((const void*)((uintptr_t)src + begin), (__mram_ptr void*)((uintptr_t)dst + begin), end - begin);
+    dma_node_to_mram(src, dst, LEAF_DMA_OF(numKeys));
 }
 
 __attribute__((noinline)) static void fetch_internal_filled(const __mram_ptr InternalNode* src, InternalNode* dst, unsigned numKeys)
 {
-    const uintptr_t begin = (offsetof(InternalNode, children) + sizeof(NodeLink) * (MAX_NR_CHILDREN - (numKeys + 1))) & ~(uintptr_t)7,
-                    end = offsetof(InternalNode, keys) + sizeof(key_uint64_t) * numKeys;
-    mram_read((const __mram_ptr void*)((uintptr_t)src + begin), (void*)((uintptr_t)dst + begin), end - begin);
+    dma_node_from_mram(src, dst, INTERNAL_DMA_OF(numKeys));
 }
 __attribute__((noinline)) static void store_internal_filled(const InternalNode* src, __mram_ptr InternalNode* dst, unsigned numKeys)
 {
-    const uintptr_t begin = (offsetof(InternalNode, children) + sizeof(NodeLink) * (MAX_NR_CHILDREN - (numKeys + 1))) & ~(uintptr_t)7,
-                    end = offsetof(InternalNode, keys) + sizeof(key_uint64_t) * numKeys;
-    mram_write((const void*)((uintptr_t)src + begin), (__mram_ptr void*)((uintptr_t)dst + begin), end - begin);
+    dma_node_to_mram(src, dst, INTERNAL_DMA_OF(numKeys));
 }
 
 

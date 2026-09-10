@@ -20,6 +20,14 @@
 
 #define BITMAP_IN_MRAM
 
+#ifndef NODE_DMA_TABLE
+#if defined(TASK_INIT_CHECK) || defined(TASK_INSERT_CHECK) || defined(TASK_DELETE_CHECK) || defined(TASK_MOVE_HOT_CHECK)
+#define NODE_DMA_TABLE 0
+#else
+#define NODE_DMA_TABLE 1
+#endif
+#endif
+
 
 #ifndef SIZEOF_NODE
 #define SIZEOF_NODE 256
