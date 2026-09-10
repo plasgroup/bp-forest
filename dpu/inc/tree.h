@@ -1,5 +1,11 @@
 #pragma once
 
+#include <barrier.h>
+
+
+//! @brief A barrier over all the tasklets, defined by dpumain.c, which uses it
+//! to hand the task number over.
+extern barrier_t tasklet_barrier;
 
 void task_init(void);
 void task_get(void);

@@ -10,7 +10,7 @@
 #include <stdlib.h>
 
 
-BARRIER_INIT(my_barrier, NR_TASKLETS);
+BARRIER_INIT(tasklet_barrier, NR_TASKLETS);
 
 InputHeader input_header;
 
@@ -25,7 +25,7 @@ int main()
         printf("task_no = %d\n", input_header.task_no);
 #endif
     }
-    barrier_wait(&my_barrier);
+    barrier_wait(&tasklet_barrier);
 
     switch (input_header.task_no) {
     case TASK_INIT:
