@@ -222,7 +222,10 @@ protected:
 class InsertBenchmark : public Benchmark
 {
     WorkloadBuffer<KVPair> workload_buf;
+    ExtendableBuffer<key_uint64_t> keys;
+    ExtendableBuffer<value_int64_t> results, oracle_results;
 
+    Database* last_db;
     KVPair* last_queries;
 
 public:
@@ -238,6 +241,7 @@ protected:
         if (size == batch_size) {
             db->batch_insert(batch_size, queries);
 
+            last_db = db;
             last_queries = queries;
             last_batch_size_ = batch_size;
             return true;
@@ -249,6 +253,20 @@ protected:
     void do_verify() override
     {
         verify_db->batch_insert(last_batch_size_, last_queries);
+#if SUPPORT_GET
+        // An insertion returns nothing per query, so the only way to see what
+        // it did is to read the keys back.  That is an extra batch of reads
+        // through the database under test, hence only under verification.
+        keys.reserve(last_batch_size_);
+        results.reserve(last_batch_size_);
+        oracle_results.reserve(last_batch_size_);
+        for (size_t i = 0; i < last_batch_size_; i++) {
+            keys[i] = last_queries[i].key;
+        }
+        last_db->batch_get(last_batch_size_, &keys[0], &results[0]);
+        verify_db->batch_get(last_batch_size_, &keys[0], &oracle_results[0]);
+        compare_results(last_batch_size_, &results[0], &oracle_results[0]);
+#endif
     }
 
     void partition_with_workload(Database* db, const std::string& workload_file) override
