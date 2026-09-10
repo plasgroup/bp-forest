@@ -23,11 +23,11 @@ public:
 
     virtual void batch_get(uint64_t n,
         const key_uint64_t keys[],
-        value_uint64_t results[])
+        value_int64_t results[])
         = 0;
 
     // Strict predecessor: result[i] = pair with the largest key < keys[i],
-    // or {NOT_FOUND_VALUE, NOT_FOUND_VALUE} if none.
+    // or {KEY_MIN, NOT_FOUND_VALUE} if none.
     virtual void batch_pred(uint64_t n,
         const key_uint64_t keys[],
         KVPair results[])
@@ -47,29 +47,29 @@ public:
 
     virtual void batch_range_minimum(uint64_t n,
         const KeyRange queries[],
-        value_uint64_t results[])
+        value_int64_t results[])
         = 0;
 
     virtual void batch_range_sum(uint64_t n,
         const KeyRange queries[],
-        value_uint64_t results[])
+        value_int64_t results[])
         = 0;
 
     virtual void batch_range_count(uint64_t n,
         const RangeCountQuery queries[],
-        value_uint64_t results[])
+        uint64_t results[])
         = 0;
 
     virtual void batch_range_max(uint64_t n,
         const KeyRange queries[],
-        value_uint64_t results[])
+        value_int64_t results[])
         = 0;
 
-    virtual void partition_with(uint64_t /* n */, const key_uint64_t /* keys */[], value_uint64_t /* values */[]) {}
+    virtual void partition_with(uint64_t /* n */, const key_uint64_t /* keys */[], value_int64_t /* values */[]) {}
     virtual void partition_with(uint64_t /* n */, const key_uint64_t /* keys */[], KVPair /* results */[]) {}
     virtual void partition_with(uint64_t /* n */, const KVPair /* pairs */[]) {}
     virtual void partition_with(uint64_t /* n */, const key_uint64_t /* keys */[]) {}
-    virtual void partition_with(uint64_t /* n */, const KeyRange /* queries */[], uint64_t /* results */[]) {}
+    virtual void partition_with(uint64_t /* n */, const KeyRange /* queries */[], value_int64_t /* results */[]) {}
     virtual void partition_with(uint64_t /* n */, const RangeCountQuery /* queries */[], uint64_t /* results */[]) {}
 
     virtual int get_parallelism() const = 0;
@@ -90,13 +90,13 @@ class InitData : public Database
             });
     }
 
-    value_uint64_t
-    foldl(KeyRange range, value_uint64_t init,
-        std::function<value_uint64_t(value_uint64_t, const KVPair&)> f)
+    value_int64_t
+    foldl(KeyRange range, value_int64_t init,
+        std::function<value_int64_t(value_int64_t, const KVPair&)> f)
     {
         auto it = find(range.begin);
         if (it != data.end() && it->key <= range.end) {
-            value_uint64_t acc = init;
+            value_int64_t acc = init;
             while (it != data.end() && it->key <= range.end) {
                 acc = f(acc, *it);
                 it++;
@@ -115,7 +115,7 @@ public:
         for (size_t i = 0; i < qs.length; i++) {
             if (qs.ops[i].type == insert_t) {
                 data.push_back({key_int64_to_uint64(qs.ops[i].tsk.i.key),
-                    value_int64_to_uint64(qs.ops[i].tsk.i.value)});
+                    qs.ops[i].tsk.i.value});
             } else {
                 std::cerr << "init_file has invalid operation of type: " << qs.ops[i].type << std::endl;
                 exit(1);
@@ -140,9 +140,9 @@ public:
         return keys;
     }
 
-    std::vector<value_uint64_t> get_values() const
+    std::vector<value_int64_t> get_values() const
     {
-        std::vector<value_uint64_t> values;
+        std::vector<value_int64_t> values;
         values.reserve(data.size());
         for (const auto& kv : data)
             values.push_back(kv.value);
@@ -151,7 +151,7 @@ public:
 
     void batch_get(uint64_t n,
         const key_uint64_t keys[],
-        value_uint64_t results[])
+        value_int64_t results[])
     {
         for (size_t i = 0; i < n; i++) {
             key_uint64_t key = keys[i];
@@ -172,7 +172,7 @@ public:
             // the strict predecessor is the pair just before it.
             auto it = find(keys[i]);
             if (it == data.begin())
-                results[i] = KVPair{NOT_FOUND_VALUE, NOT_FOUND_VALUE};
+                results[i] = KVPair{KEY_MIN, NOT_FOUND_VALUE};
             else
                 results[i] = *(it - 1);
         }
@@ -235,49 +235,48 @@ public:
 
     void batch_range_minimum(uint64_t n,
         const KeyRange queries[],
-        value_uint64_t results[])
+        value_int64_t results[])
     {
         for (size_t i = 0; i < n; i++)
             results[i] = foldl(queries[i], VALUE_MAX,
-                [](value_uint64_t min, const KVPair& kv) {
+                [](value_int64_t min, const KVPair& kv) {
                     return kv.value < min ? kv.value : min;
                 });
     }
 
     void batch_range_sum(uint64_t n,
         const KeyRange queries[],
-        value_uint64_t results[])
+        value_int64_t results[])
     {
         for (size_t i = 0; i < n; i++)
             results[i] = foldl(queries[i], 0,
-                [](value_uint64_t sum, const KVPair& kv) {
+                [](value_int64_t sum, const KVPair& kv) {
                     return sum + kv.value;
                 });
     }
 
     void batch_range_count(uint64_t n,
         const RangeCountQuery queries[],
-        value_uint64_t results[])
+        uint64_t results[])
     {
         for (size_t i = 0; i < n; i++) {
             const KeyRange& range = queries[i].range;
-            const value_uint64_t& needle = queries[i].needle;
-            results[i] = foldl(range, 0,
-                [&needle](value_uint64_t count, const KVPair& kv) {
-                    if (kv.value == needle)
-                        count++;
-                    return count;
-                });
+            const value_int64_t needle = queries[i].needle;
+            uint64_t count = 0;
+            for (auto it = find(range.begin); it != data.end() && it->key <= range.end; ++it) {
+                count += (it->value == needle);
+            }
+            results[i] = count;
         }
     }
 
     void batch_range_max(uint64_t n,
         const KeyRange queries[],
-        value_uint64_t results[])
+        value_int64_t results[])
     {
         for (size_t i = 0; i < n; i++)
             results[i] = foldl(queries[i], NOT_FOUND_VALUE,
-                [](value_uint64_t max, const KVPair& kv) {
+                [](value_int64_t max, const KVPair& kv) {
                     return kv.value > max ? kv.value : max;
                 });
     }

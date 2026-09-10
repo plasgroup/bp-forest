@@ -257,13 +257,13 @@ enum class CmdClass { None, Read, Insert, Delete };
 //! the last admitted SET of a key wins.
 struct Epoch {
     std::vector<key_uint64_t> get_keys;  // GET, and existence probes of EXISTS
-    std::vector<value_uint64_t> get_results;
+    std::vector<value_int64_t> get_results;
     std::vector<key_uint64_t> pred_keys;
     std::vector<KVPair> pred_results;
     std::vector<RangeCountQuery> count_qrys;
     std::vector<uint64_t> count_results;
     std::vector<KeyRange> max_qrys;
-    std::vector<value_uint64_t> max_results;
+    std::vector<value_int64_t> max_results;
     std::vector<KVPair> ins_pairs;
     std::unordered_map<key_uint64_t, uint32_t> ins_pos;
     std::vector<key_uint64_t> del_keys;
@@ -690,9 +690,9 @@ private:
             push_key_error(c);
             return true;
         }
-        if (value == NOT_FOUND_VALUE) {
+        if (value > static_cast<uint64_t>(VALUE_MAX)) {
             push_text(c, [](std::string& o) {
-                put_error(o, "ERR value 0 is reserved as the not-found sentinel");
+                put_error(o, "ERR value out of range");
             });
             return true;
         }
@@ -700,9 +700,9 @@ private:
             return false;
         const auto [it, inserted] = epoch_.ins_pos.try_emplace(key, static_cast<uint32_t>(epoch_.ins_pairs.size()));
         if (inserted)
-            epoch_.ins_pairs.push_back(KVPair{key, value});
+            epoch_.ins_pairs.push_back(KVPair{key, static_cast<value_int64_t>(value)});
         else
-            epoch_.ins_pairs[it->second].value = value;  // last SET in the epoch wins
+            epoch_.ins_pairs[it->second].value = static_cast<value_int64_t>(value);  // last SET in the epoch wins
         nr_epoch_queries_++;
         push_text(c, [](std::string& o) { put_simple(o, "OK"); });
         return true;
@@ -802,7 +802,7 @@ private:
             return false;
         c.replies.push_back(Reply{Reply::Kind::Count, static_cast<uint32_t>(epoch_.count_qrys.size())});
         nr_pending_replies_++;
-        epoch_.count_qrys.push_back(RangeCountQuery{KeyRange{begin, end}, needle});
+        epoch_.count_qrys.push_back(RangeCountQuery{KeyRange{begin, end}, static_cast<value_int64_t>(needle)});
         nr_epoch_queries_++;
         return true;
 #endif
@@ -880,11 +880,11 @@ private:
                     case Reply::Kind::Text:
                         continue;
                     case Reply::Kind::Get: {
-                        const value_uint64_t v = ep.get_results[r.idx];
+                        const value_int64_t v = ep.get_results[r.idx];
                         if (v == NOT_FOUND_VALUE)
                             text += NIL_BULK;
                         else
-                            put_bulk_u64(text, v);
+                            put_bulk_u64(text, static_cast<uint64_t>(v));
                         break;
                     }
                     case Reply::Kind::Exists: {
@@ -909,18 +909,18 @@ private:
                         }
                         text += "*2\r\n";
                         put_bulk_u64(text, p.key);
-                        put_bulk_u64(text, p.value);
+                        put_bulk_u64(text, static_cast<uint64_t>(p.value));
                         break;
                     }
                     case Reply::Kind::Count:
                         put_int(text, ep.count_results[r.idx]);
                         break;
                     case Reply::Kind::Max: {
-                        const value_uint64_t v = ep.max_results[r.idx];
+                        const value_int64_t v = ep.max_results[r.idx];
                         if (v == NOT_FOUND_VALUE)
                             text += NIL_BULK;
                         else
-                            put_bulk_u64(text, v);
+                            put_bulk_u64(text, static_cast<uint64_t>(v));
                         break;
                     }
                     case Reply::Kind::DbSize: {
@@ -1063,7 +1063,7 @@ int main(int argc, char* argv[])
     cmdline::parser a;
     a.add<std::string>("bind", 'b', "address to listen on", false, "127.0.0.1");
     a.add<int>("port", 'p', "port to listen on", false, 6399, cmdline::range(1, 65535));
-    a.add<size_t>("init-nr", 'n', "number of generated initial pairs (key = i * stride, value = key)", false, size_t{1} << 20);
+    a.add<size_t>("init-nr", 'n', "number of generated initial pairs (key = i * stride, value = the low bits of the key)", false, size_t{1} << 20);
     a.add<uint64_t>("init-stride", 0, "key stride of generated initial pairs", false, 2, cmdline::range<uint64_t>(1, uint64_t{1} << 32));
     a.add<std::optional<std::string>>("init-file", 'i', "file path to PIM-Tree init file to bulk-load instead of generated pairs", false);
     a.add<size_t>("batch-size", 0, "max queries executed in one batch (epoch)", false, size_t{1} << 20);
@@ -1089,7 +1089,7 @@ int main(int argc, char* argv[])
         init_pairs.resize(nr);
         for (size_t i = 0; i < nr; i++) {
             const key_uint64_t key = (static_cast<key_uint64_t>(i) + 1) * stride;
-            init_pairs[i] = KVPair{key, key};
+            init_pairs[i] = KVPair{key, static_cast<value_int64_t>(key & static_cast<key_uint64_t>(VALUE_MAX))};
         }
     }
     if (init_pairs.empty()) {

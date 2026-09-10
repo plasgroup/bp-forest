@@ -114,7 +114,7 @@ static __attribute__((unused)) uint16_t search_for_pair_index(const key_uint64_t
 
 static void fetch_leaf_filled(const __mram_ptr LeafNode* src, LeafNode* dst, unsigned numKeys)
 {
-    const uintptr_t begin = offsetof(LeafNode, values) + sizeof(value_uint64_t) * (MAX_NR_PAIRS - numKeys),
+    const uintptr_t begin = offsetof(LeafNode, values) + sizeof(value_int64_t) * (MAX_NR_PAIRS - numKeys),
                     end = offsetof(LeafNode, keys) + sizeof(key_uint64_t) * numKeys;
     mram_read((const __mram_ptr void*)((uintptr_t)src + begin), (void*)((uintptr_t)dst + begin), end - begin);
 }
@@ -863,7 +863,7 @@ static bool /* did the number of live pairs grow? */ INSERT_execute(Node* const 
         if (idx_pair < child_link.numKeys && leaf->lf.keys[idx_pair] == qry->key) {
             // Revives a tombstone, as in the root-leaf case above.
             const bool revived = NthValue(leaf->lf, idx_pair) == NOT_FOUND_VALUE;
-            mram_write(&qry->value, &NthValue(Deref(child_link.ptr).lf, idx_pair), sizeof(value_uint64_t));  // update
+            mram_write(&qry->value, &NthValue(Deref(child_link.ptr).lf, idx_pair), sizeof(value_int64_t));  // update
             if (is_cache_dirty) {
                 mram_write(node, &Deref(node_link->ptr), sizeof(Node));
             }
@@ -1104,7 +1104,7 @@ static void DELETE_flush_results_cache(DeleteWorkspace* wks)
 //! @brief Tombstones the pair whose value slot lives in WRAM (the root leaf).
 //! @return 1 if the pair was live (not already tombstoned) before this call.
 OVERLAY_LOCAL(OVL_SLOT_QUERY)
-static uint8_t DELETE_tombstone_wram(value_uint64_t* const slot, const key_uint64_t key)
+static uint8_t DELETE_tombstone_wram(value_int64_t* const slot, const key_uint64_t key)
 {
     mutex_pool_lock(&DELETE_value_mutexes, (uint16_t)key);
     const uint8_t existed = (*slot != NOT_FOUND_VALUE);
@@ -1115,16 +1115,16 @@ static uint8_t DELETE_tombstone_wram(value_uint64_t* const slot, const key_uint6
 //! @brief Tombstones the pair whose value slot lives in MRAM.
 //! @return 1 if the pair was live (not already tombstoned) before this call.
 OVERLAY_LOCAL(OVL_SLOT_QUERY)
-static uint8_t DELETE_tombstone_mram(DeleteWorkspace* const wks, __mram_ptr value_uint64_t* const slot, const key_uint64_t key)
+static uint8_t DELETE_tombstone_mram(DeleteWorkspace* const wks, __mram_ptr value_int64_t* const slot, const key_uint64_t key)
 {
     mutex_pool_lock(&DELETE_value_mutexes, (uint16_t)key);
-    mram_read(slot, &wks->old_value, sizeof(value_uint64_t));
+    mram_read(slot, &wks->old_value, sizeof(value_int64_t));
     const uint8_t existed = (wks->old_value != NOT_FOUND_VALUE);
     if (existed) {
         // Reuse the read buffer as the write source: it is one of the
         // statically aligned ones DeleteWorkspace keeps for this reason.
         wks->old_value = NOT_FOUND_VALUE;
-        mram_write(&wks->old_value, slot, sizeof(value_uint64_t));
+        mram_write(&wks->old_value, slot, sizeof(value_int64_t));
     }
     mutex_pool_unlock(&DELETE_value_mutexes, (uint16_t)key);
     return existed;
@@ -1189,7 +1189,7 @@ static KVPair DELETE_refresh_one(const Node* const root, const uint8_t height, c
     DeleteWorkspace* const wks_me = loop_invariant(&workspace.tree.delete[me()]);
 
     if (height == 0) {
-        const value_uint64_t* const rev_values = RevValues(root->lf);
+        const value_int64_t* const rev_values = RevValues(root->lf);
         for (uint16_t i = search_for_pair_index(&root->lf.keys[0], root_numKeys, range.begin); i < root_numKeys; i++) {
             if (root->lf.keys[i] > range.end) {
                 break;
@@ -1208,7 +1208,7 @@ static KVPair DELETE_refresh_one(const Node* const root, const uint8_t height, c
         link = NthChild(wks_me->node_cache.inl, idx_child);
     }
 
-    const value_uint64_t* const rev_values = loop_invariant(RevValues(wks_me->node_cache.lf));
+    const value_int64_t* const rev_values = loop_invariant(RevValues(wks_me->node_cache.lf));
     const key_uint64_t* const cached_keys = loop_invariant(&wks_me->node_cache.lf.keys[0]);
     for (;;) {
         fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
@@ -1318,8 +1318,8 @@ OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static void GET_prepare_next_qry(key_uint64_t* qrys_cache, unsigned* idx_qry_in_cache, uintptr_t* cursor_on_qrys, uintptr_t* cursor_on_results)
 {
     if (*idx_qry_in_cache == TASK_GET_NR_CACHED_QRYS) {
-        mram_write(qrys_cache, (__mram_ptr void*)*cursor_on_results, sizeof(value_uint64_t) * TASK_GET_NR_CACHED_QRYS);
-        *cursor_on_results += sizeof(value_uint64_t) * TASK_GET_NR_CACHED_QRYS;
+        mram_write(qrys_cache, (__mram_ptr void*)*cursor_on_results, sizeof(value_int64_t) * TASK_GET_NR_CACHED_QRYS);
+        *cursor_on_results += sizeof(value_int64_t) * TASK_GET_NR_CACHED_QRYS;
 
         *cursor_on_qrys += sizeof(key_uint64_t) * TASK_GET_NR_CACHED_QRYS;
         mram_read((__mram_ptr void*)*cursor_on_qrys, qrys_cache, sizeof(key_uint64_t) * TASK_GET_NR_CACHED_QRYS);
@@ -1336,7 +1336,7 @@ static void GET_execute(const Node* const root, const uint8_t height, const uint
 
     unsigned idx_qry = idx_qry_begin, idx_qry_in_cache = 0;
     uintptr_t cursor_on_qrys = qrys + sizeof(key_uint64_t) * idx_qry,
-              cursor_on_results = results + sizeof(value_uint64_t) * idx_qry;
+              cursor_on_results = results + sizeof(value_int64_t) * idx_qry;
     mram_read((__mram_ptr void*)(cursor_on_qrys), &wks_me->qrys[0], sizeof(key_uint64_t) * TASK_GET_NR_CACHED_QRYS);
 
     if (height == 0) {
@@ -1376,7 +1376,7 @@ static void GET_execute(const Node* const root, const uint8_t height, const uint
         }
     }
     if (idx_qry_in_cache != 0) {
-        mram_write(&wks_me->qrys[0], (__mram_ptr void*)cursor_on_results, sizeof(value_uint64_t) * idx_qry_in_cache);
+        mram_write(&wks_me->qrys[0], (__mram_ptr void*)cursor_on_results, sizeof(value_int64_t) * idx_qry_in_cache);
     }
 }
 OVERLAY_TASK(OVL_SLOT_QUERY, task_get, (void), ())
@@ -1455,10 +1455,10 @@ static KVPair PRED_search_one(const Node* const root, const uint8_t height, cons
     PredWorkspace* const wks_me = loop_invariant(&workspace.tree.pred[me()]);
 
     if (height == 0) {
-        const value_uint64_t* const rev_values = RevValues(root->lf);
+        const value_int64_t* const rev_values = RevValues(root->lf);
         for (uint16_t i = search_for_pair_index(&root->lf.keys[0], root_numKeys, key); i > 0;) {
             i--;
-            const value_uint64_t value = rev_values[-(int32_t)i];
+            const value_int64_t value = rev_values[-(int32_t)i];
             if (value != NOT_FOUND_VALUE) {
                 return (KVPair){root->lf.keys[i], value};
             }
@@ -1466,7 +1466,7 @@ static KVPair PRED_search_one(const Node* const root, const uint8_t height, cons
         return (KVPair){KEY_MIN, NOT_FOUND_VALUE};
     }
 
-    const value_uint64_t* const rev_values = loop_invariant(RevValues(wks_me->node_cache.lf));
+    const value_int64_t* const rev_values = loop_invariant(RevValues(wks_me->node_cache.lf));
     const key_uint64_t* const cached_keys = loop_invariant(&wks_me->node_cache.lf.keys[0]);
     for (;;) {
         NodeLink link = NthChild(root->inl, search_for_pair_index(&root->inl.keys[0], root_numKeys, key));
@@ -1479,7 +1479,7 @@ static KVPair PRED_search_one(const Node* const root, const uint8_t height, cons
         const uint16_t idx_first_ge = search_for_pair_index(cached_keys, link.numKeys, key);
         for (uint16_t i = idx_first_ge; i > 0;) {
             i--;
-            const value_uint64_t value = rev_values[-(int32_t)i];
+            const value_int64_t value = rev_values[-(int32_t)i];
             if (value != NOT_FOUND_VALUE) {
                 return (KVPair){cached_keys[i], value};
             }
@@ -1573,11 +1573,11 @@ static void RANGE_MIN_prepare_next_lump_end_index(uint16_t* lump_end_indices_cac
         *idx_lump_in_cache = 0;
     }
 }
-static void RANGE_MIN_commit_next_result(value_uint64_t* results_cache, unsigned* idx_result_in_cache, uintptr_t* cursor_on_results)
+static void RANGE_MIN_commit_next_result(value_int64_t* results_cache, unsigned* idx_result_in_cache, uintptr_t* cursor_on_results)
 {
     if (*idx_result_in_cache == TASK_RANGE_MIN_NR_CACHED_RESULTS) {
-        mram_write(results_cache, (__mram_ptr void*)*cursor_on_results, sizeof(value_uint64_t) * TASK_RANGE_MIN_NR_CACHED_RESULTS);
-        *cursor_on_results += sizeof(value_uint64_t) * TASK_RANGE_MIN_NR_CACHED_RESULTS;
+        mram_write(results_cache, (__mram_ptr void*)*cursor_on_results, sizeof(value_int64_t) * TASK_RANGE_MIN_NR_CACHED_RESULTS);
+        *cursor_on_results += sizeof(value_int64_t) * TASK_RANGE_MIN_NR_CACHED_RESULTS;
         *idx_result_in_cache = 0;
     }
 }
@@ -1607,7 +1607,7 @@ static void RANGE_MIN_execute(const Node* const root, const uint8_t height, cons
     cursor_on_delim_keys = delim_keys + sizeof(key_uint64_t) * idx_delim;
 
     idx_result_in_cache = 0;
-    cursor_on_results = results + sizeof(value_uint64_t) * (idx_delim - idx_lump);
+    cursor_on_results = results + sizeof(value_int64_t) * (idx_delim - idx_lump);
 
 
     if (height == 0) {
@@ -1627,7 +1627,7 @@ static void RANGE_MIN_execute(const Node* const root, const uint8_t height, cons
                 const key_uint64_t range_end = wks_me->delim_keys[idx_delim_in_cache];
                 idx_delim_in_cache++;
 
-                value_uint64_t min = VALUE_MAX;
+                value_int64_t min = VALUE_MAX;
                 for (; idx_pair < root_numKeys && root->lf.keys[idx_pair] <= range_end; idx_pair++) {
                     if (min > RevValues(root->lf)[-(int32_t)idx_pair]) {
                         min = RevValues(root->lf)[-(int32_t)idx_pair];
@@ -1662,8 +1662,8 @@ static void RANGE_MIN_execute(const Node* const root, const uint8_t height, cons
                 const key_uint64_t range_end = wks_me->delim_keys[idx_delim_in_cache];
                 idx_delim_in_cache++;
 
-                value_uint64_t min = VALUE_MAX;
-                const value_uint64_t* const rev_values = loop_invariant(RevValues(wks_me->node_cache.lf));
+                value_int64_t min = VALUE_MAX;
+                const value_int64_t* const rev_values = loop_invariant(RevValues(wks_me->node_cache.lf));
                 const key_uint64_t* const cached_keys = loop_invariant(&wks_me->node_cache.lf.keys[0]);
                 for (;;) {
                     for (; idx_pair < link.numKeys; idx_pair++) {
@@ -1690,7 +1690,7 @@ static void RANGE_MIN_execute(const Node* const root, const uint8_t height, cons
         }
     }
     if (idx_result_in_cache != 0) {
-        mram_write(&wks_me->results[0], (__mram_ptr void*)cursor_on_results, sizeof(value_uint64_t) * idx_result_in_cache);
+        mram_write(&wks_me->results[0], (__mram_ptr void*)cursor_on_results, sizeof(value_int64_t) * idx_result_in_cache);
     }
 }
 void task_range_min(void)
@@ -1726,7 +1726,7 @@ void task_range_min(void)
                         hot_delim_keys = cold_delim_keys + sizeof(key_uint64_t) * nr_cold_delims;
 
         const uintptr_t cold_results = (uintptr_t)DPU_MRAM_HEAP_POINTER + RESULT_OFFSET,
-                        hot_results = cold_results + sizeof(value_uint64_t) * nr_cold_results;
+                        hot_results = cold_results + sizeof(value_int64_t) * nr_cold_results;
 
         const uint16_t nr_cold_delims_per_tasklet = (uint16_t)DIV_NR_DELIMS_BY_TASK_RANGE_MIN_NR_TASKLETS(nr_cold_delims),
                        nr_remainder_cold_delims = nr_cold_delims - nr_cold_delims_per_tasklet * TASK_RANGE_MIN_NR_TASKLETS,
@@ -1805,14 +1805,14 @@ static uint64_t RANGE_COUNT_impl(const Node* const root, const uint8_t height, c
     // hoisted out of the scan loops by hand: the compiler must assume the
     // fetches into node_cache may alias *qry, so it cannot
     const key_uint64_t range_end = qry->range.end;
-    const value_uint64_t needle = qry->needle;
+    const value_int64_t needle = qry->needle;
 
     uint64_t count = 0;
 
     if (height == 0) {
         uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, qry->range.begin);
 
-        const value_uint64_t* const rev_values = RevValues(root->lf);
+        const value_int64_t* const rev_values = RevValues(root->lf);
         for (; idx_pair < root_numKeys && root->lf.keys[idx_pair] <= range_end; idx_pair++) {
             if (rev_values[-(int32_t)idx_pair] != NOT_FOUND_VALUE && rev_values[-(int32_t)idx_pair] == needle) {
                 count++;
@@ -1830,7 +1830,7 @@ static uint64_t RANGE_COUNT_impl(const Node* const root, const uint8_t height, c
         fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
         uint16_t idx_pair = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, qry->range.begin);
 
-        const value_uint64_t* const rev_values = loop_invariant(RevValues(wks_me->node_cache.lf));
+        const value_int64_t* const rev_values = loop_invariant(RevValues(wks_me->node_cache.lf));
         const key_uint64_t* const cached_keys = loop_invariant(&wks_me->node_cache.lf.keys[0]);
         for (;;) {
             for (; idx_pair < link.numKeys; idx_pair++) {
@@ -1915,27 +1915,27 @@ static KeyRange* RANGE_MAX_pop_qry(KeyRange* qrys_cache, unsigned* idx_qry_in_ca
     return &qrys_cache[(*idx_qry_in_cache)++];
 }
 OVERLAY_LOCAL(OVL_SLOT_QUERY)
-static void RANGE_MAX_push_result(value_uint64_t result, value_uint64_t* results_cache, unsigned* idx_result_in_cache, uintptr_t* cursor_on_results)
+static void RANGE_MAX_push_result(value_int64_t result, value_int64_t* results_cache, unsigned* idx_result_in_cache, uintptr_t* cursor_on_results)
 {
     results_cache[*idx_result_in_cache] = result;
     (*idx_result_in_cache)++;
     if (*idx_result_in_cache == TASK_RANGE_MAX_NR_CACHED_RESULTS) {
-        mram_write(results_cache, (__mram_ptr void*)*cursor_on_results, sizeof(value_uint64_t) * TASK_RANGE_MAX_NR_CACHED_RESULTS);
-        *cursor_on_results += sizeof(value_uint64_t) * TASK_RANGE_MAX_NR_CACHED_RESULTS;
+        mram_write(results_cache, (__mram_ptr void*)*cursor_on_results, sizeof(value_int64_t) * TASK_RANGE_MAX_NR_CACHED_RESULTS);
+        *cursor_on_results += sizeof(value_int64_t) * TASK_RANGE_MAX_NR_CACHED_RESULTS;
         *idx_result_in_cache = 0;
     }
 }
 OVERLAY_LOCAL(OVL_SLOT_QUERY)
-static void RANGE_MAX_flush_results_cache(value_uint64_t* results_cache, unsigned* idx_result_in_cache, uintptr_t* cursor_on_results)
+static void RANGE_MAX_flush_results_cache(value_int64_t* results_cache, unsigned* idx_result_in_cache, uintptr_t* cursor_on_results)
 {
     if (*idx_result_in_cache != 0) {
-        mram_write(results_cache, (__mram_ptr void*)*cursor_on_results, sizeof(value_uint64_t) * *idx_result_in_cache);
-        *cursor_on_results += sizeof(value_uint64_t) * *idx_result_in_cache;
+        mram_write(results_cache, (__mram_ptr void*)*cursor_on_results, sizeof(value_int64_t) * *idx_result_in_cache);
+        *cursor_on_results += sizeof(value_int64_t) * *idx_result_in_cache;
         *idx_result_in_cache = 0;
     }
 }
 OVERLAY_LOCAL(OVL_SLOT_QUERY)
-static value_uint64_t RANGE_MAX_impl(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
+static value_int64_t RANGE_MAX_impl(const Node* const root, const uint8_t height, const uint8_t root_numKeys,
     const KeyRange* const qry)
 {
     RMaxQWorkspace* const wks_me = loop_invariant(&workspace.tree.rmaxq[me()]);
@@ -1943,12 +1943,12 @@ static value_uint64_t RANGE_MAX_impl(const Node* const root, const uint8_t heigh
     // fetches into node_cache may alias *qry, so it cannot
     const key_uint64_t range_end = qry->end;
 
-    value_uint64_t max = NOT_FOUND_VALUE;
+    value_int64_t max = NOT_FOUND_VALUE;
 
     if (height == 0) {
         uint16_t idx_pair = search_for_pair_index(&root->lf.keys[0], root_numKeys, qry->begin);
 
-        const value_uint64_t* const rev_values = RevValues(root->lf);
+        const value_int64_t* const rev_values = RevValues(root->lf);
         for (; idx_pair < root_numKeys && root->lf.keys[idx_pair] <= range_end; idx_pair++) {
             if (rev_values[-(int32_t)idx_pair] > max) {
                 max = rev_values[-(int32_t)idx_pair];
@@ -1966,7 +1966,7 @@ static value_uint64_t RANGE_MAX_impl(const Node* const root, const uint8_t heigh
         fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
         uint16_t idx_pair = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, qry->begin);
 
-        const value_uint64_t* const rev_values = loop_invariant(RevValues(wks_me->node_cache.lf));
+        const value_int64_t* const rev_values = loop_invariant(RevValues(wks_me->node_cache.lf));
         const key_uint64_t* const cached_keys = loop_invariant(&wks_me->node_cache.lf.keys[0]);
         for (;;) {
             for (; idx_pair < link.numKeys; idx_pair++) {
@@ -2002,11 +2002,11 @@ static void RANGE_MAX_execute(const Node* const root, const uint8_t height, cons
     mram_read((__mram_ptr void*)(cursor_on_qrys), &wks_me->qrys[0], sizeof(KeyRange) * TASK_RANGE_MAX_NR_CACHED_QRYS);
 
     unsigned idx_result_in_cache = 0;
-    uintptr_t cursor_on_results = results + sizeof(value_uint64_t) * idx_qry;
+    uintptr_t cursor_on_results = results + sizeof(value_int64_t) * idx_qry;
 
     for (; idx_qry < idx_qry_end; idx_qry++) {
         const KeyRange* const qry = RANGE_MAX_pop_qry(&wks_me->qrys[0], &idx_qry_in_cache, &cursor_on_qrys);
-        const value_uint64_t max = RANGE_MAX_impl(root, height, root_numKeys, qry);
+        const value_int64_t max = RANGE_MAX_impl(root, height, root_numKeys, qry);
         RANGE_MAX_push_result(max, &wks_me->results[0], &idx_result_in_cache, &cursor_on_results);
     }
     RANGE_MAX_flush_results_cache(&wks_me->results[0], &idx_result_in_cache, &cursor_on_results);
@@ -2129,9 +2129,9 @@ static void SERIALIZE_execute(uint8_t root_numKeys, const Node* root, uint8_t he
     key_uint64_t* delim = SERIALIZE_fetch_next_delim(wks);
 
     if (height == 0) {
-        const value_uint64_t* const rev_values = RevValues(root->lf);
+        const value_int64_t* const rev_values = RevValues(root->lf);
         for (uint8_t i = 0; i < root_numKeys; i++) {
-            const value_uint64_t value = rev_values[-(int32_t)i];
+            const value_int64_t value = rev_values[-(int32_t)i];
             if (value != NOT_FOUND_VALUE) {
                 const key_uint64_t key = root->lf.keys[i];
 
@@ -2153,13 +2153,13 @@ static void SERIALIZE_execute(uint8_t root_numKeys, const Node* root, uint8_t he
         }
 
         // serialize kvpairs in leaf nodes
-        const value_uint64_t* const rev_values = loop_invariant(RevValues(wks->leaf_cache));
+        const value_int64_t* const rev_values = loop_invariant(RevValues(wks->leaf_cache));
         const key_uint64_t* const cached_keys = loop_invariant(&wks->leaf_cache.keys[0]);
         for (;;) {
             fetch_leaf_filled(&Deref(cursor.ptr).lf, &wks->leaf_cache, cursor.numKeys);
 
             for (uint8_t i = 0; i < cursor.numKeys; i++) {
-                const value_uint64_t value = rev_values[-(int32_t)i];
+                const value_int64_t value = rev_values[-(int32_t)i];
                 if (value != NOT_FOUND_VALUE) {
                     const key_uint64_t key = cached_keys[i];
 

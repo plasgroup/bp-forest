@@ -29,7 +29,7 @@ static const NodeLink NODELINK_NULLPTR = {NODE_NULLPTR, UINT_MAX&((1u << CEIL_LO
 #define MIN_NR_CHILDREN ((MAX_NR_CHILDREN + 1) / 2)
 #endif
 
-#define MAX_NR_PAIRS ((SIZEOF_NODE - 16) / (sizeof(key_uint64_t) + sizeof(value_uint64_t)))
+#define MAX_NR_PAIRS ((SIZEOF_NODE - 16) / (sizeof(key_uint64_t) + sizeof(value_int64_t)))
 #define MIN_NR_PAIRS ((MAX_NR_PAIRS + 1) / 2)
 
 // Bidirectional layout: all the occupied elements of a node form one
@@ -53,7 +53,7 @@ typedef struct {
 #endif
 } InternalNode;
 typedef struct {
-    __dma_aligned value_uint64_t values[MAX_NR_PAIRS];
+    __dma_aligned value_int64_t values[MAX_NR_PAIRS];
     __dma_aligned NodeLink right;
     __dma_aligned key_uint64_t keys[MAX_NR_PAIRS];
     __dma_aligned NodePtr left;
@@ -123,7 +123,7 @@ typedef struct {
     __dma_aligned Node node_cache;
     __dma_aligned key_uint64_t qrys[TASK_DELETE_NR_CACHED_QRYS];
     __dma_aligned uint8_t results[TASK_DELETE_NR_CACHED_RESULTS];
-    __dma_aligned value_uint64_t old_value;
+    __dma_aligned value_int64_t old_value;
     // DMA buffers of the min-refresh phase.  Static so that the 8-byte
     // alignment is guaranteed: the DMA engine masks the low bits of the WRAM
     // address, so a stack local, whose alignment the compiler is free to
@@ -144,7 +144,7 @@ typedef struct {
     __dma_aligned Node node_cache;
     __dma_aligned uint16_t lump_end_indices[TASK_RANGE_MIN_NR_CACHED_LUMP_END_INDICES];
     __dma_aligned key_uint64_t delim_keys[TASK_RANGE_MIN_NR_CACHED_DELIM_KEYS];
-    __dma_aligned value_uint64_t results[TASK_RANGE_MIN_NR_CACHED_RESULTS];
+    __dma_aligned value_int64_t results[TASK_RANGE_MIN_NR_CACHED_RESULTS];
 } TaskletLocalRMQWorkspace;
 _Static_assert((TASK_RANGE_MIN_NR_CACHED_LUMP_END_INDICES * sizeof(uint16_t)) % 8 == 0, "(TASK_RANGE_MIN_NR_CACHED_LUMP_END_INDICES * sizeof(uint16_t)) % 8 == 0");
 
@@ -165,7 +165,7 @@ typedef struct {
 typedef struct {
     __dma_aligned Node node_cache;
     __dma_aligned KeyRange qrys[TASK_RANGE_MAX_NR_CACHED_QRYS];
-    __dma_aligned value_uint64_t results[TASK_RANGE_MAX_NR_CACHED_RESULTS];
+    __dma_aligned value_int64_t results[TASK_RANGE_MAX_NR_CACHED_RESULTS];
 } RMaxQWorkspace;
 
 

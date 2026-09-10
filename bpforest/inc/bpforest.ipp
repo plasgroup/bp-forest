@@ -63,22 +63,6 @@ inline void QueryDataPerRange<Query, Result>::clear_for_thread(unsigned tid)
     qrys[tid].clear();
     orig_idxs[tid].clear();
 }
-template <typename QandR>
-inline void QueryDataPerRange<QandR, QandR>::clear()
-{
-    for (auto& vec : qrys) {
-        vec.clear();
-    }
-    for (auto& vec : orig_idxs) {
-        vec.clear();
-    }
-}
-template <typename QandR>
-inline void QueryDataPerRange<QandR, QandR>::clear_for_thread(unsigned tid)
-{
-    qrys[tid].clear();
-    orig_idxs[tid].clear();
-}
 template <typename Query>
 inline void QueryDataPerRange<Query, void>::clear()
 {
@@ -162,7 +146,7 @@ template <typename Query>
 constexpr bool IsPointQuery = std::is_invocable_v<PointQueryToKey<Query>, Query>;
 
 // predecessor query: key in, KVPair (predecessor pair) out.  Distinct (Query,
-// Result) pair from GET's <key_uint64_t, value_uint64_t> so its routing /
+// Result) pair from GET's <key_uint64_t, value_int64_t> so its routing /
 // not_found specializations do not collide.
 template <typename Query, typename Result>
 constexpr bool IsPredecessorQuery = std::is_same_v<Query, key_uint64_t>&& std::is_same_v<Result, KVPair>;
@@ -626,7 +610,7 @@ inline void BPForest::route_accumulate_impl(unsigned tid)
         routed->cold[idx].nr_qrys = static_cast<uint32_t>(nr_cold);
         routed->hot[idx].nr_qrys = static_cast<uint32_t>(nr_hot);
 
-        if constexpr (!std::is_same_v<Result, void> && !std::is_same_v<Query, Result>) {
+        if constexpr (!std::is_same_v<Result, void>) {
             for (unsigned t = 0; t < nr_threads; t++) {
                 routed->cold[idx].results[t].reserve(routed->cold[idx].qrys[t].size());
                 routed->hot[idx].results[t].reserve(routed->hot[idx].qrys[t].size());
@@ -710,9 +694,9 @@ inline void BPForest::route_single_point_query(
 }
 // GET
 template <>
-inline void BPForest::not_found_in_point_query<key_uint64_t, value_uint64_t>(
-    uint32_t, const key_uint64_t&, value_uint64_t* result,
-    QueryData<key_uint64_t, value_uint64_t>&,
+inline void BPForest::not_found_in_point_query<key_uint64_t, value_int64_t>(
+    uint32_t, const key_uint64_t&, value_int64_t* result,
+    QueryData<key_uint64_t, value_int64_t>&,
     unsigned)
 {
     *result = NOT_FOUND_VALUE;
@@ -745,7 +729,7 @@ inline void BPForest::not_found_in_point_query<key_uint64_t, KVPair>(
     QueryData<key_uint64_t, KVPair>&,
     unsigned)
 {
-    *result = KVPair{NOT_FOUND_VALUE, NOT_FOUND_VALUE};
+    *result = KVPair{KEY_MIN, NOT_FOUND_VALUE};
 }
 
 template <typename Query, typename Result>
@@ -865,11 +849,7 @@ struct ResultReceiver {
     static bool result_blocks_of_tree(sg_block_info* out, block_id_t& block_index, QueryDataPerRange<Query, Result>& query_data)
     {
         if (block_index < query_data.qrys.size()) {
-            if constexpr (std::is_same_v<Query, Result>) {
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(&query_data.qrys[block_index][0]));
-            } else {
-                out->addr = static_cast<uint8_t*>(static_cast<void*>(&query_data.results[block_index][0]));
-            }
+            out->addr = static_cast<uint8_t*>(static_cast<void*>(&query_data.results[block_index][0]));
             out->length = static_cast<uint32_t>(sizeof(Result) * query_data.qrys[block_index].size());
             return true;
         }
@@ -1041,7 +1021,7 @@ inline void BPForest::execute_in_dpus(TaskID task_no, QueryData<Query, Result>& 
 }
 
 
-inline void BPForest::batch_get(uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t results[])
+inline void BPForest::batch_get(uint32_t nr_queries, const key_uint64_t keys[], value_int64_t results[])
 {
     ScopedTimer t{Timer, "batch"};
 
@@ -1050,7 +1030,7 @@ inline void BPForest::batch_get(uint32_t nr_queries, const key_uint64_t keys[], 
     execute_in_dpus(TASK_GET, get_queries);
     postprocess_of_get(results);
 }
-inline void BPForest::postprocess_of_get(value_uint64_t results[])
+inline void BPForest::postprocess_of_get(value_int64_t results[])
 {
     ScopedTimer t{Timer, "postproc"};
 
@@ -1060,17 +1040,17 @@ inline void BPForest::postprocess_of_get(value_uint64_t results[])
 }
 inline void BPForest::postprocess_of_get_impl(unsigned tid)
 {
-    value_uint64_t* results = std::any_cast<value_uint64_t*>(any_tmp_data);
+    value_int64_t* results = std::any_cast<value_int64_t*>(any_tmp_data);
 
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
         for (const auto& tmp : {std::ref(get_queries.cold), std::ref(get_queries.hot)}) {
             const auto& query_data = tmp.get();
-            const auto& qrys = query_data[idx_dpu].qrys[tid];
+            const auto& partial_results = query_data[idx_dpu].results[tid];
             const auto& orig_idxs = query_data[idx_dpu].orig_idxs[tid];
 
-            const size_t n_qrys = qrys.size();
+            const size_t n_qrys = orig_idxs.size();
             for (size_t i = 0; i < n_qrys; i++) {
-                results[orig_idxs[i]] = qrys[i];
+                results[orig_idxs[i]] = partial_results[i];
             }
         }
     }
@@ -1298,7 +1278,7 @@ inline void BPForest::postprocess_of_rcq_impl(unsigned tid)
     }
 }
 
-inline void BPForest::batch_range_max(uint32_t nr_queries, const KeyRange queries[], value_uint64_t results[])
+inline void BPForest::batch_range_max(uint32_t nr_queries, const KeyRange queries[], value_int64_t results[])
 {
     ScopedTimer t{Timer, "batch"};
 
@@ -1307,7 +1287,7 @@ inline void BPForest::batch_range_max(uint32_t nr_queries, const KeyRange querie
     execute_in_dpus(TASK_RANGE_MAX, rmaxqs);
     postprocess_of_rmaxq(nr_queries, results);
 }
-inline void BPForest::postprocess_of_rmaxq(uint32_t nr_queries, value_uint64_t result[])
+inline void BPForest::postprocess_of_rmaxq(uint32_t nr_queries, value_int64_t result[])
 {
     ScopedTimer t{Timer, "postproc"};
 
@@ -1318,7 +1298,7 @@ inline void BPForest::postprocess_of_rmaxq(uint32_t nr_queries, value_uint64_t r
 }
 inline void BPForest::postprocess_of_rmaxq_impl(unsigned tid)
 {
-    value_uint64_t* results;
+    value_int64_t* results;
     uint32_t nr_queries;
     std::tie(nr_queries, results) = *std::any_cast<const TmpDataForPostprocessOfRMaxQ*>(any_tmp_data);
 
@@ -2961,7 +2941,7 @@ inline void BPForest::incremental_repartition_worker_hot([[maybe_unused]] unsign
     }
 }
 
-inline void BPForest::partition_with_get_batch(uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[])
+inline void BPForest::partition_with_get_batch(uint32_t nr_queries, const key_uint64_t keys[], value_int64_t result[])
 {
     ScopedTimer t{Timer, "partition"};
     full_repartition(nr_queries, keys, result, get_queries);
@@ -2989,7 +2969,7 @@ inline void BPForest::partition_with_range_count_batch(uint32_t nr_queries, cons
     ScopedTimer t{Timer, "partition"};
     full_repartition(nr_queries, queries, result, rcqs);
 }
-inline void BPForest::partition_with_range_max_batch(uint32_t nr_queries, const KeyRange queries[], value_uint64_t result[])
+inline void BPForest::partition_with_range_max_batch(uint32_t nr_queries, const KeyRange queries[], value_int64_t result[])
 {
     ScopedTimer t{Timer, "partition"};
     full_repartition(nr_queries, queries, result, rmaxqs);

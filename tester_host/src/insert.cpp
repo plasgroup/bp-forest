@@ -145,7 +145,7 @@ int main(int argc, char* argv[])
         ExtendableBuffer<KVPair> init_pairs{init_qrys.length};
         for (size_t i = 0; i < init_qrys.length; i++) {
             ASSERT(init_qrys.ops[i].type == insert_t);
-            init_pairs[i] = {key_int64_to_uint64(init_qrys.ops[i].tsk.i.key), key_int64_to_uint64(init_qrys.ops[i].tsk.i.value)};
+            init_pairs[i] = {key_int64_to_uint64(init_qrys.ops[i].tsk.i.key), init_qrys.ops[i].tsk.i.value};
         }
 
         const InitHeader init_header{TASK_INIT, static_cast<uint32_t>(init_qrys.length)};

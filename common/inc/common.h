@@ -23,7 +23,7 @@ extern "C" {
  */
 typedef struct {
     key_uint64_t key;
-    value_uint64_t value;
+    value_int64_t value;
 } KVPair;
 typedef struct {
     key_uint64_t begin, end;
@@ -33,7 +33,7 @@ typedef struct {
 } IndexRange;
 typedef struct {
     KeyRange range;
-    value_uint64_t needle;
+    value_int64_t needle;
 } RangeCountQuery;
 typedef struct {
     uint16_t nr_keys[4];

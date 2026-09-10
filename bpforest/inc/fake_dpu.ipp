@@ -33,8 +33,8 @@ inline void FakeDPU::execute()
     case TASK_GET: {
         const uint32_t nr_cold_qrys = header.qrys.nr_cold_qrys, nr_hot_qrys = header.qrys.nr_hot_qrys;
         const key_uint64_t* const keys = std::launder(reinterpret_cast<key_uint64_t*>(payload));
-        ASSERT(header.qrys.result_offset + sizeof(value_uint64_t) * (nr_cold_qrys + nr_hot_qrys) <= MRAMSize);
-        value_uint64_t* const result = new (&mram[header.qrys.result_offset]) value_uint64_t[nr_cold_qrys + nr_hot_qrys];
+        ASSERT(header.qrys.result_offset + sizeof(value_int64_t) * (nr_cold_qrys + nr_hot_qrys) <= MRAMSize);
+        value_int64_t* const result = new (&mram[header.qrys.result_offset]) value_int64_t[nr_cold_qrys + nr_hot_qrys];
         task_get(cold_tree, nr_cold_qrys, keys, result);
         task_get(hot_tree, nr_hot_qrys, keys + nr_cold_qrys, result + nr_cold_qrys);
     } break;
@@ -57,8 +57,8 @@ inline void FakeDPU::execute()
     case TASK_RANGE_MAX: {
         const uint32_t nr_cold_qrys = header.qrys.nr_cold_qrys, nr_hot_qrys = header.qrys.nr_hot_qrys;
         const KeyRange* const queries = std::launder(reinterpret_cast<KeyRange*>(payload));
-        ASSERT(header.qrys.result_offset + sizeof(value_uint64_t) * (nr_cold_qrys + nr_hot_qrys) <= MRAMSize);
-        value_uint64_t* const result = new (&mram[header.qrys.result_offset]) value_uint64_t[nr_cold_qrys + nr_hot_qrys];
+        ASSERT(header.qrys.result_offset + sizeof(value_int64_t) * (nr_cold_qrys + nr_hot_qrys) <= MRAMSize);
+        value_int64_t* const result = new (&mram[header.qrys.result_offset]) value_int64_t[nr_cold_qrys + nr_hot_qrys];
         task_range_max(cold_tree, nr_cold_qrys, queries, result);
         task_range_max(hot_tree, nr_hot_qrys, queries + nr_cold_qrys, result + nr_cold_qrys);
     } break;
@@ -157,7 +157,7 @@ inline void FakeDPU::execute()
 namespace
 {
 struct KVPairToStdPair {
-    using value_type = std::pair<key_uint64_t, value_uint64_t>;
+    using value_type = std::pair<key_uint64_t, value_int64_t>;
     using reference = value_type&;
 
 private:
@@ -207,7 +207,7 @@ inline void FakeDPU::construct_tree(Tree& tree, const uint32_t nr_pairs, const K
 {
     Tree{KVPairToStdPair{pairs}, KVPairToStdPair{pairs + nr_pairs}}.swap(tree);
 }
-inline void FakeDPU::task_get(const Tree& tree, const uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[])
+inline void FakeDPU::task_get(const Tree& tree, const uint32_t nr_queries, const key_uint64_t keys[], value_int64_t result[])
 {
     for (uint32_t i = 0; i < nr_queries; i++) {
         const auto iter = tree.find(keys[i]);
@@ -247,10 +247,10 @@ inline void FakeDPU::task_range_count(const Tree& tree, const uint32_t nr_querie
         result[i] = count;
     }
 }
-inline void FakeDPU::task_range_max(const Tree& tree, const uint32_t nr_queries, const KeyRange queries[], value_uint64_t result[])
+inline void FakeDPU::task_range_max(const Tree& tree, const uint32_t nr_queries, const KeyRange queries[], value_int64_t result[])
 {
     for (uint32_t i = 0; i < nr_queries; i++) {
-        value_uint64_t max = NOT_FOUND_VALUE;
+        value_int64_t max = NOT_FOUND_VALUE;
         for (auto iter = tree.lower_bound(queries[i].begin);
              iter != tree.end() && iter->first <= queries[i].end;
              iter++) {

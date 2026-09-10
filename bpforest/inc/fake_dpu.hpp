@@ -32,7 +32,7 @@ private:
     const std::unique_ptr<MRAMImage> mram_impl{new MRAMImage};
     std::byte* mram{&mram_impl->impl[0]};
 
-    using Tree = std::map<key_uint64_t, value_uint64_t>;
+    using Tree = std::map<key_uint64_t, value_int64_t>;
     Tree cold_tree, hot_tree;
 
 public:
@@ -41,10 +41,10 @@ public:
 
 private:
     static void construct_tree(Tree& tree, uint32_t nr_pairs, const KVPair pairs[]);
-    static void task_get(const Tree& tree, uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
+    static void task_get(const Tree& tree, uint32_t nr_queries, const key_uint64_t keys[], value_int64_t result[]);
     static void task_pred(const Tree& tree, uint32_t nr_queries, const key_uint64_t keys[], KVPair result[]);
     static void task_range_count(const Tree& tree, uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
-    static void task_range_max(const Tree& tree, uint32_t nr_queries, const KeyRange queries[], value_uint64_t result[]);
+    static void task_range_max(const Tree& tree, uint32_t nr_queries, const KeyRange queries[], value_int64_t result[]);
     static void task_insert(Tree& tree, uint32_t nr_queries, const KVPair pairs[]);
     static void task_delete(Tree& tree, uint32_t nr_queries, const key_uint64_t keys[], uint8_t existed[]);
     static KVPair refresh_min(const Tree& tree, KeyRange range);

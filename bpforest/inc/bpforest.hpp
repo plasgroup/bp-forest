@@ -31,11 +31,11 @@ struct ScanRange {
     uint32_t inner_begin, inner_end;
 };
 struct BatchScanResult {
-    ExtendableBuffer<value_uint64_t> values;
+    ExtendableBuffer<value_int64_t> values;
     ConstantCapacityVector<size_t, MAX_NR_DPUS * 2> outer_offset;
     ExtendableBuffer<ScanRange> ranges;
 
-    std::pair<const value_uint64_t*, const value_uint64_t*> get_nth_result(size_t n) const
+    std::pair<const value_int64_t*, const value_int64_t*> get_nth_result(size_t n) const
     {
         return std::make_pair(
             &values[outer_offset[ranges[n].outer_begin] + ranges[n].inner_begin],
@@ -54,16 +54,6 @@ struct QueryDataPerRange {
     uint32_t nr_qrys;
 
     explicit QueryDataPerRange(unsigned nr_threads) : qrys(nr_threads), orig_idxs(nr_threads), results(nr_threads) {}
-    void clear();
-    void clear_for_thread(unsigned tid);
-};
-template <typename QandR>
-struct QueryDataPerRange<QandR, QandR> {
-    std::vector<std::vector<QandR>> qrys;
-    std::vector<std::vector<uint32_t>> orig_idxs;
-    uint32_t nr_qrys;
-
-    explicit QueryDataPerRange(unsigned nr_threads) : qrys(nr_threads), orig_idxs(nr_threads) {}
     void clear();
     void clear_for_thread(unsigned tid);
 };
@@ -130,7 +120,7 @@ struct BPForest : ParallelManager<BPForest> {
     BPForest(const KVPair sorted_pairs[], size_t nr_pairs, const std::vector<Partition>& partitioning, const Param& = {});
     ~BPForest();
 
-    void batch_get(uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
+    void batch_get(uint32_t nr_queries, const key_uint64_t keys[], value_int64_t result[]);
     //! result[i].value == NOT_FOUND_VALUE means keys[i] has no live (i.e. not
     //! deleted) strict predecessor; otherwise result[i] is the live pair with
     //! the largest key < keys[i].
@@ -140,17 +130,17 @@ struct BPForest : ParallelManager<BPForest> {
     //! before its deletion; duplicates within a batch as Database::batch_delete.
     void batch_delete(uint32_t nr_queries, const key_uint64_t keys[], uint8_t existed[]);
     void batch_range_count(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
-    void batch_range_max(uint32_t nr_queries, const KeyRange queries[], value_uint64_t result[]);
+    void batch_range_max(uint32_t nr_queries, const KeyRange queries[], value_int64_t result[]);
     void batch_scan(size_t nr_queries, const KeyRange ranges[], BatchScanResult& result);
     std::vector<std::array<uint32_t, 2>> get_nr_pairs() const;
     std::vector<std::array<uint32_t, 2>> last_query_dist() const;
 
-    void partition_with_get_batch(uint32_t nr_queries, const key_uint64_t keys[], value_uint64_t result[]);
+    void partition_with_get_batch(uint32_t nr_queries, const key_uint64_t keys[], value_int64_t result[]);
     void partition_with_pred_batch(uint32_t nr_queries, const key_uint64_t keys[], KVPair result[]);
     void partition_with_insert_batch(uint32_t nr_queries, const KVPair pairs[]);
     void partition_with_delete_batch(uint32_t nr_queries, const key_uint64_t keys[]);
     void partition_with_range_count_batch(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
-    void partition_with_range_max_batch(uint32_t nr_queries, const KeyRange queries[], value_uint64_t result[]);
+    void partition_with_range_max_batch(uint32_t nr_queries, const KeyRange queries[], value_int64_t result[]);
 
     void print_params(std::ostream&) const;
     std::vector<Partition> dump_partitions() const;
@@ -285,12 +275,12 @@ private:
     std::vector<std::vector<NewHotRange>> hot_split_plans = std::vector<std::vector<NewHotRange>>(nr_base_parts);
 
     TaskID last_qry_type = TASK_NONE;
-    QueryData<key_uint64_t, value_uint64_t> get_queries{nr_base_parts, get_parallelism()};
+    QueryData<key_uint64_t, value_int64_t> get_queries{nr_base_parts, get_parallelism()};
     QueryData<key_uint64_t, KVPair> pred_queries{nr_base_parts, get_parallelism()};
     QueryData<KVPair, void> insert_queries{nr_base_parts, get_parallelism()};
     QueryData<key_uint64_t, uint8_t> delete_queries{nr_base_parts, get_parallelism()};
     QueryData<RangeCountQuery, uint64_t> rcqs{nr_base_parts, get_parallelism()};
-    QueryData<KeyRange, value_uint64_t> rmaxqs{nr_base_parts, get_parallelism()};
+    QueryData<KeyRange, value_int64_t> rmaxqs{nr_base_parts, get_parallelism()};
 
     const ExtendableBuffer<InputHeader> input_headers{nr_base_parts};
 
@@ -414,7 +404,7 @@ private:
     template <typename Query, typename Result, typename SendTail, typename RecvTail>
     void execute_in_dpus(TaskID task_no, QueryData<Query, Result>&, const SendTail&, const RecvTail&);
 
-    void postprocess_of_get(value_uint64_t result[]);
+    void postprocess_of_get(value_int64_t result[]);
     void postprocess_of_get_impl(unsigned tid);
 
     void postprocess_of_pred(KVPair result[]);
@@ -431,9 +421,9 @@ private:
     void postprocess_of_rcq_impl(unsigned tid);
     using TmpDataForPostprocessOfRCQ = std::tuple<uint32_t, uint64_t*>;
 
-    void postprocess_of_rmaxq(uint32_t nr_queries, value_uint64_t result[]);
+    void postprocess_of_rmaxq(uint32_t nr_queries, value_int64_t result[]);
     void postprocess_of_rmaxq_impl(unsigned tid);
-    using TmpDataForPostprocessOfRMaxQ = std::tuple<uint32_t, value_uint64_t*>;
+    using TmpDataForPostprocessOfRMaxQ = std::tuple<uint32_t, value_int64_t*>;
 
     size_t retrieve_all_data(ExtendableBuffer<KVPair>& buf);
     template <typename Query, typename Result>

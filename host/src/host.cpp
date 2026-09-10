@@ -208,7 +208,7 @@ public:
     BPForestDatabase(const std::vector<KVPair>& init_data, const BPForest::Param& param)
         : forest(&init_data[0], init_data.size(), param) {}
 
-    void batch_get(size_t nr_queries, const key_uint64_t keys[], value_uint64_t results[]) override
+    void batch_get(size_t nr_queries, const key_uint64_t keys[], value_int64_t results[]) override
     {
         forest.batch_get(static_cast<uint32_t>(nr_queries), keys, results);
 #ifdef DEBUG_ON
@@ -231,7 +231,7 @@ public:
         forest.batch_delete(static_cast<uint32_t>(nr_queries), keys, existed);
     }
 
-    void batch_range_minimum(size_t, const KeyRange[], value_uint64_t[]) override
+    void batch_range_minimum(size_t, const KeyRange[], value_int64_t[]) override
     {
         std::cerr << "batch_range_minimum is not implemented" << std::endl;
         exit(1);
@@ -239,7 +239,7 @@ public:
 
     void batch_range_sum(uint64_t /* n */,
         const KeyRange /*queries */[],
-        value_uint64_t /* results */[]) override
+        value_int64_t /* results */[]) override
     {
         std::cerr << "batch_range_sum is not implemented" << std::endl;
         exit(1);
@@ -247,19 +247,19 @@ public:
 
     void batch_range_count(uint64_t n,
         const RangeCountQuery queries[],
-        value_uint64_t results[]) override
+        uint64_t results[]) override
     {
         forest.batch_range_count(static_cast<uint32_t>(n), queries, results);
     };
 
     void batch_range_max(uint64_t n,
         const KeyRange queries[],
-        value_uint64_t results[]) override
+        value_int64_t results[]) override
     {
         forest.batch_range_max(static_cast<uint32_t>(n), queries, results);
     };
 
-    void partition_with(uint64_t n, const key_uint64_t keys[], value_uint64_t values[]) override
+    void partition_with(uint64_t n, const key_uint64_t keys[], value_int64_t values[]) override
     {
         forest.partition_with_get_batch(static_cast<uint32_t>(n), keys, values);
     }
@@ -275,7 +275,7 @@ public:
     {
         forest.partition_with_delete_batch(static_cast<uint32_t>(n), keys);
     }
-    void partition_with(uint64_t n, const KeyRange queries[], uint64_t results[]) override
+    void partition_with(uint64_t n, const KeyRange queries[], value_int64_t results[]) override
     {
         forest.partition_with_range_max_batch(static_cast<uint32_t>(n), queries, results);
     }

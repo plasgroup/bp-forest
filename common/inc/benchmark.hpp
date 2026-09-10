@@ -33,7 +33,7 @@ inline void assign_query(key_uint64_t& to, operation& from)
 inline void assign_query(KVPair& to, operation& from)
 {
     if (from.type == insert_t)
-        to = {key_int64_to_uint64(from.tsk.i.key), value_int64_to_uint64(from.tsk.i.value)};
+        to = {key_int64_to_uint64(from.tsk.i.key), from.tsk.i.value};
 }
 inline void assign_query(KeyRange& to, operation& from)
 {
@@ -49,7 +49,7 @@ inline void assign_query(RangeCountQuery& to, operation& from)
         KeyRange range = {
             key_int64_to_uint64(from.tsk.s.lkey),
             key_int64_to_uint64(from.tsk.s.rkey)};
-        value_uint64_t needle = range.begin & 0xff;
+        value_int64_t needle = static_cast<value_int64_t>(range.begin & 0xff);
         to = {range, needle};
     }
 }
@@ -132,7 +132,7 @@ public:
 class GetBenchmark : public Benchmark
 {
     WorkloadBuffer<key_uint64_t> workload_buf;
-    ExtendableBuffer<value_uint64_t> results, oracle_results;
+    ExtendableBuffer<value_int64_t> results, oracle_results;
 
     key_uint64_t* last_queries;
 
@@ -331,7 +331,7 @@ public:
 
 class RMQBenchmark : public RangeBenchmark
 {
-    ExtendableBuffer<value_uint64_t> results, oracle_results;
+    ExtendableBuffer<value_int64_t> results, oracle_results;
 
     KeyRange* last_queries;
 
@@ -371,7 +371,7 @@ public:
 
 class RangeSumBenchmark : public RangeBenchmark
 {
-    ExtendableBuffer<value_uint64_t> results, oracle_results;
+    ExtendableBuffer<value_int64_t> results, oracle_results;
 
     KeyRange* last_queries;
 
@@ -411,7 +411,7 @@ public:
 
 class RangeMaxBenchmark : public RangeBenchmark
 {
-    ExtendableBuffer<value_uint64_t> results, oracle_results;
+    ExtendableBuffer<value_int64_t> results, oracle_results;
 
     KeyRange* last_queries;
 
@@ -452,7 +452,7 @@ public:
 class RangeCountBenchmark : public Benchmark
 {
     WorkloadBuffer<RangeCountQuery> workload_buf;
-    ExtendableBuffer<value_uint64_t> results, oracle_results;
+    ExtendableBuffer<uint64_t> results, oracle_results;
 
     RangeCountQuery* last_queries;
 

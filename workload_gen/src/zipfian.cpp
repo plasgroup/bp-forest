@@ -544,7 +544,7 @@ private:
 
     ExtendableBuffer<int64_t> init_keys;
     std::uniform_int_distribution<int64_t> key_dist{std::numeric_limits<int64_t>::min()};
-    std::uniform_int_distribution<int64_t> value_dist{std::numeric_limits<int64_t>::min() + 1};
+    std::uniform_int_distribution<int64_t> value_dist{VALUE_MIN, VALUE_MAX};
     unsigned merge_step;
     ExtendableBuffer<operation> init_ops;
     std::vector<std::vector<size_t>> counts_per_slice;

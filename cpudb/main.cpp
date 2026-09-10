@@ -123,9 +123,9 @@ TimerTree Timer{{"batch"}};
 //! for it.
 class CPUDatabase : public InitData, public ParallelManager<CPUDatabase>
 {
-    std::optional<SegmentTree<value_uint64_t, MinOp<value_uint64_t>>> min_tree;
-    std::optional<SegmentTree<value_uint64_t, MaxOp<value_uint64_t>>> max_tree;
-    std::optional<SegmentTree<value_uint64_t, SumOp<value_uint64_t>>> sum_tree;
+    std::optional<SegmentTree<value_int64_t, MinOp<value_int64_t>>> min_tree;
+    std::optional<SegmentTree<value_int64_t, MaxOp<value_int64_t>>> max_tree;
+    std::optional<SegmentTree<value_int64_t, SumOp<value_int64_t>>> sum_tree;
 
     std::function<void(uint64_t idx_begin, uint64_t nr_queries)> batch_job;
     uint64_t batch_size = 0;
@@ -169,8 +169,8 @@ class CPUDatabase : public InitData, public ParallelManager<CPUDatabase>
     //! Answers an empty range by NOT_FOUND_VALUE, the convention InitData
     //! folds follow.
     template <class Op>
-    void fold_batch(const SegmentTree<value_uint64_t, Op>& tree, uint64_t n,
-        const KeyRange queries[], value_uint64_t results[])
+    void fold_batch(const SegmentTree<value_int64_t, Op>& tree, uint64_t n,
+        const KeyRange queries[], value_int64_t results[])
     {
         const std::vector<KVPair>& data = get_data();
         const size_t nr_pairs = data.size();
@@ -200,14 +200,14 @@ public:
             max_tree.emplace(get_values(), NOT_FOUND_VALUE);
             break;
         case TASK_RANGE_SUM:
-            sum_tree.emplace(get_values(), value_uint64_t{0});
+            sum_tree.emplace(get_values(), value_int64_t{0});
             break;
         default:
             break;
         }
     }
 
-    void batch_get(uint64_t n, const key_uint64_t keys[], value_uint64_t results[]) override
+    void batch_get(uint64_t n, const key_uint64_t keys[], value_int64_t results[]) override
     {
         parallel_batch(n, [&](uint64_t at, uint64_t len) { InitData::batch_get(len, keys + at, results + at); });
     }
@@ -215,19 +215,19 @@ public:
     {
         parallel_batch(n, [&](uint64_t at, uint64_t len) { InitData::batch_pred(len, keys + at, results + at); });
     }
-    void batch_range_minimum(uint64_t n, const KeyRange queries[], value_uint64_t results[]) override
+    void batch_range_minimum(uint64_t n, const KeyRange queries[], value_int64_t results[]) override
     {
         fold_batch(*min_tree, n, queries, results);
     }
-    void batch_range_sum(uint64_t n, const KeyRange queries[], value_uint64_t results[]) override
+    void batch_range_sum(uint64_t n, const KeyRange queries[], value_int64_t results[]) override
     {
         fold_batch(*sum_tree, n, queries, results);
     }
-    void batch_range_count(uint64_t n, const RangeCountQuery queries[], value_uint64_t results[]) override
+    void batch_range_count(uint64_t n, const RangeCountQuery queries[], uint64_t results[]) override
     {
         parallel_batch(n, [&](uint64_t at, uint64_t len) { InitData::batch_range_count(len, queries + at, results + at); });
     }
-    void batch_range_max(uint64_t n, const KeyRange queries[], value_uint64_t results[]) override
+    void batch_range_max(uint64_t n, const KeyRange queries[], value_int64_t results[]) override
     {
         fold_batch(*max_tree, n, queries, results);
     }
