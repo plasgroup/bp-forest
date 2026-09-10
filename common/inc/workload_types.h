@@ -5,6 +5,8 @@ extern "C" {
 #endif  // ifdef __cplusplus
 
 
+#include "bit_ops_macro.h"
+
 #include <stdint.h>
 
 
@@ -14,6 +16,7 @@ extern "C" {
 typedef uint64_t key_uint64_t;
 #define KEY_MIN (UINT64_C(0))
 #define KEY_MAX (UINT64_MAX)
+#define KEY_WIDTH (BITWIDTH_UINT64(KEY_MAX))
 
 // Values a user may store: the 63-bit signed range.  Everything below it is
 // reserved for the tombstone and for TASK_DELETE's claims (docs/parallel_delete.md).

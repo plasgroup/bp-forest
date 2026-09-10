@@ -36,6 +36,10 @@ static DEFINE_DIV_BY(MAX_NR_CHILDREN, NODE_PTR_WIDTH, _NR_NODES);
 static DEFINE_DIV_BY(TREE_CONSTRUCT_NR_TASKLETS, NODE_PTR_WIDTH, _NR_NODES);
 static DEFINE_DIV_BY(TREE_CONSTRUCT_NR_CACHED_OUTPUT_LIFT, NODE_PTR_WIDTH, _NR_NODES);
 
+#ifdef SUPPORT_INSERT
+static DEFINE_DIV_BY(TASK_INSERT_SORT_NR_TASKLETS, 32, _NR_QRYS);
+#endif
+
 #ifdef SUPPORT_DELETE
 static DEFINE_DIV_BY(TASK_DELETE_NR_TASKLETS, 32, _NR_QRYS);
 #endif
@@ -556,8 +560,441 @@ OVERLAY_TASK(OVL_SLOT_RESHARD, task_init, (void), ())
 }
 
 
+#if SUPPORT_INSERT
 OVERLAY_LOCAL(OVL_SLOT_INSERT)
-static KVPair* INSERT_fetch_next_qry(InsertWorkspace* wks)
+static void INSERT_wait_for_all_prev(const unsigned nr_tasklets)
+{
+    if (me() != 0) {
+        wait_for_prev_ready();
+    }
+    if (me() != nr_tasklets - 1) {
+        notify_next_of_readiness();
+    }
+}
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
+static void INSERT_wait_for_all_next(const unsigned nr_tasklets)
+{
+    if (me() != nr_tasklets - 1) {
+        wait_for_next_ready();
+    }
+    if (me() != 0) {
+        notify_prev_of_readiness();
+    }
+}
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
+static void INSERT_sort_barrier(void)
+{
+    INSERT_wait_for_all_next(TASK_INSERT_SORT_NR_TASKLETS);
+    INSERT_wait_for_all_prev(TASK_INSERT_SORT_NR_TASKLETS);
+}
+/* ---------------------------------------------------------------------- *
+ *  Sorting a batch by key.  @sa /docs/parallel_batch_update.md
+ * ---------------------------------------------------------------------- */
+
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
+static unsigned ISORT_digit(const key_uint64_t key, const unsigned shift)
+{
+    return (unsigned)(key >> shift) & (TASK_INSERT_SORT_NR_PIECES - 1);
+}
+
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
+static unsigned ISORT_first_shift(const key_uint64_t min_key, const key_uint64_t max_key)
+{
+    const unsigned width = KEY_WIDTH - countl_zero_uint64(min_key ^ max_key);
+    return (width > TASK_INSERT_SORT_RADIX_BITS ? width - TASK_INSERT_SORT_RADIX_BITS : 0);
+}
+
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
+static void ISORT_min_max(key_uint64_t* const p_min, key_uint64_t* const p_max, KVPair (*const buf)[TASK_INSERT_SORT_RUN],
+    __mram_ptr const KVPair* const qrys, const uint32_t begin, const uint32_t end)
+{
+    key_uint64_t min_key = KEY_MAX, max_key = KEY_MIN;
+
+    for (uint32_t i = begin; i < end;) {
+        __mram_ptr const KVPair* const to_read = qrys + i;
+
+        uint32_t n = end - i;
+        if (n >= TASK_INSERT_SORT_RUN) {
+            n = TASK_INSERT_SORT_RUN;
+            mram_read(to_read, &(*buf)[0], sizeof(KVPair) * TASK_INSERT_SORT_RUN);
+        } else {
+            mram_read(to_read, &(*buf)[0], sizeof(KVPair) * n);
+        }
+
+        for (uint32_t j = 0; j < n; j++) {
+            if ((*buf)[j].key < min_key) {
+                min_key = (*buf)[j].key;
+            }
+            if ((*buf)[j].key > max_key) {
+                max_key = (*buf)[j].key;
+            }
+        }
+        i += n;
+    }
+    *p_min = min_key;
+    *p_max = max_key;
+}
+
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
+static void ISORT_count_digits(uint32_t (*const counts_me)[TASK_INSERT_SORT_NR_PIECES], KVPair (*const buf)[TASK_INSERT_SORT_RUN],
+    __mram_ptr const KVPair* const src, const uint32_t begin, const uint32_t end, const unsigned shift)
+{
+    for (unsigned d = 0; d < TASK_INSERT_SORT_NR_PIECES; d++) {
+        (*counts_me)[d] = 0;
+    }
+    for (uint32_t i = begin; i < end;) {
+        __mram_ptr const KVPair* const to_read = src + i;
+
+        uint32_t n = end - i;
+        if (n >= TASK_INSERT_SORT_RUN) {
+            n = TASK_INSERT_SORT_RUN;
+            mram_read(to_read, &(*buf)[0], sizeof(KVPair) * TASK_INSERT_SORT_RUN);
+        } else {
+            mram_read(to_read, &(*buf)[0], sizeof(KVPair) * n);
+        }
+
+        for (uint32_t j = 0; j < n; j++) {
+            (*counts_me)[ISORT_digit((*buf)[j].key, shift)]++;
+        }
+        i += n;
+    }
+}
+
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
+static void ISORT_scatter_by_digit(uint32_t (*const offsets_me)[TASK_INSERT_SORT_NR_PIECES], KVPair (*const buf)[TASK_INSERT_SORT_RUN],
+    KVPair (*const digit_buf)[TASK_INSERT_SORT_NR_PIECES][TASK_INSERT_SORT_DIGIT_BUF],
+    uint8_t (*const nr_in_digit_buf)[TASK_INSERT_SORT_NR_PIECES],
+    __mram_ptr const KVPair* const src, __mram_ptr KVPair* const dst,
+    const uint32_t begin, const uint32_t end, const unsigned shift)
+{
+    for (unsigned d = 0; d < TASK_INSERT_SORT_NR_PIECES; d++) {
+        (*nr_in_digit_buf)[d] = 0;
+    }
+
+    for (uint32_t i = begin; i < end;) {
+        __mram_ptr const KVPair* const to_read = src + i;
+
+        uint32_t n = end - i;
+        if (n >= TASK_INSERT_SORT_RUN) {
+            n = TASK_INSERT_SORT_RUN;
+            mram_read(to_read, &(*buf)[0], sizeof(KVPair) * TASK_INSERT_SORT_RUN);
+        } else {
+            mram_read(to_read, &(*buf)[0], sizeof(KVPair) * n);
+        }
+
+        for (uint32_t j = 0; j < n; j++) {
+            const KVPair pair = (*buf)[j];
+
+            const unsigned d = ISORT_digit(pair.key, shift);
+            const unsigned nr_buffered = (*nr_in_digit_buf)[d];
+            KVPair(*const out_buf)[TASK_INSERT_SORT_DIGIT_BUF] = &(*digit_buf)[d];
+
+            if (nr_buffered >= TASK_INSERT_SORT_DIGIT_BUF) {
+                mram_write(&(*out_buf)[0], dst + (*offsets_me)[d], sizeof(KVPair) * TASK_INSERT_SORT_DIGIT_BUF);
+                (*offsets_me)[d] += TASK_INSERT_SORT_DIGIT_BUF;
+
+                (*out_buf)[0] = pair;
+                (*nr_in_digit_buf)[d] = 1;
+            } else {
+                (*out_buf)[nr_buffered] = pair;
+                (*nr_in_digit_buf)[d] = (uint8_t)(nr_buffered + 1);
+            }
+        }
+        i += n;
+    }
+}
+
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
+static void ISORT_flush_digit_buf(uint32_t (*const offsets_me)[TASK_INSERT_SORT_NR_PIECES],
+    KVPair (*const digit_buf)[TASK_INSERT_SORT_NR_PIECES][TASK_INSERT_SORT_DIGIT_BUF],
+    uint8_t (*const nr_in_digit_buf)[TASK_INSERT_SORT_NR_PIECES], __mram_ptr KVPair* const dst)
+{
+    for (unsigned d = 0; d < TASK_INSERT_SORT_NR_PIECES; d++) {
+        const unsigned nr_buffered = (*nr_in_digit_buf)[d];
+        if (nr_buffered != 0) {
+            mram_write(&(*digit_buf)[d][0], dst + (*offsets_me)[d], sizeof(KVPair) * nr_buffered);
+            (*offsets_me)[d] += nr_buffered;
+        }
+    }
+}
+
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
+static void ISORT_sort_short_piece_impl(KVPair* const buf, const uint32_t n,
+    __mram_ptr KVPair* const dst)
+{
+    for (uint32_t i = 1; i < n; i++) {
+        const KVPair qry = buf[i];
+        uint32_t j = i;
+        if (buf[j - 1].key > qry.key) {
+            do {
+                buf[j] = buf[j - 1];
+                j--;
+            } while (j != 0 && buf[j - 1].key > qry.key);
+            buf[j] = qry;
+        }
+    }
+
+    mram_write(&buf[0], dst, sizeof(KVPair) * n);
+}
+//! @pre `[begin, end)` fits in `buf`: at most TASK_INSERT_SORT_RUN queries.
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
+static void ISORT_sort_short_piece(KVPair (*const buf)[TASK_INSERT_SORT_RUN], __mram_ptr const KVPair* const src,
+    __mram_ptr KVPair* const dst, const uint32_t begin, const uint32_t end)
+{
+    const uint32_t n = end - begin;
+    mram_read(src + begin, &(*buf)[0], sizeof(KVPair) * n);
+
+    ISORT_sort_short_piece_impl(&(*buf)[0], n, dst + begin);
+}
+
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
+static void ISORT_move_piece(KVPair (*const buf)[TASK_INSERT_SORT_RUN], __mram_ptr const KVPair* const src,
+    __mram_ptr KVPair* const dst, const uint32_t begin, const uint32_t end)
+{
+    if (src == dst) {
+        return;
+    }
+    for (uint32_t i = begin; i < end;) {
+        __mram_ptr const KVPair* const to_read = src + i;
+        __mram_ptr KVPair* const to_write = dst + i;
+
+        uint32_t n = end - i;
+        if (end - i >= TASK_INSERT_SORT_RUN) {
+            n = TASK_INSERT_SORT_RUN;
+            mram_read(to_read, &(*buf)[0], sizeof(KVPair) * TASK_INSERT_SORT_RUN);
+            mram_write(&(*buf)[0], to_write, sizeof(KVPair) * TASK_INSERT_SORT_RUN);
+        } else {
+            mram_read(to_read, &(*buf)[0], sizeof(KVPair) * n);
+            mram_write(&(*buf)[0], to_write, sizeof(KVPair) * n);
+        }
+
+        i += n;
+    }
+}
+
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
+static void ISORT_plan_top_digit(const uint32_t nr_qrys)
+{
+    InsertSortTopDigit* const top_digit = &workspace.tree.insert.sort_top_digit;
+    InsertSortWorkspace* const wks = &workspace.tree.insert.sort;
+    uint32_t(*const piece_delims)[TASK_INSERT_SORT_NR_PIECES + 1] = &top_digit->piece_delims;
+
+    for (unsigned d = me(); d < TASK_INSERT_SORT_NR_PIECES; d += TASK_INSERT_SORT_NR_TASKLETS) {
+        uint32_t total = 0;
+        for (unsigned t = 0; t < TASK_INSERT_SORT_NR_TASKLETS; t++) {
+            total += wks->counts[t][d];
+        }
+        (*piece_delims)[d + 1] = total;
+    }
+    INSERT_wait_for_all_next(TASK_INSERT_SORT_NR_TASKLETS);
+
+    if (me() == 0) {
+        (*piece_delims)[0] = 0;
+        for (unsigned d = 1; d <= TASK_INSERT_SORT_NR_PIECES; d++) {
+            (*piece_delims)[d] += (*piece_delims)[d - 1];
+        }
+
+        uint32_t threshold = nr_qrys;
+        unsigned d = 0;
+        wks->top_digit_split[0] = 0;
+        for (unsigned t = 1; t < TASK_INSERT_SORT_NR_TASKLETS; t++, threshold += nr_qrys) {
+            while ((*piece_delims)[d + 1] * TASK_INSERT_SORT_NR_TASKLETS < threshold) {
+                d++;
+            }
+            wks->top_digit_split[t] = (uint16_t)d;
+        }
+        wks->top_digit_split[TASK_INSERT_SORT_NR_TASKLETS] = TASK_INSERT_SORT_NR_PIECES;
+    }
+    INSERT_wait_for_all_prev(TASK_INSERT_SORT_NR_TASKLETS);
+
+    for (unsigned d = me(); d < TASK_INSERT_SORT_NR_PIECES; d += TASK_INSERT_SORT_NR_TASKLETS) {
+        uint32_t acc = (*piece_delims)[d];
+        for (unsigned t = 0; t < TASK_INSERT_SORT_NR_TASKLETS; t++) {
+            const uint32_t c = wks->counts[t][d];
+            wks->counts[t][d] = acc;
+            acc += c;
+        }
+    }
+}
+
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
+static void ISORT_finish_pieces(__mram_ptr KVPair* const qrys, __mram_ptr KVPair* const scratch,
+    __mram_ptr InsertSortStackEntry (*const stack)[TASK_INSERT_SORT_STACK_CAPACITY],
+    const unsigned first_shift)
+{
+    InsertSortTopDigit* const top_digit = &workspace.tree.insert.sort_top_digit;
+    InsertSortWorkspace* const wks = &workspace.tree.insert.sort;
+    KVPair(*const buf)[TASK_INSERT_SORT_RUN] = &wks->buf[me()];
+    uint32_t(*const piece_delims)[TASK_INSERT_SORT_NR_PIECES + 1] = &top_digit->piece_delims;
+    uint32_t(*const counts_me)[TASK_INSERT_SORT_NR_PIECES] = &wks->counts[me()];
+
+    uint32_t nr_stacked = 0;
+
+    for (unsigned d = wks->top_digit_split[me()]; d < wks->top_digit_split[me() + 1]; d++) {
+        if ((*piece_delims)[d] != (*piece_delims)[d + 1]) {
+            InsertSortStackEntry entry;
+            entry.begin = (*piece_delims)[d];
+            entry.end = (*piece_delims)[d + 1];
+            entry.prev_shift = first_shift;
+            entry.src = scratch;
+            mram_write(&entry, &(*stack)[nr_stacked++], sizeof(InsertSortStackEntry));
+        }
+    }
+
+    while (nr_stacked != 0) {
+        InsertSortStackEntry entry;
+        mram_read(&(*stack)[--nr_stacked], &entry, sizeof(InsertSortStackEntry));
+        const uint32_t begin = entry.begin, end = entry.end, prev_shift = entry.prev_shift;
+        __mram_ptr KVPair* const src = entry.src;
+        __mram_ptr KVPair* const dst = (src == qrys ? scratch : qrys);
+
+        if (prev_shift == 0) {
+            ISORT_move_piece(buf, src, qrys, begin, end);
+            continue;
+        }
+        if (end - begin <= TASK_INSERT_SORT_RUN) {
+            ISORT_sort_short_piece(buf, src, qrys, begin, end);
+            continue;
+        }
+        uint32_t shift = prev_shift >= TASK_INSERT_SORT_RADIX_BITS ? prev_shift - TASK_INSERT_SORT_RADIX_BITS : 0;
+
+        ISORT_count_digits(counts_me, buf, src, begin, end, shift);
+        uint32_t acc = begin;
+        for (unsigned d = 0; d < TASK_INSERT_SORT_NR_PIECES; d++) {
+            const uint32_t c = (*counts_me)[d];
+            (*counts_me)[d] = acc;
+            acc += c;
+        }
+        KVPair(*const digit_buf)[TASK_INSERT_SORT_NR_PIECES][TASK_INSERT_SORT_DIGIT_BUF] = &wks->digit_buf[me()];
+        uint8_t(*const nr_in_digit_buf)[TASK_INSERT_SORT_NR_PIECES] = &wks->nr_in_digit_buf[me()];
+        ISORT_scatter_by_digit(counts_me, buf, digit_buf, nr_in_digit_buf,
+            src, dst, begin, end, shift);
+
+        uint32_t piece_begin = begin;
+        for (unsigned d = 0; d < TASK_INSERT_SORT_NR_PIECES; d++) {
+            KVPair(*const out_buf)[TASK_INSERT_SORT_DIGIT_BUF] = &(*digit_buf)[d];
+            const unsigned nr_buffered = (*nr_in_digit_buf)[d];
+
+            const uint32_t offset = (*counts_me)[d];
+            const uint32_t piece_end = offset + nr_buffered;
+
+            if (offset == piece_begin) {
+                if (nr_buffered == 0) {
+                    continue;
+                } else if (nr_buffered > TASK_INSERT_SORT_DIGIT_BUF) {
+                    __builtin_unreachable();
+                } else {
+                    ISORT_sort_short_piece_impl(&(*out_buf)[0], nr_buffered, qrys + offset);
+                }
+            } else {
+                if (nr_buffered != 0) {
+                    mram_write(&(*out_buf)[0], dst + offset, sizeof(KVPair) * nr_buffered);
+                }
+
+                InsertSortStackEntry entry;
+                entry.begin = piece_begin;
+                entry.end = piece_end;
+                entry.prev_shift = shift;
+                entry.src = dst;
+                mram_write(&entry, &(*stack)[nr_stacked++], sizeof(InsertSortStackEntry));
+            }
+            piece_begin = piece_end;
+        }
+    }
+}
+
+#ifdef TASK_INSERT_SORT_CHECK
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
+static bool ISORT_check_sorted(__mram_ptr const KVPair* const qrys, const uint32_t nr_qrys)
+{
+    KVPair(*const buf)[TASK_INSERT_SORT_RUN] = &workspace.tree.insert.sort.buf[me()];
+    bool success = true;
+    key_uint64_t previous = KEY_MIN;
+
+    for (uint32_t i = 0; i < nr_qrys;) {
+        const uint32_t n = (nr_qrys - i < TASK_INSERT_SORT_RUN ? nr_qrys - i : TASK_INSERT_SORT_RUN);
+        mram_read(qrys + i, (*buf), sizeof(KVPair) * n);
+        for (uint32_t j = 0; j < n; j++) {
+            if ((*buf)[j].key < previous) {
+                success = false;
+                printf("qrys[%u].key == %lu < %lu == qrys[%u].key\n", i + j, (*buf)[j].key, previous, i + j - 1);
+            }
+            previous = (*buf)[j].key;
+        }
+        i += n;
+    }
+    return success;
+}
+#endif
+
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
+static void ISORT_execute_in_parallel(__mram_ptr KVPair* const qrys, const uint32_t nr_qrys,
+    __mram_ptr KVPair* const scratch)
+{
+    InsertSortTopDigit* const top_digit = &workspace.tree.insert.sort_top_digit;
+    InsertSortWorkspace* const wks = &workspace.tree.insert.sort;
+    KVPair(*const buf)[TASK_INSERT_SORT_RUN] = &wks->buf[me()];
+
+    if (nr_qrys <= 1) {
+        return;
+    }
+    if (nr_qrys <= TASK_INSERT_SORT_RUN) {
+        if (me() == 0) {
+            ISORT_sort_short_piece(buf, qrys, qrys, 0, nr_qrys);
+        }
+        INSERT_sort_barrier();
+        return;
+    }
+
+    const uint32_t nr_qrys_per_tasklet = DIV_NR_QRYS_BY_TASK_INSERT_SORT_NR_TASKLETS(nr_qrys),
+                   nr_remainder_qrys = nr_qrys - nr_qrys_per_tasklet * TASK_INSERT_SORT_NR_TASKLETS,
+                   nr_qrys_for_me = nr_qrys_per_tasklet + (me() < nr_remainder_qrys);
+    const uint32_t my_qry_begin = nr_qrys_per_tasklet * me() + (me() < nr_remainder_qrys ? me() : nr_remainder_qrys),
+                   my_qry_end = my_qry_begin + nr_qrys_for_me;
+
+    ISORT_min_max(&wks->qry_min_key[me()], &wks->qry_max_key[me()], buf, qrys, my_qry_begin, my_qry_end);
+    INSERT_wait_for_all_next(TASK_INSERT_SORT_NR_TASKLETS);
+
+    if (me() == 0) {
+        key_uint64_t min_key = KEY_MAX, max_key = KEY_MIN;
+        for (unsigned t = 0; t < TASK_INSERT_SORT_NR_TASKLETS; t++) {
+            if (wks->qry_min_key[t] < min_key) {
+                min_key = wks->qry_min_key[t];
+            }
+            if (wks->qry_max_key[t] > max_key) {
+                max_key = wks->qry_max_key[t];
+            }
+        }
+        top_digit->qry_min_key = min_key;
+        top_digit->qry_max_key = max_key;
+        top_digit->shift = ISORT_first_shift(min_key, max_key);
+    }
+    INSERT_wait_for_all_prev(TASK_INSERT_SORT_NR_TASKLETS);
+    const unsigned first_shift = top_digit->shift;
+
+    uint32_t(*const counts_me)[TASK_INSERT_SORT_NR_PIECES] = &wks->counts[me()];
+    ISORT_count_digits(counts_me, buf, qrys, my_qry_begin, my_qry_end, first_shift);
+    INSERT_sort_barrier();
+
+    ISORT_plan_top_digit(nr_qrys);
+    INSERT_sort_barrier();
+
+    KVPair(*const digit_buf)[TASK_INSERT_SORT_NR_PIECES][TASK_INSERT_SORT_DIGIT_BUF] = &wks->digit_buf[me()];
+    uint8_t(*const nr_in_digit_buf)[TASK_INSERT_SORT_NR_PIECES] = &wks->nr_in_digit_buf[me()];
+
+    ISORT_scatter_by_digit(counts_me, buf, digit_buf, nr_in_digit_buf,
+        qrys, scratch, my_qry_begin, my_qry_end, first_shift);
+    ISORT_flush_digit_buf(counts_me, digit_buf, nr_in_digit_buf, scratch);
+    INSERT_sort_barrier();
+
+    ISORT_finish_pieces(qrys, scratch, (__mram_ptr InsertSortStackEntry(*)[TASK_INSERT_SORT_STACK_CAPACITY])(scratch + nr_qrys) + me(), first_shift);
+    INSERT_sort_barrier();
+}
+#endif /* SUPPORT_INSERT */
+
+
+OVERLAY_LOCAL(OVL_SLOT_INSERT)
+static KVPair* INSERT_fetch_next_qry(InsertPhysWorkspace* wks)
 {
     if (wks->idx_qry_in_cache == TASK_INSERT_NR_CACHED_QRYS) {
         mram_read((__mram_ptr void*)wks->cursor_on_qrys, wks->qrys, sizeof(KVPair) * TASK_INSERT_NR_CACHED_QRYS);
@@ -569,7 +1006,7 @@ static KVPair* INSERT_fetch_next_qry(InsertWorkspace* wks)
 OVERLAY_LOCAL(OVL_SLOT_INSERT)
 static bool /* did the number of live pairs grow? */ INSERT_execute(Node* const root, uint8_t* const height, uint8_t* const root_numKeys, const KVPair* const qry)
 {
-    InsertWorkspace* const wks_me = loop_invariant(&workspace.tree.insert[me()]);
+    InsertPhysWorkspace* const wks_me = loop_invariant(&workspace.tree.insert.phys[me()]);
 
     if (*height == 0) {
         // Insert into the leaf
@@ -1012,7 +1449,7 @@ OVERLAY_LOCAL(OVL_SLOT_INSERT)
 static void INSERT_execute_batch(Node* const root, uint8_t* const height, uint8_t* const root_numKeys, uint32_t* const p_nr_pairs,
     const uint32_t idx_qry_begin, const uint32_t idx_qry_end)
 {
-    InsertWorkspace* const wks_me = loop_invariant(&workspace.tree.insert[me()]);
+    InsertPhysWorkspace* const wks_me = loop_invariant(&workspace.tree.insert.phys[me()]);
     wks_me->idx_qry_in_cache = TASK_INSERT_NR_CACHED_QRYS;  // to trigger the first fetch
     wks_me->cursor_on_qrys = (uintptr_t)DPU_MRAM_HEAP_POINTER + sizeof(InputHeader) + sizeof(KVPair) * idx_qry_begin;
 

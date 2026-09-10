@@ -10,6 +10,17 @@ static inline uint32_t countl_zero_uint32(uint32_t n)
     __builtin_clz_rr(n, n);
     return n;
 }
+static inline uint32_t countl_zero_uint64(uint64_t n)
+{
+    //  __asm__("clz %[r], %[hi], nmax, 1f\n\t"
+    //          "clz %[r], %[lo]\n\t"
+    //          "add %[r], %[r], 32\n"
+    //          "1:"
+    //          : [r] "=&r"(r)
+    //          : [hi] "r"(hi), [lo] "r"(lo));
+    const uint32_t hi = (uint32_t)(n >> 32);
+    return (hi != 0 ? countl_zero_uint32(hi) : 32 + countl_zero_uint32((uint32_t)n));
+}
 
 static inline uint32_t bit_ceil_uint32(uint32_t n)
 {

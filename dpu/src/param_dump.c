@@ -70,6 +70,14 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
 #else
                                      "TASK_INSERT_CHECK: 0\n"
 #endif
+#ifdef TASK_INSERT_SORT_CHECK
+                                     "TASK_INSERT_SORT_CHECK: 1\n"
+#else
+                                     "TASK_INSERT_SORT_CHECK: 0\n"
+#endif
+                                     "TASK_INSERT_SORT_RADIX_BITS: " EXPAND_STRINGIFY(TASK_INSERT_SORT_RADIX_BITS) "\n"
+                                     "TASK_INSERT_SORT_RUN: " EXPAND_STRINGIFY(TASK_INSERT_SORT_RUN) "\n"
+                                     "TASK_INSERT_SORT_DIGIT_BUF: " EXPAND_STRINGIFY(TASK_INSERT_SORT_DIGIT_BUF) "\n"
                                      "TASK_RANGE_MIN_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_RANGE_MIN_NR_TASKLETS) "\n"
                                      "TASK_RANGE_MIN_NR_CACHED_LUMP_END_INDICES: " EXPAND_STRINGIFY(TASK_RANGE_MIN_NR_CACHED_LUMP_END_INDICES) "\n"
                                      "TASK_RANGE_MIN_NR_CACHED_DELIM_KEYS: " EXPAND_STRINGIFY(TASK_RANGE_MIN_NR_CACHED_DELIM_KEYS) "\n"

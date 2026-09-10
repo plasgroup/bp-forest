@@ -66,6 +66,10 @@ _Static_assert(sizeof(Node) == SIZEOF_NODE, "sizeof(Node) == SIZEOF_NODE");
 // HEIGHT <= log_{MIN_NR_CHILDREN} [ (MAX_NR_NODES - 1) * (MIN_NR_CHILDREN - 1) / 2.0 + 1 ]
 #define MAX_HEIGHT ((CEIL_LOG2_UINT32((MAX_NR_NODES - 1) * (MIN_NR_CHILDREN - 1) + 2) - 1) / FLOOR_LOG2_UINT32(MIN_NR_CHILDREN))
 
+#define TASK_INSERT_SORT_NR_PIECES (1u << TASK_INSERT_SORT_RADIX_BITS)
+#define TASK_INSERT_SORT_NR_LEVELS ((KEY_WIDTH + TASK_INSERT_SORT_RADIX_BITS - 1) / TASK_INSERT_SORT_RADIX_BITS)
+#define TASK_INSERT_SORT_STACK_CAPACITY (TASK_INSERT_SORT_NR_PIECES + (TASK_INSERT_SORT_NR_LEVELS - 1) * (TASK_INSERT_SORT_NR_PIECES - 1))
+
 
 typedef struct {
     uint32_t key_parts[2];
@@ -97,10 +101,46 @@ typedef struct {
 
 
 typedef struct {
+    key_uint64_t qry_min_key, qry_max_key;
+    uint32_t shift;
+    uint32_t piece_delims[TASK_INSERT_SORT_NR_PIECES + 1];
+} InsertSortTopDigit;
+
+typedef struct {
+    __dma_aligned KVPair buf[TASK_INSERT_SORT_NR_TASKLETS][TASK_INSERT_SORT_RUN];
+    __dma_aligned KVPair digit_buf[TASK_INSERT_SORT_NR_TASKLETS][TASK_INSERT_SORT_NR_PIECES][TASK_INSERT_SORT_DIGIT_BUF];
+    uint8_t nr_in_digit_buf[TASK_INSERT_SORT_NR_TASKLETS][TASK_INSERT_SORT_NR_PIECES];
+    union {
+        struct {
+            key_uint64_t qry_min_key[TASK_INSERT_SORT_NR_TASKLETS], qry_max_key[TASK_INSERT_SORT_NR_TASKLETS];
+        };
+        struct {
+            uint32_t counts[TASK_INSERT_SORT_NR_TASKLETS][TASK_INSERT_SORT_NR_PIECES];
+            uint16_t top_digit_split[TASK_INSERT_SORT_NR_TASKLETS + 1];
+        };
+    };
+} InsertSortWorkspace;
+_Static_assert(sizeof(KVPair) * TASK_INSERT_SORT_RUN <= 2048, "sizeof(KVPair) * TASK_INSERT_SORT_RUN <= 2048");
+
+typedef struct {
+    __dma_aligned uint32_t begin;
+    uint32_t end;
+    uint32_t prev_shift;
+    __mram_ptr KVPair* src;
+} InsertSortStackEntry;
+typedef struct {
     __dma_aligned Node node_cache[2];
     __dma_aligned KVPair qrys[TASK_INSERT_NR_CACHED_QRYS];
     uint32_t idx_qry_in_cache;
     uintptr_t cursor_on_qrys;
+} InsertPhysWorkspace;
+
+typedef struct {
+    union {
+        InsertSortWorkspace sort;
+        InsertPhysWorkspace phys[TASK_INSERT_NR_TASKLETS];
+    };
+    InsertSortTopDigit sort_top_digit;
 } InsertWorkspace;
 
 
@@ -250,7 +290,7 @@ typedef union {
     ClearTreeWorkspace clear;
     GetWorkspace get[TASK_GET_NR_TASKLETS];
     PredWorkspace pred[TASK_PRED_NR_TASKLETS];
-    InsertWorkspace insert[TASK_INSERT_NR_TASKLETS];
+    InsertWorkspace insert;
     DeleteWorkspace delete[TASK_DELETE_NR_TASKLETS];
     RCQWorkspace rcq[TASK_RANGE_COUNT_NR_TASKLETS];
     RMaxQWorkspace rmaxq[TASK_RANGE_MAX_NR_TASKLETS];
