@@ -5,9 +5,12 @@
  * 参照。IRAM_OVERLAY が未定義のビルドではすべて無効果。
  */
 
-#define OVL_SLOT_INSERT 0  /* task_insert と upsert エンジン */
-#define OVL_SLOT_RESHARD 1 /* rebalancing 系: 木の構築・直列化・破棄 */
-#define OVL_SLOT_QUERY 2   /* その他のクエリ処理 */
+#define OVL_SLOT_INSERT 0      /* task_insert と upsert エンジン */
+#define OVL_SLOT_RESHARD 1     /* rebalancing 系: 木の構築・直列化・破棄 */
+#define OVL_SLOT_QUERY 2       /* その他のクエリ処理 */
+#define OVL_SLOT_CHECK 3       /* 木の構造検査 (検査ビルドでのみ中身がある) */
+#define OVL_SLOT_DELETE 4      /* task_delete の前半: 結果配列づくりとキーの並べ替え */
+#define OVL_SLOT_DELETE_TREE 5 /* task_delete の後半: 木からペアを外す */
 
 #ifdef IRAM_OVERLAY
 
