@@ -1,6 +1,7 @@
 #include "assert.hpp"
 #include "common.h"
 #include "extendable_buffer.hpp"
+#include "input_header.h"
 #include "log_buffer.hpp"
 #include "pimtree_query.hpp"
 #include "workload_buffer.hpp"
@@ -100,25 +101,6 @@ void dump_param(const CMDOpt& opt, const DPUHandler& dpu_hdr)
                     << "\nnr_batches: " << opt.nr_batches << std::endl;
 }
 
-struct InitHeader {
-    uint32_t task_no = TASK_INIT;
-    uint32_t nr_pairs;
-};
-struct ConstructHotHeader {
-    uint32_t task_no = TASK_MOVE_HOT;
-    uint32_t nr_pairs;
-};
-struct NopHeader {
-    uint32_t task_no = TASK_NONE;
-    uint32_t pad = 0;
-};
-struct InsertHeader {
-    uint32_t task_no = TASK_INSERT;
-    uint16_t nr_cold_qrys;
-    uint16_t nr_hot_qrys = 0;
-};
-
-
 int main(int argc, char* argv[])
 {
     CMDOpt opt{argc, argv};
@@ -148,15 +130,27 @@ int main(int argc, char* argv[])
             init_pairs[i] = {key_int64_to_uint64(init_qrys.ops[i].tsk.i.key), init_qrys.ops[i].tsk.i.value};
         }
 
-        const InitHeader init_header{TASK_INIT, static_cast<uint32_t>(init_qrys.length)};
-        DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 0, &init_header, 8, DPU_XFER_DEFAULT));
-        DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 8, &init_pairs[0], init_qrys.length * sizeof(KVPair), DPU_XFER_DEFAULT));
+        // The queries of a batch go to both trees, so the hot tree is built
+        // from the same pairs.  TASK_INIT fills the cold tree, and TASK_MOVE_HOT
+        // renews the hot one from the same payload (`nr_cold_pairs` of 0 leaves
+        // the cold tree alone).
+        InputHeader init_header{};
+        init_header.task_no = TASK_INIT;
+        init_header.init.nr_cold_pairs = static_cast<uint32_t>(init_qrys.length);
+        init_header.init.nr_hot_pairs = 0;
+        DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 0, &init_header, sizeof(InputHeader), DPU_XFER_DEFAULT));
+        DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, sizeof(InputHeader), &init_pairs[0], init_qrys.length * sizeof(KVPair), DPU_XFER_DEFAULT));
         DPU_ASSERT(dpu_launch(dpu_hdr.all_dpu, DPU_SYNCHRONOUS));
         print_stdout();
 
-        const ConstructHotHeader hot_header{TASK_MOVE_HOT, static_cast<uint32_t>(init_qrys.length)};
-        DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 0, &hot_header, 8, DPU_XFER_DEFAULT));
-        DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 8, &init_pairs[0], init_qrys.length * sizeof(KVPair), DPU_XFER_DEFAULT));
+        InputHeader hot_header{};
+        hot_header.task_no = TASK_MOVE_HOT;
+        hot_header.move_hot.nr_cold_pairs = 0;
+        hot_header.move_hot.nr_hot_pairs = static_cast<uint32_t>(init_qrys.length);
+        hot_header.move_hot.renew_cold = false;
+        hot_header.move_hot.renew_hot = true;
+        DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 0, &hot_header, sizeof(InputHeader), DPU_XFER_DEFAULT));
+        DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, sizeof(InputHeader), &init_pairs[0], init_qrys.length * sizeof(KVPair), DPU_XFER_DEFAULT));
         DPU_ASSERT(dpu_launch(dpu_hdr.all_dpu, DPU_SYNCHRONOUS));
         print_stdout();
     }
@@ -166,7 +160,7 @@ int main(int argc, char* argv[])
         std::vector<KVPair> workload_pairs;
         workload_pairs.reserve(workload_qrys.length);
         for (size_t i = 0; i < workload_qrys.length; i++) {
-            workload_pairs.push_back({key_int64_to_uint64(workload_qrys.ops[i].tsk.i.key), key_int64_to_uint64(workload_qrys.ops[i].tsk.i.value)});
+            workload_pairs.push_back({key_int64_to_uint64(workload_qrys.ops[i].tsk.i.key), workload_qrys.ops[i].tsk.i.value});
         }
         WorkloadBuffer buf{std::move(workload_pairs)};
 
@@ -176,11 +170,17 @@ int main(int argc, char* argv[])
                 break;
             }
 
-            const InsertHeader insert_header{TASK_INSERT, static_cast<uint16_t>(nr_qrys), static_cast<uint16_t>(nr_qrys)};
+            // The same queries go to both trees: [cold | hot] from the head of
+            // the payload, and the pair counts come back at `result_offset`.
+            InputHeader insert_header{};
+            insert_header.task_no = TASK_INSERT;
+            insert_header.qrys.nr_cold_qrys = static_cast<uint32_t>(nr_qrys);
+            insert_header.qrys.nr_hot_qrys = static_cast<uint32_t>(nr_qrys);
+            insert_header.qrys.result_offset = static_cast<uint32_t>(sizeof(InputHeader) + sizeof(KVPair) * nr_qrys * 2);
 
-            DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 0, &insert_header, 8, DPU_XFER_DEFAULT));
-            DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 8, qrys, nr_qrys * sizeof(KVPair), DPU_XFER_DEFAULT));
-            DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, static_cast<uint32_t>(8 + nr_qrys * sizeof(KVPair)), qrys, nr_qrys * sizeof(KVPair), DPU_XFER_DEFAULT));
+            DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, 0, &insert_header, sizeof(InputHeader), DPU_XFER_DEFAULT));
+            DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, sizeof(InputHeader), qrys, nr_qrys * sizeof(KVPair), DPU_XFER_DEFAULT));
+            DPU_ASSERT(dpu_broadcast_to_symbol(dpu_hdr.all_dpu, dpu_hdr.comm_buffer, static_cast<uint32_t>(sizeof(InputHeader) + sizeof(KVPair) * nr_qrys), qrys, nr_qrys * sizeof(KVPair), DPU_XFER_DEFAULT));
             DPU_ASSERT(dpu_launch(dpu_hdr.all_dpu, DPU_SYNCHRONOUS));
 
             print_stdout();
