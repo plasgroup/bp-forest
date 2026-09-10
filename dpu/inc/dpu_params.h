@@ -18,7 +18,7 @@
 #define MRAM_FOR_TREE 28311552  // 27 * 1024 * 1024
 #endif
 
-// #define BITMAP_IN_MRAM
+#define BITMAP_IN_MRAM
 
 
 #ifndef SIZEOF_NODE
