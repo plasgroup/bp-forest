@@ -4553,7 +4553,7 @@ static void GET_execute(const Node* const root, const uint8_t height, const uint
             if (idx_pair < root_numKeys && root->lf.keys[idx_pair] == key) {
                 wks_me->qrys[idx_qry_in_cache] = NthValue(root->lf, idx_pair);
             } else {
-                wks_me->qrys[idx_qry_in_cache] = 0;  // not found
+                wks_me->qrys[idx_qry_in_cache] = NOT_FOUND_VALUE;
             }
             idx_qry_in_cache++;
         }
@@ -4575,7 +4575,7 @@ static void GET_execute(const Node* const root, const uint8_t height, const uint
             if (idx_pair < link.numKeys && wks_me->node_cache.lf.keys[idx_pair] == key) {
                 wks_me->qrys[idx_qry_in_cache] = NthValue(wks_me->node_cache.lf, idx_pair);
             } else {
-                wks_me->qrys[idx_qry_in_cache] = 0;  // not found
+                wks_me->qrys[idx_qry_in_cache] = NOT_FOUND_VALUE;
             }
             idx_qry_in_cache++;
         }
