@@ -41,6 +41,7 @@
 #include <numeric>
 #include <optional>
 #include <ostream>
+#include <random>
 #include <stdexcept>
 #include <tuple>
 #include <type_traits>
@@ -155,6 +156,12 @@ constexpr bool IsPredecessorQuery = std::is_same_v<Query, key_uint64_t>&& std::i
 template <typename Query, typename Result>
 constexpr bool IsDeleteQuery = std::is_same_v<Query, key_uint64_t>&& std::is_same_v<Result, uint8_t>;
 
+template <typename Query, typename Result>
+constexpr bool IsGetQuery = std::is_same_v<Query, key_uint64_t>&& std::is_same_v<Result, value_int64_t>;
+
+template <typename Query, typename Result>
+constexpr bool IsInsertQuery = std::is_same_v<Query, KVPair>&& std::is_same_v<Result, void>;
+
 template <typename RangeQuery>
 struct RangeQueryToRange {
     // KeyRange& operator()(RangeQuery&) const;
@@ -182,6 +189,8 @@ inline BPForest::BPForest(const Param& param)
     parallel_run(&BPForest::set_numa_affinity);
 
     any_tmp_data.reset();
+
+    std::fill_n(&hot_cache[0], nr_base_parts, KVPair{0, NOT_FOUND_VALUE});
 }
 inline void BPForest::set_numa_affinity(unsigned tid)
 {
@@ -551,16 +560,6 @@ inline void BPForest::rebuild_parts(dpu_id_t nr_hot_entries, Renewed&& renewed)
     parts.swap(rebuilt_parts);
     rebuild_part_indices();
 }
-//! @brief The partition holding the strict predecessor of `key`: the rightmost
-//! one that begins below `key`.  Returns -1 when no live pair precedes `key`.
-//!
-//! Every partition begins at its own smallest live key, so that partition is
-//! certain to hold a live pair below `key` while every partition to its right
-//! holds none, which is why one round always answers.
-inline ptrdiff_t BPForest::locate_pred_partition(key_uint64_t key) const
-{
-    return std::lower_bound(parts.begins.begin(), parts.begins.end(), key) - parts.begins.begin() - 1;
-}
 
 
 template <typename Query, typename Result>
@@ -576,6 +575,13 @@ inline void BPForest::route_queries(
 
     parallel_run(&BPForest::route_clear_impl<Query, Result>);
     parallel_run(&BPForest::route_queries_impl<Query, Result>);
+    if constexpr (IsInsertQuery<Query, Result>) {
+        for (const HotCacheHits& hits : hot_cache_hits) {
+            for (const dpu_id_t slot : hits.touched) {
+                hot_cache[slot].value = queries[hits.forwarded[slot]].value;
+            }
+        }
+    }
     parallel_run(&BPForest::route_accumulate_impl<Query, Result>);
 
     any_tmp_data.reset();
@@ -588,6 +594,7 @@ inline void BPForest::route_clear_impl(unsigned tid)
     QueryData<Query, Result>* routed;
     std::tie(std::ignore, std::ignore, routed, std::ignore) = *std::any_cast<const TmpData*>(any_tmp_data);
     routed->clear_for_thread(tid);
+    hot_cache_hits[tid].clear();
 }
 template <typename Query, typename Result>
 inline void BPForest::route_accumulate_impl(unsigned tid)
@@ -647,6 +654,12 @@ inline void BPForest::route_queries_impl(unsigned tid)
             }
         }
     }
+    if constexpr (IsInsertQuery<Query, Result>) {
+        const HotCacheHits& hits = hot_cache_hits[tid];
+        for (const dpu_id_t slot : hits.touched) {
+            route_point_query_to_tree(hits.forwarded[slot], queries[hits.forwarded[slot]], *routed, tid, hot_part[slot]);
+        }
+    }
 }
 template <typename Query, typename Result>
 inline void BPForest::route_single_point_query(
@@ -656,40 +669,64 @@ inline void BPForest::route_single_point_query(
 {
     const key_uint64_t key = PointQueryToKey<Query>{}(qry);
 
+    ptrdiff_t idx_part;
     if constexpr (IsPredecessorQuery<Query, Result>) {
-        const ptrdiff_t idx_part = locate_pred_partition(key);
-        if (idx_part < 0) {
-            not_found_in_point_query(idx_qry, qry, result, routed, tid);
-        } else {
-            const QueryDest& dest = parts.dests[static_cast<size_t>(idx_part)];
-            auto& out = dest.is_hot ? routed.hot[dest.dpu] : routed.cold[dest.dpu];
-            out.qrys[tid].emplace_back(qry);
-            out.orig_idxs[tid].emplace_back(idx_qry);
-        }
+        idx_part = std::lower_bound(parts.begins.begin(), parts.begins.end(), key) - parts.begins.begin() - 1;
+    } else {
+        idx_part = std::upper_bound(parts.begins.begin(), parts.begins.end(), key) - parts.begins.begin() - 1;
+    }
+    if (idx_part < 0) {
+        not_found_in_point_query(idx_qry, qry, result, routed, tid);
         return;
     }
 
-    const auto one_after_the_target = std::upper_bound(parts.begins.begin(), parts.begins.end(), key);
-
-    if (one_after_the_target == parts.begins.begin()) {
-        not_found_in_point_query(idx_qry, qry, result, routed, tid);
-
-    } else {
-        const size_t idx_part = static_cast<size_t>(one_after_the_target - parts.begins.begin()) - 1;
-
-        const QueryDest& dest = parts.dests[idx_part];
-        auto& out = dest.is_hot ? routed.hot[dest.dpu] : routed.cold[dest.dpu];
-        out.qrys[tid].emplace_back(qry);
-
-        if constexpr (IsDeleteQuery<Query, Result>) {
-            if (key == parts.begins[idx_part]) {
-                out.min_hits[tid].push_back(static_cast<uint32_t>(idx_part));
+    const QueryDest& dest = parts.dests[static_cast<size_t>(idx_part)];
+    if (dest.is_hot && hot_cache[dest.dpu].key == key && hot_cache[dest.dpu].value != NOT_FOUND_VALUE) {
+        const dpu_id_t slot = dest.dpu;
+        HotCacheHits& hits = hot_cache_hits[tid];
+        const bool first = hits.hit(slot);
+        if constexpr (IsGetQuery<Query, Result>) {
+            *result = hot_cache[slot].value;
+        } else if constexpr (IsInsertQuery<Query, Result>) {
+            // the thread's last one goes, once the thread is through its range
+            hits.forwarded[slot] = idx_qry;
+        } else if constexpr (IsDeleteQuery<Query, Result>) {
+            // the thread's first one goes and gets the flag from the DPU
+            if (first) {
+                hits.forwarded[slot] = idx_qry;
+                route_point_query_to_tree(idx_qry, qry, routed, tid, static_cast<size_t>(idx_part));
+            } else {
+                *result = 0;
+            }
+        } else {
+            static_assert(IsPredecessorQuery<Query, Result>);
+            // the thread's first one goes and the rest copy its result
+            if (first) {
+                hits.forwarded[slot] = idx_qry;
+                route_point_query_to_tree(idx_qry, qry, routed, tid, static_cast<size_t>(idx_part));
+            } else {
+                hits.dedup.emplace_back(slot, idx_qry);
             }
         }
+        return;
+    }
+    route_point_query_to_tree(idx_qry, qry, routed, tid, static_cast<size_t>(idx_part));
+}
+template <typename Query, typename Result>
+inline void BPForest::route_point_query_to_tree(uint32_t idx_qry, const Query& qry, QueryData<Query, Result>& routed, unsigned tid, size_t idx_part)
+{
+    const QueryDest& dest = parts.dests[idx_part];
+    auto& out = dest.is_hot ? routed.hot[dest.dpu] : routed.cold[dest.dpu];
+    out.qrys[tid].emplace_back(qry);
 
-        if constexpr (!std::is_same_v<Result, void>) {
-            out.orig_idxs[tid].emplace_back(idx_qry);
+    if constexpr (IsDeleteQuery<Query, Result>) {
+        if (PointQueryToKey<Query>{}(qry) == parts.begins[idx_part]) {
+            out.min_hits[tid].push_back(static_cast<uint32_t>(idx_part));
         }
+    }
+
+    if constexpr (!std::is_same_v<Result, void>) {
+        out.orig_idxs[tid].emplace_back(idx_qry);
     }
 }
 // GET
@@ -730,6 +767,151 @@ inline void BPForest::not_found_in_point_query<key_uint64_t, KVPair>(
     unsigned)
 {
     *result = KVPair{KEY_MIN, NOT_FOUND_VALUE};
+}
+
+inline BPForest::HotCacheHits::HotCacheHits(dpu_id_t nr_slots)
+    : served{nr_slots}, forwarded{nr_slots}
+{
+    std::fill_n(&served[0], nr_slots, 0u);
+}
+inline bool BPForest::HotCacheHits::hit(dpu_id_t slot)
+{
+    if (served[slot]++ == 0) {
+        touched.push_back(slot);
+        return true;
+    }
+    return false;
+}
+inline void BPForest::HotCacheHits::clear()
+{
+    for (const dpu_id_t slot : touched) {
+        served[slot] = 0;
+    }
+    touched.clear();
+    dedup.clear();
+}
+inline uint32_t BPForest::nr_hot_cache_hits() const
+{
+    uint32_t nr_hits = 0;
+    for (const HotCacheHits& hits : hot_cache_hits) {
+        for (const dpu_id_t slot : hits.touched) {
+            nr_hits += hits.served[slot];
+        }
+    }
+    return nr_hits;
+}
+inline void BPForest::log_hot_cache_hits() const
+{
+    if (partitioning_log) {
+        if (const uint32_t nr_hits = nr_hot_cache_hits(); nr_hits != 0) {
+            *partitioning_log << "cache hits " << nr_hits << '\n';
+        }
+    }
+}
+inline void BPForest::drop_hot_cache_pair(dpu_id_t dpu, const char* reason)
+{
+    if (hot_cache[dpu].value != NOT_FOUND_VALUE) {
+        if (partitioning_log) {
+            *partitioning_log << "cache evict " << dpu << " key " << hot_cache[dpu].key << " reason " << reason << '\n';
+        }
+        hot_cache[dpu].value = NOT_FOUND_VALUE;
+    }
+}
+inline void BPForest::evict_deleted_hot_cache_pairs()
+{
+    for (const HotCacheHits& hits : hot_cache_hits) {
+        for (const dpu_id_t slot : hits.touched) {
+            drop_hot_cache_pair(slot, "deleted");
+        }
+    }
+}
+template <typename Query, typename Result>
+inline std::optional<BPForest::HotCacheCandidate> BPForest::find_hot_cache_candidate(const ChunkedPairsRange& hot, const QueryDataPerRange<Query, Result>& routed) const
+{
+    constexpr double delta = 0.01, w = 0.1;
+    static const unsigned k = static_cast<unsigned>(std::ceil(18 * std::log(4 / delta))),
+                          m = static_cast<unsigned>(std::ceil(2 / (w * w) * std::log(8 / delta)));
+    static const double bound = std::log(8 / delta), alpha = std::log(1 / (1 - 2 * w)), beta = std::log(1 + 2 * w);
+
+    const size_t nr_threads = routed.qrys.size();
+    ExtendableBuffer<uint32_t>& ends = hot_qrys_ends;
+    ends.reserve(nr_threads);
+    uint32_t end = 0;
+    for (size_t t = 0; t < nr_threads; t++) {
+        ends[t] = end += static_cast<uint32_t>(routed.qrys[t].size());
+    }
+    static thread_local xoshiro256pp rng{std::random_device{}()};
+    std::uniform_int_distribution<uint32_t> index{0, routed.nr_qrys - 1};
+    const auto sample = [&] {
+        const uint32_t i = index(rng);
+        const size_t t = static_cast<size_t>(std::upper_bound(&ends[0], &ends[nr_threads], i) - &ends[0]);
+        const auto& qrys = routed.qrys[t];
+        return PointQueryToKey<Query>{}(qrys[i - (ends[t] - qrys.size())]);
+    };
+
+    key_uint64_t candidates[2] = {0, 0};
+    unsigned counts[2] = {0, 0};
+    for (unsigned i = 0; i < k; i++) {
+        const key_uint64_t key = sample();
+        if (counts[0] != 0 && key == candidates[0]) {
+            counts[0]++;
+        } else if (counts[1] != 0 && key == candidates[1]) {
+            counts[1]++;
+        } else if (counts[0] == 0) {
+            candidates[0] = key;
+            counts[0] = 1;
+        } else if (counts[1] == 0) {
+            candidates[1] = key;
+            counts[1] = 1;
+        } else {
+            counts[0]--;
+            counts[1]--;
+        }
+    }
+    double share = 0;
+    const auto accepted = [&](key_uint64_t key) {
+        double llr = 0;
+        unsigned nr_equal = 0;
+        for (unsigned t = 1; t <= m; t++) {
+            if (sample() == key) {
+                llr += alpha;
+                nr_equal++;
+            } else {
+                llr -= beta;
+            }
+            if (llr >= bound || llr <= -bound) {
+                share = static_cast<double>(nr_equal) / t;
+                return llr >= bound;
+            }
+        }
+        share = static_cast<double>(nr_equal) / m;
+        return nr_equal >= m * (0.5 - w / 2);
+    };
+    for (unsigned j = 0; j < 2; j++) {
+        if (counts[j] == 0 || !accepted(candidates[j])) {
+            continue;
+        }
+        const key_uint64_t key = candidates[j];
+        const uint32_t nr_qrys = static_cast<uint32_t>(share * routed.nr_qrys);
+        if constexpr (IsInsertQuery<Query, Result>) {
+            for (size_t t = nr_threads; t-- > 0;) {
+                const auto& qrys = routed.qrys[t];
+                for (size_t i = qrys.size(); i-- > 0;) {
+                    if (qrys[i].key == key) {
+                        return HotCacheCandidate{qrys[i], nr_qrys};
+                    }
+                }
+            }
+        } else {
+            const KVPair* const pair = std::lower_bound(hot.PairsRange::begin(), hot.PairsRange::end(), key,
+                [](const KVPair& lhs, key_uint64_t rhs) { return lhs.key < rhs; });
+            if (pair != hot.PairsRange::end() && pair->key == key) {
+                return HotCacheCandidate{*pair, nr_qrys};
+            }
+        }
+        return std::nullopt;
+    }
+    return std::nullopt;
 }
 
 template <typename Query, typename Result>
@@ -975,6 +1157,7 @@ inline void BPForest::execute_in_dpus(TaskID task_no, QueryData<Query, Result>& 
     const SendTail& send_tail, const RecvTail& recv_tail)
 {
     last_qry_type = task_no;
+    log_hot_cache_hits();
 
     // The result region starts past the whole payload, the same distance in on
     // every DPU, so that one offset drives the transfer back.
@@ -1089,6 +1272,9 @@ inline void BPForest::postprocess_of_pred_impl(unsigned tid)
             }
         }
     }
+    for (const auto& [slot, idx_qry] : hot_cache_hits[tid].dedup) {
+        results[idx_qry] = results[hot_cache_hits[tid].forwarded[slot]];
+    }
 }
 
 inline void BPForest::batch_insert(uint32_t nr_queries, const KVPair pairs[])
@@ -1100,6 +1286,7 @@ inline void BPForest::batch_insert(uint32_t nr_queries, const KVPair pairs[])
     }
 
     route_queries(nr_queries, pairs, (void*){nullptr}, insert_queries);
+    repartition(nr_queries, pairs, (void*){nullptr}, insert_queries);
 
     // The first partition takes in whatever falls below it, so it is the only
     // one an insert can make begin lower: a key routed to partition i lies in
@@ -1118,10 +1305,12 @@ inline void BPForest::batch_delete(uint32_t nr_queries, const key_uint64_t keys[
     ScopedTimer t{Timer, "batch"};
 
     route_queries(nr_queries, keys, existed, delete_queries);
+    repartition(nr_queries, keys, existed, delete_queries);
     build_delete_refresh_requests();
     execute_in_dpus(TASK_DELETE, delete_queries, RefreshRequestTail{this}, RefreshResponseTail{this});
     postprocess_of_delete(existed);
     apply_delete_refresh_responses();
+    evict_deleted_hot_cache_pairs();
 }
 inline void BPForest::build_delete_refresh_requests()
 {
@@ -1775,7 +1964,7 @@ find_relatively_hot_ranges(const LinkedList<ChunkedPairsRange>::iterator begin_r
 }
 
 template <typename Query, typename Result>
-inline void BPForest::repartition(uint32_t nr_queries, const Query queries[], Result results[], QueryData<Query, Result>& routed)
+inline void BPForest::repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed)
 {
     if (param.enable_dynamic_repartition) {
         const Balanced balanced = incremental_repartition(nr_queries, queries, results, routed);
@@ -1804,6 +1993,9 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
 
     if (partitioning_log) {
         *partitioning_log << "start full resharding" << '\n';
+    }
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+        drop_hot_cache_pair(idx_dpu, "moved");
     }
 
     const size_t nr_total_pairs = retrieve_all_data(data_buf);
@@ -2134,7 +2326,7 @@ struct TmpDataForIncRepartition {
     dpu_id_t nr_new_pieces;
 };
 template <typename Query, typename Result>
-inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query queries[], Result results[], QueryData<Query, Result>& routed) -> Balanced
+inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed) -> Balanced
 {
     ScopedTimer t{Timer, "inc_reb"};
 
@@ -2420,6 +2612,9 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             nr_pairs[idx_dpu].get()[1] = static_cast<uint32_t>(kept_hot[idx_dpu].pairs_range.npairs());
             hot_split_failed[idx_dpu] = false;
             hot_entries[nr_hot_entries++] = {kept_hot[idx_dpu].key_range.begin, idx_dpu, kept_hot[idx_dpu].origin};
+            if (hot_cache[idx_dpu].key < kept_hot[idx_dpu].key_range.begin || kept_hot[idx_dpu].key_range.end < hot_cache[idx_dpu].key) {
+                drop_hot_cache_pair(idx_dpu, "moved");
+            }
         } else if (hot_part[idx_dpu] != INVALID_DPU_ID) {
             hot_entries[nr_hot_entries++] = {parts.begins[hot_part[idx_dpu]], idx_dpu, parts.origins[hot_part[idx_dpu]]};
         }
@@ -2917,14 +3112,37 @@ inline void BPForest::incremental_repartition_worker_hot([[maybe_unused]] unsign
                 // A single dominant chunk cannot be subdivided: keep the hot whole.
                 pieces.clear();
                 hot_ranges[idx_dpu] = PairsRange{nullptr, nullptr};
-                hot_split_failed[idx_dpu] = true;
+                std::optional<HotCacheCandidate> cacheable;
+                if constexpr (IsPointQuery<Query> && !IsDeleteQuery<Query, Result>) {
+                    if (param.enable_hot_cache) {
+                        cacheable = find_hot_cache_candidate(hot_cpr, routed.hot[idx_dpu]);
+                    }
+                }
+                uint32_t nr_served = 0;
+                for (const HotCacheHits& hits : hot_cache_hits) {
+                    nr_served += hits.served[idx_dpu];
+                }
                 std::lock_guard lock{tmp.mutex};
-                if (partitioning_log) {
-                    const KVPair* const maxchunk = hot_cpr.PairsRange::begin()
-                        + (hot_cpr.nchunks() - 1) * KVPairsChunkSize;
-                    *partitioning_log << "nosplit hot " << idx_dpu << " reason no_cut_point load " << measured
-                                      << " maxchunk_load " << maxchunk_load
-                                      << " keyrange " << maxchunk->key << ' ' << hot_max_key << '\n';
+                if (cacheable && cacheable->nr_qrys > nr_served) {
+                    drop_hot_cache_pair(idx_dpu, "replaced");
+                    hot_cache[idx_dpu] = cacheable->pair;
+                    if (partitioning_log) {
+                        *partitioning_log << "cache hot " << idx_dpu << " key " << cacheable->pair.key << " nqrys " << cacheable->nr_qrys << " load " << measured << '\n';
+                    }
+                } else {
+                    hot_split_failed[idx_dpu] = true;
+                    if (partitioning_log) {
+                        if (cacheable) {
+                            *partitioning_log << "cache keep " << idx_dpu << " key " << hot_cache[idx_dpu].key << " served " << nr_served
+                                              << " over " << cacheable->pair.key << " nqrys " << cacheable->nr_qrys << '\n';
+                        } else {
+                            const KVPair* const maxchunk = hot_cpr.PairsRange::begin()
+                                + (hot_cpr.nchunks() - 1) * KVPairsChunkSize;
+                            *partitioning_log << "nosplit hot " << idx_dpu << " reason no_cut_point load " << measured
+                                              << " maxchunk_load " << maxchunk_load
+                                              << " keyrange " << maxchunk->key << ' ' << hot_max_key << '\n';
+                        }
+                    }
                 }
                 idx_dpu = get_next_idx_dpu(lock);
                 continue;
@@ -3054,6 +3272,7 @@ inline void BPForest::print_params(std::ostream& ostr) const
             "param.enable_dynamic_repartition: " << param.enable_dynamic_repartition << "\n"
             "param.enable_incremental: " << param.enable_incremental << "\n"
             "param.enable_hot_split: " << param.enable_hot_split << "\n"
+            "param.enable_hot_cache: " << param.enable_hot_cache << "\n"
             "param.nr_host_threads: " << param.nr_host_threads << "\n";
     print_overload_threshold_spec(ostr, param.overload_threshold_spec);
     ostr << "get_parallelism(): " << get_parallelism() << "\n"

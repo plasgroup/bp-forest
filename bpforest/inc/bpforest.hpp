@@ -11,6 +11,7 @@
 #include "parallel.hpp"
 #include "partition.hpp"
 #include "workload_types.h"
+#include "xoshiro256pp.hpp"
 
 #include <any>
 #include <array>
@@ -19,6 +20,7 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <ostream>
 #include <tuple>
 #include <type_traits>
@@ -109,6 +111,7 @@ struct BPForestParameter {
     bool enable_dynamic_repartition = true;
     bool enable_incremental = true;
     bool enable_hot_split = true;
+    bool enable_hot_cache = true;
     // BPForest resolves this spec to a concrete policy at construction using ndpus.
     OverloadThresholdSpec overload_threshold_spec = HighWatermarkRatio{1.05};
     unsigned nr_host_threads = 0;
@@ -274,6 +277,11 @@ private:
     // capacity across batches; entries are cleared at the top of pass 1.
     std::vector<std::vector<NewHotRange>> hot_split_plans = std::vector<std::vector<NewHotRange>>(nr_base_parts);
 
+    //! The pair a hot partition's queries pile onto, served by the host
+    //! (docs/host_hot_cache.md): slot `d` holds DPU `d`'s, with the value
+    //! `NOT_FOUND_VALUE` when there is none.
+    const ExtendableBuffer<KVPair> hot_cache{nr_base_parts};
+
     TaskID last_qry_type = TASK_NONE;
     QueryData<key_uint64_t, value_int64_t> get_queries{nr_base_parts, get_parallelism()};
     QueryData<key_uint64_t, KVPair> pred_queries{nr_base_parts, get_parallelism()};
@@ -286,6 +294,25 @@ private:
 
     // for insert queries
     const ExtendableBuffer<CachelineAligned<key_uint64_t>> new_min_keys{get_parallelism()};
+
+    struct HotCacheHits {
+        ExtendableBuffer<uint32_t> served;     //!< per slot, how many queries the cache served
+        ExtendableBuffer<uint32_t> forwarded;  //!< per slot, the query the DPU is to see
+        std::vector<dpu_id_t> touched;
+        std::vector<std::pair<dpu_id_t, uint32_t>> dedup;  //!< pred queries copying the forwarded one's result
+
+        explicit HotCacheHits(dpu_id_t nr_slots);
+        bool hit(dpu_id_t slot);
+        void clear();
+    };
+    std::vector<HotCacheHits> hot_cache_hits = [this] {
+        std::vector<HotCacheHits> result;
+        result.reserve(get_parallelism());
+        for (unsigned tid = 0; tid < get_parallelism(); tid++) {
+            result.emplace_back(nr_base_parts);
+        }
+        return result;
+    }();
 
     //! @name min-refresh questions of one delete batch
     //! Grouped by DPU: DPU d owns `[refresh_begin[d], refresh_begin[d + 1])` of
@@ -330,7 +357,7 @@ private:
     const ExtendableBuffer<std::pair<dpu_id_t, uint32_t /* load */>> cold_loads{nr_base_parts};
     const ExtendableBuffer<uint32_t /* npairs */> cold_npairs_list{nr_base_parts};
     const ExtendableBuffer<NewHotRange> new_hots{nr_base_parts};
-    inline static thread_local ExtendableBuffer<uint32_t> chunk2load;
+    inline static thread_local ExtendableBuffer<uint32_t> chunk2load, hot_qrys_ends;
 
     // pass intermediate data to parallel workers
     std::any any_tmp_data;
@@ -365,7 +392,6 @@ private:
     //! pieces there are, one more than the number of cuts, and none at all
     //! when the base holds no cold partition.
     dpu_id_t cut_points_of_cold_tree(dpu_id_t idx_base, key_uint64_t incisions[], KeyRange key_ranges[]) const;
-    ptrdiff_t locate_pred_partition(key_uint64_t key) const;
 
     template <typename Query, typename Result>
     void route_queries(
@@ -390,6 +416,9 @@ private:
         uint32_t idx_qry, const Query& qry, Result* result,
         QueryData<Query, Result>& routed,
         unsigned tid);
+
+    template <typename Query, typename Result>
+    void route_point_query_to_tree(uint32_t idx_qry, const Query& qry, QueryData<Query, Result>& routed, unsigned tid, size_t idx_part);
 
     template <typename Query, typename Result>
     void route_single_range_query(
@@ -427,13 +456,13 @@ private:
 
     size_t retrieve_all_data(ExtendableBuffer<KVPair>& buf);
     template <typename Query, typename Result>
-    void repartition(uint32_t nr_queries, const Query queries[], Result results[], QueryData<Query, Result>& routed);
+    void repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed);
     enum class Balanced {
         Yes,
         No
     };
     template <typename Query, typename Result>
-    Balanced incremental_repartition(uint32_t nr_queries, const Query queries[], Result results[], QueryData<Query, Result>& routed);
+    Balanced incremental_repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed);
     template <typename Query, typename Result>
     void full_repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed);
 
@@ -448,6 +477,19 @@ private:
     void incremental_repartition_worker_hot(unsigned tid);
     template <typename Query, typename Result>
     void full_repartition_worker(unsigned tid);
+
+    struct HotCacheCandidate {
+        KVPair pair;
+        uint32_t nr_qrys;
+    };
+    //! @brief The pair at least half of a hot partition's queries go to, by
+    //! the sampling of docs/hot_key_finding.md.
+    template <typename Query, typename Result>
+    std::optional<HotCacheCandidate> find_hot_cache_candidate(const ChunkedPairsRange& hot, const QueryDataPerRange<Query, Result>& routed) const;
+    void drop_hot_cache_pair(dpu_id_t dpu, const char* reason);
+    void evict_deleted_hot_cache_pairs();
+    uint32_t nr_hot_cache_hits() const;
+    void log_hot_cache_hits() const;
 };
 
 

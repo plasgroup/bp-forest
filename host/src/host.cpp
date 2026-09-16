@@ -81,6 +81,11 @@ struct BPForestOption {
             "re-overheats and redistributing the pieces (carving newly hot "
             "ranges out of cold and full repartition are unaffected)",
             false, true);
+        a.add<bool>("hot-cache", 0,
+            "whether to let the host serve point queries for the pair a hot "
+            "partition's queries pile onto when that keeps the partition from "
+            "being split",
+            false, true);
         add_overload_threshold_options(a);
         a.add<unsigned>("nr-host-threads", 't', "num of threads used in pre/post-processing in B+-Forest", false, 0);
     }
@@ -92,6 +97,7 @@ struct BPForestOption {
         param.enable_dynamic_repartition = a.get<bool>("dynamic-repartition");
         param.enable_incremental = a.get<bool>("incremental");
         param.enable_hot_split = a.get<bool>("hot-split");
+        param.enable_hot_cache = a.get<bool>("hot-cache");
         param.nr_host_threads = a.get<unsigned>("nr-host-threads");
         param.overload_threshold_spec = parse_overload_threshold_spec(a).value_or(HighWatermarkRatio{1.05});
     }

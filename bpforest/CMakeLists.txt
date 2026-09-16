@@ -61,3 +61,5 @@ foreach(build_version IN LISTS targets)
         add_dependencies(bpforest_${build_version} dpu_program_${build_version})
     endif(build_version STREQUAL "dpu_on_cpu")
 endforeach()
+
+add_subdirectory(test)
