@@ -2866,7 +2866,11 @@ inline void BPForest::incremental_repartition_worker_hot([[maybe_unused]] unsign
                         }();
                         // 始端キーが最小生存キーであることに依存する。
                         // 添字 -1 は負荷配列の手前を黙って壊す。
-                        assert(hot_begin_key <= key && key <= hot_max_key);
+                        if constexpr (IsPredecessorQuery<Query, Result>) {
+                            assert(hot_begin_key < key && key - 1 <= hot_max_key);
+                        } else {
+                            assert(hot_begin_key <= key && key <= hot_max_key);
+                        }
                         assert(one_after_target_chunk != hot_cpr.begin());
                         (--one_after_target_chunk)->load()++;
                     }
