@@ -11,7 +11,7 @@
 #include <utility>
 
 
-inline void upmem_init(void);
+inline void upmem_init(unsigned nr_host_threads);
 inline void upmem_release(void);
 inline dpu_id_t nr_dpus_in_set(const DPUSet& set);
 inline dpu_id_t upmem_get_nr_dpus(void);

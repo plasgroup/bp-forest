@@ -19,7 +19,7 @@ constexpr dpu_id_t NrDPUsInRank = MAX_NR_DPUS_IN_RANK;
 inline std::optional<FakeDPUFleet<NrDPUs>> emulated_dpus;
 
 
-inline void upmem_init_impl()
+inline void upmem_init_impl(unsigned)
 {
     all_dpu.reset();
     all_dpu.flip();

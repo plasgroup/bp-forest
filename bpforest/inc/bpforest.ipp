@@ -174,7 +174,7 @@ struct RangeQueryToRange<RangeCountQuery> {
 
 inline BPForest::BPForest(const Param& param)
     : ParallelManager<BPForest>{param.nr_host_threads},
-      nr_base_parts{(upmem_init(), upmem_get_nr_dpus())}, param{param}
+      nr_base_parts{(upmem_init(get_parallelism()), upmem_get_nr_dpus())}, param{param}
 {
     const NUMA::Topology topology;
     any_tmp_data = &topology;

@@ -27,7 +27,7 @@ struct UPMEM_AsyncDuration {
 #endif
 };
 
-inline void upmem_init_impl();
+inline void upmem_init_impl(unsigned nr_host_threads);
 inline void upmem_release_impl();
 
 
@@ -43,9 +43,9 @@ inline void upmem_release_impl();
 //
 //  UPMEM module interface
 //
-inline void upmem_init()
+inline void upmem_init(unsigned nr_host_threads)
 {
-    upmem_init_impl();
+    upmem_init_impl(nr_host_threads);
 
 #ifdef PRINT_DEBUG
     const dpu_id_t nr_dpus = upmem_get_nr_dpus();

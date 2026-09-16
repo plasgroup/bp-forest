@@ -57,7 +57,7 @@ inline UPMEM_AsyncDuration::~UPMEM_AsyncDuration()
     }
 }
 
-inline void upmem_init_impl()
+inline void upmem_init_impl(unsigned nr_host_threads)
 {
     std::ostringstream sstr;
     sstr <<
@@ -66,7 +66,7 @@ inline void upmem_init_impl()
 #else
         "sgXferEnable=true,sgXferMaxBlocksPerDpu="
 #endif
-         << std::max<size_t>({2 * MAX_NR_DPUS + 4, MAX_NR_SUMMARY_CHUNKS});
+         << std::max<size_t>({2 * MAX_NR_DPUS + 4, MAX_NR_SUMMARY_CHUNKS, 2 * size_t{nr_host_threads} + 6});
 
     DPU_ASSERT(dpu_alloc_ranks(NR_RANKS, sstr.str().c_str(), &all_dpu_impl));
 

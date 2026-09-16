@@ -53,7 +53,7 @@ extern "C" inline void dpu_on_cpu_dump_logs_on_abort(int signum)
     std::raise(signum);
 }
 
-inline void upmem_init_impl()
+inline void upmem_init_impl(unsigned)
 {
     all_dpu.reset();
     all_dpu.flip();
