@@ -56,6 +56,7 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
                                      "TASK_SERIALIZE_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_SERIALIZE_NR_TASKLETS) "\n"
                                      "TASK_SERIALIZE_NR_CACHED_KVPAIRS: " EXPAND_STRINGIFY(TASK_SERIALIZE_NR_CACHED_KVPAIRS) "\n"
                                      "TASK_SERIALIZE_NR_CACHED_DELIMS: " EXPAND_STRINGIFY(TASK_SERIALIZE_NR_CACHED_DELIMS) "\n"
+                                     "TASK_SERIALIZE_NR_CACHED_INCISIONS: " EXPAND_STRINGIFY(TASK_SERIALIZE_NR_CACHED_INCISIONS) "\n"
                                      "TREE_CLEAR_NR_TASKLETS: " EXPAND_STRINGIFY(TREE_CLEAR_NR_TASKLETS) "\n"
 #ifdef TASK_MOVE_HOT_CHECK
                                      "TASK_MOVE_HOT_CHECK: 1\n"
@@ -66,6 +67,7 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
                                      "TASK_GET_NR_CACHED_QRYS: " EXPAND_STRINGIFY(TASK_GET_NR_CACHED_QRYS) "\n"
                                      "TASK_PRED_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_PRED_NR_TASKLETS) "\n"
                                      "TASK_PRED_NR_CACHED_QRYS: " EXPAND_STRINGIFY(TASK_PRED_NR_CACHED_QRYS) "\n"
+                                     "TASK_PRED_NR_CACHED_RESULTS: " EXPAND_STRINGIFY(TASK_PRED_NR_CACHED_RESULTS) "\n"
                                      "TASK_DELETE_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_DELETE_NR_TASKLETS) "\n"
                                      "TASK_DELETE_NR_CACHED_QRYS: " EXPAND_STRINGIFY(TASK_DELETE_NR_CACHED_QRYS) "\n"
                                      "TASK_DELETE_SORT_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_DELETE_SORT_NR_TASKLETS) "\n"
@@ -84,6 +86,7 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
 #else
                                      "TASK_INSERT_SORT_CHECK: 0\n"
 #endif
+                                     "TASK_INSERT_SORT_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_INSERT_SORT_NR_TASKLETS) "\n"
                                      "TASK_INSERT_SORT_RADIX_BITS: " EXPAND_STRINGIFY(TASK_INSERT_SORT_RADIX_BITS) "\n"
                                      "TASK_INSERT_SORT_RUN: " EXPAND_STRINGIFY(TASK_INSERT_SORT_RUN) "\n"
                                      "TASK_INSERT_SORT_DIGIT_BUF: " EXPAND_STRINGIFY(TASK_INSERT_SORT_DIGIT_BUF) "\n"
