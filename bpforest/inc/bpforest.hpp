@@ -107,7 +107,6 @@ constexpr size_t max_nr_parts(dpu_id_t nr_base_parts) { return size_t{nr_base_pa
 struct BPForestParameter {
     unsigned balancing = 1;
     unsigned more_hotness = 1;
-    bool greedy_only = false;
     bool enable_dynamic_repartition = true;
     bool enable_incremental = true;
     bool enable_hot_split = true;
@@ -356,7 +355,8 @@ private:
     const ExtendableBuffer<KeyRange> cold_key_ranges{nr_base_parts * 2};
     const ExtendableBuffer<std::pair<dpu_id_t, uint32_t /* load */>> cold_loads{nr_base_parts};
     const ExtendableBuffer<uint32_t /* npairs */> cold_npairs_list{nr_base_parts};
-    const ExtendableBuffer<NewHotRange> new_hots{nr_base_parts};
+    //! The extra slot holds the piece carve_new_hots() merges away.
+    const ExtendableBuffer<NewHotRange> new_hots{nr_base_parts + 1};
     inline static thread_local ExtendableBuffer<uint32_t> chunk2load, hot_qrys_ends;
 
     // pass intermediate data to parallel workers
@@ -486,6 +486,14 @@ private:
     //! the sampling of docs/hot_key_finding.md.
     template <typename Query, typename Result>
     std::optional<HotCacheCandidate> find_hot_cache_candidate(const ChunkedPairsRange& hot, const QueryDataPerRange<Query, Result>& routed) const;
+    uint32_t cold_load_goal(uint64_t total_load) const;
+    uint32_t hot_load_goal(uint64_t total_load) const;
+    dpu_id_t carve_new_hots(const ChunkedPairsRange& hot, const KeyRange& key_range, uint32_t load, dpu_id_t origin,
+        dpu_id_t room, uint32_t hot_load, uint32_t load_goal, NewHotRange* out) const;
+    template <typename Query, typename Result>
+    bool relieve_overloaded_hot(dpu_id_t dpu, const PairsRange& pairs_range, uint32_t hot_cnt_goal, const QueryDataPerRange<Query, Result>& routed_hot);
+    template <typename Query, typename Result>
+    void relieve_overloaded_hots(dpu_id_t nr_new_hots, uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed);
     void drop_hot_cache_pair(dpu_id_t dpu, const char* reason);
     void evict_deleted_hot_cache_pairs();
     uint32_t nr_hot_cache_hits() const;

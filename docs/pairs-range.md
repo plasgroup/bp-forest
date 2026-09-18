@@ -53,10 +53,9 @@ ChunkedPairsRange 上の chunk 単位 random access iterator。
 ## NewHotRange
 
 hot range 切り出し結果。データ範囲 (`pairs_range`)、キー範囲 (`key_range`)、
-推定負荷 (`load`) の 3 つ組。切り出しの起点は 3 か所:
+推定負荷 (`load`)、切り出し元の base partition (`origin`) の 4 つ組。切り出しの起点は 2 か所:
 
-- `find_absolutely_hot_ranges` -- cold 領域から絶対 hot を切り出す
-- `find_relatively_hot_ranges` -- cold 領域から相対 hot を切り出す
+- `find_relatively_hot_ranges` -- cold 領域から hot を切り出す
 - `split_hot_range_equal_load` (`bpforest/inc/split_hot_range.hpp`) -- 既存 hot が過熱したとき、
   それを負荷が均等になるよう分割する
 

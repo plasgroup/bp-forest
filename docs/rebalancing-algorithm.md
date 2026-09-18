@@ -9,8 +9,6 @@ BPForest の rebalancing (クエリ負荷を平滑化するための hot range �
 関連参照ドキュメント:
 
 - `docs/pairs-range.md` — 型と capability
-- `docs/hot-range-finding/find_absolutely_hot_ranges_naive.hpp` / `..._sliding_window.hpp` — Algorithm 2 の愚直版 → 最適化版の対応
-- `docs/hot-range-finding/find_relatively_hot_ranges_naive.hpp` / `..._sliding_window.hpp` / `..._opt1..opt6_*.hpp` — Algorithm 3 の愚直版 → bpforest.ipp 相当までの段階的最適化
 
 ---
 
@@ -20,20 +18,17 @@ BPForest の rebalancing (クエリ負荷を平滑化するための hot range �
 
 各 DPU は base partition を 1 つ持ち、その中にクエリ負荷の高い subrange
 (= hot range) が見つかれば、それを**抜き出して別 DPU に移送**することで
-DPU 間のクエリ負荷を均す。論文では "Query Density-Driven Partitioning"
-と呼ぶ (body.tex)。
+DPU 間のクエリ負荷を均す。
 
 - 入力: 今バッチのクエリ (keys / range queries) と各 DPU の現 partition
 - 出力: 更新後のパーティション表 `parts` と `hot_ranges`、DPU に送る `TASK_MOVE_HOT` 指示
-- 性質:
-  - hot は cold から取り除かれるので "複製" ではなく **移動**
-  - 高負荷な base partition の中から hot を最大 $P$ (= DPU 数) 個まで
-    抜き出せることが論文で示される (§3 不変条件)
+- 性質: 1 回の再分割で新たに作る hot は $P$ (= DPU 数) 個以下 (§3)
 
 呼び出し位置:
 
-- `BPForest::batch_get` / `batch_pred` / `batch_range_count` /
-  `batch_range_max` が `route_queries` 直後に `repartition()` ラッパを呼ぶ
+- `BPForest::batch_get` / `batch_pred` / `batch_insert` / `batch_delete` /
+  `batch_range_count` / `batch_range_max` が `route_queries` 直後に
+  `repartition()` ラッパを呼ぶ
 - `repartition()` は `param.enable_dynamic_repartition` (CLI
   `--dynamic-repartition`, デフォルト on) のときだけ動く。まず
   `incremental_repartition` を試し、返り値が `Balanced::No` なら
@@ -44,11 +39,8 @@ DPU 間のクエリ負荷を均す。論文では "Query Density-Driven Partitio
 
 | 経路 | 意味 | いつ走るか |
 |---|---|---|
-| `full_repartition` | 全 KV ペアを CPU に回収して partition を組み直す重い経路 | 初期構築時、および incremental が `Balanced::No` を返して `repartition()` が escalate した時 |
-| `incremental_repartition` | 前バッチの状態を活かして負荷が偏った DPU だけ touch する軽い経路 | 定常バッチ処理。不変条件を破りそうな場合は `Balanced::No` を返し、full 行きを呼出し側に委ねる |
-
-どちらも、各 base partition 内で「hot range を抜き出す → 残余 cold を
-保持」という同一の semantics を持つ。違いは "どこまで全体を作り直すか"。
+| `full_repartition` | 全 KV ペアを CPU に回収して partition を組み直す重い経路 | 初期構築時、および incremental が `Balanced::No` を返した時 |
+| `incremental_repartition` | 前バッチの状態を活かして負荷が偏った DPU だけ touch する軽い経路 | 定常バッチ処理。`new_hots` に収まらない場合は `Balanced::No` を返す (§3) |
 
 ### 1.3 用語と記号
 
@@ -57,59 +49,45 @@ range query の負荷は **begin/end の 2 つの endpoint への point query �
 して近似** する (1 本 = 2 本相当, $W = 2$)。以降の式はこの近似を前提に
 している。
 
+論文の記号との対応 (`more_hotness = 1`、$W = 1$、既存 hot が無いとき):
+
 | 論文 | コード | 意味 |
 |---|---|---|
 | $P$ | `nr_base_parts` | DPU 数 (= base partition 数) |
-| $Q$ (論文) / $Q \cdot W$ (コード) | `nr_queries * W`, $W \in \{1, 2\}$ | クエリ負荷の総和。point=1, range=2 の重み付け近似 |
+| $Q$ (論文) / $Q \cdot W$ (コード) | `nr_queries * W`, $W \in \{1, 2\}$ | クエリ負荷の総和 |
 | $D$ | 総 KV ペア数 | 論文はバイト数、コードはペア件数 |
-| $Q/P$ / $\lceil Q/P \rceil$ | `hot_load` | 1 hot range の最小クエリ負荷 (絶対閾値) |
+| $Q/P$ / $\lceil Q/P \rceil$ | `hot_load` | hot 1 つあたりの負荷の目安。split の piece 数の単位 (§4) |
 | $\alpha$ | `param.balancing` | balancing factor |
-| $\dfrac{1}{\alpha}\dfrac{D}{P}$ | `hot_npairs` | 1 hot range の目標ペア数 (= sliding window の幅閾値) |
-| $\beta$ | `nr_relative_hots` | Algorithm 3 (double scan) で切り出す hot 個数の上限 |
-| — | `param.more_hotness` | `hot_load` と `cold_endpoint_cnt_goal` に乗る倍率 (CLI `--more-hot`, デフォルト 1)。大きいほど閾値が上がり hot が切り出されにくくなる |
-| — | `param.greedy_only` | 真なら Algorithm 3 (relative phase) を丸ごとスキップし、`cold_endpoint_cnt_goal` も greedy 専用式に切り替える (CLI `--greedy-only`) |
+| $\dfrac{1}{\alpha}\dfrac{D}{P}$ | `hot_npairs` | 1 hot range の目標ペア数 (= ブロックの幅; §4) |
+| — | `param.more_hotness` | `hot_load` と `cold_endpoint_cnt_goal` に乗る倍率 (CLI `--more-hot`, デフォルト 1) |
 
 代表的な式 (`full_repartition_worker` / `incremental_repartition_worker_cold`
 の冒頭; 両者同式):
 
 ```cpp
 hot_load               = (more_hotness * nr_queries * W + nr_base_parts - 1) / nr_base_parts;
-cold_endpoint_cnt_goal = greedy_only
-                             ? more_hotness * nr_queries * W * balancing / nr_base_parts
-                             : more_hotness * nr_queries * W * max(3, balancing + 1) / 3 / nr_base_parts;
+cold_endpoint_cnt_goal = more_hotness * nr_queries * W * (balancing + 1) * (balancing + 1) / balancing / 4 / nr_base_parts;  // cold_load_goal()
 
 // full_repartition_worker: 対象 base の cold ペア数から
 hot_npairs       = (cold_npairs + param.balancing - 1) / param.balancing;
 // incremental_repartition_worker_cold: cold + 既存 hot を合算した base ペア数から
 hot_npairs       = (base_npairs + param.balancing - 1) / param.balancing;
-
-// 両 worker の relative phase 直前
-nr_relative_hots = cold_endpoint_cnt / hot_load;  // 論文の β
 ```
 
-`cold_endpoint_cnt_goal` の係数 $\max(3, \alpha+1)/3$ は論文 appendix
-の定理「cold 側クエリ負荷の上界 $\le \frac{Q}{P}\max\{\frac{\alpha+1}{3}, 1\}$」
-(Alg.3 double-scan 後) に対応。$\alpha \le 2$ では係数が 1 に張り付く。
-`param.greedy_only` のときは double-scan という定理の前提が消えるので、
-goal は $\alpha \cdot QW/P$ (係数 $\alpha$) の greedy 専用式に切り替わる。
-いずれの式も `param.more_hotness` 倍される。
+`cold_endpoint_cnt_goal` の係数 $\dfrac{(\alpha+1)^2}{4\alpha}$ は、§4 の選び方で cold の負荷を
+goal まで下げても切り出す個数が $P$ を超えない (§3)、最小の係数である。
 
-**Phase 1 と Phase 3 の比較対象は意図的に別単位** (incremental 経路):
+**Phase 1 と Phase 3 (§6) の比較対象は別単位** (incremental 経路):
 
 - Phase 1 (`incremental_repartition` 冒頭の pre-filter) の `cold_cnt_goal`
-  は **combined_delim 境界で split された cold partial 本数**
+  は **パーティション境界で切られた range query の断片 (fragment) の本数**
   (`routed.cold[d].nr_qrys`; `W` を乗せない) と比較
 - Phase 3 (`incremental_repartition_worker_cold`) の
   `cold_endpoint_cnt_goal` は **原 range query の begin/end endpoint の
   うち cold subrange に落ちた本数** と比較 (`W=2`)
 
-両者は単位も係数も違うので直接比較できない。Phase 1 の起動判定は goal
-そのものではなく、`OverloadThreshold` が goal から導く threshold (§7
-Phase 1) との比較で行う。threshold は goal より大きい側に張られる safety
-margin であり、Phase 1 で `TASK_NONE` と判定された DPU は Phase 3 の
-endpoint ベース精査には回らない (Phase 3 は Phase 1 の `TASK_SERIALIZE`
-群を `TASK_NONE` に戻す方向にしか動かない; §7.1 の goal 判定)。
-false-negative の発生は仕様。
+両者は単位も係数も違うので直接比較できない。point query では fragment の数と
+endpoint の数はともにクエリ数で、両者は一致する。
 
 **load estimation の近似**: range query の実際の交差 chunk 数は無視され、
 begin/end の各 endpoint が対象範囲に落ちた場合のみ chunk の `load()` に
@@ -118,7 +96,7 @@ begin/end の各 endpoint が対象範囲に落ちた場合のみ chunk の `loa
 (`incremental_repartition_worker_cold`) は `cold_key_ranges` から作った
 `cold_range_bounds` 列で「残存 cold subrange に落ちた endpoint」だけ計上し、同一
 query が同じ DPU の複数 fragment に routed されていても `orig_idx` で
-dedup する。対象範囲の外に飛び出した endpoint は計上されない。
+dedup する。
 
 ---
 
@@ -127,224 +105,126 @@ dedup する。対象範囲の外に飛び出した endpoint は計上されな�
 詳細は `docs/pairs-range.md` 参照。ここでは rebalancing 文脈での役割のみ:
 
 - `PairsRange` / `ChunkedPairsRange` — cold subrange を表す非所有ビュー
-- `DataChunkIterator` — 256 ペア単位の chunk iterator。sliding window 走査の単位
+- `DataChunkIterator` — `KVPairsChunkSize` ペア単位の chunk iterator。ブロック (§4) と split (§6.2) の粒度
 - `BPForest::parts` — 鍵順のパーティション表。rebalancing の出力そのもの
 - `NewHotRange = {PairsRange, KeyRange, load, origin}` — 抜き出した hot のスロット。`origin` は切り出し元の base partition で、`parts` を組み直すときに要る
 - `LinkedList<ChunkedPairsRange>` — 各 DPU の cold range 集合。hot 抜出しに伴う分割を erase/insert で扱う (iterator stable)
-- `BPForest::new_hots` — `ExtendableBuffer<NewHotRange>{nr_base_parts}` の **固定サイズバッファ**。後述の不変条件を前提にしている
-- `BPForest::kept_hot` / `BPForest::hot_split_plans` — hot partition split (§7.2) の中間データ。split 元 DPU に残す piece[0] と、再配置する pieces[1..] の受け渡しに使う
+- `BPForest::new_hots` — `ExtendableBuffer<NewHotRange>{nr_base_parts + 1}` の **固定サイズバッファ** (§3)。+1 は `carve_new_hots` が併合して消す余分な piece の分
+- `BPForest::kept_hot` / `BPForest::hot_split_plans` — hot partition split (§6.2) の中間データ。split 元 DPU に残す piece[0] と、再配置する pieces[1..] の受け渡しに使う
 
 ---
 
-## 3. 不変条件 (最重要)
+## 3. 不変条件
 
-**命題:** `full_repartition` / `incremental_repartition` が 1 回走り
-切ったとき、新たに切り出される hot range 総数 `hot_count` は
-`nr_base_parts` (= $P$) を超えない。
+**命題 (full 経路):** `full_repartition` が 1 回走り切ったとき、新たに切り出される
+hot の総数 `hot_count` は `nr_base_parts` (= $P$) を超えない。
 
-**論文の証明 (appendix.tex, Theorem):**
+**証明の要点** (`more_hotness = 1`、丸めは無視する): base partition $b$ の cold の
+負荷を $L_b$、$x_b = L_b / (Q/P)$、$c = (\alpha+1)^2/(4\alpha)$、ブロック数を $m$ とする。
+cold range は 1 本で、末尾以外のブロックは `hot_npairs` $= \lceil n/\alpha \rceil$ ($n$ は
+cold のペア数) ペア以上を持つので、$m \le \alpha$。負荷の大きい順に $k$ 個目のブロックを取るのは、$k - 1$ 個を
+取った残りが goal $c \cdot Q/P$ を超えているときで、残りは $L_b (m-k+1)/m$ 以下なので
+$k - 1 < \alpha (1 - c/x_b)$。相加相乗平均 $x_b + \alpha c / x_b \ge \alpha + 1$ から
+$k < x_b$。split の piece で数えても同じである: 負荷 $l$ のブロックから出る piece は
+$\max(1, \lfloor l / \text{hot\_load} \rfloor)$ 個で、$l \ge Q/P$ ならこれは $l/(Q/P)$ 以下。
+$l < Q/P$ のブロックは負荷順で後ろに並ぶので、それらだけを対象に、$L_b$ から前者の負荷を
+引いた値で同じ議論を繰り返せる。よって base partition $b$ からは $x_b$ 個以下。
+$\sum_b L_b \le Q$ から合計は $P$ 以下。
 
-- **Algorithm 2 (Greedy):** 各 hot range は `hot_load` $\ge Q/P$ を
-  超えてから emit されるので、greedy 全体で切り出せるのは $Q/(Q/P) = P$ 個以下
-- **Algorithm 3 (Double-scan):** 呼び出しごとに $\beta_b = \lfloor (\text{残クエリ数})/(Q/P) \rfloor$ 以下に制限され、
-  base partition 合計も greedy 残余クエリ数$/(Q/P)$ で抑えられる
-- 合わせても $P$ 以下
+**incremental 経路では成り立たない:** 既存の hot が cold を分断していると
+cold range が複数本になり、ブロック数は $\alpha + (\text{その base 由来の既存 hot の数})$
+まで増える。既存の hot まで含めて $P$ 以下という保証も無い。
 
 **コード側の担保:**
 
-- `new_hots` は固定サイズ確保 (bpforest.hpp のメンバ定義)、
-  `new_hots[hot_count++]` で index 書込 (`full_repartition_worker` /
-  `incremental_repartition_worker_cold` の absolute・relative 両 callback)。
-  容量 check なし — 不変条件を**信じて**書いている
-- `incremental_repartition` には**事後**の bailout が 2 箇所ある:
-  ```cpp
-  // cold pass (incremental_repartition_worker_cold) の直後
-  if (tmp_data.nr_existing_hots + tmp_data.hot_count > nr_base_parts) {
-      return Balanced::No;
-  }
-  // hot pass (incremental_repartition_worker_hot) の直後: split 由来の新片も勘定
-  if (tmp_data.nr_existing_hots + tmp_data.hot_count + tmp_data.nr_new_pieces > nr_base_parts) {
-      return Balanced::No;
-  }
-  ```
-  `Balanced::No` を受けた呼出し側 `repartition()` が `full_repartition`
-  へ escalate する (§1.1)。hot split の pieces[1..] は 2 つ目の check を
-  通過した後で初めて `new_hots` に書き込まれるので固定サイズバッファは
-  溢れないが、cold 側の書込は事後検証であり、バッチ内 `hot_count` 単独の
-  上限は依然として論文の定理にのみ依存する
-- さらに incremental の両 worker (`incremental_repartition_worker_cold` /
-  `_hot`) の `get_next_idx_dpu` に**走査中ガード**があり、
-  `nr_existing_hots + hot_count > nr_base_parts` に達した時点で新しい
-  DPU を掴まなくなる (走査途中の DPU は完走する)
+- `new_hots` は固定サイズ。両 worker の hook は `carve_new_hots` に残り枠
+  (incremental は `P − (既存 hot の数) − hot_count`、full は `P − hot_count`) を渡し、
+  次のブロックの piece がそこに収まらなければ `carve_new_hots` は何も書かずに 0 を返す
+- incremental の hook は 0 を受けたら `overflow` を立てて選択をやめる (そのブロックは
+  cold list からは外れているが、full に落ちるので list ごと捨てられる)。
+  `incremental_repartition` は、cold pass の直後に `overflow` なら `Balanced::No`、
+  hot pass の直後に split 由来の新片も勘定して
+  `nr_existing_hots + hot_count + nr_new_pieces > nr_base_parts` なら
+  `Balanced::No` を返す。hot split の pieces[1..] は 2 つ目の check を通過した後で
+  初めて `new_hots` に書き込まれる
+- full の hook は上の命題により 0 を受けない (`assert`)
 
 ---
 
-## 4. `find_absolutely_hot_ranges` (Algorithm 2)
+## 4. `find_relatively_hot_ranges` と新しい hot の据え方
 
 ### Semantics
 
-`[begin_part, end_part)` の cold range 列を受け取り、各 range 上で
-sliding window の右端を 1 chunk ずつ伸ばし、窓内 pair 数が `hot_npairs`
-を大きく超えないように「left chunk を 1 つ外すと `hot_npairs` を下回る」
-限界まで left 側を前進させながら、窓内 load が `hot_nqrys` に到達した
-瞬間に hot range を emit して窓を reset する。したがって emit 幅は load
-が閾値に達するまでに必要だった幅で決まり、密度が高ければ `hot_npairs`
-未満、低ければ `hot_npairs` に chunk 1 つ分未満の余剰を乗せた程度に
-収まる。窓は range を跨がない (range が替わると reset)。
+1 つの base partition の cold range 集合を `hot_npairs` ペアごとのブロックに区切り、
+負荷の大きいブロックから順に hot にしていく。
 
-callback 規約: `bool hot_hook(part, left, right, load)` が `false` を
-返せば即中断。callback 側は `part` を `{end, part.end()}` に縮めて hot
-を取り除き、`new_hots[hot_count++]` に記録する (呼出し側 = §6 / §7.1 の
-worker)。
+- **ブロック**: 各 cold range を先頭から区切る。1 ブロックは `hot_npairs` ペアを
+  chunk 単位に切り上げた幅で、range の末尾の端数もそのまま 1 ブロックにする。
+  ブロックは cold range を跨がない
+- **選択**: ブロックを負荷の降順に `hot_hook` へ渡し、hook が
+  `false` を返したところで止める。両 worker の hook は「cold の負荷が
+  `cold_endpoint_cnt_goal` 以下になった」または「`new_hots` の残り枠に収まらない」
+  (§3) で止める
+- **cold の残り**: 渡したブロックを list から取り除く。range の残りは元の node に
+  残し、取り除いた結果 range がちぎれたときは `new_cold_hook` が返す node に入れる。
+  hook が走っている間 list は変わらない
 
-呼び出し方は経路で異なる: `full_repartition_worker` は担当 base 1 つを
-`(&base, &base + 1)` の単一 range として渡し、
-`incremental_repartition_worker_cold` は対象 DPU の cold range list 全体
-(既存 hot で分断された複数 range; `chunked_cold_ranges` プール上で連続)
-を渡す。
+callback 規約: `bool hot_hook(range, begin_chunk, end_chunk, load)`、
+`LinkedChunkedPairsRange& new_cold_hook()`。
 
-### Implementation 段階
+選ばれる hot は隣り合うとは限らない。ブロックの走査には `DataChunkIterator` を使う。これは
+`part_begin/part_end/cursor/p_load` を値として保持し、range の node を live 参照しない
+ので、cold の残りを組み直す間に node を書き換えても、記録済みのブロックの境界は壊れない。
 
-愚直版 → 最適化版は以下の 2 ファイルで段階を追える:
+テストは `bpforest/test/hot_range_finding.cpp` (`hot_range_finding_test_<target>`)。乱数で作った
+cold range 集合について、渡されるブロックとその順、残る cold range を、この節の定義を
+そのまま書いた参照実装と突き合わせる。
 
-- `docs/hot-range-finding/find_absolutely_hot_ranges_naive.hpp` — Alg.2 の逐語実装。各 $r$
-  で `l'` 候補を右→左に全走査し、`SizeOf` / `NQrys` を毎回積み直す
-- `docs/hot-range-finding/find_absolutely_hot_ranges_sliding_window.hpp` — `window_npairs` /
-  `window_load` を保持し、$r$ の前進で加算、$l$ の前進で減算することで
-  各集約値を amortized $O(1)$ に。これが bpforest.ipp の
-  `find_absolutely_hot_ranges` に対応
+### 新しい hot の据え方 (`carve_new_hots`)
 
-### callback 内 mutation の安全性
+両 worker の `hot_hook` は選ばれたブロックを `carve_new_hots` に渡す。これは
+ブロックを 1 個以上の hot partition (`NewHotRange`) にして `new_hots` に書き、
+個数を返す。`param.enable_hot_split` のとき、ブロックの負荷が hot split の goal
+(`hot_load_goal()`; §6 Phase 1 の `hot_cnt_goal` を端点の単位で計算した値) を超えるなら
+`split_hot_range_equal_load` (§6.2) で `負荷 / hot_load` 個の piece に割る。piece の数が
+`new_hots` の残り枠 (§3) を超えるときは何も書かずに 0 を返す。
 
-`DataChunkIterator` は `part_begin/part_end/cursor/p_load` を値として
-保持し (pairs_range.hpp の `DataChunkIterator` メンバ)、
-`part->begin()/end()` を live 参照しない。
-加えて、ループ終端 `end_chunk` は各 part の走査開始時に `part->end()`
-の snapshot を取っている。
+### 割っても重い hot の扱い (`relieve_overloaded_hots`)
 
-この 2 つの独立した保証により、callback が `part` を
-`{end, part.end()}` に縮めても関数内のローカル `left/right/end_chunk`
-は壊れない。移植時に `ChunkedPairsRange` を list iterator 越しの live
-reference 型に置き換えると両方壊れうる。
+新しい hot を DPU に割り当て、クエリを振り分け直した後、この再分割で据えた hot
+(cold から切り出したもの、hot split の pieces[1..]、split 元に残した piece[0]) のうち、
+振り分けられたクエリ数 `routed.hot[dpu].nr_qrys` が `hot_cnt_goal` を超えるものについて、
+次の順に試みる (`param.enable_hot_split` のとき; 1 つの hot に対する処理は `relieve_overloaded_hot`)。
+これは、hot が 1 chunk より大きければ、次のバッチでその hot が hot split の対象
+(`do_hot`; §6 Phase 1) になる条件と同じである。
 
----
+1. **ホスト側キャッシュへの採用** (docs/host_hot_cache.md の「採用」): 採用した
+   キーの推定件数をクエリ数から引く
+2. **`hot_split_failed`**: それでも `hot_cnt_goal` を超えるなら、その DPU の
+   `hot_split_failed` を立てる
 
-## 5. `find_relatively_hot_ranges` (Algorithm 3 第2スキャン)
-
-### Semantics
-
-Greedy pass で取り切れなかった残り cold range 集合に対し、**`nr_hots`
-個ぴったり分の hot range を carve-out できる "最大荷重ウィンドウ"**
-を見つけ、そのウィンドウを右→左に `hot_npairs` 単位で束ねて emit する
-2 フェーズ処理。`param.greedy_only` が真の場合はこの relative phase
-自体が呼ばれない (`full_repartition_worker` /
-`incremental_repartition_worker_cold` の relative 段が
-`!param.greedy_only` でゲートされている)。
-
-- **入力**: `[begin_range, end_range)` — cold range list の半開区間。
-  hot はすでに走査空間から消えているので、ウィンドウは cold range を
-  **不連続に跨ぐ**
-- **出力**: argmax ウィンドウの `[left, right)` 境界 (callback が途中で
-  stop を返せばその時点の split 位置)。呼出し側はこの 2 つの境界から
-  cold 残余を再構成する
-
-#### Phase 1: argmax スキャン
-
-ウィンドウ `[l, r)` を右に伸ばしつつ、各 $r$ で *window 容量が丁度
-`nr_hots` 個の hot range に carve 可能な最大幅* を満たす最右の $l'$ を
-取り、`load(l, r)` の最大を記録する。容量判定には論文の `SizeOf` を
-cold-range-list に拡張した **effective pair count** を使う:
-
-```
-effective_window_pair_count(l, r)
-  = raw_npairs(left_partial)
-  + Σ slot_rounded_npairs(middle_range)
-  + slot_rounded_npairs(right_partial)
-where slot_rounded_npairs(n) = ceil(n / hot_npairs) * hot_npairs
-```
-
-**なぜ left partial だけ raw か**: carve が range 全体 (middle) や
-range 先頭から始まる (right partial) ケースでは `hot_npairs` 単位で
-消費するので slot_rounded で測るのが自然。一方、左端は "最後に足した
-chunk が hot 1 個分の余剰をどれだけ運ぶか" を chunk 粒度で見たいので
-raw。`l_range == r_range` のとき式は raw に退化し、単一 range 版
-(`single_range_naive.hpp`) の条件と一致する。
-
-**境界例外**: `cand` が `cand_range->begin()` に達した瞬間、cand_range
-全体が left partial になる。cand_range が undersize (raw < slot_rounded)
-だと raw 比較ではまだ条件を満たさないが、ここで止めないと次 step で
-cand_range が "完全通過 middle" に格下げされ、carve 数が `nr_hots + α`
-に膨らむ。**`slot_rounded 下の effective_npairs == required_npairs`
-が成立する瞬間だけ例外採用** することで、carve は丁度 `nr_hots` 個で
-終わる。`>` のケースは構造的に存在しない (raw 比較で先に検出される)
-ので救済不要、`<` は容量不足で採用不可 (証明は
-`find_relatively_hot_ranges_naive.hpp` ヘッダ)。
-
-#### Phase 2: carve-out
-
-`[argmax_left, argmax_right)` を右→左に逆走し、`hot_npairs` ペアずつ
-束ねて hook に渡す。cold range 境界を跨ぐ時は 1 range ごとに callback
-を呼び直す (callback の第 1 引数が `ChunkedPairsRange&` なので)。
-
-論文対応: `body.tex` Algorithm 3 "Double-scan hot range selection"。
-
-### Implementation 段階
-
-`docs/hot-range-finding/find_relatively_hot_ranges_*.hpp` に愚直版 → bpforest.ipp 相当
-までの段階的最適化を配置している。学習者はこの順に読むと実装上の
-最適化を 1 つずつ追える:
-
-| ファイル | 追加される最適化 |
-|---|---|
-| `naive.hpp` | Alg.3 の逐語実装 (`effective_window_pair_count` と境界例外を毎回 $O(N)$ で計算) |
-| `single_range_naive.hpp` | 単一 cold range 前提の愚直版 (意味論差分なし、論文そのまま) |
-| `sliding_window.hpp` | $l$ を単調前進させる 2 ポインタ化。状態変数 (`left_npairs_offcut`, `right_npairs_offcut`, `right_window_offcut`, `non_left_effective`) で `effective_window_pair_count` を差分更新 |
-| `opt1_bootstrap_whole_range_advance.hpp` | メインループ前に right を cold range 単位で bulk 進める初期化 |
-| `opt2_bootstrap_all_hot_early_exit.hpp` | bootstrap で全 range 吸収なら argmax 確定で carve へ直行 |
-| `opt3_single_range_steady_state.hpp` | `left_range == right_range` 用の専用 fast path |
-| `opt4_right_quota_threshold_gate.hpp` | 右端 rounded 幅の再計算・左縮小・margin 圧縮を `right_npairs_offcut > right_window_offcut` の成立時だけに遅延 |
-| `opt5_right_margin_compression.hpp` | 右 rounded 幅が増えた直後、同 range 内で right を先取りして margin を最小化 |
-| `opt6_range_level_left_shrink.hpp` | 左縮小を cold range 単位 (bulk) + 最終 range 内の chunk 単位に分解。opt6 で bpforest.ipp の `find_relatively_hot_ranges` と semantically equivalent |
-
-**opt6 ↔ bpforest.ipp 乖離監視ポイント**: 以下 5 箇所は現時点で一致
-しているが、bpforest.ipp 側だけ変更されると silent に乖離しうる
-(いずれも bpforest.ipp `find_relatively_hot_ranges` のメインループ内):
-
-1. 閾値ゲート条件 `right_npairs_offcut > right_window_offcut`
-2. right margin compression の `<` 境界
-   (`right_npairs_offcut + right->npairs() < right_window_offcut`)
-3. range-level left shrink 合流
-   (`left_window_offcut <= left_window_offcut_to_shrink` ループ) の
-   state 畳み込み
-4. final chunk-level left shrink の `>=` 境界
-   (`left_npairs_offcut - left->npairs() >= left_window_offcut`)
-5. single-range fast path (`left_range == right_range` 分岐) — 別
-   invariant 系で乖離が目立たない
+1 つでもペアをキャッシュに入れたら、クエリをもう一度振り分け直す。
 
 ---
 
-## 6. `full_repartition`
+## 5. `full_repartition`
 
 ### Semantics
 
 全 KV ペアを CPU に回収し、DPU 数で等分した base partition 上から
-greedy + double-scan で hot を抜き出し、`partial_sort` で低負荷 DPU に
+§4 で hot を抜き出し、`partial_sort` で低負荷 DPU に
 割り当ててから全 DPU の tree を再構築する **一括リビルド** 経路。
 論文 Algorithm 1 "Construction of hot/cold partitions" の骨格。
 
 ### Implementation (フロー)
 
-hot 切り出しの本体は `full_repartition_worker` に分離され、
-`parallel_run` でマルチスレッド実行される (かつての base partition
-ごとの直列ループから変更)。ワーカー間は `TmpDataForFullRepartition` の
-mutex と共有カウンタ (`idx_base` / `cold_count` / `hot_count`) で排他
-する。「`param.balancing > 0` のときだけ hot を切る」ゲートは現行には
-無く、worker は常に走る。
+`full_repartition_worker` のワーカー間は `TmpDataForFullRepartition` の
+mutex と共有カウンタ (`idx_base` / `cold_count` / `hot_count`) で排他する。
 
 `full_repartition` 本体:
 
-1. `retrieve_all_data(data_buf)` で全 DPU から KV ペア pull
-2. `chunked_cold_ranges_lists[]` のクリアを RAII cleanup として仕込む
+1. 全 DPU の `hot_cache` を捨て (docs/host_hot_cache.md の「追い出し」)、`kept_hot` を落とす
+2. `retrieve_all_data(data_buf)` で全 DPU から KV ペア pull
 3. `data_buf` を `nr_base_parts` 等分、各 base partition を
    `chunked_cold_ranges[]` に詰め、`parts` を base partition だけで作り直す
 4. `rebuild_part_indices()` → `route_queries()` で新 partition に re-route
@@ -355,6 +235,7 @@ mutex と共有カウンタ (`idx_base` / `cold_count` / `hot_count`) で排他
    - `new_hots` を load 降順 sort
    - 負荷の低い DPU ← 負荷の高い hot の対応付け、`hot_entries[]` に記録
    - `rebuild_parts()` → `route_queries()` で更新後の partition に再 route
+   - `relieve_overloaded_hots` (§4)
 7. `initialize_in_dpu(...)` で DPU 側 tree 再構築
 
 `full_repartition_worker` (各スレッド、`get_next_idx_base` で base を
@@ -366,116 +247,104 @@ mutex と共有カウンタ (`idx_base` / `cold_count` / `hot_count`) で排他
   fragment 本数と endpoint 本数が別単位 (§1.3) なのでここではスキップ
   せず、endpoint 計数後に判定する
 - `cold_npairs`, `hot_npairs` 確定
-- **load estimation** (mutex 外・並列): `chunk2load[]` を 0 初期化し、
-  point は `upper_bound` (predecessor 系は `lower_bound`)、range は両
-  endpoint のうち `[base_min, base_max]` 内のもののみ計上
-- **absolute 段** (mutex 下; `cold_endpoint_cnt > cold_endpoint_cnt_goal`
-  の場合のみ): `find_absolutely_hot_ranges(&base, &base + 1, ...)`。
-  callback で `part` を縮め `new_hots[hot_count++]` に詰める。抜出し後
-  `base.npairs() == 0` なら list から erase
-- **relative 段** (mutex 下; `!param.greedy_only` かつまだ goal 超過):
-  `nr_relative_hots = cold_endpoint_cnt / hot_load` を上限として
-  `find_relatively_hot_ranges`。返り値の `[left_range, left)` と
-  `[right, right_range->end())` から cold 残余を再構成
+- **load estimation** (mutex 外・並列): §1.3 の近似。point の chunk は
+  `upper_bound` (predecessor 系は `lower_bound`) で引く
+- **hot 選出** (mutex 下; `cold_endpoint_cnt > cold_endpoint_cnt_goal`
+  の場合のみ): `find_relatively_hot_ranges` (§4)。選ばれたブロックは
+  `carve_new_hots` が `new_hots` に詰める
 - `nr_pairs[idx_base]`, `cold_loads[idx_base]` 更新
 
 ---
 
-## 7. `incremental_repartition`
+## 6. `incremental_repartition`
 
 ### Semantics
 
 前バッチの状態を残したまま、**統計的閾値を超える負荷の偏りが観測された
-ときだけ hot を付け替える軽量経路**。Phase 1 でトリガ判定と serialize
-対象の選定 → Phase 2 で serialize して CPU に KV を持ち出し → Phase 3 で
-cold からの hot 選出 (cold pass) と過熱 hot の分割計画 (hot pass)、の
-3 段。返り値は `Balanced` で、不変条件を破りそうな場合と、トリガが立った
-のに `param.enable_incremental == false` の場合は `Balanced::No` を返す
-— full への escalate は呼出し側 `repartition()` の仕事 (§1.1)。
+ときだけ hot を付け替える軽量経路**。返り値は `Balanced` で、`new_hots` に
+収まらない場合 (§3) と、トリガが立ったのに `param.enable_incremental == false`
+の場合は `Balanced::No` を返す。
 
 ### Implementation (フロー)
 
 1. **Phase 1: トリガ判定と serialize 対象の選定**
    - goal は 2 系統:
-     - `cold_cnt_goal` — §1.3 の `cold_endpoint_cnt_goal` と同係数
-       (greedy_only 分岐・`more_hotness` 係数込み) だが routed fragment
-       本数用 (`W` を乗せない)
-     - `hot_cnt_goal = (more_hotness * 2 * nr_queries + P - 1) / P` —
+     - `cold_cnt_goal` — §1.3 の `cold_endpoint_cnt_goal` と同係数だが
+       routed fragment 本数用 (`W` を乗せない)
+     - `hot_cnt_goal = hot_load_goal(nr_queries)` = `ceil(more_hotness * 2 * nr_queries / P)` —
        hot split の下限。query 種によらず係数 2 固定
    - threshold は
      `overload_threshold.threshold_for(nr_queries, goal, family)` で導出
      (`util/inc/overload_threshold.hpp`)。`OverloadThresholdSpec` は
      `HighWatermarkRatio{r}` (threshold = goal × r; デフォルト r=1.05,
      CLI `--high-watermark`) か `FalsePositiveRate` (Bernstein 閾値,
-     CLI `--fp-rate`) の 2 択で、
+     CLI `--fp-rate`) の 2 択。後者だけ
      `family = nr_base_parts + 既存 hot 数` の Bonferroni 補正を受ける
    - **トリガと対象選定の分離**: threshold 超過 (`trigger_cold` /
      `trigger_hot`) は「今バッチで rebalancing を起動するか」の判定で、
      どれか 1 DPU でも立てば起動する。実際に serialize する対象は goal
-     超過 (`do_cold` / `do_hot`) で選ぶ — トリガより緩い条件なので、
+     超過 (`do_cold` / `do_hot`) で選ぶ。トリガより緩い条件なので、
      起動時には goal を超えただけの DPU もまとめて処理される
-   - `trigger_hot` / `do_hot` は `param.enable_hot_split`
-     (CLI `--hot-split`) が前提
+   - hot 側の条件: `trigger_hot` = `param.enable_hot_split` ∧ hot が 1 chunk より
+     大きい ∧ `!hot_split_failed[dpu]` ∧ `nr_qrys > hot_cnt_threshold`。
+     `do_hot` は同じで、threshold を goal に置き換え、`hot_split_failed` を見ない。
+     つまり `hot_split_failed` (§4、§6.2) が立った hot は自分から再分割を起こさないが、
+     他の DPU が起こしたバッチでは再検査される
    - `do_cold` の DPU は `cut_points_of_cold_tree()` で自分の cold
      partition 群を走査し、その境目を `incision_keys[]` に、各 partition
-     の鍵範囲を `cold_key_ranges[]` に記録して `TASK_SERIALIZE` を設定
+     の鍵範囲を `cold_key_ranges[]` に記録して `TASK_SERIALIZE` を設定。
+     `do_cold` / `do_hot` はヘッダに記録し、以後のホスト側の判定はこの 2 つの
+     フラグだけを見る (`task_no` は DPU への命令)
    - トリガが立っていて `param.enable_incremental == false` なら
-     `Balanced::No` を返す (呼出し側が full へ)
+     `Balanced::No` を返す
    - 全 DPU 走査後、トリガ無しなら `Balanced::Yes` で early return
 2. **Phase 2: serialize 実行 / 回収 / cold range 再構築**
    - 各対象 DPU に `TASK_SERIALIZE` を gather + execute
-   - 回収 pair 数を基に `data_buf.reserve()`。`incision_indices[]` も
-     同時回収
+   - `incision_indices[]` も同時回収
    - `do_cold` の DPU: KV pairs を `chunked_cold_ranges[]` に詰め直し、
      `chunked_cold_ranges_lists[idx_dpu]` として再連結
    - `do_hot` の DPU: hot の pair 列を `hot_ranges[idx_dpu]` に回収
 3. **Phase 3: 2 つの並列 pass**
    - **cold pass**: `parallel_run(&incremental_repartition_worker_cold)`
-     (§7.1)。直後に bailout check #1 (§3) — 超過なら `Balanced::No`
+     (§6.1)。直後に §3 の check #1
    - **hot pass**: `parallel_run(&incremental_repartition_worker_hot)`
-     (§7.2)。直後に bailout check #2 (`nr_new_pieces` 込み; §3) — 超過
-     なら `Balanced::No`。hot pass は `parts` / `kept_hot` / `new_hots`
-     に触れないので、この時点の fallback は安全
+     (§6.2)。直後に §3 の check #2。hot pass は `new_hots` に触れない
 4. **hot split 計画の確定**: `hot_split_plans[idx_dpu]` が非空の DPU に
    ついて、piece[0] を `kept_hot[idx_dpu]` に残置予約、pieces[1..] を
    `new_hots[hot_count++]` に積む
 5. `hot_count == 0` なら `Balanced::Yes` で return
 6. `new_hots` を低負荷 DPU に割当。既に hot を持つ DPU (split して
-   piece[0] を残す DPU 含む) は `cold_loads[idx].second = UINT32_MAX`
-   にして候補から除外した上で `partial_sort`。割当後、kept piece[0] を
-   元 DPU に再挿入 — 左端のデータを既に持っているので移動なしで hot 木
+   piece[0] を残す DPU 含む) は候補から除外した上で `partial_sort`。割当後、kept piece[0] を
+   元 DPU に再挿入する。左端のデータを既に持っているので移動なしで hot 木
    を再構築できる
 7. 据え置きの hot・kept piece[0]・新規割当の hot を `hot_entries[]` に
    集めて鍵順に並べ、`rebuild_parts()` で `parts` を作り直す。各 DPU の
    `input_header` を `TASK_MOVE_HOT` 用に設定
 8. DPU への更新 partition 送信と実行
-9. `route_queries()` で再 route し、`Balanced::Yes` を返す
+9. `route_queries()` で再 route し、`relieve_overloaded_hots` (§4) の後 `Balanced::Yes` を返す
 
-### 7.1 cold pass (`incremental_repartition_worker_cold`)
+### 6.1 cold pass (`incremental_repartition_worker_cold`)
 
-対象は `TASK_SERIALIZE` かつ `do_cold` の DPU。それ以外は
+対象は `do_cold` の DPU。それ以外は
 `cold_npairs_list = 0` と現負荷の `cold_loads` 記録だけ行う。
-`get_next_idx_dpu` の冒頭には走査中ガード (§3) がある。各対象 DPU に
+`get_next_idx_dpu` は `overflow` (§3) が立ったら新しい DPU を掴まない。各対象 DPU に
 ついて:
 
 - **load estimation** (mutex 外・並列): §1.3 末尾の「load estimation の
-  近似」参照 — 残存 cold subrange への帰属判定と `orig_idx` dedup
-- `base_npairs` = 現 cold ペア数 + その base 由来の既存 hot のペア数、
-  `hot_npairs = ceil(base_npairs / α)`
-- `cold_endpoint_cnt <= cold_endpoint_cnt_goal` なら `TASK_NONE` に戻す
-  (Phase 1 の粗い判定を endpoint 単位の精査で覆す唯一の方向; §1.3)
-- **absolute 段** (mutex 下): `find_absolutely_hot_ranges(begin_part,
-  end_part, ...)` に DPU の cold range list 全体を渡す (§4)。callback
-  は cold の分割に合わせて `cold_key_ranges` の境界も更新する
-- **relative 段** (mutex 下; `!param.greedy_only` かつまだ goal 超過):
-  full 側 (§6) と同じ流れ
+  近似」参照。残存 cold subrange への帰属判定と `orig_idx` dedup
+- `hot_npairs` は §1.3 の式 (`base_npairs` = 現 cold ペア数 + その base 由来の
+  既存 hot のペア数)
+- `cold_endpoint_cnt <= cold_endpoint_cnt_goal` なら `do_cold` を下ろし、cold は
+  据え置く (Phase 1 の fragment 単位の判定を endpoint 単位で覆す唯一の方向; §1.3)。
+  point query では両単位が一致するので起きない。その DPU が `do_hot` でもあれば
+  hot pass (§6.2) の対象のまま残る (テスト: `bpforest/test/hot_pass_targets.cpp`)
+- **hot 選出** (mutex 下): full 側 (§5) と同じ流れ
 - `cold_npairs_list[idx_dpu]`, `cold_loads[idx_dpu]` 更新
 
-### 7.2 hot pass — hot partition split 機構 (`incremental_repartition_worker_hot`)
+### 6.2 hot pass — hot partition split 機構 (`incremental_repartition_worker_hot`)
 
 `param.enable_hot_split` (デフォルト on) で有効になる、**過熱した既存
-hot partition を複数片に割って捌き直す**機構。対象は `TASK_SERIALIZE`
-かつ `do_hot` の DPU。
+hot partition を複数片に割って捌き直す**機構。対象は `do_hot` の DPU。
 
 - 回収済み hot pair 列 (`hot_ranges[idx_dpu]`) に load estimation。
   単一連続 range なので cold pass のような dedup は不要。range query は
@@ -485,17 +354,14 @@ hot partition を複数片に割って捌き直す**機構。対象は `TASK_SER
   hot 木は据え置き)
 - `split_hot_range_equal_load` (`bpforest/inc/split_hot_range.hpp`) が
   chunk 粒度で load をほぼ等分 (`ceil(measured / nr_target_pieces)`
-  ずつ) に切る。細分不能な単一巨大 chunk があると emit 数は目標より
-  減り、1 個なら split を断念して hot を保持
+  ずつ) に切る。emit 数は、最後の切れ目の後ろに負荷の無い chunk が残ると
+  目標より 1 個多く、細分不能な単一巨大 chunk があると目標より少ない。1 個なら
+  split を断念して hot を保持し、docs/host_hot_cache.md の「採用」を試み、採用に
+  至らなければ `hot_split_failed` を立てる
 - pieces は `hot_split_plans[idx_dpu]` に記録し、`nr_new_pieces` に
-  `emit_count - 1` を加算するだけ — `parts` / `new_hots` への反映は
-  bailout check #2 の通過後に本体が行う (piece[0] は `kept_hot` として
-  元 DPU に残置、pieces[1..] は `new_hots` 経由で再配置)
-- 関連メンバは `hot_stage1_fired` / `kept_hot` / `hot_split_plans`
-  (bpforest.hpp)。`hot_stage1_fired` は Phase 1 の `do_hot` 判定の記録
-  で、現行コードでは書き込みのみ
+  `emit_count - 1` を加算する
 
-### バッチ間の実行順 (batch_get など)
+### バッチ内の実行順 (batch_get など)
 
 ```
 BPForest::batch_get(nr_queries, keys, results)
@@ -505,21 +371,21 @@ BPForest::batch_get(nr_queries, keys, results)
   │    │    ├─ Phase 1: トリガ判定 + serialize 対象選定 (トリガ無しなら Balanced::Yes)
   │    │    ├─ Phase 2: TASK_SERIALIZE で KV を CPU 回収
   │    │    ├─ Phase 3: cold pass → hot pass
-  │    │    │           └─ 不変条件超過なら Balanced::No
+  │    │    │           └─ new_hots に収まらなければ Balanced::No
   │    │    ├─ new_hots を低負荷 DPU に割当 (partial_sort)、kept piece[0] 再挿入
   │    │    ├─ TASK_MOVE_HOT 送信 → DPU 側で木を構築
-  │    │    └─ route_queries() で再 route
+  │    │    ├─ route_queries() で再 route
+  │    │    └─ relieve_overloaded_hots() (採用があればもう一度 route_queries())
   │    └─ Balanced::No なら full_repartition(...)
   ├─ execute_in_dpus()                         // query 実行
   └─ postprocess_of_get()                      // 結果収集
 ```
 
-`batch_pred` / `batch_range_count` / `batch_range_max` も同じ流れ
-(routed データと postprocess が置き換わるだけ)。
+他のバッチ操作 (§1.1) も同じ流れ (routed データと postprocess が置き換わるだけ)。
 
 ---
 
-## 8. コスト感 (body.tex §"Expense of Full Rebalancing")
+## 7. コスト感 (body.tex §"Expense of Full Rebalancing")
 
 - Full rebalancing の大半は KV ペア移動 (~3/4)。partitioning 計算自体は <0.8%
 - Full rebalancing 1 回 ≈ batched range query 100 回ぶん
@@ -528,20 +394,8 @@ BPForest::batch_get(nr_queries, keys, results)
 
 ---
 
-## 9. 再実装時の安全チェックポイント
+## 8. 再実装時の安全チェックポイント
 
-rebalancing を bpforest.ipp の外に再実装するときに踏みやすい
-メモリ安全性の境界。crash 調査時に最初に確認すべきポイント:
-
-1. `find_absolutely_hot_ranges` の callback 内 mutation が関数のループ
-   変数に影響しない snapshot 設計になっているか (`DataChunkIterator`
-   相当の型が `part_begin` を live 参照していないか; §4)
-2. callback 1 回あたりの emit 個数 × 全 base partition の合計が
-   `nr_base_parts` を超えない不変条件が、移植版でも同じ証明で成立するか
-   (§3)
-3. incremental 相当の bailout (`incremental_repartition` の 2 段の
-   `Balanced::No` check; §3) と同じ check が移植版にもあるか
-
-`new_hots` 相当を growable なコンテナにすれば即 heap overwrite こそ
-避けられるが、§3 の不変条件が論理的に崩れた移植は次段で別経路の境界を
-踏みうる。
+rebalancing を bpforest.ipp の外に再実装するときは、§3 の不変条件と
+残り枠の検査、§4 の snapshot 設計 (`DataChunkIterator` が range の node を
+live 参照しないこと) を保つこと。

@@ -1736,230 +1736,174 @@ inline size_t BPForest::retrieve_all_data(ExtendableBuffer<KVPair>& buf)
 }
 
 
-template <typename HotHook /* bool(part, begin_chunk, end_chunk, load) */>
-inline void find_absolutely_hot_ranges(LinkedChunkedPairsRange* const begin_part, LinkedChunkedPairsRange* const end_part,
-    uint32_t hot_npairs, uint32_t hot_nqrys,
-    HotHook&& hot_hook)
+struct ColdBlock {
+    LinkedList<ChunkedPairsRange>::iterator range;
+    DataChunkIterator begin, end;
+    uint32_t load;
+    bool is_hot;
+};
+template <typename HotHook /* bool(const ChunkedPairsRange& range, DataChunkIterator begin, DataChunkIterator end, uint32_t load) */,
+    typename NewColdHook /* LinkedChunkedPairsRange&() */>
+inline void find_relatively_hot_ranges(LinkedList<ChunkedPairsRange>& list, const uint32_t hot_npairs,
+    HotHook&& hot_hook, NewColdHook&& new_cold_hook)
 {
-    for (LinkedChunkedPairsRange* part = begin_part; part != end_part; part++) {
-        DataChunkIterator left = part->begin(), right = left;
-        const DataChunkIterator end_chunk = part->end();
+    assert(hot_npairs != 0);
 
-        uint32_t nr_pairs = 0, load = 0;
-        while (right != end_chunk) {
-            const DataChunkIterator appended = right++;
-            nr_pairs += appended->npairs();
-            load += appended->load();
+    static thread_local std::vector<ColdBlock> blocks;
+    static thread_local std::vector<size_t> hottest_first;
 
-            while (nr_pairs - left->npairs() >= hot_npairs) {
-                nr_pairs -= left->npairs();
-                load -= left->load();
-                ++left;
+    blocks.clear();
+    for (LinkedList<ChunkedPairsRange>::iterator range = list.begin(); range != list.end(); ++range) {
+        const DataChunkIterator end_chunk = range->end();
+        for (DataChunkIterator chunk = range->begin(); chunk != end_chunk;) {
+            ColdBlock block{range, chunk, chunk, 0, false};
+            for (size_t npairs = 0; chunk != end_chunk && npairs < hot_npairs; ++chunk) {
+                npairs += chunk->npairs();
+                block.load += chunk->load();
+            }
+            block.end = chunk;
+            blocks.push_back(block);
+        }
+    }
+
+    hottest_first.resize(blocks.size());
+    std::iota(hottest_first.begin(), hottest_first.end(), size_t{0});
+    std::sort(hottest_first.begin(), hottest_first.end(), [](size_t lhs, size_t rhs) { return blocks[lhs].load > blocks[rhs].load; });
+    for (const size_t idx_block : hottest_first) {
+        ColdBlock& block = blocks[idx_block];
+        block.is_hot = true;
+        if (!hot_hook(*block.range, block.begin, block.end, block.load)) {
+            break;
+        }
+    }
+
+    for (size_t idx_block = 0; idx_block < blocks.size();) {
+        const LinkedList<ChunkedPairsRange>::iterator range = blocks[idx_block].range, next_range = std::next(range);
+        bool node_reused = false;
+        while (idx_block < blocks.size() && blocks[idx_block].range == range) {
+            if (blocks[idx_block].is_hot) {
+                idx_block++;
+                continue;
             }
 
-            if (load >= hot_nqrys) {
-                if (!hot_hook(*part, left, right, load)) {
-                    return;
-                }
-                left = right;
-                nr_pairs = load = 0;
+            const DataChunkIterator run_begin = blocks[idx_block].begin;
+            DataChunkIterator run_end = run_begin;
+            for (; idx_block < blocks.size() && blocks[idx_block].range == range && !blocks[idx_block].is_hot; idx_block++) {
+                run_end = blocks[idx_block].end;
             }
+
+            if (!node_reused) {
+                *range = ChunkedPairsRange{run_begin, run_end};
+                node_reused = true;
+            } else {
+                LinkedChunkedPairsRange& new_cold = new_cold_hook();
+                new_cold = ChunkedPairsRange{run_begin, run_end};
+                list.insert(next_range, new_cold);
+            }
+        }
+        if (!node_reused) {
+            list.erase(range);
         }
     }
 }
-template <typename Func /* bool(ChunkedPairsRange&, PairsRange, load) */>
-inline std::array<std::pair<LinkedList<ChunkedPairsRange>::iterator, DataChunkIterator>, 2>
-find_relatively_hot_ranges(const LinkedList<ChunkedPairsRange>::iterator begin_range, const LinkedList<ChunkedPairsRange>::iterator end_range,
-    const uint32_t hot_npairs, const dpu_id_t nr_hots,
-    Func&& hot_hook)
+
+inline uint32_t BPForest::cold_load_goal(uint64_t total_load) const
 {
-    assert(begin_range != end_range);
-    assert(nr_hots != 0);
-
-    LinkedList<ChunkedPairsRange>::iterator argmax_left_range = begin_range, argmax_right_range = argmax_left_range;
-    DataChunkIterator argmax_left = argmax_left_range->begin(), argmax_right = argmax_left;
-
-    const auto carve_out_hot_ranges = [&] {
-        LinkedList<ChunkedPairsRange>::iterator range = argmax_right_range;
-        DataChunkIterator chunk = argmax_right;
-
-        for (;;) {
-            const DataChunkIterator limit = (range == argmax_left_range ? argmax_left : range->begin());
-            while (limit < chunk) {
-                uint32_t load = 0;
-                PairsRange hot_range{chunk->begin(), chunk->begin()};
-                while (limit < chunk && hot_range.npairs() < hot_npairs) {
-                    --chunk;
-                    hot_range = PairsRange{chunk->begin(), hot_range.end()};
-                    load += chunk->load();
-                }
-                if (!hot_hook(*range, hot_range, load)) {
-                    return std::array<std::pair<LinkedList<ChunkedPairsRange>::iterator, DataChunkIterator>, 2>{
-                        {{range, chunk}, {argmax_right_range, argmax_right}}};
-                }
-            }
-
-            if (range == argmax_left_range) {
-                break;
-            }
-
-            --range;
-            chunk = range->end();
-        }
-
-        return std::array<std::pair<LinkedList<ChunkedPairsRange>::iterator, DataChunkIterator>, 2>{
-            {{argmax_left_range, argmax_left}, {argmax_right_range, argmax_right}}};
-    };
-
-    uint32_t nqrys_in_window = 0;
-
-    LinkedList<ChunkedPairsRange>::iterator left_range = begin_range;
-    DataChunkIterator left = left_range->begin();
-
-    //----- 1. keeping the left end as is, extend the right end -----//
-
-    LinkedList<ChunkedPairsRange>::iterator right_range = left_range;
-    uint32_t right_window_offcut = hot_npairs * nr_hots;  // length of the window on right_range
-
-    // push the right end outward per cold range
-    while (right_range != end_range && right_range->npairs() <= right_window_offcut) {
-        const dpu_id_t nr_hots_in_this_range = (static_cast<dpu_id_t>(right_range->npairs()) + hot_npairs - 1) / hot_npairs;
-        right_window_offcut -= nr_hots_in_this_range * hot_npairs;
-
-        for (DataChunkIterator chunk = right_range->begin(); chunk != right_range->end(); chunk++) {
-            nqrys_in_window += chunk->load();
-        }
-
-        right_range++;
+    const uint64_t alpha = param.balancing;
+    return static_cast<uint32_t>(param.more_hotness * total_load * (alpha + 1) * (alpha + 1) / alpha / 4 / nr_base_parts);
+}
+inline uint32_t BPForest::hot_load_goal(uint64_t total_load) const
+{
+    return static_cast<uint32_t>((param.more_hotness * 2 * total_load + nr_base_parts - 1) / nr_base_parts);
+}
+inline dpu_id_t BPForest::carve_new_hots(const ChunkedPairsRange& hot, const KeyRange& key_range, const uint32_t load, const dpu_id_t origin,
+    const dpu_id_t room, const uint32_t hot_load, const uint32_t load_goal, NewHotRange* const out) const
+{
+    const dpu_id_t nr_target_pieces = param.enable_hot_split && load > load_goal ? static_cast<dpu_id_t>(load / hot_load) : 1;
+    if (nr_target_pieces > room) {
+        return 0;
+    }
+    if (nr_target_pieces < 2) {
+        out[0] = NewHotRange{hot, key_range, load, origin};
+        return 1;
     }
 
-    // all chunks are hot
-    if (right_range == end_range) {
-        argmax_right_range = std::prev(right_range);
-        argmax_right = argmax_right_range->end();
-
-        return carve_out_hot_ranges();
+    dpu_id_t nr_pieces = 0;
+    split_hot_range_equal_load(hot, load, nr_target_pieces, key_range.end,
+        [&](PairsRange pairs_range, KeyRange piece_key_range, uint32_t piece_load, uint32_t) {
+            out[nr_pieces++] = NewHotRange{pairs_range, piece_key_range, piece_load, origin};
+        });
+    assert(nr_pieces <= nr_target_pieces + 1);
+    if (nr_pieces > nr_target_pieces) {
+        NewHotRange& merged = out[nr_target_pieces - 1];
+        const NewHotRange& last = out[nr_target_pieces];
+        merged.pairs_range = {merged.pairs_range.begin(), last.pairs_range.end()};
+        merged.key_range.end = last.key_range.end;
+        merged.load += last.load;
+        nr_pieces = nr_target_pieces;
+    }
+    return nr_pieces;
+}
+template <typename Query, typename Result>
+inline bool BPForest::relieve_overloaded_hot(const dpu_id_t dpu, const PairsRange& pairs_range, const uint32_t hot_cnt_goal, const QueryDataPerRange<Query, Result>& routed_hot)
+{
+    uint32_t load = routed_hot.nr_qrys;
+    if (load <= hot_cnt_goal) {
+        return false;
     }
 
-    // push the right end outward per data chunk
-    DataChunkIterator right;
-    uint32_t right_npairs_offcut;
-    if (right_window_offcut == 0) {
-        --right_range;
-        right = right_range->end();
-        right_npairs_offcut = static_cast<uint32_t>(right_range->npairs());
-        right_window_offcut = (right_npairs_offcut + hot_npairs - 1) / hot_npairs * hot_npairs;
+    bool cached = false;
+    if constexpr (IsPointQuery<Query> && !IsDeleteQuery<Query, Result>) {
+        if (param.enable_hot_cache) {
+            const std::optional<HotCacheCandidate> cacheable = find_hot_cache_candidate(ChunkedPairsRange{pairs_range}, routed_hot);
+            uint32_t nr_served = 0;
+            for (const HotCacheHits& hits : hot_cache_hits) {
+                nr_served += hits.served[dpu];
+            }
+            if (cacheable && cacheable->nr_qrys > nr_served) {
+                drop_hot_cache_pair(dpu, "replaced");
+                hot_cache[dpu] = cacheable->pair;
+                if (partitioning_log) {
+                    *partitioning_log << "cache hot " << dpu << " key " << cacheable->pair.key << " nqrys " << cacheable->nr_qrys << " load " << load << '\n';
+                }
+                load -= std::min(cacheable->nr_qrys, load);
+                cached = true;
+            } else if (cacheable && partitioning_log) {
+                *partitioning_log << "cache keep " << dpu << " key " << hot_cache[dpu].key << " served " << nr_served
+                                  << " over " << cacheable->pair.key << " nqrys " << cacheable->nr_qrys << '\n';
+            }
+        }
+    }
+    if (load > hot_cnt_goal) {
+        hot_split_failed[dpu] = true;
+        if (partitioning_log) {
+            *partitioning_log << "nosplit hot " << dpu << " reason new_hot load " << load << '\n';
+        }
+    }
+    return cached;
+}
+template <typename Query, typename Result>
+inline void BPForest::relieve_overloaded_hots(const dpu_id_t nr_new_hots, const uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed)
+{
+    if (!param.enable_hot_split) {
+        return;
+    }
+    ScopedTimer t{Timer, "relieve"};
 
-    } else {
-        right = right_range->begin();
-        right_npairs_offcut = 0;
-
-        while (right_npairs_offcut + right->npairs() < right_window_offcut) {
-            right_npairs_offcut += right->npairs();
-            nqrys_in_window += right->load();
-            ++right;
+    const uint32_t hot_cnt_goal = hot_load_goal(nr_queries);
+    bool cached = false;
+    for (dpu_id_t idx_hot = 0; idx_hot < nr_new_hots; idx_hot++) {
+        const dpu_id_t idx_dpu = cold_loads[idx_hot].first;
+        cached |= relieve_overloaded_hot(idx_dpu, new_hots[idx_hot].pairs_range, hot_cnt_goal, routed.hot[idx_dpu]);
+    }
+    for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
+        if (kept_hot[idx_dpu].active) {
+            cached |= relieve_overloaded_hot(idx_dpu, kept_hot[idx_dpu].pairs_range, hot_cnt_goal, routed.hot[idx_dpu]);
         }
     }
 
-    uint32_t left_window_offcut, left_npairs_offcut;
-    if (left_range != right_range) {
-        left_npairs_offcut = static_cast<uint32_t>(left_range->npairs());
-        left_window_offcut = (left_npairs_offcut + hot_npairs - 1) / hot_npairs * hot_npairs;
-
-    } else {  // when both ends are in the same cold range, use the variable for the left end
-        left_window_offcut = right_window_offcut;
-        left_npairs_offcut = right_npairs_offcut;
-        right_window_offcut = right_npairs_offcut = 0;
-    }
-
-    // finish keeping the left end
-
-    // record the status
-    uint32_t max_nqrys_in_window = nqrys_in_window;
-    argmax_right_range = right_range;
-    argmax_right = right;
-    const auto compare_nqrys_in_window = [&] {
-        if (nqrys_in_window > max_nqrys_in_window) {
-            max_nqrys_in_window = nqrys_in_window;
-            argmax_left_range = left_range;
-            argmax_right_range = right_range;
-            argmax_left = left;
-            argmax_right = right;
-        }
-    };
-
-    //----- 2. a cycle of extending the right end and then adjusting the left end -----//
-
-    for (;; compare_nqrys_in_window()) {
-        if (right != right_range->end() && left_range == right_range) {  // push the right end outward by one chunk and pull the left end slightly inward
-            left_npairs_offcut += right->npairs();
-            nqrys_in_window += right->load();
-            ++right;
-
-            while (left_npairs_offcut - left->npairs() >= left_window_offcut) {
-                left_npairs_offcut -= left->npairs();
-                nqrys_in_window -= left->load();
-                ++left;
-            }
-
-        } else {
-            if (right == right_range->end()) {  // the right edge is extending to the next cold range
-                if (++right_range == end_range) {
-                    return carve_out_hot_ranges();
-                }
-
-                assert(right_range->npairs() > 0);
-                right_npairs_offcut = right_window_offcut = 0;
-                right = right_range->begin();
-            }
-
-            right_npairs_offcut += static_cast<uint32_t>(right->npairs());
-            nqrys_in_window += right->load();
-            ++right;
-
-            if (right_npairs_offcut > right_window_offcut) {
-                const uint32_t new_right_window_offcut = (right_npairs_offcut + hot_npairs - 1) / hot_npairs * hot_npairs;
-                uint32_t left_window_offcut_to_shrink = new_right_window_offcut - right_window_offcut;
-                right_window_offcut = new_right_window_offcut;
-                // minimize the margin within the window as much as possible
-                while (right != right_range->end() && right_npairs_offcut + right->npairs() < right_window_offcut) {
-                    right_npairs_offcut += right->npairs();
-                    nqrys_in_window += right->load();
-                    ++right;
-                }
-
-                // pull the left end inward per cold range
-                while (left_window_offcut <= left_window_offcut_to_shrink) {
-                    while (left != left_range->end()) {
-                        nqrys_in_window -= left->load();
-                        ++left;
-                    }
-                    left_window_offcut_to_shrink -= left_window_offcut;
-
-                    ++left_range;
-                    left = left_range->begin();
-
-                    if (left_range == right_range) {
-                        left_window_offcut = right_window_offcut;
-                        left_npairs_offcut = right_npairs_offcut;
-                        right_window_offcut = right_npairs_offcut = 0;
-                        break;
-                    } else {
-                        left_npairs_offcut = static_cast<uint32_t>(left_range->npairs());
-                        left_window_offcut = (left_npairs_offcut + hot_npairs - 1) / hot_npairs * hot_npairs;
-                    }
-                }
-                assert(left_window_offcut > left_window_offcut_to_shrink);
-                left_window_offcut -= left_window_offcut_to_shrink;
-
-                // pull the left end inward per data chunk
-                while (left_npairs_offcut - left->npairs() >= left_window_offcut) {
-                    left_npairs_offcut -= left->npairs();
-                    nqrys_in_window -= left->load();
-                    ++left;
-                }
-            }
-        }
+    if (cached) {
+        route_queries(nr_queries, queries, results, routed);
     }
 }
 
@@ -1996,6 +1940,7 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
     }
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
         drop_hot_cache_pair(idx_dpu, "moved");
+        kept_hot[idx_dpu].active = false;
     }
 
     const size_t nr_total_pairs = retrieve_all_data(data_buf);
@@ -2060,6 +2005,7 @@ inline void BPForest::full_repartition(const uint32_t nr_queries, const Query qu
                 ScopedTimer t{Timer, "re"};
                 route_queries(nr_queries, queries, results, routed);
             }
+            relieve_overloaded_hots(tmp_data.hot_count, nr_queries, queries, results, routed);
         }
     }
 
@@ -2078,9 +2024,8 @@ inline void BPForest::full_repartition_worker(unsigned /* tid */)
     const size_t nr_total_pairs = tmp.nr_total_pairs;
 
     const uint32_t hot_load = (param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts,
-                   cold_endpoint_cnt_goal = param.greedy_only
-                                                ? param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) * param.balancing / nr_base_parts
-                                                : param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
+                   cold_endpoint_cnt_goal = cold_load_goal(uint64_t{nr_queries} * (IsPointQuery<Query> ? 1 : 2)),
+                   hot_endpoint_cnt_goal = hot_load_goal(uint64_t{nr_queries} * (IsPointQuery<Query> ? 1 : 2));
 
     const auto get_next_idx_base = [&](const std::lock_guard<std::mutex>& /* lock */) {
         dpu_id_t idx_base;
@@ -2105,8 +2050,7 @@ inline void BPForest::full_repartition_worker(unsigned /* tid */)
         const uint32_t hot_npairs = (cold_npairs + param.balancing - 1) / param.balancing;
 
         LinkedList<ChunkedPairsRange>& list = chunked_cold_ranges_lists[idx_base];
-        const LinkedList<ChunkedPairsRange>::iterator iter_base = list.begin();
-        assert(&base == &*iter_base);
+        assert(&base == &*list.begin());
 
         // Counts, for each original range query, how many of its two endpoints (begin/end)
         // fall inside this base's cold key range. This is a different metric from
@@ -2141,7 +2085,7 @@ inline void BPForest::full_repartition_worker(unsigned /* tid */)
                 cold_endpoint_cnt = routed.cold[idx_base].nr_qrys;
             } else {
                 const key_uint64_t base_min = base.PairsRange::begin()->key,
-                                   base_max = idx_base + 1 == nr_base_parts ? KEY_MAX : base.PairsRange::end()->key;
+                                   base_max = idx_base + 1 == nr_base_parts ? KEY_MAX : base.PairsRange::end()->key - 1;
                 for (const auto& idx_vec : routed.cold[idx_base].orig_idxs) {
                     for (const auto orig_idx : idx_vec) {
                         const KeyRange& range = RangeQueryToRange<Query>{}(queries[orig_idx]);
@@ -2162,92 +2106,24 @@ inline void BPForest::full_repartition_worker(unsigned /* tid */)
         uint32_t nhots_carved = 0;
 
         if (cold_endpoint_cnt > cold_endpoint_cnt_goal) {
-            find_absolutely_hot_ranges(&base, &base + 1, hot_npairs, hot_load,
-                [&](ChunkedPairsRange& part, DataChunkIterator begin, DataChunkIterator end, uint32_t load) {
-                    nhots_carved++;
+            find_relatively_hot_ranges(
+                list, hot_npairs,
+                [&](const ChunkedPairsRange&, DataChunkIterator begin, DataChunkIterator end, uint32_t load) {
+                    const ChunkedPairsRange hot{begin, end};
+                    const KeyRange key_range{hot.PairsRange::begin()->key,
+                        (hot.PairsRange::end() == &data_buf[nr_total_pairs] ? KEY_MAX : hot.PairsRange::end()->key - 1)};
+                    const dpu_id_t nr_pieces = carve_new_hots(hot, key_range, load, idx_base, nr_base_parts - tmp.hot_count, hot_load, hot_endpoint_cnt_goal,
+                        &new_hots[tmp.hot_count]);
+                    assert(nr_pieces != 0);
+                    tmp.hot_count += nr_pieces;
+                    nhots_carved += nr_pieces;
 
-                    if (part.begin() != begin) {
-                        LinkedChunkedPairsRange& new_cold = chunked_cold_ranges[tmp.cold_count++];
-                        new_cold = ChunkedPairsRange{part.begin(), begin};
-                        list.insert(iter_base, new_cold);
-                    }
-                    part = ChunkedPairsRange{end, part.end()};
-
-                    NewHotRange& new_hot = new_hots[tmp.hot_count++];
-                    new_hot.pairs_range = {begin.begin(), end.begin()};
-                    new_hot.key_range = {new_hot.pairs_range.begin()->key,
-                        (new_hot.pairs_range.end() == &data_buf[nr_total_pairs] ? KEY_MAX : new_hot.pairs_range.end()->key - 1)};
-                    new_hot.load = load;
-                    new_hot.origin = idx_base;
-
-                    cold_npairs -= new_hot.pairs_range.npairs();
+                    cold_npairs -= hot.npairs();
                     cold_endpoint_cnt -= load;
 
                     return cold_endpoint_cnt > cold_endpoint_cnt_goal;
-                });
-            if (base.npairs() == 0) {
-                list.erase(iter_base);
-            }
-        }
-
-        if (!param.greedy_only && cold_endpoint_cnt > cold_endpoint_cnt_goal) {
-            const uint32_t nr_relative_hots = cold_endpoint_cnt / hot_load;
-
-            const std::array<std::pair<LinkedList<ChunkedPairsRange>::iterator, DataChunkIterator>, 2>
-                carved_cold_range
-                = find_relatively_hot_ranges(list.begin(), list.end(), hot_npairs, nr_relative_hots,
-                    [&]([[maybe_unused]] const ChunkedPairsRange& part, const PairsRange& range, uint32_t load) {
-                        nhots_carved++;
-
-                        NewHotRange& new_hot = new_hots[tmp.hot_count++];
-                        new_hot.pairs_range = range;
-                        new_hot.key_range = {range.begin()->key,
-                            (range.end() == &data_buf[nr_total_pairs] ? KEY_MAX : range.end()->key - 1)};
-                        new_hot.load = load;
-                        new_hot.origin = idx_base;
-
-                        cold_npairs -= new_hot.pairs_range.npairs();
-                        cold_endpoint_cnt -= new_hot.load;
-
-                        return cold_endpoint_cnt > cold_endpoint_cnt_goal;
-                    });
-
-            const LinkedList<ChunkedPairsRange>::iterator left_range = carved_cold_range[0].first, right_range = carved_cold_range[1].first;
-            const DataChunkIterator left = carved_cold_range[0].second, right = carved_cold_range[1].second;
-
-            if (left_range == right_range) {
-                if (right != left_range->end()) {
-                    if (left != left_range->begin()) {
-                        LinkedChunkedPairsRange& new_cold = chunked_cold_ranges[tmp.cold_count++];
-                        new_cold = ChunkedPairsRange{left_range->begin(), left};
-                        list.insert(left_range, new_cold);
-                    }
-
-                    *left_range = ChunkedPairsRange{right, left_range->end()};
-                } else {
-                    if (left != left_range->begin()) {
-                        *left_range = ChunkedPairsRange{left_range->begin(), left};
-                    } else {
-                        list.erase(left_range);
-                    }
-                }
-
-            } else {
-                for (LinkedList<ChunkedPairsRange>::iterator range = std::next(left_range); range != right_range;) {
-                    range = list.erase(range);
-                }
-
-                if (right != right_range->end()) {
-                    *right_range = ChunkedPairsRange{right, right_range->end()};
-                } else {
-                    list.erase(right_range);
-                }
-                if (left != left_range->begin()) {
-                    *left_range = ChunkedPairsRange{left_range->begin(), left};
-                } else {
-                    list.erase(left_range);
-                }
-            }
+                },
+                [&]() -> LinkedChunkedPairsRange& { return chunked_cold_ranges[tmp.cold_count++]; });
         }
 
         if (partitioning_log && nhots_carved != 0) {
@@ -2324,6 +2200,7 @@ struct TmpDataForIncRepartition {
     dpu_id_t cold_count;
     dpu_id_t hot_count;
     dpu_id_t nr_new_pieces;
+    bool overflow;
 };
 template <typename Query, typename Result>
 inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed) -> Balanced
@@ -2345,6 +2222,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
     tmp_data.cold_count = 0;  // # of meaningful entries in chunked_cold_ranges
     tmp_data.hot_count = 0;
     tmp_data.nr_new_pieces = 0;
+    tmp_data.overflow = false;
 
     {
         ScopedTimer t{Timer, "retrieve"};
@@ -2356,11 +2234,9 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
             // comparable: the slack deliberately broadens this skip to shrink
             // the rebalanced DPU set.
             const unsigned bonferroni_family = static_cast<unsigned>(nr_base_parts) + static_cast<unsigned>(tmp_data.nr_existing_hots);
-            const uint32_t cold_cnt_goal = param.greedy_only
-                                               ? param.more_hotness * nr_queries * param.balancing / nr_base_parts
-                                               : param.more_hotness * nr_queries * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
+            const uint32_t cold_cnt_goal = cold_load_goal(nr_queries);
             const uint32_t cold_cnt_threshold = overload_threshold.threshold_for(nr_queries, cold_cnt_goal, bonferroni_family);
-            const uint32_t hot_cnt_goal = (param.more_hotness * 2u * nr_queries + nr_base_parts - 1) / nr_base_parts;
+            const uint32_t hot_cnt_goal = hot_load_goal(nr_queries);
             const uint32_t hot_cnt_threshold = overload_threshold.threshold_for(nr_queries, hot_cnt_goal, bonferroni_family);
             const bool logging = static_cast<bool>(partitioning_log);
             dpu_id_t serialized_cold_count = 0, incision_count = 0;
@@ -2388,6 +2264,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 if (!do_cold && !do_hot) {
                     input.task_no = TASK_NONE;
                     input.serialize.nr_delims = 0;
+                    input.serialize.do_cold = input.serialize.do_hot = false;
                     continue;
                 }
 
@@ -2531,7 +2408,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
 
         parallel_run(&BPForest::incremental_repartition_worker_cold<Query, Result>);
 
-        if (tmp_data.nr_existing_hots + tmp_data.hot_count > nr_base_parts) {
+        if (tmp_data.overflow) {
             return Balanced::No;
         }
     }
@@ -2579,7 +2456,7 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         // Only DPUs whose cold tree was actually carved: do_hot-only
         // candidates have cold_npairs_list==0 and overwriting would corrupt
         // their persistent cold count for future batches.
-        if (input_headers[idx_dpu].task_no != TASK_NONE && input_headers[idx_dpu].serialize.do_cold) {
+        if (input_headers[idx_dpu].serialize.do_cold) {
             nr_pairs[idx_dpu].get()[0] = cold_npairs_list[idx_dpu];
         }
         // Exclude DPUs that already host a hot, split hosts included: they
@@ -2623,13 +2500,13 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         [](const HotEntry& lhs, const HotEntry& rhs) { return lhs.begin < rhs.begin; });
 
     rebuild_parts(nr_hot_entries, [this](dpu_id_t idx_dpu) {
-        return input_headers[idx_dpu].task_no == TASK_SERIALIZE && input_headers[idx_dpu].serialize.do_cold;
+        return input_headers[idx_dpu].serialize.do_cold;
     });
 
 
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
         InputHeader& input_header = input_headers[idx_dpu];
-        const bool cold_renewed = input_header.task_no == TASK_SERIALIZE && input_header.serialize.do_cold;
+        const bool cold_renewed = input_header.serialize.do_cold;
         input_header.move_hot.nr_cold_pairs = cold_npairs_list[idx_dpu];
         input_header.move_hot.nr_hot_pairs = static_cast<uint32_t>(hot_ranges[idx_dpu].npairs());
         input_header.move_hot.renew_cold = cold_renewed;
@@ -2669,6 +2546,8 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
         // TODO: efficient re-routing
         route_queries(nr_queries, queries, results, routed);
     }
+
+    relieve_overloaded_hots(tmp_data.hot_count, nr_queries, queries, results, routed);
 
     return Balanced::Yes;
 }
@@ -2716,18 +2595,17 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
     const dpu_id_t nr_existing_hots = tmp.nr_existing_hots;
 
     const uint32_t hot_load = (param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
-    const uint32_t cold_endpoint_cnt_goal = param.greedy_only
-                                                ? param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) * param.balancing / nr_base_parts
-                                                : param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) * std::max(3u, param.balancing + 1) / 3 / nr_base_parts;
+    const uint32_t cold_endpoint_cnt_goal = cold_load_goal(uint64_t{nr_queries} * (IsPointQuery<Query> ? 1 : 2));
+    const uint32_t hot_endpoint_cnt_goal = hot_load_goal(uint64_t{nr_queries} * (IsPointQuery<Query> ? 1 : 2));
 
     const auto get_next_idx_dpu = [&](const std::lock_guard<std::mutex>& /* lock */) {
-        if (nr_existing_hots + tmp.hot_count > nr_base_parts) {
+        if (tmp.overflow) {
             return nr_base_parts;
         }
 
         dpu_id_t idx_dpu;
         for (idx_dpu = tmp.idx_dpu; idx_dpu < nr_base_parts; idx_dpu++) {
-            if (input_headers[idx_dpu].task_no == TASK_SERIALIZE && input_headers[idx_dpu].serialize.do_cold) {
+            if (input_headers[idx_dpu].serialize.do_cold) {
                 break;
             }
 
@@ -2867,7 +2745,7 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
         const uint32_t hot_npairs = (base_npairs + param.balancing - 1) / param.balancing;
 
         if (cold_endpoint_cnt <= cold_endpoint_cnt_goal) {
-            input_headers[idx_dpu].task_no = TASK_NONE;
+            input_headers[idx_dpu].serialize.do_cold = false;
             cold_npairs_list[idx_dpu] = 0;
             list.clear();
             cold_loads[idx_dpu] = {idx_dpu, cold_endpoint_cnt};
@@ -2880,112 +2758,30 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
         std::lock_guard lock{tmp.mutex};
         uint32_t nhots_carved = 0;
 
-        {
-            LinkedList<ChunkedPairsRange>::iterator iter_cold = list.begin();
-            find_absolutely_hot_ranges(begin_part, end_part, hot_npairs, hot_load,
-                [&](LinkedChunkedPairsRange& part, DataChunkIterator begin, DataChunkIterator end, uint32_t load) {
-                    nhots_carved++;
+        find_relatively_hot_ranges(
+            list, hot_npairs,
+            [&](const ChunkedPairsRange& part, DataChunkIterator begin, DataChunkIterator end, uint32_t load) {
+                const dpu_id_t idx_in_ary = static_cast<dpu_id_t>(&static_cast<const LinkedChunkedPairsRange&>(part) - &chunked_cold_ranges[0]);
 
-                    const dpu_id_t idx_in_ary = static_cast<dpu_id_t>(&part - &chunked_cold_ranges[0]);
-                    while (&*iter_cold != &part) {
-                        ++iter_cold;
-                    }
-
-                    if (part.begin() != begin) {
-                        cold_key_ranges[tmp.cold_count] = {part.PairsRange::begin()->key, begin->begin()->key - 1};
-                        LinkedChunkedPairsRange& new_cold = chunked_cold_ranges[tmp.cold_count];
-                        new_cold = ChunkedPairsRange{part.begin(), begin};
-                        tmp.cold_count++;
-                        list.insert(iter_cold, new_cold);
-                    }
-                    if (end != part.end()) {
-                        cold_key_ranges[idx_in_ary].begin = end->begin()->key;
-                    }
-                    part = ChunkedPairsRange{end, part.end()};
-
-                    NewHotRange& new_hot = new_hots[tmp.hot_count++];
-                    new_hot.pairs_range = {begin.begin(), end.begin()};
-                    new_hot.key_range = {new_hot.pairs_range.begin()->key,
-                        (new_hot.pairs_range.end() == part.PairsRange::end() ? cold_key_ranges[idx_in_ary].end
-                                                                             : new_hot.pairs_range.end()->key - 1)};
-                    new_hot.load = load;
-                    new_hot.origin = idx_dpu;
-
-                    cold_npairs -= new_hot.pairs_range.npairs();
-                    cold_endpoint_cnt -= load;
-
-                    return cold_endpoint_cnt > cold_endpoint_cnt_goal;
-                });
-            for (iter_cold = list.begin(); iter_cold != list.end();) {
-                const auto orig_iter = iter_cold++;
-                if (orig_iter->npairs() == 0) {
-                    list.erase(orig_iter);
+                const ChunkedPairsRange hot{begin, end};
+                const KeyRange key_range{hot.PairsRange::begin()->key,
+                    (hot.PairsRange::end() == part.PairsRange::end() ? cold_key_ranges[idx_in_ary].end
+                                                                     : hot.PairsRange::end()->key - 1)};
+                const dpu_id_t nr_pieces = carve_new_hots(hot, key_range, load, idx_dpu, nr_base_parts - nr_existing_hots - tmp.hot_count, hot_load, hot_endpoint_cnt_goal,
+                    &new_hots[tmp.hot_count]);
+                if (nr_pieces == 0) {
+                    tmp.overflow = true;
+                    return false;
                 }
-            }
-        }
+                tmp.hot_count += nr_pieces;
+                nhots_carved += nr_pieces;
 
-        if (!param.greedy_only && cold_endpoint_cnt > cold_endpoint_cnt_goal) {
-            const uint32_t nr_relative_hots = cold_endpoint_cnt / hot_load;
+                cold_npairs -= hot.npairs();
+                cold_endpoint_cnt -= load;
 
-            const std::array<std::pair<LinkedList<ChunkedPairsRange>::iterator, DataChunkIterator>, 2>
-                carved_cold_range
-                = find_relatively_hot_ranges(list.begin(), list.end(), hot_npairs, nr_relative_hots,
-                    [&](const ChunkedPairsRange& part, const PairsRange& range, uint32_t load) {
-                        const dpu_id_t idx_in_ary = static_cast<dpu_id_t>(&static_cast<const LinkedChunkedPairsRange&>(part) - &chunked_cold_ranges[0]);
-
-                        nhots_carved++;
-
-                        NewHotRange& new_hot = new_hots[tmp.hot_count++];
-                        new_hot.pairs_range = range;
-                        new_hot.key_range = {range.begin()->key,
-                            (range.end() == part.PairsRange::end() ? cold_key_ranges[idx_in_ary].end
-                                                                   : range.end()->key - 1)};
-                        new_hot.load = load;
-                        new_hot.origin = idx_dpu;
-
-                        cold_npairs -= new_hot.pairs_range.npairs();
-                        cold_endpoint_cnt -= new_hot.load;
-
-                        return cold_endpoint_cnt > cold_endpoint_cnt_goal;
-                    });
-
-            const LinkedList<ChunkedPairsRange>::iterator left_range = carved_cold_range[0].first, right_range = carved_cold_range[1].first;
-            const DataChunkIterator left = carved_cold_range[0].second, right = carved_cold_range[1].second;
-
-            if (left_range == right_range) {
-                if (right != left_range->end()) {
-                    if (left != left_range->begin()) {
-                        LinkedChunkedPairsRange& new_cold = chunked_cold_ranges[tmp.cold_count++];
-                        new_cold = ChunkedPairsRange{left_range->begin(), left};
-                        list.insert(left_range, new_cold);
-                    }
-
-                    *left_range = ChunkedPairsRange{right, left_range->end()};
-                } else {
-                    if (left != left_range->begin()) {
-                        *left_range = ChunkedPairsRange{left_range->begin(), left};
-                    } else {
-                        list.erase(left_range);
-                    }
-                }
-
-            } else {
-                for (LinkedList<ChunkedPairsRange>::iterator range = std::next(left_range); range != right_range;) {
-                    range = list.erase(range);
-                }
-
-                if (right != right_range->end()) {
-                    *right_range = ChunkedPairsRange{right, right_range->end()};
-                } else {
-                    list.erase(right_range);
-                }
-                if (left != left_range->begin()) {
-                    *left_range = ChunkedPairsRange{left_range->begin(), left};
-                } else {
-                    list.erase(left_range);
-                }
-            }
-        }
+                return cold_endpoint_cnt > cold_endpoint_cnt_goal;
+            },
+            [&]() -> LinkedChunkedPairsRange& { return chunked_cold_ranges[tmp.cold_count++]; });
 
         if (partitioning_log && nhots_carved != 0) {
             *partitioning_log << "carved cold " << idx_dpu << " nhots " << nhots_carved << '\n';
@@ -3007,18 +2803,13 @@ inline void BPForest::incremental_repartition_worker_hot([[maybe_unused]] unsign
     const uint32_t nr_queries = tmp.nr_queries;
     const Query* const queries = tmp.queries;
     const QueryData<Query, Result>& routed = *tmp.routed;
-    const dpu_id_t nr_existing_hots = tmp.nr_existing_hots;
 
     const uint32_t hot_load = (param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts;
 
     const auto get_next_idx_dpu = [&](const std::lock_guard<std::mutex>& /* lock */) {
-        if (nr_existing_hots + tmp.hot_count > nr_base_parts) {
-            return nr_base_parts;
-        }
-
         dpu_id_t idx_dpu;
         for (idx_dpu = tmp.idx_dpu; idx_dpu < nr_base_parts; idx_dpu++) {
-            if (input_headers[idx_dpu].task_no == TASK_SERIALIZE && input_headers[idx_dpu].serialize.do_hot) {
+            if (input_headers[idx_dpu].serialize.do_hot) {
                 break;
             }
         }
@@ -3268,7 +3059,6 @@ inline void BPForest::print_params(std::ostream& ostr) const
 #endif
             "param.balancing: " << param.balancing << "\n"
             "param.more_hotness: " << param.more_hotness << "\n"
-            "param.greedy_only: " << param.greedy_only << "\n"
             "param.enable_dynamic_repartition: " << param.enable_dynamic_repartition << "\n"
             "param.enable_incremental: " << param.enable_incremental << "\n"
             "param.enable_hot_split: " << param.enable_hot_split << "\n"
