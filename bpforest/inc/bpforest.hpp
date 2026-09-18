@@ -289,6 +289,13 @@ private:
     QueryData<RangeCountQuery, uint64_t> rcqs{nr_base_parts, get_parallelism()};
     QueryData<KeyRange, value_int64_t> rmaxqs{nr_base_parts, get_parallelism()};
 
+    struct QuerySource {
+        bool cold, hot;
+    };
+    const ExtendableBuffer<QuerySource> moved_query_sources{nr_base_parts};
+    const ExtendableBuffer<bool> newly_cached{nr_base_parts};
+    const ExtendableBuffer<bool> hot_load_check{nr_base_parts};
+
     const ExtendableBuffer<InputHeader> input_headers{nr_base_parts};
 
     // for insert queries
@@ -298,7 +305,7 @@ private:
         ExtendableBuffer<uint32_t> served;     //!< per slot, how many queries the cache served
         ExtendableBuffer<uint32_t> forwarded;  //!< per slot, the query the DPU is to see
         std::vector<dpu_id_t> touched;
-        std::vector<std::pair<dpu_id_t, uint32_t>> dedup;  //!< pred queries copying the forwarded one's result
+        std::vector<std::pair<uint32_t, uint32_t>> dedup;  //!< pred queries copying the forwarded one's result
 
         explicit HotCacheHits(dpu_id_t nr_slots);
         bool hit(dpu_id_t slot);
@@ -407,6 +414,19 @@ private:
     using TmpDataForRouteQueries = const std::tuple<uint32_t, const Query*, QueryData<Query, Result>*, Result*>;
 
     template <typename Query, typename Result>
+    ptrdiff_t part_index_of_point_query(key_uint64_t key) const;
+    template <typename Query, typename Result>
+    void reroute_after_repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed);
+    template <typename Query, typename Result>
+    void absorb_new_caches(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed);
+    template <typename Query, typename Result>
+    void resweep_routed_queries_impl(unsigned tid);
+    template <typename Query, typename Result>
+    void absorb_cached_queries_impl(unsigned tid);
+    template <typename Query, typename Result>
+    void mark_hot_split_failures(uint32_t nr_queries, const QueryData<Query, Result>& routed);
+    void clear_repartition_marks();
+    template <typename Query, typename Result>
     void route_single_point_query(
         uint32_t idx_qry, const Query& qry, Result* result,
         QueryData<Query, Result>& routed,
@@ -482,10 +502,11 @@ private:
         KVPair pair;
         uint32_t nr_qrys;
     };
-    //! @brief The pair at least half of a hot partition's queries go to, by
-    //! the sampling of docs/hot_key_finding.md.
+    //! @brief The pair the most queries of a hot partition go to, by the
+    //! sampling of docs/hot_key_finding.md, which takes the pair this DPU has
+    //! cached as one of the candidates.
     template <typename Query, typename Result>
-    std::optional<HotCacheCandidate> find_hot_cache_candidate(const ChunkedPairsRange& hot, const QueryDataPerRange<Query, Result>& routed) const;
+    std::optional<HotCacheCandidate> find_hot_cache_candidate(const ChunkedPairsRange& hot, const QueryDataPerRange<Query, Result>& routed, dpu_id_t dpu) const;
     uint32_t cold_load_goal(uint64_t total_load) const;
     uint32_t hot_load_goal(uint64_t total_load) const;
     dpu_id_t carve_new_hots(const ChunkedPairsRange& hot, const KeyRange& key_range, uint32_t load, dpu_id_t origin,
