@@ -104,6 +104,8 @@ typedef struct {
     __dma_aligned Node node_cache;
     __dma_aligned key_uint64_t qrys[TASK_GET_NR_CACHED_QRYS];
 } GetWorkspace;
+_Static_assert(sizeof(key_uint64_t) * TASK_GET_NR_CACHED_QRYS <= 2048, "sizeof(key_uint64_t) * TASK_GET_NR_CACHED_QRYS <= 2048");
+_Static_assert(sizeof(value_int64_t) * TASK_GET_NR_CACHED_QRYS <= 2048, "sizeof(value_int64_t) * TASK_GET_NR_CACHED_QRYS <= 2048");
 
 
 typedef struct {
@@ -398,6 +400,8 @@ typedef struct {
     uint32_t idx_result_in_cache;
     uintptr_t cursor_on_results;
 } PredWorkspace;
+_Static_assert(sizeof(key_uint64_t) * TASK_PRED_NR_CACHED_QRYS <= 2048, "sizeof(key_uint64_t) * TASK_PRED_NR_CACHED_QRYS <= 2048");
+_Static_assert(sizeof(KVPair) * TASK_PRED_NR_CACHED_RESULTS <= 2048, "sizeof(KVPair) * TASK_PRED_NR_CACHED_RESULTS <= 2048");
 
 
 #define MAX_NR_SUMMARY_DATA (MAX_NR_NODES * (MAX_NR_CHILDREN - 1) / ((MAX_NR_CHILDREN - 1) * MIN_NR_CHILDREN + MAX_NR_CHILDREN))
