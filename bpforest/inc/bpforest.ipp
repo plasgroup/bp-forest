@@ -2842,27 +2842,25 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
                         const key_uint64_t key = PointQueryToKey<Query>{}(qry);
                         const LinkedChunkedPairsRange* one_after_target_part = [&] {
                             if constexpr (IsPredecessorQuery<Query, Result>) {
-                                return std::lower_bound(begin_part, end_part, key,
+                                return std::lower_bound(begin_part + 1, end_part, key,
                                     [](const PairsRange& range, key_uint64_t key) { return range.begin()->key < key; });
                             } else {
-                                return std::upper_bound(begin_part, end_part, key,
+                                return std::upper_bound(begin_part + 1, end_part, key,
                                     [](key_uint64_t key, const PairsRange& range) { return key < range.begin()->key; });
                             }
                         }();
-                        // 添字 -1 は負荷配列の手前を黙って壊すので、ここで落とす。
-                        assert(one_after_target_part != begin_part);
                         const ChunkedPairsRange& part = one_after_target_part[-1];
 
                         DataChunkIterator one_after_target_chunk = [&] {
+                            const DataChunkIterator left = ++part.begin(), right = part.end();
                             if constexpr (IsPredecessorQuery<Query, Result>) {
-                                return std::lower_bound(part.begin(), part.end(), key,
+                                return std::lower_bound(left, right, key,
                                     [](DataChunkIterator& chunk, key_uint64_t key) { return chunk.begin()->key < key; });
                             } else {
-                                return std::upper_bound(part.begin(), part.end(), key,
+                                return std::upper_bound(left, right, key,
                                     [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
                             }
                         }();
-                        assert(one_after_target_chunk != part.begin());
                         (--one_after_target_chunk)->load()++;
                     }
                 }
