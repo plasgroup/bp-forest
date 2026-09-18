@@ -134,7 +134,7 @@ inline void FakeDPU::execute()
             uint32_t* const incisions = new (payload) uint32_t[nr_delims];
             uint32_t idx_delim = 0;
             for (const auto& [key, value] : cold_tree) {
-                while (idx_delim < nr_delims && delims[idx_delim] < key) {
+                while (idx_delim < nr_delims && delims[idx_delim] <= key) {
                     incisions[idx_delim++] = idx_out;
                 }
                 out_pairs[idx_out++] = KVPair{key, value};
