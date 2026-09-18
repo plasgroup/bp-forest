@@ -2245,12 +2245,11 @@ inline auto BPForest::incremental_repartition(uint32_t nr_queries, const Query q
                 InputHeader& input = input_headers[idx_dpu];
                 const dpu_id_t orig_incision_count = (base_to_nr_incisions_psum[idx_dpu] = incision_count);
 
-                const bool hot_splittable = nr_pairs[idx_dpu].get()[1] > KVPairsChunkSize;
                 const bool trigger_cold = routed.cold[idx_dpu].nr_qrys > cold_cnt_threshold,
-                           trigger_hot = param.enable_hot_split && hot_splittable && !hot_split_failed[idx_dpu] && routed.hot[idx_dpu].nr_qrys > hot_cnt_threshold;
+                           trigger_hot = param.enable_hot_split && !hot_split_failed[idx_dpu] && routed.hot[idx_dpu].nr_qrys > hot_cnt_threshold;
                 trigger = trigger || trigger_cold || trigger_hot;
                 const bool do_cold = routed.cold[idx_dpu].nr_qrys > cold_cnt_goal;
-                const bool do_hot = param.enable_hot_split && hot_splittable && routed.hot[idx_dpu].nr_qrys > hot_cnt_goal;
+                const bool do_hot = param.enable_hot_split && nr_pairs[idx_dpu].get()[1] != 0 && routed.hot[idx_dpu].nr_qrys > hot_cnt_goal;
 
                 kept_hot[idx_dpu].active = false;
 
@@ -2577,7 +2576,7 @@ inline void BPForest::log_serialize_targets(const QueryData<Query, Result>& rout
         if (routed.cold[idx_dpu].nr_qrys > cold_cnt_goal) {
             log << "serialize cold " << idx_dpu << " nqrys " << routed.cold[idx_dpu].nr_qrys << " size " << nr_pairs[idx_dpu].get()[0] << '\n';
         }
-        if (param.enable_hot_split && nr_hot_pairs > KVPairsChunkSize && routed.hot[idx_dpu].nr_qrys > hot_cnt_goal) {
+        if (param.enable_hot_split && nr_hot_pairs != 0 && routed.hot[idx_dpu].nr_qrys > hot_cnt_goal) {
             log << "serialize hot " << idx_dpu << " origin " << parts.origins[hot_part[idx_dpu]] << " nqrys " << routed.hot[idx_dpu].nr_qrys << " size " << nr_hot_pairs << " split_failed " << hot_split_failed[idx_dpu] << '\n';
         }
     }
