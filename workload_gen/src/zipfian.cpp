@@ -107,6 +107,9 @@ public:
             }
         }
     }
+
+    template <class URBG>
+    constexpr result_type operator()(URBG& g, size_t /* idx_query */) { return (*this)(g); }
 };
 
 
@@ -147,6 +150,54 @@ public:
                 }
             }
         }
+    }
+
+    template <class URBG>
+    constexpr result_type operator()(URBG& g, size_t /* idx_query */) { return (*this)(g); }
+};
+
+
+template <class UIntType>
+struct DriftingDoubleZipfDistribution {
+    using result_type = UIntType;
+
+private:
+    const int64_t peak0, step, lo, hi;
+    const size_t interval;
+    std::vector<DoubleZipfDistribution<UIntType>> dists;
+
+    constexpr int64_t fold(int64_t pos) const
+    {
+        const int64_t width = hi - lo;
+        if (width == 0) {
+            return lo;
+        }
+        int64_t offset = (pos - lo) % (2 * width);
+        if (offset < 0) {
+            offset += 2 * width;
+        }
+        return lo + (offset <= width ? offset : 2 * width - offset);
+    }
+
+public:
+    DriftingDoubleZipfDistribution(size_t nr_elems, size_t peak_pos, double skew,
+        int64_t step, size_t interval, int64_t lo, int64_t hi)
+        : peak0{static_cast<int64_t>(peak_pos)}, step{step}, lo{lo}, hi{hi}, interval{interval}
+    {
+        assert(0 <= lo && lo <= hi && hi < static_cast<int64_t>(nr_elems));
+        assert(lo <= peak0 && peak0 <= hi);
+        assert(interval > 0);
+        dists.reserve(static_cast<size_t>(hi - lo + 1));
+        for (int64_t pos = lo; pos <= hi; pos++) {
+            dists.emplace_back(nr_elems, static_cast<size_t>(pos), skew);
+        }
+    }
+
+    template <class URBG>
+    result_type operator()(URBG& g, size_t idx_query)
+    {
+        const int64_t pos = fold(peak0 + step * static_cast<int64_t>(idx_query / interval));
+        return dists[static_cast<size_t>(pos - lo)](g);
     }
 };
 
@@ -280,6 +331,9 @@ struct CMDOpt {
 
     double zipf_skewness;
     std::optional<uint64_t> zipf_peak;
+    int64_t peak_drift_step;
+    size_t peak_drift_interval;
+    std::array<int64_t, 2> peak_drift_range{};
     std::optional<std::array<int64_t, 2>> amp_range;
     double amp_ratio{};
     bool scramble;
@@ -297,6 +351,9 @@ struct CMDOpt {
         parser.add<std::string>("zipf_skewness", 'z', "zipfian skewness parameter (often called theta)", false, "0.99");
         parser.add<uint64_t>("zipf_nr_cands", 'c', "size of candidates of the zipfian dist.", false, 2500);
         parser.add<std::optional<uint64_t>>("zipf_peak", 'p', "shift peak of zipf distribution", false);
+        parser.add<int64_t>("peak_drift_step", 0, "num of slices the peak of zipf distribution moves at each drift step (0 keeps it at zipf_peak; may be negative)", false, 0);
+        parser.add<size_t>("peak_drift_interval", 0, "num of queries between two drift steps", false, 0);
+        parser.add<std::optional<std::array<int64_t, 2>>>("peak_drift_range", 0, "the (inclusive) slice range \"xx,xx\" the drifting peak turns back at (default: the whole slice range)", false);
         parser.add<std::optional<std::array<int64_t, 2>>>("amp_range", 0, "amplify the (inclusive) key range specified as \"xx,xx\"", false);
         parser.add<std::string>("amp_ratio", 0, "amplification ratio (must be positive)", false, "1.0");
         parser.add("scramble", 's', "whether scramble or not");
@@ -314,6 +371,9 @@ struct CMDOpt {
         const std::string zipf_skewness_str = parser.get<std::string>("zipf_skewness");
         zipf_nr_cands = parser.get<uint64_t>("zipf_nr_cands");
         zipf_peak = parser.get<std::optional<uint64_t>>("zipf_peak");
+        peak_drift_step = parser.get<int64_t>("peak_drift_step");
+        peak_drift_interval = parser.get<size_t>("peak_drift_interval");
+        const auto peak_drift_range_opt = parser.get<std::optional<std::array<int64_t, 2>>>("peak_drift_range");
         amp_range = parser.get<std::optional<std::array<int64_t, 2>>>("amp_range");
         const std::string amp_ratio_str = parser.get<std::string>("amp_ratio");
         scramble = parser.exist("scramble");
@@ -325,6 +385,34 @@ struct CMDOpt {
         if (zipf_peak && scramble) {
             std::cerr << "non-zero zipf_peak and scramble options are mutually exclusive" << std::endl;
             throw cmdline::cmdline_error{""};
+        }
+
+        if (peak_drift_step == 0) {
+            if (peak_drift_interval != 0 || peak_drift_range_opt) {
+                std::cerr << "peak_drift_interval and peak_drift_range need a non-zero peak_drift_step" << std::endl;
+                throw cmdline::cmdline_error{""};
+            }
+        } else {
+            if (!zipf_peak) {
+                std::cerr << "peak_drift_step needs zipf_peak, the slice the drift starts at" << std::endl;
+                throw cmdline::cmdline_error{""};
+            }
+            if (peak_drift_interval == 0) {
+                std::cerr << "peak_drift_step needs a non-zero peak_drift_interval" << std::endl;
+                throw cmdline::cmdline_error{""};
+            }
+            peak_drift_range = peak_drift_range_opt.value_or(
+                std::array<int64_t, 2>{0, static_cast<int64_t>(zipf_nr_cands) - 1});
+            if (peak_drift_range[0] < 0 || peak_drift_range[0] > peak_drift_range[1]
+                || peak_drift_range[1] >= static_cast<int64_t>(zipf_nr_cands)) {
+                std::cerr << "peak_drift_range is invalid" << std::endl;
+                throw cmdline::cmdline_error{""};
+            }
+            if (static_cast<int64_t>(*zipf_peak) < peak_drift_range[0]
+                || static_cast<int64_t>(*zipf_peak) > peak_drift_range[1]) {
+                std::cerr << "zipf_peak is outside peak_drift_range" << std::endl;
+                throw cmdline::cmdline_error{""};
+            }
         }
 
         if (amp_range) {
@@ -353,6 +441,10 @@ struct CMDOpt {
                      << "_skew" << zipf_skewness_str;
         if (zipf_peak) {
             ostr_queries << "_peak" << *zipf_peak;
+        }
+        if (peak_drift_step != 0) {
+            ostr_queries << "_drift" << peak_drift_step << "x" << peak_drift_interval
+                         << "_in" << peak_drift_range[0] << "_" << peak_drift_range[1];
         }
         if (amp_range) {
             ostr_queries << "_amp" << amp_ratio_str << "_in" << (*amp_range)[0] << "_" << (*amp_range)[1];
@@ -387,7 +479,13 @@ struct CMDOpt {
 template <typename Func>
 void create_slice_dict(const CMDOpt& opt, Func&& func)
 {
-    if (opt.zipf_peak) {
+    if (opt.zipf_peak && opt.peak_drift_step != 0) {
+        DriftingDoubleZipfDistribution<size_t> drifting_dist{
+            opt.zipf_nr_cands, *opt.zipf_peak, opt.zipf_skewness,
+            opt.peak_drift_step, opt.peak_drift_interval,
+            opt.peak_drift_range[0], opt.peak_drift_range[1]};
+        std::forward<Func>(func)(drifting_dist);
+    } else if (opt.zipf_peak) {
         DoubleZipfDistribution<size_t> double_zipf_dist{opt.zipf_nr_cands, *opt.zipf_peak, opt.zipf_skewness};
         std::forward<Func>(func)(double_zipf_dist);
     } else {
@@ -573,7 +671,7 @@ void WorkloadGen<SliceDist, Filter>::generate_queries_impl(const unsigned tid)
             uint64_t idx_slice;
             int64_t key;
             do {
-                idx_slice = scramble_mapping[slice_dist(rand_gens[tid])];
+                idx_slice = scramble_mapping[slice_dist(rand_gens[tid], idx_query)];
                 const auto tmp = query_item_dists[idx_slice](rand_gens[tid]);
                 if (tmp >= npairs)
                     std::cout << "tmp = " << key << ", npairs = " << npairs << std::endl;
@@ -615,7 +713,7 @@ void WorkloadGen<SliceDist, Filter>::generate_queries_impl(const unsigned tid)
             uint64_t idx_slice;
             int64_t key;
             do {
-                idx_slice = scramble_mapping[slice_dist(rand_gens[tid])];
+                idx_slice = scramble_mapping[slice_dist(rand_gens[tid], idx_query)];
                 key = query_key_dists[idx_slice](rand_gens[tid]);
             } while (!filter(key, rand_gens[tid]));
 
