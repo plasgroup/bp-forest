@@ -14,7 +14,7 @@ DPU プログラム (`dpu/src/dpumain.c`) は 1 回の起動で 1 種類のタ�
         始まる領域に置く。
     *   返り値の配置はタスクごとに異なる (下記各項を参照)。
 *   `Key` = `key_uint64_t`, `Value` = `value_uint64_t` (`common/inc/workload_types.h`)。
-    `KVPair` / `KeyRange` / `RangeCountQuery` / `SummaryBlock` は `common/inc/common.h`。
+    `KVPair` / `KeyRange` / `RangeCountQuery` は `common/inc/common.h`。
 *   ほとんどのタスクは cold 木と hot 木の両方を対象とする。クエリ・ペアの配列は
     **`[cold | hot]` の連続**で渡し、ヘッダで各々の個数を伝える。
 *   タスク ID の一覧は `enum TaskID` (`common/inc/common.h`)。
@@ -27,8 +27,6 @@ DPU プログラム (`dpu/src/dpumain.c`) は 1 回の起動で 1 種類のタ�
 | `qrys` | `uint32_t nr_cold_qrys, nr_hot_qrys, result_offset` | TASK_GET / PRED / RANGE_COUNT / RANGE_MAX / INSERT / DELETE |
 | `move_hot` | `uint32_t nr_cold_pairs, nr_hot_pairs; bool renew_cold, renew_hot` | TASK_MOVE_HOT |
 | `serialize` | `uint32_t nr_delims, max_nr_delims; bool do_cold, do_hot` | TASK_SERIALIZE |
-| `rmq` | `uint16_t nr_cold_lumps, nr_hot_lumps` | TASK_RANGE_MIN (未修理、後述) |
-| `extract`, `restore` | `uint32_t nr_ranges` | 未実装タスク用の残骸 |
 
 `qrys.result_offset` は、返り値を書き込む位置をヒープ先頭からのバイトオフセットで表す。
 ホストは全 DPU 中の最大クエリ数 `max_nqrys` を使って
@@ -188,83 +186,14 @@ TASK_SERIALIZE で吸い出したペアを移送先 DPU に流し込む。`renew
 
 何もしない。ランク単位で DPU を起動する都合上、そのバッチで仕事の無い DPU に割り当てる。
 
-### TASK_RANGE_MIN (`SUPPORT_RANGE_MIN`) — 現状は未修理
-
-```
-(uint16_t nr_cold_lumps, uint16_t nr_hot_lumps, uint16_t[], Key[]) -> Value[]
-```
-
-連続・重複するクエリ範囲をまとめた「かたまり (lump)」単位で処理する設計:
-
-*   cold/hot それぞれのかたまりの数を受け取る。
-*   cold/hot それぞれについて、次の配列における各かたまりの始点インデックスを受け取る
-    (末尾に配列全体の要素数が付く)。
-*   かたまりごとに、その中のクエリを処理するのに必要な小範囲を
-    (始点[0], 終点[0] = 始点[1]-1, 終点[1] = 始点[2]-1, ..., 終点[n]) の形で受け取る
-    (終点は inclusive)。
-
-**このタスクは現状どのビルドでも有効化できない。** 復活させるには最低限:
-
-*   `dpu/src/bplustree.c` の `task_range_min` がペイロード開始位置をヒープ先頭 + 8 と仮定している
-    (現行 `InputHeader` は 16 バイト)。
-*   同関数が廃止済みマクロ `RESULT_OFFSET` を参照している (現行は `qrys.result_offset` を使う)。
-*   ホスト側 `BPForest::batch_range_minimum` も `host/src/host.cpp` ではスタブ (未実装メッセージ)。
-
 ## 未実装のタスク
 
-`enum TaskID` には ID があるが、DPU 側に実装が無いもの。将来実装する可能性を残して仕様案を
-保存してある。ここに書かれた引数・返り値は**設計案であって現行実装ではない**。
-
-### TASK_SCAN
-
-```
-(uint16_t, uint16_t, KeyRange[]) -> (uint32_t, uint32_t, uint32_t[], (uint32_t, uint32_t)[], (uint32_t, uint32_t)[], Value[])
-```
-
-*   cold/hot それぞれへのクエリ数を受け取る。
-*   cold/hot それぞれから返す値の数を最初に教える。
-*   cold range の切れ目 (hot range を取り出したところ) が値配列の何番目にあるかを教える。
-*   cold range へのクエリそれぞれの始端・終端の位置を、直前の「切れ目」からのオフセットで教える。
-*   hot range へのクエリそれぞれの始端・終端の位置を教える。
-
-ホスト側にも `BPForest::batch_scan` の宣言だけが残っている (定義なし)。
-
-### TASK_RANGE_SUM
-
-キー範囲内の値の総和。CPU ベースライン (`cpudb/`) だけが実装しており、DPU 側は未実装。
-
-### TASK_SUMMARIZE
-
-```
-() -> (uint32_t, uint16_t, uint16_t[], SummaryBlock[])
-```
-
-*   サマリーの中身は、ある程度の塊に分けてシャッフルしたような並びになっている。
-*   全要素数を返す。
-*   「塊」の数を返す。
-*   それぞれの塊が、正しい順番に並べた時に何個目で終わるかを返す。
-    *   例: `(xx, 2, (6, 2, 4), (block0, ..., block5))` は、
-        `(block2, block3, block4, block5, block0, block1)` とすれば正しい順番になることを示す。
-
-### TASK_EXTRACT
-
-```
-(uint32_t nr_ranges, KeyRange[nr_ranges]) -> (uint32_t[], KVPair[])
-```
-
-キー範囲は閉区間。
-
-### TASK_FLATTEN_HOT
-
-```
-() -> (uint32_t, KVPair[])
-```
-
-### TASK_RESTORE
-
-```
-(uint32_t nr_ranges, uint32_t[], KVPair[]) -> ()
-```
+`enum TaskID` の TASK_RANGE_MIN (キー範囲内の最小値) と TASK_RANGE_SUM (総和) は CPU
+ベースライン (`cpudb/`) だけが実装しており、DPU 側と `host_app` は対応しない。
+TASK_RANGE_MIN にはかつて DPU 実装 (`SUPPORT_RANGE_MIN`) があったが、`InputHeader` の変更に
+追従しないまま有効化できなくなっていたので削除した。ID だけがあった TASK_SCAN /
+TASK_SUMMARIZE / TASK_EXTRACT / TASK_FLATTEN_HOT / TASK_RESTORE も、実装も利用箇所も
+無いので削除した。
 
 ## tasklet による並列化の可否
 
@@ -283,11 +212,7 @@ TASK_SERIALIZE は 1 tasklet に固定されている
 3.  適当な場所に書き込んでおき、どんな順番になったかをホストに教えることで、DPU から
     転送するときに詰める。
 
-この問題に該当するタスク: TASK_SCAN, TASK_SUMMARIZE, TASK_EXTRACT, TASK_FLATTEN_HOT。
-TASK_SERIALIZE も同種の問題を持ち、現状は対策 1 (単一 tasklet) を採っている。
+TASK_SERIALIZE がこの問題を持ち、現状は対策 1 (単一 tasklet) を採っている。
 
 TASK_INSERT はこの問題を持たず (返り値は生存ペア数 1 組だけ)、全 tasklet で並列化
 されている。設計は `docs/parallel_batch_update.md`。
-
-TASK_SUMMARIZE は単一 tasklet でも上記の問題が残るため、`uint16_t[4]` + `Key[4]` の
-ブロック (`SummaryBlock`) 単位で書き出し、並べ替え情報を別に返す設計になっている。

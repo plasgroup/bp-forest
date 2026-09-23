@@ -35,10 +35,6 @@ typedef struct {
     KeyRange range;
     value_int64_t needle;
 } RangeCountQuery;
-typedef struct {
-    uint16_t nr_keys[4];
-    key_uint64_t head_keys[4];
-} SummaryBlock;
 
 
 /* Tasks */
@@ -46,19 +42,14 @@ enum TaskID : uint32_t {
     TASK_INIT,
     TASK_GET,
     TASK_PRED,
-    TASK_SCAN,
     TASK_INSERT,
     TASK_DELETE,
     TASK_RANGE_MIN,
     TASK_RANGE_SUM,
     TASK_RANGE_COUNT,
     TASK_RANGE_MAX,
-    TASK_SUMMARIZE,
-    TASK_EXTRACT,
     TASK_SERIALIZE,
     TASK_MOVE_HOT,
-    TASK_FLATTEN_HOT,
-    TASK_RESTORE,
     TASK_NONE
 };
 

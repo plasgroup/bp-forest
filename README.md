@@ -80,15 +80,13 @@ embeds this repository as `bp-forest/`.
     * the default number of queries in each query batch
 * compile definitions (via `-DCMAKE_C_FLAGS`/`-DCMAKE_CXX_FLAGS`)
   * SUPPORT_GET / SUPPORT_PRED / SUPPORT_INSERT / SUPPORT_DELETE /
-    SUPPORT_RANGE_{MIN,MAX,COUNT}
+    SUPPORT_RANGE_{MAX,COUNT}
     * the query task types compiled into the DPU program
       (see docs/dpu_task_signature.md)
 * common/inc/common_params.h
   * (NR_RANKS)
   * UPMEM_SIMULATOR
     * defined if UPMEM's functional simulator is used, undefined otherwise
-  * MAX_NR_SUMMARY_CHUNKS
-  * MAX_NR_RMQ_LUMPS
 * util/host_params/inc/host_params.hpp
   * (NUM_REQUESTS_PER_BATCH)
   * DEFAULT_NR_BATCHES

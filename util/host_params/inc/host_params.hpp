@@ -54,4 +54,3 @@ constexpr uint32_t KVPairsChunkSize = KVPAIRS_CHUNK_SIZE;
 
 // #define SYNCHRONOUS_DPU_EXEC
 
-// #define EXTRACT_BY_INITIALIZATION

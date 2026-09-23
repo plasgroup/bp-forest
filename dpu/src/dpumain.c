@@ -51,11 +51,6 @@ int main()
         task_delete();
         break;
 #endif
-#if SUPPORT_RANGE_MIN
-    case TASK_RANGE_MIN:
-        task_range_min();
-        break;
-#endif
 #if SUPPORT_RANGE_COUNT
     case TASK_RANGE_COUNT:
         task_range_count();

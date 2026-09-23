@@ -116,7 +116,7 @@ struct Option {
         a.add<size_t>("batch-size", 0, "fixed batch size (when --query-rate unset) or per-batch cap (when --query-rate set)", false, NUM_REQUESTS_PER_BATCH);
         a.add<std::optional<double>>("query-rate", 0, "set average query rate (op/s); when set, --batch-size acts as the per-batch cap", false);
         a.add<int>("num_batches", 0, "maximum num of batches for the experiment", false, DEFAULT_NR_BATCHES);
-        a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, rmq, count, max", false, "get");
+        a.add<std::string>("ops", 'o', "kind of operation ex)get, insert, pred, count, max", false, "get");
         a.add<std::optional<std::string>>("dump-compute-load", 0, "print number of queries sent for each dpu to a file", false);
         a.add<std::optional<std::string>>("dump-cold-compute-load", 0, "print number of queries sent for cold partitions in each dpu to a file", false);
         a.add<std::optional<std::string>>("dump-hot-compute-load", 0, "print number of queries sent for hot partitions in each dpu to a file", false);
@@ -161,8 +161,6 @@ struct Option {
             op_type = TASK_DELETE;
         else if (ops == "pred")
             op_type = TASK_PRED;
-        else if (ops == "rmq")
-            op_type = TASK_RANGE_MIN;
         else if (ops == "count")
             op_type = TASK_RANGE_COUNT;
         else if (ops == "max")
@@ -234,20 +232,6 @@ public:
     {
         forest.batch_delete(static_cast<uint32_t>(nr_queries), keys, existed);
     }
-
-    void batch_range_minimum(size_t, const KeyRange[], value_int64_t[]) override
-    {
-        std::cerr << "batch_range_minimum is not implemented" << std::endl;
-        exit(1);
-    }
-
-    void batch_range_sum(uint64_t /* n */,
-        const KeyRange /*queries */[],
-        value_int64_t /* results */[]) override
-    {
-        std::cerr << "batch_range_sum is not implemented" << std::endl;
-        exit(1);
-    };
 
     void batch_range_count(uint64_t n,
         const RangeCountQuery queries[],
@@ -392,8 +376,6 @@ Benchmark* make_benchmark(const Option& opt, Args&&... args)
         return new QueryRateKind<InsertBenchmark>(std::forward<Args>(args)..., opt.workload_file);
     else if (opt.op_type == TASK_DELETE)
         return new QueryRateKind<DeleteBenchmark>(std::forward<Args>(args)..., opt.workload_file);
-    else if (opt.op_type == TASK_RANGE_MIN)
-        return new QueryRateKind<RMQBenchmark>(std::forward<Args>(args)..., opt.workload_file);
     else if (opt.op_type == TASK_RANGE_COUNT)
         return new QueryRateKind<RangeCountBenchmark>(std::forward<Args>(args)..., opt.workload_file);
     else if (opt.op_type == TASK_RANGE_MAX)

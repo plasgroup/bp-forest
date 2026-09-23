@@ -15,11 +15,3 @@
 // #define UPMEM_SIMULATOR
 
 
-#ifndef MAX_NR_SUMMARY_CHUNKS
-#define MAX_NR_SUMMARY_CHUNKS 635
-#endif
-
-
-#ifndef MAX_NR_RMQ_LUMPS
-#define MAX_NR_RMQ_LUMPS 20000
-#endif

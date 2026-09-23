@@ -13,8 +13,6 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
 #else
                                      "UPMEM_SIMULATOR: 0\n"
 #endif
-                                     "MAX_NR_SUMMARY_CHUNKS: " EXPAND_STRINGIFY(MAX_NR_SUMMARY_CHUNKS) "\n"
-                                     "MAX_NR_RMQ_LUMPS: " EXPAND_STRINGIFY(MAX_NR_RMQ_LUMPS) "\n"
                                      "NR_TASKLETS: " EXPAND_STRINGIFY(NR_TASKLETS) "\n"
 #ifdef PRINT_DEBUG
                                      "PRINT_DEBUG: 1\n"
@@ -46,12 +44,6 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
                                      "TASK_INIT_CHECK: 1\n"
 #else
                                      "TASK_INIT_CHECK: 0\n"
-#endif
-                                     "TASK_SUMMARIZE_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_SUMMARIZE_NR_TASKLETS) "\n"
-#ifdef TASK_EXTRACT_CHECK
-                                     "TASK_EXTRACT_CHECK: 1\n"
-#else
-                                     "TASK_EXTRACT_CHECK: 0\n"
 #endif
                                      "TASK_SERIALIZE_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_SERIALIZE_NR_TASKLETS) "\n"
                                      "TASK_SERIALIZE_NR_CACHED_KVPAIRS: " EXPAND_STRINGIFY(TASK_SERIALIZE_NR_CACHED_KVPAIRS) "\n"
@@ -90,19 +82,12 @@ __mram_keep const char ParamDump[] = "NR_RANKS: " EXPAND_STRINGIFY(NR_RANKS) "\n
                                      "TASK_INSERT_SORT_RADIX_BITS: " EXPAND_STRINGIFY(TASK_INSERT_SORT_RADIX_BITS) "\n"
                                      "TASK_INSERT_SORT_RUN: " EXPAND_STRINGIFY(TASK_INSERT_SORT_RUN) "\n"
                                      "TASK_INSERT_SORT_DIGIT_BUF: " EXPAND_STRINGIFY(TASK_INSERT_SORT_DIGIT_BUF) "\n"
-                                     "TASK_RANGE_MIN_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_RANGE_MIN_NR_TASKLETS) "\n"
-                                     "TASK_RANGE_MIN_NR_CACHED_LUMP_END_INDICES: " EXPAND_STRINGIFY(TASK_RANGE_MIN_NR_CACHED_LUMP_END_INDICES) "\n"
-                                     "TASK_RANGE_MIN_NR_CACHED_DELIM_KEYS: " EXPAND_STRINGIFY(TASK_RANGE_MIN_NR_CACHED_DELIM_KEYS) "\n"
-                                     "TASK_RANGE_MIN_NR_CACHED_RESULTS: " EXPAND_STRINGIFY(TASK_RANGE_MIN_NR_CACHED_RESULTS) "\n"
                                      "TASK_RANGE_COUNT_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_RANGE_COUNT_NR_TASKLETS) "\n"
                                      "TASK_RANGE_COUNT_NR_CACHED_QRYS: " EXPAND_STRINGIFY(TASK_RANGE_COUNT_NR_CACHED_QRYS) "\n"
                                      "TASK_RANGE_COUNT_NR_CACHED_RESULTS: " EXPAND_STRINGIFY(TASK_RANGE_COUNT_NR_CACHED_RESULTS) "\n"
                                      "TASK_RANGE_MAX_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_RANGE_MAX_NR_TASKLETS) "\n"
                                      "TASK_RANGE_MAX_NR_CACHED_QRYS: " EXPAND_STRINGIFY(TASK_RANGE_MAX_NR_CACHED_QRYS) "\n"
                                      "TASK_RANGE_MAX_NR_CACHED_RESULTS: " EXPAND_STRINGIFY(TASK_RANGE_MAX_NR_CACHED_RESULTS) "\n"
-                                     "TASK_RANGE_COUNT_PREFIX_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_RANGE_COUNT_PREFIX_NR_TASKLETS) "\n"
-                                     "TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS: " EXPAND_STRINGIFY(TASK_RANGE_COUNT_PREFIX_NR_CACHED_QRYS) "\n"
-                                     "TASK_RANGE_COUNT_PREFIX_NR_CACHED_RESULTS: " EXPAND_STRINGIFY(TASK_RANGE_COUNT_PREFIX_NR_CACHED_RESULTS) "\n"
                                      "TASK_INIT_BITMAP_NR_TASKLETS: " EXPAND_STRINGIFY(TASK_INIT_BITMAP_NR_TASKLETS) "\n"
                                      "TASK_INIT_NR_CACHED_WORDS: " EXPAND_STRINGIFY(TASK_INIT_NR_CACHED_WORDS) "\n"
 #undef STRINGIFY

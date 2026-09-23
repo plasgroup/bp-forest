@@ -3199,8 +3199,6 @@ inline void BPForest::print_params(std::ostream& ostr) const
 #else
             "UPMEM_SIMULATOR: 0\n"
 #endif
-            "MAX_NR_SUMMARY_CHUNKS: " EXPAND_STRINGIFY(MAX_NR_SUMMARY_CHUNKS) "\n"
-            "MAX_NR_RMQ_LUMPS: " EXPAND_STRINGIFY(MAX_NR_RMQ_LUMPS) "\n"
 #ifdef FAKE_DPU
             "FAKE_DPU: 1\n"
 #else
@@ -3246,11 +3244,6 @@ inline void BPForest::print_params(std::ostream& ostr) const
             "SYNCHRONOUS_DPU_EXEC: 1\n"
 #else
             "SYNCHRONOUS_DPU_EXEC: 0\n"
-#endif
-#ifdef EXTRACT_BY_INITIALIZATION
-            "EXTRACT_BY_INITIALIZATION: 1\n"
-#else
-            "EXTRACT_BY_INITIALIZATION: 0\n"
 #endif
             "param.balancing: " << param.balancing << "\n"
             "param.more_hotness: " << param.more_hotness << "\n"

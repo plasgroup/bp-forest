@@ -25,12 +25,6 @@ typedef struct __dma_aligned InputHeader {
             uint32_t nr_cold_qrys, nr_hot_qrys, result_offset;
         } qrys;
         struct {
-            uint16_t nr_cold_lumps, nr_hot_lumps;
-        } rmq;
-        struct {
-            uint32_t nr_ranges;
-        } extract, restore;
-        struct {
             uint32_t nr_delims, max_nr_delims;
             bool do_cold, do_hot;
         } serialize;

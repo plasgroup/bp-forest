@@ -28,23 +28,6 @@
 #include <vector>
 
 
-struct ScanRange {
-    uint16_t outer_begin, outer_end;
-    uint32_t inner_begin, inner_end;
-};
-struct BatchScanResult {
-    ExtendableBuffer<value_int64_t> values;
-    ConstantCapacityVector<size_t, MAX_NR_DPUS * 2> outer_offset;
-    ExtendableBuffer<ScanRange> ranges;
-
-    std::pair<const value_int64_t*, const value_int64_t*> get_nth_result(size_t n) const
-    {
-        return std::make_pair(
-            &values[outer_offset[ranges[n].outer_begin] + ranges[n].inner_begin],
-            &values[outer_offset[ranges[n].outer_end] + ranges[n].inner_end]);
-    }
-};
-
 template <typename Query, typename Result>
 struct QueryDataPerRange {
     // qrys[idx_host_thread][idx_qry]
@@ -133,7 +116,6 @@ struct BPForest : ParallelManager<BPForest> {
     void batch_delete(uint32_t nr_queries, const key_uint64_t keys[], uint8_t existed[]);
     void batch_range_count(uint32_t nr_queries, const RangeCountQuery queries[], uint64_t result[]);
     void batch_range_max(uint32_t nr_queries, const KeyRange queries[], value_int64_t result[]);
-    void batch_scan(size_t nr_queries, const KeyRange ranges[], BatchScanResult& result);
     std::vector<std::array<uint32_t, 2>> get_nr_pairs() const;
     std::vector<std::array<uint32_t, 2>> last_query_dist() const;
 
