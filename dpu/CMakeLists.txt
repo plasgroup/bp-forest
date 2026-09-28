@@ -11,9 +11,6 @@ foreach(build_version IN LISTS targets)
     if(build_version MATCHES "^upmem")
         if(NOT TARGET dpu_program_${build_version})
             add_executable(dpu_program_${build_version} ${DPU_SOURCE})
-            # v1B, the DPU of the UPMEM DIMMs and of the simulator
-            # the host starts (chipId=0x42): both reject a v1A program, the
-            # default of SDK 2025.1 (SDK 2024.1 defaults to v1B)
             target_compile_options(dpu_program_${build_version} PRIVATE -Oz -mcpu=v1B)
             target_link_options(dpu_program_${build_version} PRIVATE -mcpu=v1B)
         else()

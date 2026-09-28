@@ -14,13 +14,6 @@
 
 // #define DEBUG_OCCUPANCY
 
-/* The cache sizes below (*_NR_CACHED_*, *_SORT_RUN) fill the WRAM with the
- * default 16 tasklets and every query type (the OPS CMake variable): the
- * per-task workspaces share the WRAM (TreeWorkspace, a union), and each one
- * takes what the stacks and the rest leave (51,768 bytes for a v1B DPU), within the 2,048
- * bytes a single MRAM DMA transfers.  With more tasklets, the DPU program
- * fails to link ("will not fit in region 'wram'"); make the caches smaller. */
-
 #ifndef MRAM_FOR_TREE
 #define MRAM_FOR_TREE 33554432  // 32 * 1024 * 1024
 #endif

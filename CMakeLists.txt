@@ -1,6 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
 
-# Prefer clang: the dpu_on_cpu build needs it, and the other builds are tuned with it.
 if(NOT DEFINED CMAKE_C_COMPILER AND NOT DEFINED ENV{CC})
     find_program(CLANG_C_COMPILER clang)
     if(CLANG_C_COMPILER)
@@ -35,8 +34,6 @@ if(NOT DEFINED targets)
 endif(NOT DEFINED targets)
 message(STATUS "targets: ${targets}")
 
-# The query types compiled into the DPU program (and accepted by the host):
-# any of get, pred, insert, delete, count (range count), and max (range max).
 set(OPS "get;pred;insert;delete;count;max" CACHE STRING "query types to support")
 set(OPS_MACRO_get SUPPORT_GET)
 set(OPS_MACRO_pred SUPPORT_PRED)
@@ -59,8 +56,6 @@ define_property(TARGET PROPERTY UPMEM_HOST
     FULL_DOCS "Whether or not to link with the UPMEM SDK and DPU program."
 )
 
-# The upmem driver allocates exactly this many ranks; by default, as many as
-# the machine has (the /dev/dpu_rank* devices), or 1 on a machine without DPUs.
 if(NOT DEFINED NR_RANKS_DEFAULT)
     set(NR_RANKS_DEFAULT 1)
     file(GLOB DPU_RANK_DEVICES /dev/dpu_rank*)
