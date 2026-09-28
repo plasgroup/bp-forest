@@ -1,8 +1,8 @@
 # B+-Forest
 
 B+-Forest is an ordered key-value index for processing-in-memory (PIM)
-systems, implemented for [UPMEM](https://www.upmem.com), a commercially
-available PIM architecture. It spreads the key space over thousands of
+systems, implemented for [UPMEM](https://www.upmem.com), a PIM
+architecture built as real hardware. It spreads the key space over thousands of
 DPUs (the processors next to the memory banks), each holding its own
 B+-tree, and serves batches of point and range queries. Query skew, which
 would overload the DPUs holding popular keys, is handled on the host:
