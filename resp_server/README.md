@@ -1,55 +1,71 @@
 # resp_server
 
-BPForest を Redis クライアントから使えるようにする RESP2 サーバ。全接続からパイプラインされたコマンドをバッチに束ね、BPForest のバッチ API で実行する。深いクライアント側パイプライン (redis-benchmark / memtier_benchmark の `-P`) を前提とした高スループット順序付き KV サーバであり、単発コマンドのレイテンシはバッチ実行時間に律速される。
+A RESP2 server that makes B+-Forest usable from Redis clients. It bundles
+the pipelined commands of all connections into batches and executes them
+with the batch API of B+-Forest. It is a high-throughput ordered key-value
+server that presumes deep client-side pipelines (`-P` of redis-benchmark
+and memtier_benchmark); the latency of a single command is bounded by the
+execution time of a batch.
 
-## 起動
+## Starting
 
-ビルドは、この repo を `bp-forest/` として含む上位ディレクトリのビルドスクリプトで行うのが基本。単体でビルドする場合は、対応させる操作の `SUPPORT_*` フラグを付けて `resp_server_<target>` をビルドする:
+The default build (see the [top-level README](../README.md)) builds
+`resp_server_<variant>` with every command:
 
 ```bash
-SUP="-DSUPPORT_GET -DSUPPORT_PRED -DSUPPORT_INSERT -DSUPPORT_DELETE -DSUPPORT_RANGE_COUNT -DSUPPORT_RANGE_MAX"
-cmake -Dtargets=upmem -DDPU_IRAM_OVERLAY=ON -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-      -DCMAKE_C_FLAGS="$SUP" -DCMAKE_CXX_FLAGS="$SUP" -S . -B build
+cmake -S . -B build
 cmake --build build --target resp_server_upmem
 ```
 
-複数操作を含める実機ビルドは IRAM overlay (`-DDPU_IRAM_OVERLAY=ON`,
-`docs/dpu_iram_overlay.md`) を前提とする。overlay なしでは 5 操作以上が
-IRAM に収まらない。
+A build that leaves out query types with the `OPS` CMake variable answers
+the commands of those types with an error.
 
-BPForest はバルクロード構築のみのため、起動時に初期データを与える:
+B+-Forest is built only by bulk loading, so the server takes its initial
+data at startup:
 
-- `--init-nr N` (既定 2^20) — key = i × stride, value = key の N ペアを生成 (`--init-stride`, 既定 2)
-- `--init-file PATH` — PIM-Tree init file をロード
+- `--init-nr N` (default 2^20): generate N pairs with key = i × stride and
+  value = key (`--init-stride`, default 2)
+- `--init-file PATH`: load an init file of `workload_gen` (or PIM-tree)
 
 ```console
 $ build/resp_server/resp_server_upmem --port 6399 --init-nr 1000000
 $ redis-cli -p 6399 GET 2
 ```
 
-他の主なオプション: `--bind` (既定 127.0.0.1)、`--batch-size` (1 バッチで実行する最大クエリ数、既定 2^20)、`--max-pipeline` (接続あたりの未実行コマンド数上限)、および `host_app` と同じ B+-Forest チューニング一式 (`-a`, `--incremental` など)。一覧は `--help`。
+Other main options: `--bind` (default 127.0.0.1), `--batch-size` (the
+maximum number of queries executed in a batch, default 2^20),
+`--max-pipeline` (the maximum number of unexecuted commands per
+connection), and the same set of B+-Forest tuning options as `host_app`
+(`-a`, `--incremental`, and so on). `--help` lists them all.
 
-## コマンド
+## Commands
 
-キー・値はともに 10 進 uint64 の文字列。範囲は両端を含む。
+Keys and values are both decimal uint64 strings. Ranges include both
+ends.
 
-| コマンド | 対応するバッチ API | 応答 |
+| Command | Batch API | Reply |
 |---|---|---|
-| `GET k` | batch_get | 値の bulk string、miss は nil |
-| `SET k v` | batch_insert (upsert) | `+OK`。v = 0 はエラー (下記) |
-| `DEL k [k ...]` | batch_delete | `:削除数` (重複引数は 1 回) |
-| `EXISTS k [k ...]` | batch_get | `:存在数` |
-| `BPF.PRED k` | batch_pred | `[key, value]`、predecessor なしは nil |
-| `BPF.RANGECOUNT b e v` | batch_range_count | `:個数` — [b,e] 内で value = v のペア数 |
-| `BPF.RANGEMAX b e` | batch_range_max | [b,e] 内の最大 value、空なら nil |
-| `PING` `ECHO` `COMMAND` `CONFIG` `DBSIZE` `QUIT` `SHUTDOWN` | — | 互換用 (redis-cli がそのまま接続できる) |
+| `GET k` | batch_get | the value as a bulk string; nil on a miss |
+| `SET k v` | batch_insert (upsert) | `+OK`; v = 0 is an error (see below) |
+| `DEL k [k ...]` | batch_delete | `:<number deleted>` (a repeated argument counts once) |
+| `EXISTS k [k ...]` | batch_get | `:<number existing>` |
+| `BPF.PRED k` | batch_pred | `[key, value]`; nil if there is no predecessor |
+| `BPF.RANGECOUNT b e v` | batch_range_count | `:<count>`: the number of pairs in [b,e] with value = v |
+| `BPF.RANGEMAX b e` | batch_range_max | the maximum value in [b,e]; nil if empty |
+| `PING` `ECHO` `COMMAND` `CONFIG` `DBSIZE` `QUIT` `SHUTDOWN` | — | for compatibility (so that redis-cli connects as is) |
 
-`SUPPORT_*` フラグでビルドに含めなかった操作のコマンドはエラー応答になる。
+## Semantics
 
-## 意味論
-
-- 同一接続のコマンド列は、送信順に直列実行したのと同じ結果と応答順を保証する。
-- 別接続のコマンドとの相対順序は保証しないが (Redis もクライアント間の順序は保証しない)、全応答と最終状態はコマンド全体の何らかの直列実行順と整合する。
-- 値 0 は `NOT_FOUND_VALUE` と衝突し miss と区別できないため、`SET` が拒否する。
-- `BPF.PRED k` は、生きているペアのうち key が k 未満で最大のものを返す。削除済みキーを返すことはなく、該当ペアがなければ nil。
-- `DBSIZE` は生きているペアの総数を返す (削除済みのキーは数えない)。
+- The commands of one connection give the same results, and the replies
+  come in the same order, as if they were executed serially in the order
+  sent.
+- The order relative to the commands of other connections is not
+  guaranteed (nor does Redis guarantee an order between clients), but all
+  the replies and the final state are consistent with some serial
+  execution order of all the commands.
+- `SET` rejects the value 0, which collides with `NOT_FOUND_VALUE` and
+  could not be told apart from a miss.
+- `BPF.PRED k` returns the live pair with the largest key less than k. It
+  never returns a deleted key; nil if there is no such pair.
+- `DBSIZE` returns the total number of live pairs (deleted keys are not
+  counted).
