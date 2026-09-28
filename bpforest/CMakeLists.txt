@@ -20,10 +20,6 @@ endif(${USE_UPMEM_SDK})
 find_package(Threads REQUIRED)
 
 foreach(build_version IN LISTS targets)
-    if(build_version STREQUAL "cpudb")
-        continue()
-    endif(build_version STREQUAL "cpudb")
-
     add_library(bpforest_${build_version} INTERFACE)
     target_include_directories(bpforest_${build_version} INTERFACE ${CMAKE_CURRENT_LIST_DIR}/inc)
     target_link_libraries(bpforest_${build_version} INTERFACE

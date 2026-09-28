@@ -191,8 +191,8 @@ Does nothing. Because DPUs are launched per rank, this is assigned to DPUs that 
 
 ## Unimplemented tasks
 
-TASK_RANGE_MIN (minimum value in a key range) and TASK_RANGE_SUM (sum) in `enum TaskID` are implemented only by
-the CPU baseline (`cpudb/`); the DPU side and `host_app` do not support them.
+TASK_RANGE_MIN (minimum value in a key range) and TASK_RANGE_SUM (sum) in `enum TaskID` have no implementation
+(the CPU baseline that implemented them has been removed).
 TASK_RANGE_MIN once had a DPU implementation (`SUPPORT_RANGE_MIN`), but it was not updated for changes to
 `InputHeader` and could no longer be enabled, so it was removed. TASK_SCAN / TASK_SUMMARIZE / TASK_EXTRACT /
 TASK_FLATTEN_HOT / TASK_RESTORE, which existed only as IDs, were also removed, since they had neither an

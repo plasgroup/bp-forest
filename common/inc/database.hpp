@@ -47,20 +47,6 @@ public:
         uint8_t existed[])
         = 0;
 
-    // Range-minimum and range-sum queries are implemented by the CPU baseline
-    // (cpudb/) only; B+-Forest does not support them.
-    virtual void batch_range_minimum(uint64_t, const KeyRange[], value_int64_t[])
-    {
-        std::cerr << "batch_range_minimum is not supported" << std::endl;
-        std::exit(1);
-    }
-
-    virtual void batch_range_sum(uint64_t, const KeyRange[], value_int64_t[])
-    {
-        std::cerr << "batch_range_sum is not supported" << std::endl;
-        std::exit(1);
-    }
-
     virtual void batch_range_count(uint64_t n,
         const RangeCountQuery queries[],
         uint64_t results[])
@@ -237,28 +223,6 @@ public:
         }
 
         data.erase(to_iter, data.end());
-    }
-
-    void batch_range_minimum(uint64_t n,
-        const KeyRange queries[],
-        value_int64_t results[])
-    {
-        for (size_t i = 0; i < n; i++)
-            results[i] = foldl(queries[i], VALUE_MAX,
-                [](value_int64_t min, const KVPair& kv) {
-                    return kv.value < min ? kv.value : min;
-                });
-    }
-
-    void batch_range_sum(uint64_t n,
-        const KeyRange queries[],
-        value_int64_t results[])
-    {
-        for (size_t i = 0; i < n; i++)
-            results[i] = foldl(queries[i], 0,
-                [](value_int64_t sum, const KVPair& kv) {
-                    return sum + kv.value;
-                });
     }
 
     void batch_range_count(uint64_t n,
