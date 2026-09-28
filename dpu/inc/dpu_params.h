@@ -14,11 +14,20 @@
 
 // #define DEBUG_OCCUPANCY
 
+/* The cache sizes below (*_NR_CACHED_*, *_SORT_RUN) fill the WRAM with the
+ * default 16 tasklets and every query type (the OPS CMake variable): the
+ * per-task workspaces share the WRAM (TreeWorkspace, a union), and each one
+ * takes what the stacks and the rest leave (51,768 bytes for a v1B DPU), within the 2,048
+ * bytes a single MRAM DMA transfers.  With more tasklets, the DPU program
+ * fails to link ("will not fit in region 'wram'"); make the caches smaller. */
+
 #ifndef MRAM_FOR_TREE
-#define MRAM_FOR_TREE 28311552  // 27 * 1024 * 1024
+#define MRAM_FOR_TREE 33554432  // 32 * 1024 * 1024
 #endif
 
+#ifndef BITMAP_IN_MRAM
 #define BITMAP_IN_MRAM
+#endif
 
 #ifndef NODE_DMA_TABLE
 #if defined(TASK_INIT_CHECK) || defined(TASK_INSERT_CHECK) || defined(TASK_DELETE_CHECK) || defined(TASK_MOVE_HOT_CHECK)
@@ -40,11 +49,11 @@
 _Static_assert(TREE_CONSTRUCT_NR_TASKLETS <= NR_TASKLETS, "TREE_CONSTRUCT_NR_TASKLETS <= NR_TASKLETS");
 
 #ifndef TREE_CONSTRUCT_NR_CACHED_KVPAIRS
-#define TREE_CONSTRUCT_NR_CACHED_KVPAIRS 1
+#define TREE_CONSTRUCT_NR_CACHED_KVPAIRS 128
 #endif
 
 #ifndef TREE_CONSTRUCT_NR_CACHED_INPUT_LIFT
-#define TREE_CONSTRUCT_NR_CACHED_INPUT_LIFT 2
+#define TREE_CONSTRUCT_NR_CACHED_INPUT_LIFT 170
 #endif
 
 #ifndef TREE_CONSTRUCT_NR_CACHED_OUTPUT_LIFT
@@ -59,15 +68,15 @@ _Static_assert(TREE_CONSTRUCT_NR_TASKLETS <= NR_TASKLETS, "TREE_CONSTRUCT_NR_TAS
 #endif
 
 #ifndef TASK_SERIALIZE_NR_CACHED_KVPAIRS
-#define TASK_SERIALIZE_NR_CACHED_KVPAIRS 1
+#define TASK_SERIALIZE_NR_CACHED_KVPAIRS 128
 #endif
 
 #ifndef TASK_SERIALIZE_NR_CACHED_DELIMS
-#define TASK_SERIALIZE_NR_CACHED_DELIMS 1
+#define TASK_SERIALIZE_NR_CACHED_DELIMS 64
 #endif
 
 #ifndef TASK_SERIALIZE_NR_CACHED_INCISIONS
-#define TASK_SERIALIZE_NR_CACHED_INCISIONS 2
+#define TASK_SERIALIZE_NR_CACHED_INCISIONS 64
 #endif
 
 
@@ -83,7 +92,7 @@ _Static_assert(TREE_CONSTRUCT_NR_TASKLETS <= NR_TASKLETS, "TREE_CONSTRUCT_NR_TAS
 #endif
 
 #ifndef TASK_GET_NR_CACHED_QRYS
-#define TASK_GET_NR_CACHED_QRYS 1
+#define TASK_GET_NR_CACHED_QRYS 256
 #endif
 
 
@@ -106,7 +115,7 @@ _Static_assert(TASK_DELETE_NR_CACHED_QRYS % 8 == 0, "TASK_DELETE_NR_CACHED_QRYS 
 _Static_assert(TASK_DELETE_SORT_NR_TASKLETS <= NR_TASKLETS, "TASK_DELETE_SORT_NR_TASKLETS <= NR_TASKLETS");
 _Static_assert(TASK_DELETE_NR_TASKLETS <= TASK_DELETE_SORT_NR_TASKLETS, "TASK_DELETE_NR_TASKLETS <= TASK_DELETE_SORT_NR_TASKLETS");
 
-// バッチをキー順に並べる基数ソートの、1 段で見るキーの桁幅。
+// The width of the key digit that each pass of the radix sort (which orders the batch by key) looks at.
 #ifndef TASK_DELETE_SORT_RADIX_BITS
 #define TASK_DELETE_SORT_RADIX_BITS 6
 #endif
@@ -140,13 +149,13 @@ _Static_assert(TASK_INSERT_NR_TASKLETS <= NR_TASKLETS, "TASK_INSERT_NR_TASKLETS 
 _Static_assert(TASK_INSERT_SORT_NR_TASKLETS <= NR_TASKLETS, "TASK_INSERT_SORT_NR_TASKLETS <= NR_TASKLETS");
 _Static_assert(TASK_INSERT_NR_TASKLETS <= TASK_INSERT_SORT_NR_TASKLETS, "TASK_INSERT_NR_TASKLETS <= TASK_INSERT_SORT_NR_TASKLETS");
 
-// バッチをキー順に並べる基数ソートの、1 段で見るキーの桁幅。
+// The width of the key digit that each pass of the radix sort (which orders the batch by key) looks at.
 #ifndef TASK_INSERT_SORT_RADIX_BITS
 #define TASK_INSERT_SORT_RADIX_BITS 6
 #endif
 
 #ifndef TASK_INSERT_SORT_RUN
-#define TASK_INSERT_SORT_RUN 50
+#define TASK_INSERT_SORT_RUN 52
 #endif
 
 #ifndef TASK_INSERT_SORT_DIGIT_BUF
@@ -159,11 +168,11 @@ _Static_assert(TASK_INSERT_NR_TASKLETS <= TASK_INSERT_SORT_NR_TASKLETS, "TASK_IN
 #endif
 
 #ifndef TASK_RANGE_COUNT_NR_CACHED_QRYS
-#define TASK_RANGE_COUNT_NR_CACHED_QRYS 1
+#define TASK_RANGE_COUNT_NR_CACHED_QRYS 85
 #endif
 
 #ifndef TASK_RANGE_COUNT_NR_CACHED_RESULTS
-#define TASK_RANGE_COUNT_NR_CACHED_RESULTS 1
+#define TASK_RANGE_COUNT_NR_CACHED_RESULTS 117
 #endif
 
 
@@ -172,11 +181,11 @@ _Static_assert(TASK_INSERT_NR_TASKLETS <= TASK_INSERT_SORT_NR_TASKLETS, "TASK_IN
 #endif
 
 #ifndef TASK_RANGE_MAX_NR_CACHED_QRYS
-#define TASK_RANGE_MAX_NR_CACHED_QRYS 1
+#define TASK_RANGE_MAX_NR_CACHED_QRYS 128
 #endif
 
 #ifndef TASK_RANGE_MAX_NR_CACHED_RESULTS
-#define TASK_RANGE_MAX_NR_CACHED_RESULTS 1
+#define TASK_RANGE_MAX_NR_CACHED_RESULTS 116
 #endif
 
 
@@ -185,11 +194,11 @@ _Static_assert(TASK_INSERT_NR_TASKLETS <= TASK_INSERT_SORT_NR_TASKLETS, "TASK_IN
 #endif
 
 #ifndef TASK_PRED_NR_CACHED_QRYS
-#define TASK_PRED_NR_CACHED_QRYS 1
+#define TASK_PRED_NR_CACHED_QRYS 184
 #endif
 
 #ifndef TASK_PRED_NR_CACHED_RESULTS
-#define TASK_PRED_NR_CACHED_RESULTS 1
+#define TASK_PRED_NR_CACHED_RESULTS 92
 #endif
 
 
@@ -199,5 +208,5 @@ _Static_assert(TASK_INSERT_NR_TASKLETS <= TASK_INSERT_SORT_NR_TASKLETS, "TASK_IN
 _Static_assert(TASK_INIT_BITMAP_NR_TASKLETS <= NR_TASKLETS, "TASK_INIT_BITMAP_NR_TASKLETS <= NR_TASKLETS");
 
 #ifndef TASK_INIT_NR_CACHED_WORDS
-#define TASK_INIT_NR_CACHED_WORDS 2
+#define TASK_INIT_NR_CACHED_WORDS 257
 #endif

@@ -37,7 +37,7 @@ constexpr dpu_id_t INVALID_DPU_ID = std::numeric_limits<dpu_id_t>::max();
 using block_id_t = uint32_t;
 
 #ifndef KVPAIRS_CHUNK_SIZE
-#define KVPAIRS_CHUNK_SIZE 256
+#define KVPAIRS_CHUNK_SIZE 128
 #endif
 constexpr uint32_t KVPairsChunkSize = KVPAIRS_CHUNK_SIZE;
 
