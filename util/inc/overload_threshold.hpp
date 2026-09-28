@@ -94,7 +94,7 @@ inline void add_overload_threshold_options(Parser& a)
 {
     a.template add<std::optional<double>>(
         "high-watermark", 0,
-        "overload threshold = per-DPU goal * r. Mutually exclusive with --fp-rate.",
+        "overload threshold = per-DPU goal * r. Mutually exclusive with --fp-rate (default: --fp-rate 0.001).",
         false);
     a.template add<std::optional<double>>(
         "fp-rate", 0,

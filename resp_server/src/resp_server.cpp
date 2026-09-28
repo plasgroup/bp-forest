@@ -1024,7 +1024,7 @@ private:
 struct BPForestOption {
     void add_options(cmdline::parser& a)
     {
-        a.add<unsigned>("balancing-param", 'a', "the tunable parameter (>= 1) for compute/memory load balancing in B+-Forest", false, 1,
+        a.add<unsigned>("balancing-param", 'a', "the tunable parameter (>= 1) for compute/memory load balancing in B+-Forest", false, 10,
             cmdline::range(1u, std::numeric_limits<unsigned>::max()));
         a.add<unsigned>("more-hot", 'h', "the tunable parameter for hotness of hot partitions", false, 1);
         a.add<bool>("dynamic-repartition", 0, "whether to adaptively repartition when overload is detected during batch execution", false, true);
@@ -1041,7 +1041,7 @@ struct BPForestOption {
         param.enable_incremental = a.get<bool>("incremental");
         param.enable_hot_split = a.get<bool>("hot-split");
         param.nr_host_threads = a.get<unsigned>("nr-host-threads");
-        param.overload_threshold_spec = parse_overload_threshold_spec(a).value_or(HighWatermarkRatio{1.05});
+        param.overload_threshold_spec = parse_overload_threshold_spec(a).value_or(FalsePositiveRate{0.001});
     }
 
     BPForest::Param param;

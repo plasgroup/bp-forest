@@ -70,7 +70,7 @@ public:
 struct BPForestOption {
     void add_options(cmdline::parser& a)
     {
-        a.add<unsigned>("balancing-param", 'a', "the tunable parameter (>= 1) for compute/memory load balancing in B+-Forest", false, 1,
+        a.add<unsigned>("balancing-param", 'a', "the tunable parameter (>= 1) for compute/memory load balancing in B+-Forest", false, 10,
             cmdline::range(1u, std::numeric_limits<unsigned>::max()));
         a.add<unsigned>("more-hot", 'h', "the tunable parameter for hotness of hot partitions", false, 1);
         a.add<bool>("dynamic-repartition", 0, "whether to adaptively repartition when overload is detected during batch execution", false, true);
@@ -97,7 +97,7 @@ struct BPForestOption {
         param.enable_hot_split = a.get<bool>("hot-split");
         param.enable_hot_cache = a.get<bool>("hot-cache");
         param.nr_host_threads = a.get<unsigned>("nr-host-threads");
-        param.overload_threshold_spec = parse_overload_threshold_spec(a).value_or(HighWatermarkRatio{1.05});
+        param.overload_threshold_spec = parse_overload_threshold_spec(a).value_or(FalsePositiveRate{0.001});
     }
 
     BPForest::Param param;
@@ -106,7 +106,7 @@ struct Option {
     void parse(int argc, char* argv[])
     {
         cmdline::parser a;
-        a.add<std::string>("dump-params", 0, "file path to output parameters");
+        a.add<std::optional<std::string>>("dump-params", 0, "file path to append the parameters to", false);
         a.add<std::string>("workload_file", 'w', "file path to PIM-Tree workload file", true);
         a.add<std::string>("init_file", 'i', "file path to PIM-Tree init file", true);
         bpforest.add_options(a);
@@ -128,7 +128,7 @@ struct Option {
         a.add("verify", 'v', "verify the result");
         a.parse_check(argc, argv);
 
-        dump_param_file = a.get<std::string>("dump-params");
+        dump_param_file = a.get<std::optional<std::string>>("dump-params");
         workload_file = a.get<std::string>("workload_file");
         init_file = a.get<std::string>("init_file");
         bpforest.set_options(a);
@@ -176,7 +176,7 @@ struct Option {
     }
 
     BPForestOption bpforest;
-    std::string dump_param_file;
+    std::optional<std::string> dump_param_file;
     std::optional<std::string> partition;
     std::optional<std::string> partition_from_workload;
     std::optional<std::string> dump_partition;
@@ -435,10 +435,10 @@ int main(int argc, char* argv[])
     printf("initialization finished\n");
 #endif
 
-    {
-        std::ofstream dump_param_file(opt.dump_param_file, std::ios_base::app);
+    if (opt.dump_param_file) {
+        std::ofstream dump_param_file(*opt.dump_param_file, std::ios_base::app);
         if (!dump_param_file) {
-            std::cerr << "cannot open file: " << opt.dump_param_file << std::endl;
+            std::cerr << "cannot open file: " << *opt.dump_param_file << std::endl;
             std::quick_exit(1);
         }
         db.print_params(dump_param_file);
