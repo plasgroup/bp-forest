@@ -1,148 +1,150 @@
-# ホスト側キャッシュ
+# Host-side cache
 
-hot partition の負荷が 1 つの KV ペアに集中していて hot split が失敗するとき、および
-据えた直後の hot partition が goal を超えるとき、そのペアをホストに写し取り、そのキーへの point クエリの大部分をホストで捌く仕組み (get は全部、
-insert, delete, pred はルーティングのスレッドあたり 1 件を除いて)。試験的な実装で、
-`BPForestParameter::enable_hot_cache` (host_app の `--hot-cache`、既定 on) で切り替える。
+A mechanism that copies a KV pair to the host and serves most point queries on that key at the host (all gets;
+all inserts, deletes, and preds except one per routing thread), used when the load of a hot partition is
+concentrated on that one pair and the hot split fails, and when a hot partition just placed exceeds the goal.
+It is an experimental implementation, switched by `BPForestParameter::enable_hot_cache` (`--hot-cache` in
+host_app, on by default).
 
-## 意味
+## Semantics
 
-* キャッシュを使うのは get, insert, delete, pred のバッチ。range 系 (range_count,
-  range_max, scan) は使わず、いつも通り DPU へ行く。
-* 各バッチの終わりには、DPU 上の木はキャッシュと同じペアを持つ。したがって range クエリが
-  古い値を見ることはない。
-* DPU ごとに高々 1 ペアを持ち、そのペアのキーはその DPU の hot partition の範囲にある
-  (「追い出し」で保つ)。したがってキャッシュの大きさは hot partition の数以下、すなわち DPU 数以下である。
-* クエリがキャッシュに当たるのは、ルーティングの宛先がその DPU の hot partition で、
-  キーがその DPU のキャッシュのキーと一致するときだけ。
+* The cache is used by get, insert, delete, and pred batches. Range operations (range_count,
+  range_max, scan) do not use it and go to the DPUs as usual.
+* At the end of each batch, the trees on the DPUs hold the same pairs as the cache. Hence range queries
+  never see stale values.
+* Each DPU holds at most 1 pair, and the key of that pair lies in the range of that DPU's hot partition
+  (maintained by "Eviction"). Hence the size of the cache is at most the number of hot partitions, i.e., at most the number of DPUs.
+* A query hits the cache only when its routing destination is the hot partition of that DPU and
+  its key equals the key cached for that DPU.
 
-## 採用
+## Adoption
 
-バッチはルーティング、再分割、DPU での実行の順に進み、再分割がパーティション表を変えた
-ときはルーティングをやり直してから実行に進む。ペアをキャッシュに入れること (採用) は
-再分割の中で行う。
+A batch proceeds through routing, repartitioning, and execution on the DPUs, in that order; when repartitioning
+changes the partition table, routing is redone before execution. Putting a pair into the cache (adoption)
+happens during repartitioning.
 
-探すのは、hot partition に割り振られたクエリ (キャッシュで捌いた分は含まない) のうち
-半分以上が向かうキーで、探す場面は 2 つある: 増分再分割の hot split
-(`incremental_repartition_worker_hot`) が失敗したときと、再分割で据えた hot partition
-が hot split の goal (`hot_cnt_goal`) を超えるとき (下記「据えた hot partition での採用」)。
-以下はまず前者について述べる。hot split (docs/rebalancing-algorithm.md §6.2) の失敗とは、
-`split_hot_range_equal_load` が切れ目を 1 つも作れないこと、すなわち末尾のチャンクが
-負荷の半分超を持つことである (piece の数が 2 未満で分割しないのは失敗ではない)。
-負荷が途中のチャンクに集中していれば、そのチャンクの直後で切れ、その
-チャンクを末尾に持つ最初の piece がその DPU に残る。この piece は据えた直後に
-「据えた hot partition での採用」(下記) の対象になる。1 チャンク (`KVPairsChunkSize`
-ペア以下) の hot partition は分割を試みないので、据えた直後の他にはこの仕組みの対象に
-ならない。
+The search looks for a key that at least half of the queries assigned to a hot partition (excluding those served
+by the cache) go to, and there are two occasions for the search: when the hot split of incremental repartitioning
+(`incremental_repartition_worker_hot`) fails, and when a hot partition placed by repartitioning
+exceeds the hot split goal (`hot_cnt_goal`) (see "Adoption at a placed hot partition" below).
+The former is described first. A hot split (docs/rebalancing-algorithm.md §6.2) fails when
+`split_hot_range_equal_load` cannot make even one cut, i.e., when the last chunk carries
+more than half of the load (not splitting because there are fewer than 2 pieces is not a failure).
+If the load is concentrated on a chunk in the middle, the cut is made right after that chunk, and the first
+piece, which ends with that chunk, stays on that DPU. Right after it is placed, this piece becomes subject to
+"Adoption at a placed hot partition" (below). A hot partition of 1 chunk (at most `KVPairsChunkSize`
+pairs) is never tried for a split, so it is subject to this mechanism only right after it is placed.
 
-探すのは get, insert, pred のバッチで失敗した場合だけである。delete のバッチではそのペアが
-バッチの後に消えるので探さない。
+The search happens only when the hot split fails in a get, insert, or pred batch. It does not happen in a delete batch,
+because the pair disappears after the batch.
 
-`find_hot_cache_candidate` が [hot_key_finding.md](hot_key_finding.md) の乱択法で探す:
-割り振られたクエリから 108 個を復元抽出して見込みのあるキーを高々 2 つ選び、それぞれを
-高々 1337 個の復元抽出による打ち切り付きの逐次確率比検定にかけ、最初に通ったキーだけを
-見る (そのキーのペアが無くても 2 つ目には進まない)。失敗確率 δ = 0.01、幅 w = 0.1 で、
-半分以上を占めるキーがあれば確率 1 − δ 以上で見つけ、見つけたキーは確率 1 − δ 以上で 1/2 − w = 0.4 より多くを占める。あわせて、
-検定で見た標本のうちそのキーに一致した割合に割り振られたクエリ数を掛けたものを、
-そのキーの推定件数とする。
+`find_hot_cache_candidate` searches with the randomized method of [hot_key_finding.md](hot_key_finding.md):
+it draws 108 samples with replacement from the assigned queries, picks at most 2 promising keys, runs each of
+them through a truncated sequential probability ratio test with at most 1337 samples drawn with replacement, and
+considers only the first key that passes (it does not proceed to the second even if the first key has no pair).
+With failure probability δ = 0.01 and width w = 0.1, if a key accounts for at least half, it is found with
+probability at least 1 − δ, and a key that is found accounts for more than 1/2 − w = 0.4 with probability at least 1 − δ. In addition,
+the fraction of samples seen in the test that matched the key, multiplied by the number of assigned queries,
+is taken as the estimated count for the key.
 
-キャッシュに入れるペアは、get と pred のバッチでは hot 木から取る。hot split のために
-hot 木はホストに直列化されている (`data_buf`) ので、追加の DPU 往復は要らない。
-見つけたキーが hot 木に無ければ入れるペアが無いので採用しない (空のスロットの印に
-`NOT_FOUND_VALUE` を使うので、「存在しない」ことはキャッシュできない)。insert のバッチでは、木を見ずに、そのバッチでそのキーを insert
-する最後のクエリのペアを入れる。そのバッチの insert が DPU 上にも同じペアを作る。
+In get and pred batches, the pair to cache is taken from the hot tree. For the hot split, the
+hot tree has been serialized to the host (`data_buf`), so no extra DPU round trip is needed.
+If the found key is not in the hot tree, there is no pair to cache, so it is not adopted (`NOT_FOUND_VALUE`
+marks an empty slot, so "does not exist" cannot be cached). In insert batches, without looking at the tree,
+the pair of the last query in the batch that inserts that key is cached. The inserts of that batch create the
+same pair on the DPU as well.
 
-その DPU のスロットに既にペアがあるときは、そのペアがこのバッチの直近のルーティングで
-捌いた件数と、見つけたキーの推定件数を比べ、後者が多いときだけ置き換える。探索が見る
-負荷にはキャッシュで捌いた分が含まれないので、比べずに置き換えると、次のバッチで
-追い出したキーの負荷が戻り、採用し直しが毎バッチ繰り返される。
+When that DPU's slot already holds a pair, the number of queries that pair served in this batch's most recent
+routing is compared with the estimated count of the found key, and the pair is replaced only when the latter is
+larger. The load seen by the search excludes what the cache served, so replacing without comparing would bring
+the evicted key's load back in the next batch, and re-adoption would repeat every batch.
 
-hot split が失敗して採用に至らなかったとき (delete のバッチ、半分以上を占めるキーが
-無い、そのキーのペアが無い、既にあるペアの方が多い) は `hot_split_failed` を立てる。
-立っている間はその hot partition は再分割の起動要因にならない (他の DPU が起動した
-バッチでは goal を超えていれば再検査される)。hot partition を据え直す (新設、
-全体再構築、hot split で piece を据える) と下りる。したがって、例えば消したキーへの
-get の集中はこれを立て、そのキーを挿入し直しても hot partition を据え直すまで
-自分からは再分割を起こさない。
+When a hot split fails and does not lead to adoption (a delete batch, no key accounting for at least half,
+no pair for that key, or the existing pair is larger), `hot_split_failed` is set.
+While it is set, that hot partition does not trigger repartitioning (in batches triggered by other DPUs,
+it is rechecked if it exceeds the goal). It is cleared when the hot partition is re-placed (newly created,
+full rebuild, or a piece placed by a hot split). Hence, for example, a concentration of gets on a deleted key
+sets it, and even if that key is reinserted, the partition does not trigger repartitioning on its own until
+the hot partition is re-placed.
 
-採用したバッチのクエリは採用の前に振り分け済みなので、キャッシュが効くのは次のバッチ
-からである (同じ再分割で他の hot partition が新設・分割されてルーティングをやり直す
-ときだけ、そのバッチから効く)。
+The queries of the batch in which adoption happens were routed before the adoption, so the cache takes effect
+from the next batch (only when the same repartitioning newly creates or splits another hot partition and
+routing is redone does it take effect from that batch).
 
-### 据えた hot partition での採用
+### Adoption at a placed hot partition
 
-再分割で据えた hot partition (cold から切り出したもの、hot split の 2 つ目以降の piece、
-split 元に残した最初の piece) を DPU に据えてクエリを振り分け直した後、振り分けられた
-クエリ数が `hot_cnt_goal` を超えるもの (1 チャンクより大きければ、次のバッチで hot split
-の対象になるもの) について同じ探索をする (docs/rebalancing-algorithm.md の
-`relieve_overloaded_hots`)。既にあるペアとの比較は hot split での採用と同じ。違いは次の
-通り。
+After hot partitions placed by repartitioning (those cut out of cold, the second and later pieces of a hot split,
+and the first piece left at the split source) are placed on the DPUs and the queries are rerouted, the same
+search is done for those whose number of assigned queries exceeds `hot_cnt_goal` (those that, if larger than
+1 chunk, would be subject to a hot split in the next batch) (`relieve_overloaded_hots` in
+docs/rebalancing-algorithm.md). The comparison with an existing pair is the same as for adoption at a hot split.
+The differences are as follows.
 
-* 採用したキーの推定件数を引いたクエリ数がなお `hot_cnt_goal` を超えるときに `hot_split_failed` を
-  立てる。採用しなかったとき (range クエリと delete のバッチを含む) は引かずに比べる。
-* 1 つでも採用したらルーティングをもう一度やり直すので、キャッシュはそのバッチから効く。
+* `hot_split_failed` is set when the query count minus the estimated count of the adopted key still exceeds
+  `hot_cnt_goal`. When nothing is adopted (including range query and delete batches), the count is compared
+  without subtracting.
+* If even one key is adopted, routing is redone once more, so the cache takes effect from that batch.
 
-## 各バッチでの扱い
+## Handling in each batch
 
-ルーティング (`route_single_point_query`) でキャッシュに当たったクエリは、種類ごとに
-次のように扱い、DPU へはそのうちルーティングのスレッドあたり高々 1 件だけを送る。
-pred は key より小さい最大のキーのペアを返すクエリなので、キャッシュのペアでは
-答えられない。同じキーの pred は同じ答えになることだけを使う。
+Queries that hit the cache in routing (`route_single_point_query`) are handled by kind as follows, and of those,
+at most 1 per routing thread is sent to the DPU.
+A pred returns the pair with the largest key less than key, so it cannot be answered from the cached pair.
+Only the fact that preds on the same key have the same answer is used.
 
-| クエリ | ホストで | DPU へ送るもの |
+| Query | At the host | Sent to the DPU |
 |:-|:-|:-|
-| get | 値をその場で書く | なし |
-| insert | キャッシュの値をバッチ順で最後の 1 件のものにする | 各スレッドの最後の 1 件 |
-| delete | 送らなかった分は `existed = 0` | 各スレッドの最初の 1 件。`existed` は DPU から受ける |
-| pred | 送った 1 件の結果を写す | 各スレッドの最初の 1 件 |
+| get | Writes the value on the spot | Nothing |
+| insert | Sets the cached value to that of the last one in batch order | The last one of each thread |
+| delete | `existed = 0` for those not sent | The first one of each thread. `existed` is received from the DPU |
+| pred | Copies the result of the one sent | The first one of each thread |
 
-スレッドあたり 1 件で足りるのは DPU 側の規則による: 同一バッチに同じキーの insert が
-複数あれば最後の 1 件の値が残り (docs/parallel_batch_update.md)、同じキーの delete が
-複数あれば先頭の 1 件だけが `existed = 1` を返す (docs/parallel_delete.md)。いずれも
-ホストが送った順序で決まる。各スレッドはバッチ順に連続した範囲を担当し、DPU に送る
-クエリ列はスレッド順に並ぶので、DPU が見る順序はバッチ順であり、バッチ全体で最後
-(insert) または最初 (delete) の 1 件が効く。
+One per thread suffices because of the DPU-side rules: if a batch has several inserts of the same key, the value
+of the last one remains (docs/parallel_batch_update.md), and if it has several deletes of the same key, only the
+first one returns `existed = 1` (docs/parallel_delete.md). Both are determined by the order in which the
+host sends them. Each thread handles a contiguous range in batch order, and the query sequence sent to the DPU
+is arranged in thread order, so the order the DPU sees is batch order, and the last (insert) or first (delete)
+one in the whole batch takes effect.
 
-## 追い出し
+## Eviction
 
-次の 3 つの場面でペアを捨てる。
+A pair is discarded on the following 3 occasions.
 
-* delete のバッチでそのキーが消えたとき (バッチの後)。
-* 同じ DPU で別のペアを採用したとき。
-* hot split でそのキーが最初の piece に無いとき、および全体再構築のとき。キーがその DPU の
-  hot partition から外れると、そのキーへの書き込みはキャッシュを経ないので、古い値を
-  残さないため。
+* When the key is removed by a delete batch (after the batch).
+* When another pair is adopted on the same DPU.
+* When the key is not in the first piece of a hot split, and on a full rebuild. Once the key leaves the DPU's
+  hot partition, writes to that key no longer go through the cache, so the pair is discarded to avoid
+  leaving a stale value.
 
-## ログ (part-log)
+## Logs (part-log)
 
-* `nosplit hot <dpu> reason new_hot load <m>`: 据えた hot partition に
-  `hot_split_failed` を立てた。`m` は振り分けられたクエリ数から採用したキーの推定件数を引いた値。
-* `cache hot <dpu> key <k> nqrys <n> load <m>`: 採用。`n` は推定件数、`m` はその
-  hot partition の負荷 (キャッシュで捌いた分は含まない)。
-* `cache keep <dpu> key <k> served <h> over <k'> nqrys <n>`: 既にあるペア `k` (このバッチで
-  `h` 件捌いた。DPU へ送った分も数える) を見つけたキー `k'` (推定 `n` 件) より優先して
-  残した。
-* `cache evict <dpu> key <k> reason replaced|deleted|moved`: 追い出し。`moved` は hot split
-  か全体再構築でキーがその DPU の hot partition から外れたとき。
-* `cache hits <n>`: そのバッチでキャッシュに当たったクエリ数 (DPU へ送った分も数える)。
-  0 のときは出ない。
+* `nosplit hot <dpu> reason new_hot load <m>`: `hot_split_failed` was set on a placed hot partition.
+  `m` is the number of assigned queries minus the estimated count of the adopted key.
+* `cache hot <dpu> key <k> nqrys <n> load <m>`: adoption. `n` is the estimated count, and `m` is the load of
+  that hot partition (excluding what the cache served).
+* `cache keep <dpu> key <k> served <h> over <k'> nqrys <n>`: the existing pair `k` (which served `h` queries in
+  this batch, counting those sent to the DPU) was kept in preference to the found key `k'` (estimated `n`
+  queries).
+* `cache evict <dpu> key <k> reason replaced|deleted|moved`: eviction. `moved` means the key left the DPU's hot
+  partition through a hot split or a full rebuild.
+* `cache hits <n>`: the number of queries that hit the cache in that batch (counting those sent to the DPU).
+  Not printed when 0.
 
-## 実装
+## Implementation
 
-* 状態は `hot_cache` で、DPU 番号で引く要素 (スロット) にその DPU のペアを置く。空の
-  スロットは値を `NOT_FOUND_VALUE` にする (ユーザの値はこれを取らない)。追い出しは値を
-  これに戻すだけ (`drop_hot_cache_pair`)。hot split では最初の piece を据える箇所で、
-  全体再構築では冒頭で捨てる。
-* ルーティングのスレッドごとの記録 `HotCacheHits`: スロットごとに捌いた件数、木へ送る
-  クエリのバッチ内位置、同じスレッドで同じスロットに 2 件目以降として当たった pred の
-  位置。`route_clear_impl` で消す。
-* delete と pred はスレッドが最初に当たった時点で `route_point_query_to_tree`
-  (キャッシュを見ないルーティング) で送る。insert は各スレッドが自分の範囲を終えてから
-  最後の 1 件を送り、キャッシュの値は `route_queries` がスレッド順に上書きして
-  バッチ順で最後のものにする。
-* pred の写しは `postprocess_of_pred_impl` の末尾、delete の追い出しは
-  `evict_deleted_hot_cache_pairs` (`batch_delete` の末尾)。
-* テストは `bpforest/test/hot_cache.cpp` (`hot_cache_test_<target>`)。1 つのキーへの
-  get の集中でキャッシュが入ること、その後の get, insert, pred, range_count, delete,
-  再挿入、全体再構築後の読みが参照実装と一致することを、キャッシュの on/off 両方で
-  確かめる。
+* The state is `hot_cache`, whose elements (slots), indexed by DPU number, hold that DPU's pair. An empty
+  slot has the value `NOT_FOUND_VALUE` (user values never take it). Eviction just resets the value to it
+  (`drop_hot_cache_pair`). Pairs are discarded where the first piece is placed in a hot split, and at the
+  beginning of a full rebuild.
+* Per-thread routing record `HotCacheHits`: for each slot, the number of queries served, the in-batch position
+  of the query sent to the tree, and the positions of preds that hit the same slot as the second or later one
+  in the same thread. Cleared by `route_clear_impl`.
+* Deletes and preds are sent with `route_point_query_to_tree` (routing that ignores the cache) at the moment
+  a thread first hits. For inserts, each thread sends the last one after finishing its range, and
+  `route_queries` overwrites the cached value in thread order so that it becomes the last one in
+  batch order.
+* The copying for pred is at the end of `postprocess_of_pred_impl`, and the eviction for delete is
+  `evict_deleted_hot_cache_pairs` (at the end of `batch_delete`).
+* The test is `bpforest/test/hot_cache.cpp` (`hot_cache_test_<target>`). It checks, with the cache both on and
+  off, that a concentration of gets on one key puts the pair into the cache, and that subsequent get, insert,
+  pred, range_count, delete, reinsertion, and reads after a full rebuild match the reference implementation.

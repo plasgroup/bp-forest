@@ -1,64 +1,71 @@
-# TASK_INSERT の分担
+# Handout for TASK_INSERT
 
-キー順に並んだバッチを tasklet に配り、各 tasklet が自分だけで木を更新するのに必要な情報を
-渡す処理を**分担**と呼ぶ。
+The process of distributing a key-ordered batch among tasklets and giving each tasklet the information
+it needs to update the tree on its own is called the **handout**.
 
-## 1. 成果物
+## 1. Output
 
-分担を終えた時点で、tasklet t ごとに `partitions[t]` (`InsertPartition`) が揃っている。
+When the handout finishes, `partitions[t]` (`InsertPartition`) is ready for each tasklet t.
 
-成果物が満たす性質: 各 tasklet の**担当**は、あるノードの子の連続部分であり (ノードは
-tasklet ごとに違ってよい)、担当を tasklet 番号の順に並べるとキー順になり、木のどの葉も
-ちょうど 1 つの担当の下にあり、クエリ数が tasklet 間で均等に近い。
+Properties of the output: each tasklet's **assignment** is a contiguous run of children of some node (the
+node may differ between tasklets); listing the assignments in tasklet-number order gives key order; every
+leaf of the tree lies under exactly one assignment; and the number of queries is close to even across
+tasklets.
 
-これらの性質は役割が違う。**「ちょうど 1 つ」と並び順が保証するのは正しさである。**
-再構築では tasklet の構築した木を番号順に繋いで上の階層を作り直すので、どの担当にも
-入らない部分木は新しい根から到達不能になって失われ、2 つの担当に入る部分木は 2 度現れる。
-一方、均等が効くのは性能で、バッチの所要時間は最も重い tasklet が決める。
+These properties serve different purposes. **"Exactly one" and the ordering guarantee correctness.**
+Reconstruction concatenates the trees built by the tasklets in number order and rebuilds the upper levels,
+so a subtree that belongs to no assignment becomes unreachable from the new root and is lost, and a subtree
+that belongs to two assignments appears twice. Evenness, on the other hand, matters for performance: the
+time of a batch is determined by the heaviest tasklet.
 
-成果物は親ノードと子の範囲である。更新と再構築が使う端の葉と局所木はここから導出でき、
-導出は全 tasklet が並列に行うのでバリアを増やさない。
+The output is a parent node and a range of its children. The edge leaves and local trees used by the update
+and the reconstruction can be derived from it, and all tasklets perform the derivation in parallel, so it
+adds no barriers.
 
-分担が決まった後、`partitions` の要素を読むのは担当する tasklet だけである。
+Once the handout is decided, each element of `partitions` is read only by the tasklet it belongs to.
 
-## 2. グループの記憶域
+## 2. Storage for groups
 
-`partitionings` の要素は、グループを作るたびに 1 つずつ配る。**要素数
-`TASK_INSERT_MAX_NR_PARTITIONINGS` が tasklet 数 − 1 で足りるのは、分担で触れるノードの数が
-それ以下だからである。** 1 つのノードに触れると、そのグループの tasklet の区間の内部に
-担当の境目が 1 本以上引かれる。割り当てが 2 つ以上ならその間に引かれる。1 つだけなら、その
-割り当ては降下しない (降下する割り当ては子を 1 つしか含まないが、内部ノードの子は 2 つ以上
-ある) ので tasklet を 1 個しか取らず、余った tasklet との間に引かれる。境目は入れ子の区間の
-内部にしか引かれないのでノード間で重複せず、引ける位置は tasklet 数 − 1 個しかない。
+One element of `partitionings` is handed out each time a group is created. **The element count
+`TASK_INSERT_MAX_NR_PARTITIONINGS`, the number of tasklets − 1, is enough because the handout touches at most
+that many nodes.** Touching one node draws one or more assignment boundaries inside the interval of that
+group's tasklets. If there are two or more allotments, a boundary is drawn between them. If there is only one,
+that allotment does not descend (an allotment that descends contains only one child, but an internal node has
+two or more children), so it takes only one tasklet, and a boundary is drawn between it and the remaining
+tasklets. Boundaries are drawn only inside nested intervals, so they do not coincide across nodes, and there
+are only tasklets − 1 positions where they can be drawn.
 
-## 3. 1 ラウンドの不変条件
+## 3. Invariants of one round
 
-*   **分担に加わる tasklet (番号が `TASK_INSERT_NR_TASKLETS` 未満) が同じ回数バリアを
-    通過する。** 担当が確定した tasklet も、そのラウンドでどのグループにも属さない tasklet
-    も、バリアだけは通過し、早期 return はその全員が同時のみ
-*   **1 つのラウンドで作られるグループは `partitionings` の連続した区間を占める** (要素の
-    番号を、単調に増える `nr_partitionings` から取るから)。次のラウンドが扱うのはその区間で、
-    区間が空ならそこで分担が終わる。判定に使う `nr_partitionings` は全 tasklet がバリアの
-    後に読むので、終わり方は揃う
+*   **The tasklets taking part in the handout (those numbered below `TASK_INSERT_NR_TASKLETS`) pass barriers
+    the same number of times.** Tasklets whose assignment is already settled, and tasklets that belong to no
+    group in that round, still pass the barriers, and an early return happens only for all of them at once
+*   **The groups created in one round occupy a contiguous range of `partitionings`** (because element indices
+    are taken from the monotonically increasing `nr_partitionings`). The next round handles that range, and if
+    the range is empty the handout ends there. All tasklets read the `nr_partitionings` used for this decision
+    after a barrier, so they all end the same way
 
-グループ先頭が並列に計画を進めてよいのは、書く先が自グループの tasklet の要素と、自分が
-取った `partitionings` の要素に閉じるからである (WRAM のバイト書きはネイティブで、隣の要素
-と衝突しない)。例外の `nr_partitionings` はロックを取って増やす。
+Group leaders may advance their plans in parallel because they write only to the elements of their own
+group's tasklets and to the `partitionings` elements they took (byte writes to WRAM are native, so they do
+not collide with adjacent elements). The exception, `nr_partitionings`, is incremented under a lock.
 
-## 4. バケット境界の探索範囲
+## 4. Search range for bucket boundaries
 
-境界は親の区切りキーをクエリ列から `INSERT_lower_bound` で探した位置である。探索範囲は
-2 つの情報で先に狭める。
+A boundary is the position of a parent's separator key in the query sequence, found with
+`INSERT_lower_bound`. The search range is narrowed beforehand using two pieces of information.
 
-*   同じグループの中で自分が直前に求めた境界。自分が担当する境界はキー順に増える
-*   並べ替えの**第 1 分割の塊** (piece)。クエリが `TASK_INSERT_SORT_RUN` 件以下のときは
-    第 1 分割自体が実行されないので、この絞り込みは使えない。分割は「最小キーと最大キーが一致しなくなる最上位の
-    桁」(全桁一致するときは最下位の桁) で行われたので、その桁より上を共有するキーの中では
-    桁順 = キー順であり、境界は区切りキーの桁の塊の中に必ずある
+*   The boundary that this tasklet found just before, in the same group. The boundaries a tasklet is
+    responsible for increase in key order
+*   The **piece of the first split** of the sort. When there are at most `TASK_INSERT_SORT_RUN` queries, the
+    first split is not performed at all, so this narrowing is unavailable. The split was made on "the most
+    significant digit at which the minimum and maximum keys differ" (the least significant digit if all
+    digits match), so among keys that share the digits above it, digit order = key order, and the boundary
+    always lies within the piece for the separator key's digit
 
-**塊で絞れるのはバッチの最小キーより大きく最大キー以下の区切りキーだけである。** それ以外
-の区切りキーは、その桁より上をバッチと共有するとは限らない。ただしその場合はグループの
-クエリが全てその区切りキー以上か全て未満かのどちらかなので、境界はクエリ区間の先頭か末尾で
-あり探索は要らない。探索範囲を空にして渡すことでそれを表す。先頭側で実際に返るのは自分が
-直前に求めた境界だが、それが先頭より後ろにあるなら最小キーより小さいクエリが存在すること
-になって矛盾するので、先頭のままである。
+**Pieces can narrow the search only for separator keys greater than the batch's minimum key and at most its
+maximum key.** Other separator keys do not necessarily share the digits above that digit with the batch. In
+that case, however, the group's queries are either all at least that separator key or all less than it, so
+the boundary is at the start or the end of the query interval and no search is needed. This is expressed by
+passing an empty search range. On the start side, what is actually returned is the boundary this tasklet
+found just before; but if that were after the start, a query smaller than the minimum key would exist, which
+is a contradiction, so it is the start.

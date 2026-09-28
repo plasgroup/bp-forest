@@ -1,176 +1,205 @@
-バッチ更新の tasklet 並列化
+Tasklet parallelization of batch updates
 ===
 
-TASK_INSERT を 1 つの DPU の全 tasklet で実行するための設計。バッチをキー順に並べ替え、
-木の形に沿って tasklet に配り、各 tasklet が自分の担当だけを更新する。
+The design for running TASK_INSERT on all tasklets of one DPU. The batch is sorted by key,
+distributed to the tasklets along the shape of the tree, and each tasklet updates only its own share.
 
-外から見える動作は単一 tasklet で実行した場合と一致する。ホストとの入出力形式
-(`docs/dpu_task_signature.md`) も、バッチ内で同じキーに複数回挿入したときに
-「最後の 1 件が残る」規則もそのままである。
+The externally visible behavior is the same as when running on a single tasklet. Both the
+input/output format with the host (`docs/dpu_task_signature.md`) and the rule that "the last
+one remains" when the same key is inserted more than once in a batch are unchanged.
 
-TASK_DELETE も並べ替えと分担を使う ([parallel_delete.md](parallel_delete.md))。
+TASK_DELETE also uses sorting and the handout ([parallel_delete.md](parallel_delete.md)).
 
-## 用語
+## Terms
 
-前のものだけで後のものが定義できる順に並べてある。
+Listed in an order in which each term can be defined using only the ones before it.
 
-*   **担当** — 1 つの tasklet が更新してよい、あるノードの子の連続部分
-*   **深さ** — ノードの、根からの距離。根は深さ 0
-*   **グループ** — ある深さで 1 つのノードを一緒に担当する tasklet の連続区間
-*   **バケット** — グループが担当するノードの子 1 つ。割り当ての最小の単位
-*   **局所木** — 1 つの tasklet が自分の担当を、それ自体で完結した B+ 木として持つもの
+*   **Share** — a contiguous range of the children of a node that one tasklet may update
+*   **Depth** — the distance of a node from the root. The root has depth 0
+*   **Group** — a contiguous interval of tasklets that jointly take charge of one node at a given depth
+*   **Bucket** — one child of the node a group takes charge of. The smallest unit of assignment
+*   **Local tree** — a tasklet's share, held as a self-contained B+ tree
 
-## 並べ替え
+## Sorting
 
-バッチをキー順に並べる。**安定**、すなわち等しいキーの間ではホストが送った順序を保つ。
-安定性は 3 箇所で保たれている。
+The batch is sorted by key. The sort is **stable**, i.e., among equal keys it keeps the order in
+which the host sent them. Stability is preserved in three places.
 
-*   第 1 分割 (バッチ全体を分ける最初の分割) の書き出し位置を「桁ごと、その中で tasklet
-    番号順」に割り当てる。各 tasklet は自分の区画をホストが送った順序で読み、区画自体も
-    その順に並んでいる
-*   塊 (キーの上位の桁が一致するクエリの連続範囲) の中の分割では、単一 tasklet が塊を
-    先頭から走査する
-*   小さい塊を並べる挿入ソートが等しいキーの順序を入れ替えない
+*   The write positions of the first partition (the first partition, which splits the whole
+    batch) are assigned "by digit, and within a digit in tasklet-number order". Each tasklet
+    reads its own section in the order the host sent it, and the sections themselves are
+    arranged in that order
+*   In partitions within a piece (a contiguous range of queries whose upper digits of the key
+    agree), a single tasklet scans the piece from the beginning
+*   The insertion sort that sorts small pieces does not swap the order of equal keys
 
-**クエリ列は 2 つの領域 (ホストが書き込んだ領域と移し先) を往復するが、`[begin, end)`
-のクエリはどちらの領域にあっても同じ `[begin, end)` を占める。** 分割の書き出し先が塊の
-範囲の外に出ないからである。したがって、別の tasklet に渡った塊同士も、1 つの tasklet の
-中の塊同士も重ならない。塊の処理の終わり (WRAM で並べる・桁を使い切った塊を移す) では
-**常にホストが書き込んだ領域へ書き戻す**。こうすればその塊が経た分割の回数の偶奇を
-数えなくてよい。
+**The query sequence moves back and forth between two regions (the region the host wrote and the
+destination), but the queries `[begin, end)` occupy the same `[begin, end)` in either region.**
+This is because the write destination of a partition never goes outside the range of the piece.
+Hence neither pieces handed to different tasklets nor pieces within one tasklet overlap. At the
+end of processing a piece (sorting it in WRAM, or moving a piece whose digits are used up), it is
+**always written back to the region the host wrote**. This way there is no need to count whether
+the number of partitions the piece has gone through is odd or even.
 
-塊を積む MRAM のスタック (tasklet のスタックは C の再帰を重ねられるほど大きくない) の
-要素数は「最上位の桁が取りうる値の数 + (1 回の分割で積む塊の数 − 1) × 最上位より下の桁の
-数」で抑えられる。桁を 1 つ降りるたびに 1 つ取り出してから積むので、その桁に残るのは
-兄弟だけである。最上位の桁は、キーの幅が桁幅の倍数でないぶん幅が狭く、取りうる値も
-少ない。第 1 分割の桁がこれより下のときは、そこで作る塊の数は増えるが、下に残る桁の数が
-それ以上に減るので、この値を超えない。
+The number of elements of the MRAM stack that holds pieces (a tasklet's stack is not large
+enough for nested C recursion) is bounded by "the number of values the most significant digit can
+take + (the number of pieces pushed by one partition − 1) × the number of digits below the most
+significant one". Each time we descend one digit, we pop one piece before pushing, so only its
+siblings remain at that digit. The most significant digit is narrower, by the amount by which the
+key width is not a multiple of the digit width, and can take fewer values. When the digit of the
+first partition is lower than this, the number of pieces created there increases, but the number
+of digits remaining below decreases by more, so this bound is not exceeded.
 
-`TASK_INSERT_SORT_CHECK` を定義すると並べ替えの直後にキーが非減少かを確かめる。実機で
-ホストが DPU の log を読むのは fault のときだけなので、違反は log に書いたうえで fault
-させる。この検査は並べ替えの直後でなければ意味を持たないので、木の構造の検査
-(`TASK_INSERT_CHECK`) と違って専用スロットへは出せない (`docs/dpu_iram_overlay.md`)。
+Defining `TASK_INSERT_SORT_CHECK` checks that the keys are non-decreasing right after sorting. On
+real hardware the host reads the DPU log only on a fault, so a violation is written to the log
+and then a fault is raised. This check is meaningful only right after sorting, so unlike the tree
+structure check (`TASK_INSERT_CHECK`) it cannot be moved to the dedicated slot
+(`docs/dpu_iram_overlay.md`).
 
-## 分担
+## Handout
 
-分担単体の解説が [insert_handout.md](insert_handout.md) にある。
+A standalone explanation of the handout is in [insert_handout.md](insert_handout.md).
 
-**2 つの tasklet が同じノードを読み書きすることはない。** 担当は部分木を丸ごと含み、
-キー範囲の境界がノードの境界に一致するからである。この性質から、担当を表すのに部分木の
-列は要らず、**そのノード 1 つと子の範囲**で足りる。
+**No two tasklets read or write the same node.** This is because a share contains whole subtrees,
+and the boundaries of its key range coincide with node boundaries. Because of this property, a
+share does not need to be represented as a sequence of subtrees; **the node itself and a range of
+its children** suffice.
 
-バケットのキー範囲に入るクエリの位置は、バッチがキー順なので連続区間である。その境界は
-ノードの区切りキーをバッチから二分探索で探せば求まり (`INSERT_lower_bound`)、境界 1 個に
-つき log2(探索範囲の広さ) 回の 8 バイト読みで済む。**クエリ列は 1 度も走査しない。**
-これが、降りる深さに上限を設けなくてよい理由である。
+Since the batch is sorted by key, the positions of the queries falling into the key range of a
+bucket form a contiguous interval. Its boundaries are found by binary-searching the batch for the
+separator keys of the node (`INSERT_lower_bound`), at a cost of log2(width of the search range)
+8-byte reads per boundary. **The query sequence is never scanned.** This is why no upper limit on
+the descent depth is needed.
 
-### 目標負荷の決め方
+### Choosing the target load
 
-割り当ては**目標負荷 L** (どの tasklet が担当するクエリ数もこれ以下と狙う上限) 1 つから
-決まる。ある L に必要な tasklet 数 `need(L)` は、バケットをキー順に 1 回走査する貪欲法で
-求まる。
+The assignment is determined by a single **target load L** (the upper bound we aim for on the
+number of queries any tasklet takes charge of). The number of tasklets `need(L)` required for a
+given L is obtained by a greedy method that scans the buckets once in key order.
 
-*   連続という制約のもとでは、この貪欲法の使う tasklet 数が最小である (交換論法)。
-    したがって `need` は L について単調減少で、グループの tasklet 数に収まる最小の L を
-    二分探索で求められる
-*   探索範囲の下限は、グループの全クエリ数をグループの tasklet 数で割った商 (切り上げ)。
-    完全に均等に割れたときの負荷であり、tasklet 1 つが担当するのは L 件までだから、これを
-    下回る L では必ず tasklet が足りない。上限は 1 tasklet が全部を担当するときの負荷
-*   単独で L を超えるバケットが葉のときは降下できず、その L は不成立である。実装の
-    `need(L)` はグループの tasklet 数を超える値を返し、二分探索は L を上げる
-*   `ceil(q[b] / L)` と数えるのは「そのバケットのクエリは L 件ずつに割れる」という仮定に
-    よる。本当に割れるかは 1 つ深く降りてそのバケットの子を見るまで分からない
+*   Under the contiguity constraint, this greedy method uses the minimum number of tasklets (by an
+    exchange argument). Hence `need` is monotonically decreasing in L, and the smallest L that
+    fits in the number of tasklets of the group can be found by binary search
+*   The lower end of the search range is the total number of queries of the group divided by the
+    number of tasklets of the group (rounded up). This is the load of a perfectly even split, and
+    since one tasklet takes charge of at most L queries, any L below it always runs out of
+    tasklets. The upper end is the load when one tasklet takes charge of everything
+*   When a bucket that alone exceeds L is a leaf, it cannot be descended into, and that L is
+    infeasible. The implementation's `need(L)` returns a value greater than the number of tasklets
+    of the group, and the binary search raises L
+*   Counting `ceil(q[b] / L)` rests on the assumption that "the queries of that bucket can be
+    split into pieces of L each". Whether they really can is not known until we descend one level
+    and look at the children of the bucket
 
-`need(L)` はグループの tasklet 数にちょうど一致するとは限らない。余った tasklet は
-**tasklet 1 つあたりのクエリ数が最大の、降下するバケット**へ 1 つずつ足す。降下しない
-バケットに足しても最大負荷は下がらない一方、降下するバケットでは中の分担の並列度が上がる
-(バケットの中の偏りは外側からは見えないので、tasklet を増やして不利になることはない)。
-余りが尽きるまで繰り返すと、tasklet 1 つあたりのクエリ数の最大値が厳密に最小になる
-(交換論法)。
+`need(L)` does not necessarily equal the number of tasklets of the group. The leftover tasklets
+are added one at a time to **the descending bucket with the largest number of queries per
+tasklet**. Adding them to a non-descending bucket does not lower the maximum load, whereas in a
+descending bucket it raises the parallelism of the handout inside it (the skew within a bucket is
+not visible from outside, so adding tasklets never makes things worse). Repeating this until the
+leftovers are used up makes the maximum number of queries per tasklet exactly minimal (by an
+exchange argument).
 
-## 更新と再構築
+## Updates and reconstruction
 
-### 経路キャッシュ
+### Path cache
 
-いまいる経路をクエリを跨いで保つ。キーがキャッシュした葉の上端を超えていれば、根から
-ではなくキャッシュした経路を上へ辿り、キーが届く最も深いノードから降りる。**各ノードに
-ついて上端しか保たないので、キー順でないバッチをこの手続きに渡してはならない。**
+The current path is kept across queries. If a key exceeds the upper bound of the cached leaf, we
+climb the cached path instead of starting from the root, and descend from the deepest node the key
+falls within. **Since only the upper bound is kept for each node, a batch that is not in key
+order must not be passed to this procedure.**
 
-キャッシュはその tasklet だけが読み書きし、局所木には他の tasklet がアクセスしないので、
-無効化を考える必要はない。ただし**担当の処理を終える前に必ず書き戻す**。この後の処理
-(葉の縫合と木の連結) は MRAM を読むからである。
+The cache is read and written only by its own tasklet, and no other tasklet accesses the local
+tree, so invalidation need not be considered. However, **it must always be written back before
+finishing the processing of the share**, because the subsequent steps (stitching leaves and
+joining trees) read MRAM.
 
-木全体の根 (`cold_root` / `hot_root`) は全タスクが使うので WRAM に残す。更新の手続きは
-MRAM にある木だけを扱うので、分担しない場合と TASK_MOVE_HOT の upsert では、バッチの
-あいだだけ木全体の根を MRAM に写して使う。
+The roots of the whole trees (`cold_root` / `hot_root`) are used by every task, so they stay in
+WRAM. The update procedure handles only trees in MRAM, so when there is no handout and in the
+upsert of TASK_MOVE_HOT, the root of the whole tree is copied to MRAM and used only for the
+duration of the batch.
 
-### 葉の縫合
+### Stitching leaves
 
-`INSERT_execute` は葉を分割したときやペア数を増やしたとき、隣の葉の `right` / `left` を
-書き換える。担当の端では隣の葉が別の tasklet のものなので、そのままでは競合する。
+When `INSERT_execute` splits a leaf or increases its number of pairs, it rewrites `right` /
+`left` of the neighboring leaf. At the edge of a share, the neighboring leaf belongs to another
+tasklet, so doing this as is would conflict.
 
-そこで、挿入を始める前に各 tasklet が自分の左端の葉の `left` と右端の葉の `right` を空
-リンクにしておく。`INSERT_execute` は空リンクなら書き換えを飛ばすので、担当の外へ書き込む
-ことがなくなる。挿入が終わったあと、各 tasklet は自分の新しい左端・右端の葉を求め直し、
-**木の連結のたびに境界 1 本ずつ繋ぐ**。繋ぐ相手を探す必要は無い。連結する 2 本の木が
-そのまま相手で、受け側の右端と donor 側の左端が出会う。したがって
+Therefore, before starting insertion, each tasklet sets `left` of its leftmost leaf and `right`
+of its rightmost leaf to a null link. `INSERT_execute` skips the rewrite if the link is null, so
+it never writes outside the share. After insertion, each tasklet finds its new leftmost and
+rightmost leaves again, and **connects one boundary at each join of trees**. There is no need to
+search for the partner to connect to: the two trees being joined are exactly the partners, and the
+rightmost leaf of the receiving side meets the leftmost leaf of the donor side. Thus
 
-> どの時点でも、tasklet が持っている木は完結した B+ 木であり、その葉の鎖は閉じていて、
-> 他の tasklet は触らない
+> at any point in time, the tree a tasklet holds is a complete B+ tree, its leaf chain is
+> closed, and no other tasklet touches it
 
-が最後まで保たれ、葉に触る操作が担当の外へ波及しないことを、木の持ち主だけで言える。
+holds to the end, and the fact that operations touching leaves do not spill outside the share can
+be argued from the owner of the tree alone.
 
-### 木の連結
+### Joining trees
 
-**連結**とは、隣り合うキー範囲を覆う 2 本の B+ 木を、その境目のキー 1 つを添えて 1 本の
-B+ 木にする操作である。
+**Joining** is the operation that turns two B+ trees covering adjacent key ranges, together with
+the one key at their boundary, into a single B+ tree.
 
-規則を決めるのは**占有率**の制約である。B+ 木で子 2 個でよいのは根だけで、非根のノードに
-は `MIN_NR_CHILDREN` 個以上の子 (葉なら `MIN_NR_PAIRS` 個以上のペア) が要る。局所木の根は
-子 2 個でありうる。そこで連結では、**低いほうの木の根を解体し、その子を高いほうの木の
-同じ高さのノードへ挿し込む**。解体して出てくる子は低いほうの木の非根ノードだから、
-そのまま下限を満たす。増えるのは受け側の子数だけなので、破れうるのは上限の側だけで、
-それは通常の分割で直せる。
+The rules are dictated by the **occupancy** constraint. In a B+ tree only the root may have just 2
+children; a non-root node needs at least `MIN_NR_CHILDREN` children (at least `MIN_NR_PAIRS`
+pairs for a leaf). The root of a local tree may have 2 children. So when joining, **the root of
+the lower tree is dismantled, and its children are inserted into the node of the same height in
+the higher tree**. The children obtained by dismantling are non-root nodes of the lower tree, so
+they satisfy the lower bound as they are. Only the number of children of the receiving side
+increases, so only the upper bound can be violated, and that is fixed by an ordinary split.
 
-挿し込みは高いほうの木の**境目に接する側の端**で行う。端に挿すので、経路上の祖先の
-区切りキーは 1 つも書き換えなくてよい。
+The insertion is done at **the edge of the higher tree that touches the boundary**. Since we
+insert at the edge, none of the separator keys of the ancestors on the path need to be rewritten.
 
-低いほうが葉 1 枚のときは解体できないので、高さ 1 のノードへ葉そのものを子として挿し込む。
-高さ 0 の木の根は分担で受け取った葉のままで、挿入はペアを増やすだけだから、非根に置いても
-ペア数の下限を満たす。両方とも葉 1 枚のときだけ 2 枚を子とする根を新しく作る。
+When the lower tree is a single leaf, it cannot be dismantled, so the leaf itself is inserted as a
+child into the node of height 1. The root of a height-0 tree is still the leaf received in the
+handout, and insertion only adds pairs, so it satisfies the lower bound on the number of pairs
+even when placed as a non-root. Only when both are single leaves is a new root created with the
+two as children.
 
-挿し込みで子数が `MAX_NR_CHILDREN` を超えたら半分に分ける。受け側の子も挿し込む子も
-それぞれ `MAX_NR_CHILDREN` 個以下だから合わせてもその 2 倍以下で、`MIN_NR_CHILDREN` の
-2 倍が `MAX_NR_CHILDREN` 以下と静的に保証されているから、半分ずつでも下限を割らない。
-この分割は経路を上へ伝播し、根まで届けば高さが 1 増えるが、`MAX_HEIGHT` を超えないことは
-占有率の下限から従う。**占有率の下限を下回る連結をしないことがその前提である。**
+If insertion makes the number of children exceed `MAX_NR_CHILDREN`, the node is split in half.
+Both the children of the receiving side and the inserted children number at most
+`MAX_NR_CHILDREN` each, so together at most twice that, and since twice `MIN_NR_CHILDREN` is
+statically guaranteed to be at most `MAX_NR_CHILDREN`, halves do not fall below the lower bound.
+This split propagates up the path, and if it reaches the root the height increases by 1, but not
+exceeding `MAX_HEIGHT` follows from the lower bound on occupancy. **The premise for this is that
+no join ever goes below the lower bound on occupancy.**
 
-## 実行の枠組み
+## Execution framework
 
-### 段階の区切り
+### Phase boundaries
 
-区切りには `sync.h` の連鎖 (隣の tasklet へ準備完了を順に伝える方式) で作ったバリアを
-使う。待っている tasklet は停止するので issue slot を消費せず、SDK のバリアと違って
-tasklet の一部だけを覆える。1 回のバリアは「後ろを待つ」「前を待つ」の対で、**同じ向きを
-続けるとデッドロックするので順序は揃える**。tasklet 0 だけの仕事はこの対の間に置ける。
+The boundaries use barriers built from the chains in `sync.h` (a scheme that passes readiness to
+the neighboring tasklet in turn). A waiting tasklet is stopped, so it consumes no issue slots,
+and unlike the SDK barriers it can cover only a subset of the tasklets. One barrier is a pair of
+"wait for those behind" and "wait for those ahead"; **the order must be kept consistent, because
+repeating the same direction deadlocks**. Work for tasklet 0 alone can be placed between the two
+halves of this pair.
 
-並べ替えに加わるのは番号が `TASK_INSERT_SORT_NR_TASKLETS` 未満の tasklet、それ以降に加わる
-のは `TASK_INSERT_NR_TASKLETS` 未満の tasklet である (前者は後者以上)。守るべき不変条件は
-**バリアの回数が、そのバリアに加わる tasklet で一致すること**である。早期 return は加わる
-全 tasklet が同時に抜けるときだけ許される。並べ替えだけに加わる tasklet が cold の更新中に
-hot の並べ替えを始めないよう (同じ union の記憶域を書く)、バッチの間にもバリアを置く。
+The sort is joined by tasklets with numbers below `TASK_INSERT_SORT_NR_TASKLETS`, and everything
+after it by tasklets below `TASK_INSERT_NR_TASKLETS` (the former is at least the latter). The
+invariant to keep is that **the number of barriers is the same for every tasklet that joins that
+barrier**. An early return is allowed only when all joining tasklets leave at the same time.
+There is also a barrier between batches, so that tasklets that join only the sort do not start
+sorting the hot batch while the cold tree is being updated (they write to the same union
+storage).
 
-**バリアで公開した共有値は、全員が読み終わる前に書き手が上書きしてはならない。**
+**A shared value published through a barrier must not be overwritten by its writer before
+everyone has finished reading it.**
 
-### MRAM 作業領域
+### MRAM work area
 
-作業領域は結果領域の直後から取る。ホストが渡す `qrys.result_offset` と結果領域の大きさ
-から DPU 側だけで位置が決まる。中身は並べ替えの移し先 (バッチ全体と同じ大きさ) と塊の
-スタックである。**この領域が MRAM の終端に収まることは呼び出し側の前提である**
-(ホストがクエリ列を書き込む時点で同じ前提が要る)。
+The work area is taken right after the result area. Its position is determined on the DPU side
+alone from `qrys.result_offset`, which the host passes, and the size of the result area. It holds
+the sort destination (the same size as the whole batch) and the piece stack. **That this area
+fits before the end of MRAM is a precondition of the caller** (the same precondition is needed
+when the host writes the query sequence).
 
-### 分担しない場合
+### Without a handout
 
-木が葉 1 枚しかないときと、クエリが `TASK_INSERT_SORT_RUN` 件以下のときは、分担せず単一
-tasklet で処理する。その更新で木の高さが増えうるので、**各 tasklet は分担に入る前のバリア
-より先に高さを読む**。遅れた tasklet が新しい高さを見ると分岐が食い違う。
+When the tree has only one leaf, or there are at most `TASK_INSERT_SORT_RUN` queries, there is no
+handout and a single tasklet does the processing. That update can increase the height of the
+tree, so **each tasklet reads the height before the barrier preceding the handout**. A tasklet
+that is late would see the new height, and the branches would diverge.

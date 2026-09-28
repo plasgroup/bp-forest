@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""リンク済み DPU ELF の overlay セグメントをロードアドレス (LMA) へ移す。
+"""Move the overlay segments of a linked DPU ELF to their load address (LMA).
 
-dpu_load は VMA だけを見てロード先メモリを決め、LMA (p_paddr) を無視する。
-そこで p_vaddr != p_paddr の LOAD セグメント (= overlay) の p_vaddr と
-所属セクションの sh_addr を LMA に書き換え、MRAM に配置させる。再配置は
-リンク時に解決済みなので実行内容には影響しない。
+dpu_load decides the destination memory from the VMA alone and ignores the
+LMA (p_paddr). This script therefore rewrites p_vaddr of every LOAD segment
+with p_vaddr != p_paddr (= an overlay), and sh_addr of the sections in it, to
+the LMA, so that they are placed in MRAM. Relocations were already resolved
+at link time, so this does not affect what is executed.
 """
 import struct
 import sys

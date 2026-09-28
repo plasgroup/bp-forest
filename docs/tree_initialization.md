@@ -1,100 +1,100 @@
 Initialization of Trees
 ===
 
-## 実現するレイアウト
+## Target layout
 
-### 基本方針
+### Basic policy
 
-* 葉に近い層から考える
-* 各層で、左側から順にできるかぎり中身を入れる
+* Consider the layers starting from the one closest to the leaves
+* In each layer, fill nodes as full as possible, from the left
 
-### 葉の層の中身
+### Contents of the leaf layer
 
-* key-valueペアが $`n`$ 個ある
-* 1つの葉ノードには最低 $`m_l`$ 個、最大 $`M_l`$ 個のkey-valueペアを入れてよい
+* There are $`n`$ key-value pairs
+* A leaf node may hold at least $`m_l`$ and at most $`M_l`$ key-value pairs
 
-このとき、
+Then,
 
-* 全部で $`L := \left\lceil n \over M_l \right\rceil`$ 個の葉ノードを作る
-* $`n = M_l q + r`$ ($`q, r \in \mathbb{N}, r < M_l`$) として、
-  * $`L = 1`$ のとき、その唯一のノードに $`n`$ 個のkey-valueペアを入れる
-  * $`L > 1 \land 0 < r < m_l \iff L > 1 \land n - (L - 1) M_l < m_l`$ のとき、
-    * 左側から $`L - 2`$ 個のノードに $`M_l`$ 個ずつkey-valueペアを入れる
-    * 右側から2番目のノードに $`M_l + r - m_l`$ 個のkey-valueペアを入れる
-    * 最も右側のノードに $`m_l`$ 個のkey-valueペアを入れる
-  * $`L > 1 \land (r = 0 \lor r \ge m_l) \iff L > 1 \land n - (L - 1) M_l \ge m_l`$ のとき、
-    * 左側から $`L - 1`$ 個のノードに $`M_l`$ 個ずつkey-valueペアを入れる
-    * 最も右側のノードに $`n - (L - 1) M_l`$ 個のkey-valueペアを入れる
+* Create $`L := \left\lceil n \over M_l \right\rceil`$ leaf nodes in total
+* Writing $`n = M_l q + r`$ ($`q, r \in \mathbb{N}, r < M_l`$),
+  * If $`L = 1`$, put $`n`$ key-value pairs into the only node
+  * If $`L > 1 \land 0 < r < m_l \iff L > 1 \land n - (L - 1) M_l < m_l`$,
+    * put $`M_l`$ key-value pairs into each of the $`L - 2`$ leftmost nodes
+    * put $`M_l + r - m_l`$ key-value pairs into the second node from the right
+    * put $`m_l`$ key-value pairs into the rightmost node
+  * If $`L > 1 \land (r = 0 \lor r \ge m_l) \iff L > 1 \land n - (L - 1) M_l \ge m_l`$,
+    * put $`M_l`$ key-value pairs into each of the $`L - 1`$ leftmost nodes
+    * put $`n - (L - 1) M_l`$ key-value pairs into the rightmost node
 
-### 内部の層の中身
+### Contents of an internal layer
 
-* 1つ下の層に $`n`$ ノードある
-* 1つの内部ノードには最低 $`m_I`$ 個、最大 $`M_I`$ 個の子供がいてよい
+* The layer below has $`n`$ nodes
+* An internal node may have at least $`m_I`$ and at most $`M_I`$ children
 
-このとき、
+Then,
 
-* 全部で $`I := \left\lceil n \over M_I \right\rceil`$ 個の内部ノードを作る
-* $`n = M_I q + r`$ ($`q, r \in \mathbb{N}, r < M_I`$) として、
-  * **レイアウト「root」**: $`I = 1`$ のとき、その唯一のノードに $`n`$ 個の子供を持たせる
-  * **レイアウト「tail-away」**: $`I > 1 \land 0 < r < m_I \iff I > 1 \land n - (I - 1) M_I < m_I`$ のとき、
-    * 左側から $`I - 2`$ 個のノードに $`M_I`$ 個ずつ子供を持たせる
-    * 右側から2番目のノードに $`M_I + r - m_I`$ 個の子供を持たせる
-    * 最も右側のノードに $`m_I`$ 個の子供を持たせる
-  * **レイアウト「tidy」**: $`I > 1 \land (r = 0 \lor r \ge m_I) \iff I > 1 \land n - (I - 1) M_I \ge m_I`$ のとき、
-    * 左側から $`I - 1`$ 個のノードに $`M_I`$ 個ずつ子供を持たせる
-    * 最も右側のノードに $`n - (I - 1) M_I`$ 個の子供を持たせる
+* Create $`I := \left\lceil n \over M_I \right\rceil`$ internal nodes in total
+* Writing $`n = M_I q + r`$ ($`q, r \in \mathbb{N}, r < M_I`$),
+  * **Layout "root"**: if $`I = 1`$, give the only node $`n`$ children
+  * **Layout "tail-away"**: if $`I > 1 \land 0 < r < m_I \iff I > 1 \land n - (I - 1) M_I < m_I`$,
+    * give $`M_I`$ children to each of the $`I - 2`$ leftmost nodes
+    * give $`M_I + r - m_I`$ children to the second node from the right
+    * give $`m_I`$ children to the rightmost node
+  * **Layout "tidy"**: if $`I > 1 \land (r = 0 \lor r \ge m_I) \iff I > 1 \land n - (I - 1) M_I \ge m_I`$,
+    * give $`M_I`$ children to each of the $`I - 1`$ leftmost nodes
+    * give $`n - (I - 1) M_I`$ children to the rightmost node
 
-## いろんな計算
+## Calculations
 
-### 子のインデックスから親のインデックス
+### From a child index to a parent index
 
-$`N_C`$ 個の子からなる層の上に $`N_P`$ 個の親からなる層がある。「全ての子が、子の層の中で左側から $`i_C`$ 個までに位置している」という条件を満たす親の個数 $`i_P`$ は？ ($`0 \le i_C \le N_C`$)
+A layer of $`N_P`$ parents sits above a layer of $`N_C`$ children. How many parents $`i_P`$ satisfy the condition "all of their children are among the $`i_C`$ leftmost children of the child layer"? ($`0 \le i_C \le N_C`$)
 
-* レイアウト「root」のとき、
-  * $`i_C = N_C`$ のとき、 $`i_P = 1 (= N_P)`$
-  * $`0 \le i_C < N_C`$ のとき、 $`i_P = 0`$
-* レイアウト「tail-away」のとき、
-  * $`i_C = N_C`$ のとき、 $`i_P = N_P`$
-  * $`N_C - m_I \le i_C < N_C`$ のとき、 $`i_P = N_P - 1`$
-  * $`0 \le i_C < N_C - m_I`$ のとき、 $`i_P = \left\lfloor i_C \over M_I \right\rfloor`$
-* レイアウト「tidy」のとき、
-  * $`i_C = N_C`$ のとき、 $`i_P = N_P`$
-  * $`0 \le i_C < N_C`$ のとき、 $`i_P = \left\lfloor i_C \over M_I \right\rfloor`$
+* For layout "root",
+  * if $`i_C = N_C`$, $`i_P = 1 (= N_P)`$
+  * if $`0 \le i_C < N_C`$, $`i_P = 0`$
+* For layout "tail-away",
+  * if $`i_C = N_C`$, $`i_P = N_P`$
+  * if $`N_C - m_I \le i_C < N_C`$, $`i_P = N_P - 1`$
+  * if $`0 \le i_C < N_C - m_I`$, $`i_P = \left\lfloor i_C \over M_I \right\rfloor`$
+* For layout "tidy",
+  * if $`i_C = N_C`$, $`i_P = N_P`$
+  * if $`0 \le i_C < N_C`$, $`i_P = \left\lfloor i_C \over M_I \right\rfloor`$
 
-これは次のように計算できる。
+This can be computed as follows.
 
-* $`i_C + m_I < N_C`$ なら、 $`i_P = \left\lfloor i_C \over M_I \right\rfloor`$
-* そうでなく $`i_C < N_C`$ なら、 $`i_P = N_P - 1`$
-* そうでないなら、 $`i_P = N_P`$
+* If $`i_C + m_I < N_C`$, $`i_P = \left\lfloor i_C \over M_I \right\rfloor`$
+* Otherwise, if $`i_C < N_C`$, $`i_P = N_P - 1`$
+* Otherwise, $`i_P = N_P`$
 
-### 親のインデックスから子のインデックス
+### From a parent index to a child index
 
-$`N_C`$ 個の子からなる層の上に $`N_P`$ 個の親からなる層がある。左側から $`i_P`$ 個の親についての、子の数の合計 $`i_C`$ は？
+A layer of $`N_P`$ parents sits above a layer of $`N_C`$ children. What is the total number of children $`i_C`$ of the $`i_P`$ leftmost parents?
 
-* レイアウト「root」のとき、
-  * $`i_P = 1 (= N_P)`$ のとき、 $`i_C = N_C`$
-  * $`i_P = 0`$ のとき、 $`i_C = 0`$
-* レイアウト「tail-away」のとき、
-  * $`i_P = N_P`$ のとき、 $`i_C = N_C`$
-  * $`i_P = N_P - 1`$ のとき、 $`i_C = N_C - m_I`$
-  * $`0 \le i_P < N_P - 1`$ のとき、 $`i_C = M_I i_P`$
-* レイアウト「tidy」のとき、
-  * $`i_P = N_P`$ のとき、 $`i_C = N_C`$
-  * $`0 \le i_P < N_P`$ のとき、 $`i_C = M_I i_P`$
+* For layout "root",
+  * if $`i_P = 1 (= N_P)`$, $`i_C = N_C`$
+  * if $`i_P = 0`$, $`i_C = 0`$
+* For layout "tail-away",
+  * if $`i_P = N_P`$, $`i_C = N_C`$
+  * if $`i_P = N_P - 1`$, $`i_C = N_C - m_I`$
+  * if $`0 \le i_P < N_P - 1`$, $`i_C = M_I i_P`$
+* For layout "tidy",
+  * if $`i_P = N_P`$, $`i_C = N_C`$
+  * if $`0 \le i_P < N_P`$, $`i_C = M_I i_P`$
 
-これは次のように計算できる。
+This can be computed as follows.
 
-* $`N_P > i_P + \begin{cases} 1 & (\text{tail-away}) \\ 0 & (\text{other layout}) \end{cases}`$ のとき、 $`i_C = M_I i_P`$
-* そうでなく $`i_P = N_P`$ なら、 $`i_C = N_C`$
-* そうでないなら、 $`i_C = N_C - m_I`$
+* If $`N_P > i_P + \begin{cases} 1 & (\text{tail-away}) \\ 0 & (\text{other layout}) \end{cases}`$, $`i_C = M_I i_P`$
+* Otherwise, if $`i_P = N_P`$, $`i_C = N_C`$
+* Otherwise, $`i_C = N_C - m_I`$
 
-### 葉のインデックスからペアのインデックス
+### From a leaf index to a pair index
 
-$`N_V`$ 個のkey-valueペアが $`N_L`$ 個の葉ノードに入っている。左側から $`i_L`$ 個の葉に入っているkey-valueペアの総数 $`i_V`$ は？
+$`N_V`$ key-value pairs are stored in $`N_L`$ leaf nodes. What is the total number $`i_V`$ of key-value pairs in the $`i_L`$ leftmost leaves?
 
-[親のインデックスから子のインデックス](#親のインデックスから子のインデックス)と同様
-($`M_I, m_I`$ を葉の $`M_l, m_l`$ に、$`N_C`$ をペア数 $`N_V`$ に読み替える)。
+Same as [From a parent index to a child index](#from-a-parent-index-to-a-child-index)
+(read $`M_I, m_I`$ as the leaf parameters $`M_l, m_l`$, and $`N_C`$ as the pair count $`N_V`$).
 
-* $`N_L > i_L + \begin{cases} 1 & (\text{tail-away}) \\ 0 & (\text{other layout}) \end{cases}`$ のとき、 $`i_V = M_l i_L`$
-* そうでなく $`i_L = N_L`$ なら、 $`i_V = N_V`$
-* そうでないなら、 $`i_V = N_V - m_l`$
+* If $`N_L > i_L + \begin{cases} 1 & (\text{tail-away}) \\ 0 & (\text{other layout}) \end{cases}`$, $`i_V = M_l i_L`$
+* Otherwise, if $`i_L = N_L`$, $`i_V = N_V`$
+* Otherwise, $`i_V = N_V - m_l`$

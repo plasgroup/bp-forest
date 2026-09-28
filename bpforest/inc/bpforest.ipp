@@ -3046,8 +3046,8 @@ inline void BPForest::incremental_repartition_worker_hot([[maybe_unused]] unsign
                                     [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
                             }
                         }();
-                        // 始端キーが最小生存キーであることに依存する。
-                        // 添字 -1 は負荷配列の手前を黙って壊す。
+                        // Relies on the begin key being the smallest live key.
+                        // An index of -1 would silently corrupt memory just before the load array.
                         if constexpr (IsPredecessorQuery<Query, Result>) {
                             assert(hot_begin_key < key && key - 1 <= hot_max_key);
                         } else {

@@ -1,76 +1,77 @@
-# pairs_range.hpp 構造メモ
+# pairs_range.hpp structure notes
 
-対象: `bpforest/inc/pairs_range.hpp`
+Subject: `bpforest/inc/pairs_range.hpp`
 
-## 型の階層
+## Type hierarchy
 
 ```
-PairsRange                  -- KVPair 連続範囲のビュー
-  LinkedPairsRange          -- + LinkedList ノード化
-  ChunkedPairsRange         -- + chunk 分割 + chunk ごとの load
-    LinkedChunkedPairsRange -- + LinkedList ノード化
-DataChunkIterator           -- ChunkedPairsRange 上の chunk 単位 random access iterator (非派生)
-NewHotRange                 -- hot range 切り出し結果 (PairsRange + KeyRange + load)
+PairsRange                  -- view of a contiguous range of KVPairs
+  LinkedPairsRange          -- + as a LinkedList node
+  ChunkedPairsRange         -- + chunk division + per-chunk load
+    LinkedChunkedPairsRange -- + as a LinkedList node
+DataChunkIterator           -- chunk-wise random access iterator over ChunkedPairsRange (not derived)
+NewHotRange                 -- result of carving out a hot range (PairsRange + KeyRange + load)
 ```
 
 ## PairsRange
 
-KVPair 連続領域への非所有・読み取り専用ビュー。`begin()`/`end()` で KVPair ポインタ範囲、`npairs()` で要素数を返す。
+A non-owning, read-only view of a contiguous region of KVPairs. `begin()`/`end()` return the range of KVPair pointers, and `npairs()` returns the number of elements.
 
 ## ChunkedPairsRange
 
-PairsRange に chunk 分割と chunk ごとの load を加えたビュー。`nchunks()` で chunk 数、`begin()`/`end()` で chunk 単位の `DataChunkIterator` を返す。
+A view that adds chunk division and per-chunk load to PairsRange. `nchunks()` returns the number of chunks, and `begin()`/`end()` return chunk-wise `DataChunkIterator`s.
 
-コンストラクタ:
-1. `(PairsRange, uint32_t* load = nullptr)` -- 対象 KVPair 範囲と chunk load 配列を指定
-2. `(DataChunkIterator begin, DataChunkIterator end)` -- 既存の chunk iterator 区間 `[begin, end)` で部分範囲を切り出す
+Constructors:
+1. `(PairsRange, uint32_t* load = nullptr)` -- specifies the target KVPair range and the chunk load array
+2. `(DataChunkIterator begin, DataChunkIterator end)` -- carves out a subrange given by an existing chunk iterator interval `[begin, end)`
 
-各 chunk の load 配列への参照をあわせて保持する。load 配列は後から
-`set_load_ary(uint32_t*)` で差し替えられる。
-range を先に組み立てて load 配列を後から割り当てる場面で使う: repartition の worker は
-DPU ごとに thread_local バッファ `chunk2load` を必要な chunk 数だけ確保し直し、
-その先頭 (incremental の cold 側は、バッファを cold range リストの要素ごとに
-切り分けた各位置) を `set_load_ary` で各 range に渡してから負荷を数え上げる。
+It also holds a reference to the load array of its chunks. The load array can be replaced later with
+`set_load_ary(uint32_t*)`.
+This is used when a range is built first and its load array is assigned later: the repartition workers
+reallocate, per DPU, a thread_local buffer `chunk2load` with as many chunks as needed,
+pass its start (on the incremental cold side, the position of each slice obtained by
+dividing the buffer among the elements of the cold range list) to each range with
+`set_load_ary`, and then count up the loads.
 
 ## DataChunkIterator
 
-ChunkedPairsRange 上の chunk 単位 random access iterator。
-`ChunkedPairsRange::begin()`/`end()` が返す。
+A chunk-wise random access iterator over ChunkedPairsRange.
+Returned by `ChunkedPairsRange::begin()`/`end()`.
 
-各 chunk は `KVPairsChunkSize` ペア単位。最終 chunk は端数あり。
+Each chunk is `KVPairsChunkSize` pairs. The last chunk may be partial.
 
-主な capability:
-- `begin()`/`end()`: この chunk の KVPair 範囲
-- `npairs()`: chunk 内の要素数
-- `load()`: この chunk の load カウンタへの参照
-- `load_ptr()`: load カウンタの生ポインタ (one-past-end 時の UB 回避用)
-- `operator++`/`--`/`+=`: chunk 単位の移動
-- `operator-`: 2 iterator 間の chunk 数の差
-- `operator==`: 同じ位置を指しているかの比較
+Main capabilities:
+- `begin()`/`end()`: the KVPair range of this chunk
+- `npairs()`: the number of elements in the chunk
+- `load()`: a reference to this chunk's load counter
+- `load_ptr()`: a raw pointer to the load counter (to avoid UB at one-past-end)
+- `operator++`/`--`/`+=`: movement in chunks
+- `operator-`: the difference in chunks between two iterators
+- `operator==`: whether two iterators point to the same position
 
-内部的には、元の PairsRange 内での現在位置と対応する load 配列位置を保持する。
+Internally, it holds the current position within the original PairsRange and the corresponding position in the load array.
 
 ## NewHotRange
 
-hot range 切り出し結果。データ範囲 (`pairs_range`)、キー範囲 (`key_range`)、
-推定負荷 (`load`)、切り出し元の base partition (`origin`) の 4 つ組。切り出しの起点は 2 か所:
+The result of carving out a hot range. A 4-tuple of the data range (`pairs_range`), the key range (`key_range`),
+the estimated load (`load`), and the base partition it was carved from (`origin`). Carving starts from two places:
 
-- `find_relatively_hot_ranges` -- cold 領域から hot を切り出す
-- `split_hot_range_equal_load` (`bpforest/inc/split_hot_range.hpp`) -- 既存 hot が過熱したとき、
-  それを負荷が均等になるよう分割する
+- `find_relatively_hot_ranges` -- carves hot ranges out of the cold region
+- `split_hot_range_equal_load` (`bpforest/inc/split_hot_range.hpp`) -- when an existing hot range overheats,
+  splits it into pieces of equal load
 
-いずれも切り出した piece を hook 経由で呼び出し側に渡すだけで、
-`NewHotRange` に組み立てるのは repartition worker 側の hook。
+Both only pass the carved pieces to the caller through a hook;
+the hooks on the repartition worker side assemble them into `NewHotRange`s.
 
 ## LinkedPairsRange
 
-DPU ごとの cold 領域を並べた列 (`BPForest::cold_ranges`) の要素。
-初期データ投入 (`distribute_data_based_on_partitions`) と全データ回収 (`retrieve_all_data`) が使う。
-どちらも hot の切り出し判定をしないので、chunk 単位の load を持たない `PairsRange` 版でよい。
-`LinkedElement<PairsRange>` の typedef。
+An element of the sequence of per-DPU cold regions (`BPForest::cold_ranges`).
+Used by the initial data distribution (`distribute_data_based_on_partitions`) and by retrieving all data (`retrieve_all_data`).
+Neither decides on carving out hot ranges, so the `PairsRange` version without per-chunk load suffices.
+A typedef of `LinkedElement<PairsRange>`.
 
 ## LinkedChunkedPairsRange
 
-各 DPU の cold range リストを構成するノード。
-hot 切り出し時に erase/insert される。
-`LinkedElement<ChunkedPairsRange>` の typedef。
+A node of each DPU's cold range list.
+Erased/inserted when hot ranges are carved out.
+A typedef of `LinkedElement<ChunkedPairsRange>`.

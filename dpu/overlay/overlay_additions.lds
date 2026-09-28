@@ -1,14 +1,15 @@
 /*
- * IRAM overlay の追加定義。link_overlay.sh が SDK の dpu.lds (iram の
- * LENGTH を形式上広げたもの) の後ろに連結して使う。
+ * Additional definitions for the IRAM overlay. link_overlay.sh appends them
+ * to the SDK's dpu.lds (with the LENGTH of iram formally widened).
  */
 SECTIONS
 {
-  /* 各スロットの VMA = IRAM 窓 (常駐 .text の直後)、LMA (ロードイメージ)
-   * は MRAM 静的データ (.mram) の直後に、DMA が MRAM 行をまたぎにくい
-   * よう行サイズ (1024B) 整列で並ぶ。単一の OVERLAY 文はメンバの LMA を
-   * 隙間なく連続配置してしまうため、スロットごとに OVERLAY 文を分けて
-   * AT() で整列を指定する。 */
+  /* The VMA of each slot is the IRAM window (right after the resident
+   * .text). The LMAs (load images) follow the MRAM static data (.mram),
+   * aligned to the row size (1024 B) so that the DMA crosses fewer MRAM
+   * rows. A single OVERLAY statement would place the LMAs of its members
+   * back to back with no gap, so each slot has its own OVERLAY statement,
+   * with the alignment given by AT(). */
   OVERLAY ALIGN(ADDR(.text) + SIZEOF(.text), 8) : AT (ALIGN(ADDR(.mram) + SIZEOF(.mram), 1024)) {
     ovl0 { *(ovl0 ovl0.*) }
   }
@@ -28,8 +29,8 @@ SECTIONS
     ovl5 { *(ovl5 ovl5.*) }
   }
 
-  /* IRAM の実容量検査。iram 領域の LENGTH では検査できない
-   * (link_overlay.sh 参照)。 */
+  /* Check against the real IRAM capacity. The LENGTH of the iram region
+   * cannot be used for this (see link_overlay.sh). */
   ASSERT(ADDR(.text) + SIZEOF(.text) <= 0x80000000 + DPU_IRAM_SIZE, "resident .text does not fit in IRAM")
   ASSERT(ADDR(ovl0) + SIZEOF(ovl0) <= 0x80000000 + DPU_IRAM_SIZE, "overlay ovl0 does not fit in IRAM")
   ASSERT(ADDR(ovl1) + SIZEOF(ovl1) <= 0x80000000 + DPU_IRAM_SIZE, "overlay ovl1 does not fit in IRAM")
@@ -38,8 +39,9 @@ SECTIONS
   ASSERT(ADDR(ovl4) + SIZEOF(ovl4) <= 0x80000000 + DPU_IRAM_SIZE, "overlay ovl4 does not fit in IRAM")
   ASSERT(ADDR(ovl5) + SIZEOF(ovl5) <= 0x80000000 + DPU_IRAM_SIZE, "overlay ovl5 does not fit in IRAM")
 
-  /* 窓の IRAM バイトアドレス。0x80000000 を引いた素の数値にしておくと
-   * C 側でそのまま使える。ABSOLUTE がないと ovl0 所属シンボルになる。 */
+  /* IRAM byte address of the window. Subtracting 0x80000000 gives a plain
+   * number that C code can use as is. Without ABSOLUTE, the symbol would
+   * belong to ovl0. */
   __ovl_window_byte_addr = ABSOLUTE(ADDR(ovl0) - 0x80000000);
 
   __ovl_load_ovl0 = LOADADDR(ovl0);
@@ -56,11 +58,13 @@ SECTIONS
   __ovl_size_ovl5 = SIZEOF(ovl5);
 
   /*
-   * MRAM ヒープの起点 __sys_used_mram_end (DPU_MRAM_HEAP_POINTER) を
-   * SDK 定義 (.mram 末尾) から overlay イメージの直後へ再代入で動かし、
-   * ヒープとイメージの衝突を防ぐ。トップレベルの代入だと ABS シンボルに
-   * なりホストの dpu_get_symbol が拒否するため、イメージ末尾に置いた
-   * セクションの中で定義する (8 バイトのダミーは空セクションの削除よけ)。
+   * Move the MRAM heap origin __sys_used_mram_end (DPU_MRAM_HEAP_POINTER)
+   * by reassignment from its SDK definition (end of .mram) to right after
+   * the overlay images, so that the heap does not collide with the images.
+   * A top-level assignment would make it an ABS symbol, which the host's
+   * dpu_get_symbol rejects, so it is defined inside a section placed at the
+   * end of the images (the 8-byte dummy keeps the empty section from being
+   * discarded).
    */
   .mram.heap_origin LOADADDR(ovl5) + SIZEOF(ovl5) (NOLOAD) : {
     __sys_used_mram_end = .;

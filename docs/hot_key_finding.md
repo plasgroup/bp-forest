@@ -1,195 +1,195 @@
-# 一部の値が取り除かれた配列に対する最頻値の $\varepsilon$ 近似を求める逐次乱択アルゴリズム
+# A sequential randomized algorithm for an $\varepsilon$-approximate mode of an array with some values removed
 
-## 0. 問題と保証
+## 0. Problem and guarantee
 
-- 元の配列を $\bar a$、その長さを $\bar n$ とする。$\bar a$ からある値 $v_0$ の出現をすべて取り除いた配列が $a$（長さ $n$）である。
-- 入力：$n$、$a$（ランダムアクセス可能）、$v_0$、取り除かれた個数 $r\ge0$、精度 $\varepsilon\in(0,1)$、失敗確率 $\delta\in(0,1)$。$\bar n=n+r$ は入力から計算する。何も取り除かれていない場合は $r=0$ とし、$v_0$ は存在しないものとして扱う（§6 参照）。
-- 記法：値 $v$ の $\bar a$ における出現割合を $\bar p_v$、$a$ における出現割合を $p_v$ とする。$v\ne v_0$ について $\bar p_v=\frac{n}{\bar n}p_v$、また $\bar p_{v_0}=r/\bar n$ は正確に分かる。$\bar p_{(1)}=\max_v\bar p_v$、$p_{(1)}=\max_{v\ne v_0}p_v$ とし、それぞれを達成する値のひとつを $\bar v^*$、$v^*$ とする。
-- 出力：$\bar a$ 内の値。
-- 保証：確率 $1-\delta$ 以上で、出力 $v$ が $\bar p_v\ge\bar p_{(1)}-\varepsilon$ を満たす。特に、$\bar a$ の上位 2 値の割合の差が $\varepsilon$ 以上なら、出力は真の最頻値である。
-- コスト：サンプル数は $n$ に依存しない。最悪値は $k+m$（§3）、割合の差が大きい入力では早期に停止する。空間 $O(1/\varepsilon)$。
+- Let $\bar a$ be the original array and $\bar n$ its length. The array $a$ (length $n$) is $\bar a$ with all occurrences of some value $v_0$ removed.
+- Input: $n$, $a$ (random access), $v_0$, the number removed $r\ge0$, accuracy $\varepsilon\in(0,1)$, failure probability $\delta\in(0,1)$. $\bar n=n+r$ is computed from the input. If nothing was removed, set $r=0$ and treat $v_0$ as nonexistent (see §6).
+- Notation: let $\bar p_v$ be the fraction of occurrences of value $v$ in $\bar a$, and $p_v$ its fraction in $a$. For $v\ne v_0$, $\bar p_v=\frac{n}{\bar n}p_v$, and $\bar p_{v_0}=r/\bar n$ is known exactly. Let $\bar p_{(1)}=\max_v\bar p_v$ and $p_{(1)}=\max_{v\ne v_0}p_v$, and let $\bar v^*$ and $v^*$ be values attaining them.
+- Output: a value in $\bar a$.
+- Guarantee: with probability at least $1-\delta$, the output $v$ satisfies $\bar p_v\ge\bar p_{(1)}-\varepsilon$. In particular, if the fractions of the top 2 values of $\bar a$ differ by at least $\varepsilon$, the output is the true mode.
+- Cost: the number of samples does not depend on $n$. The worst case is $k+m$ (§3), and on inputs with a large gap in fractions it stops early. Space $O(1/\varepsilon)$.
 
-厳密な最頻値を $n$ に依存しないコストで求めることは不可能である（上位 2 値の差が $1/n$ まで小さくなりうるため）。$\varepsilon$ による緩和はこのための最小限の妥協である。
+Finding the exact mode at a cost independent of $n$ is impossible (because the gap between the top 2 values can be as small as $1/n$). Relaxing by $\varepsilon$ is the minimal compromise for this.
 
-## 1. 必要な確率論の知識
+## 1. Required probability background
 
-### 1.1 復元抽出と i.i.d. ベルヌーイ試行（sampling with replacement）
+### 1.1 Sampling with replacement and i.i.d. Bernoulli trials
 
-一様復元抽出において「サンプルが値 $v$ に等しい」の指示変数は Bernoulli$(p_v)$ で、異なるサンプル間で独立同分布。
+Under uniform sampling with replacement, the indicator of "the sample equals value $v$" is Bernoulli$(p_v)$, independent and identically distributed across samples.
 
-### 1.2 Hoeffding の不等式（Hoeffding's inequality）
+### 1.2 Hoeffding's inequality
 
-$X_1,\dots,X_t$ を i.i.d. Bernoulli$(p)$、$\hat p=\frac1t\sum X_i$ とすると、任意の $\rho>0$ で
+Let $X_1,\dots,X_t$ be i.i.d. Bernoulli$(p)$ and $\hat p=\frac1t\sum X_i$. Then for any $\rho>0$,
 $$P(\hat p\le p-\rho)\le e^{-2t\rho^2},\qquad P(\hat p\ge p+\rho)\le e^{-2t\rho^2}.$$
 
-### 1.3 乗法型 Chernoff 上界・下側（multiplicative Chernoff bound, lower tail）
+### 1.3 Multiplicative Chernoff bound, lower tail
 
-$X$ を独立なベルヌーイ変数の和、$\mu=E[X]$ とすると、任意の $\eta\in(0,1)$ で
+Let $X$ be a sum of independent Bernoulli variables and $\mu=E[X]$. Then for any $\eta\in(0,1)$,
 $$P\big(X\le(1-\eta)\mu\big)\le e^{-\eta^2\mu/2}.$$
 
-### 1.4 時刻についての和集合上界（union bound, Basel problem）
+### 1.4 Union bound over time (Basel problem)
 
-事象列 $E_1,E_2,\dots$ が $P(E_t)\le c/t^2$ を満たすなら
+If a sequence of events $E_1,E_2,\dots$ satisfies $P(E_t)\le c/t^2$, then
 $$P\Big(\bigcup_{t\ge1}E_t\Big)\le c\sum_{t\ge1}\frac1{t^2}=c\cdot\frac{\pi^2}6<1.645\,c.$$
-（これで作る「すべての時刻で同時に成り立つ信頼区間」は confidence sequence / anytime-valid confidence bound と呼ばれる。）
+(A "confidence interval that holds simultaneously at all times" built this way is called a confidence sequence / anytime-valid confidence bound.)
 
-### 1.5 Misra–Gries アルゴリズム（Misra–Gries algorithm, frequent items）
+### 1.5 Misra–Gries algorithm (frequent items)
 
-長さ $k$ のストリームに $l$ 個のカウンタで Misra–Gries を走らせると、出現回数が $k/(l+1)$ を超える要素はすべて終了時に保持されている。空間 $O(l)$。
+Running Misra–Gries with $l$ counters on a stream of length $k$, every element that occurs more than $k/(l+1)$ times is retained at the end. Space $O(l)$.
 
-## 2. 帰着の考え方
+## 2. Idea of the reduction
 
-2 つの事実を使う。
+Two facts are used.
 
-1. $v_0$ 以外の値の順序は $a$ と $\bar a$ で一致し、$\bar a$ での加法誤差 $\varepsilon$ は $a$ での加法誤差
+1. The order of values other than $v_0$ is the same in $a$ and $\bar a$, and an additive error $\varepsilon$ in $\bar a$ corresponds to an additive error
    $$\varepsilon'=\varepsilon\cdot\frac{\bar n}{n}$$
-   に対応する。$\varepsilon'\ge\varepsilon$ なので、$a$ 上では要求精度が緩くなる。
-2. $\bar p_{v_0}=r/\bar n$ は既知なので、$v_0$ を「推定誤差 0 の候補」として検証段の候補集合に加えればよい。$v_0$ と他の候補との比較も、他の候補どうしの比較と同じ停止規則で扱える。
+   in $a$. Since $\varepsilon'\ge\varepsilon$, the required accuracy is looser on $a$.
+2. $\bar p_{v_0}=r/\bar n$ is known, so it suffices to add $v_0$ to the candidate set of the verification stage as a "candidate with zero estimation error". Comparisons between $v_0$ and other candidates are handled by the same stopping rule as comparisons among the other candidates.
 
-候補選択は $a$ に対して精度 $\varepsilon'$ で行い、検証は候補集合 $C\cup\{v_0\}$ 上で、推定値を $\bar a$ の単位に換算して行う。
+Candidate selection is done on $a$ with accuracy $\varepsilon'$, and verification is done on the candidate set $C\cup\{v_0\}$ with the estimates converted to the units of $\bar a$.
 
-## 3. アルゴリズム
+## 3. Algorithm
 
-### 定数
+### Constants
 
-$\delta_1=\delta_2=\delta_3=\delta/3$、$\varepsilon'=\varepsilon\bar n/n$ とし、
+Let $\delta_1=\delta_2=\delta_3=\delta/3$, $\varepsilon'=\varepsilon\bar n/n$, and
 $$
 k=\Big\lceil\frac{8}{\varepsilon'}\ln\frac1{\delta_1}\Big\rceil,\qquad
 l=\Big\lceil\frac{2}{\varepsilon'}\Big\rceil .
 $$
-第 1 段で得られる候補集合 $C$ の要素数を $L=|C|$（$L\le l$）とし、
+Let $L=|C|$ ($L\le l$) be the size of the candidate set $C$ obtained in stage 1, and
 $$
 m=\Big\lceil\frac{2}{\varepsilon'^2}\ln\frac{2L}{\delta_3}\Big\rceil,\qquad
 \rho_t=\sqrt{\frac{\ln(4Lt^2/\delta_2)}{2t}}\quad(t\ge1).
 $$
-$\rho_t$ は $t$ について単調減少である（$4L/\delta_2\ge12>e^2$ より）。さらに $\bar a$ の単位に換算した推定値と半径を
+$\rho_t$ is monotonically decreasing in $t$ (since $4L/\delta_2\ge12>e^2$). Further, define the estimates and radii converted to the units of $\bar a$ as
 $$
 \hat q_v(t)=\frac{n}{\bar n}\hat p_v(t),\quad \mathrm{rad}(v)=\bar\rho_t:=\frac{n}{\bar n}\rho_t\qquad(v\in C),\qquad
 \hat q_{v_0}(t)=\frac r{\bar n},\quad \mathrm{rad}(v_0)=0
 $$
-とする。ここで $\hat p_v(t)$ は第 2 段の $t$ 個のサンプル中で $v$ が出現した割合である。
+where $\hat p_v(t)$ is the fraction of the $t$ samples of stage 2 in which $v$ occurred.
 
-### 手順
+### Procedure
 
-1. $r+\varepsilon\bar n\ge n$ なら $v_0$ を出力して終了。（このとき $a$ のどの値も $\bar p_v\le n/\bar n\le r/\bar n+\varepsilon$。）
-   以下では $n>r+\varepsilon\bar n$、したがって $\varepsilon'<1$ である。
-2. 第 1 段（候補選択）：$a$ から $k$ 個を復元抽出し、Misra–Gries を $l$ 個のカウンタで走らせて、保持された値の集合を $C$ とする。（辞書で厳密に数え、出現回数が $k/(l+1)$ を超える値を $C$ としてもよい。）$C=\emptyset$ なら $v_0$ を出力して終了。
-3. 第 2 段（逐次検証）：$a$ から新たに 1 個ずつ復元抽出し、$v\in C$ について $\hat p_v(t)$ を維持する。各 $t$ で $\hat v_t=\arg\max_{v\in C\cup\{v_0\}}\hat q_v(t)$（同点は任意）とし：
-   - 早期停止：すべての $u\in C\cup\{v_0\}$、$u\ne\hat v_t$ について
+1. If $r+\varepsilon\bar n\ge n$, output $v_0$ and stop. (In this case every value of $a$ has $\bar p_v\le n/\bar n\le r/\bar n+\varepsilon$.)
+   From here on, $n>r+\varepsilon\bar n$, and hence $\varepsilon'<1$.
+2. Stage 1 (candidate selection): draw $k$ samples with replacement from $a$, run Misra–Gries with $l$ counters, and let $C$ be the set of retained values. (Alternatively, count exactly with a dictionary and let $C$ be the values occurring more than $k/(l+1)$ times.) If $C=\emptyset$, output $v_0$ and stop.
+3. Stage 2 (sequential verification): draw fresh samples from $a$ with replacement, one at a time, and maintain $\hat p_v(t)$ for $v\in C$. At each $t$, let $\hat v_t=\arg\max_{v\in C\cup\{v_0\}}\hat q_v(t)$ (ties broken arbitrarily), and:
+   - Early stop: if for all $u\in C\cup\{v_0\}$ with $u\ne\hat v_t$
      $$\hat q_{\hat v_t}(t)-\mathrm{rad}(\hat v_t)\ \ge\ \hat q_u(t)+\mathrm{rad}(u)-\varepsilon$$
-     が成り立てば $\hat v_t$ を出力して終了。
-   - 打ち切り：$t=m$ に達したら $\hat v_m$ を出力して終了。
+     holds, output $\hat v_t$ and stop.
+   - Truncation: on reaching $t=m$, output $\hat v_m$ and stop.
 
-### 実装上の注意
+### Implementation notes
 
-- 1 サンプルあたりの更新は $O(1)$。停止条件の判定は $O(L)$ なので、毎回でなく $L$ 回ごと、あるいは $t$ が幾何級数的な時刻でのみ判定してもよい（停止が高々その間隔分だけ遅れる）。
-- 空間は $C$ の計数分で $O(L)=O(1/\varepsilon')\le O(1/\varepsilon)$。
-- 手順 1, 2 の判定はサンプリングを要しない。
+- The update per sample is $O(1)$. Checking the stopping condition is $O(L)$, so it may be checked every $L$ samples instead of every time, or only at geometrically spaced $t$ (stopping is delayed by at most that interval).
+- Space is $O(L)=O(1/\varepsilon')\le O(1/\varepsilon)$ for the counts of $C$.
+- The checks in steps 1 and 2 require no sampling.
 
-## 4. 失敗確率が $\delta$ 以下であることの証明
+## 4. Proof that the failure probability is at most $\delta$
 
-次の 3 事象を定義する。
+Define the following 3 events.
 
-- $F$：$v^*\in C$。
-- $G$：すべての $v\in C$ とすべての $t\ge1$ で $|\hat p_v(t)-p_v|\le\rho_t$。
-- $H$：すべての $v\in C$ で $|\hat p_v(m)-p_v|\le\varepsilon'/2$。
+- $F$: $v^*\in C$.
+- $G$: for all $v\in C$ and all $t\ge1$, $|\hat p_v(t)-p_v|\le\rho_t$.
+- $H$: for all $v\in C$, $|\hat p_v(m)-p_v|\le\varepsilon'/2$.
 
-$\bar a$ の単位では、$G$ の下で $|\hat q_v(t)-\bar p_v|\le\bar\rho_t$、$H$ の下で $|\hat q_v(m)-\bar p_v|\le\varepsilon/2$（$v\in C$）が成り立ち、$v_0$ については $\hat q_{v_0}=\bar p_{v_0}$ が常に成り立つ。
+In the units of $\bar a$, under $G$ we have $|\hat q_v(t)-\bar p_v|\le\bar\rho_t$, and under $H$ we have $|\hat q_v(m)-\bar p_v|\le\varepsilon/2$ ($v\in C$); for $v_0$, $\hat q_{v_0}=\bar p_{v_0}$ always holds.
 
-### 補題 1
+### Lemma 1
 
-$p_{(1)}\ge\varepsilon'$ なら $P(F^c)\le e^{-k\varepsilon'/8}\le\delta_1$。
+If $p_{(1)}\ge\varepsilon'$, then $P(F^c)\le e^{-k\varepsilon'/8}\le\delta_1$.
 
-証明：第 1 段での $v^*$ の出現回数 $c^*$ は 1.1 より Bin$(k,p_{(1)})$、$\mu=kp_{(1)}\ge k\varepsilon'$。1.5 より $c^*>k/(l+1)$ なら $v^*\in C$ であり、$l+1>2/\varepsilon'$ から $k/(l+1)<k\varepsilon'/2\le\mu/2$。よって
+Proof: by 1.1, the number of occurrences $c^*$ of $v^*$ in stage 1 is Bin$(k,p_{(1)})$, with $\mu=kp_{(1)}\ge k\varepsilon'$. By 1.5, $c^*>k/(l+1)$ implies $v^*\in C$, and $l+1>2/\varepsilon'$ gives $k/(l+1)<k\varepsilon'/2\le\mu/2$. Hence
 $$P(F^c)\le P(c^*\le\mu/2)\le e^{-\mu/8}\le e^{-k\varepsilon'/8}$$
-（1.3 を $\eta=1/2$ で適用）。$k\ge\frac8{\varepsilon'}\ln\frac1{\delta_1}$ よりこれは $\delta_1$ 以下。$\square$
+(applying 1.3 with $\eta=1/2$). Since $k\ge\frac8{\varepsilon'}\ln\frac1{\delta_1}$, this is at most $\delta_1$. $\square$
 
-### 補題 2
+### Lemma 2
 
-$P(G^c)\le\delta_2$。
+$P(G^c)\le\delta_2$.
 
-証明：第 2 段のサンプルは第 1 段と独立なので、$C$ を固定して考えてよい。固定した $v\in C$、$t$ について、1.2（両側）より
+Proof: the samples of stage 2 are independent of stage 1, so we may treat $C$ as fixed. For fixed $v\in C$ and $t$, by 1.2 (two-sided),
 $$P(|\hat p_v(t)-p_v|>\rho_t)\le2e^{-2t\rho_t^2}=\frac{\delta_2}{2Lt^2}.$$
-1.4 より $t$ について足すと $<\delta_2/L$、さらに $v\in C$ について足して $\le\delta_2$。$\square$
+By 1.4, summing over $t$ gives $<\delta_2/L$, and summing further over $v\in C$ gives $\le\delta_2$. $\square$
 
-### 補題 3
+### Lemma 3
 
-$P(H^c)\le\delta_3$。
+$P(H^c)\le\delta_3$.
 
-証明：固定した $v\in C$ について 1.2 より $P(|\hat p_v(m)-p_v|>\varepsilon'/2)\le2e^{-m\varepsilon'^2/2}$。$L$ 個について足して $2Le^{-m\varepsilon'^2/2}\le\delta_3$（$m\ge\frac2{\varepsilon'^2}\ln\frac{2L}{\delta_3}$ より）。$\square$
+Proof: for fixed $v\in C$, by 1.2, $P(|\hat p_v(m)-p_v|>\varepsilon'/2)\le2e^{-m\varepsilon'^2/2}$. Summing over the $L$ values gives $2Le^{-m\varepsilon'^2/2}\le\delta_3$ (since $m\ge\frac2{\varepsilon'^2}\ln\frac{2L}{\delta_3}$). $\square$
 
-### 補題 4（手順 1, 2 の出力）
+### Lemma 4 (output of steps 1, 2)
 
-手順 1 または手順 2 で $v_0$ が出力されたとき、$p_{(1)}\ge\varepsilon'$ なら $F$ の下で、そうでなければ無条件に、$\bar p_{v_0}\ge\bar p_{(1)}-\varepsilon$。
+When $v_0$ is output in step 1 or step 2, $\bar p_{v_0}\ge\bar p_{(1)}-\varepsilon$ holds under $F$ if $p_{(1)}\ge\varepsilon'$, and unconditionally otherwise.
 
-証明：手順 1 では $a$ のすべての値 $v$ で $\bar p_v\le n/\bar n\le r/\bar n+\varepsilon$。手順 2 で $C=\emptyset$ のとき、$p_{(1)}\ge\varepsilon'$ なら $F$ に反するので $p_{(1)}<\varepsilon'$、したがって $a$ のすべての値で $\bar p_v<\varepsilon$。$\bar p_{(1)}=r/\bar n$ なら自明、そうでなければ $\bar p_{(1)}<\varepsilon\le\bar p_{v_0}+\varepsilon$。$\square$
+Proof: in step 1, every value $v$ of $a$ has $\bar p_v\le n/\bar n\le r/\bar n+\varepsilon$. When $C=\emptyset$ in step 2, $p_{(1)}\ge\varepsilon'$ would contradict $F$, so $p_{(1)}<\varepsilon'$, and hence every value of $a$ has $\bar p_v<\varepsilon$. If $\bar p_{(1)}=r/\bar n$ the claim is trivial; otherwise $\bar p_{(1)}<\varepsilon\le\bar p_{v_0}+\varepsilon$. $\square$
 
-### 補題 5（$\bar a$ の最頻値が候補集合に入る）
+### Lemma 5 (the mode of $\bar a$ is in the candidate set)
 
-$\bar v^*=v_0$ なら常に、$\bar v^*\ne v_0$ かつ $p_{(1)}\ge\varepsilon'$ なら $F$ の下で、$\bar v^*\in C\cup\{v_0\}$。$\bar v^*\ne v_0$ かつ $p_{(1)}<\varepsilon'$ なら $\bar p_{(1)}<\varepsilon$ であり、任意の出力が保証を満たす。
+$\bar v^*\in C\cup\{v_0\}$ holds always if $\bar v^*=v_0$, and under $F$ if $\bar v^*\ne v_0$ and $p_{(1)}\ge\varepsilon'$. If $\bar v^*\ne v_0$ and $p_{(1)}<\varepsilon'$, then $\bar p_{(1)}<\varepsilon$, and any output satisfies the guarantee.
 
-証明：$\bar v^*\ne v_0$ なら $\bar v^*$ は $a$ の最頻値でもあるので $v^*$ と取れる。$p_{(1)}<\varepsilon'$ なら $\bar p_{(1)}=\frac n{\bar n}p_{(1)}<\varepsilon$。$\square$
+Proof: if $\bar v^*\ne v_0$, then $\bar v^*$ is also a mode of $a$, so it can be taken as $v^*$. If $p_{(1)}<\varepsilon'$, then $\bar p_{(1)}=\frac n{\bar n}p_{(1)}<\varepsilon$. $\square$
 
-### 補題 6（早期停止の正しさ）
+### Lemma 6 (correctness of early stopping)
 
-$\bar v^*\in C\cup\{v_0\}$ かつ $G$ の下で、早期停止により出力された $\hat v$ は $\bar p_{\hat v}\ge\bar p_{(1)}-\varepsilon$ を満たす。
+If $\bar v^*\in C\cup\{v_0\}$, then under $G$ the output $\hat v$ of early stopping satisfies $\bar p_{\hat v}\ge\bar p_{(1)}-\varepsilon$.
 
-証明：停止時刻を $t$ とする。任意の $u\in C\cup\{v_0\}$ について、$G$（$u\in C$）または等式（$u=v_0$）と停止条件より
+Proof: let $t$ be the stopping time. For any $u\in C\cup\{v_0\}$, by $G$ ($u\in C$) or the equality ($u=v_0$) and the stopping condition,
 $$\bar p_u\le\hat q_u(t)+\mathrm{rad}(u)\le\hat q_{\hat v}(t)-\mathrm{rad}(\hat v)+\varepsilon\le\bar p_{\hat v}+\varepsilon$$
-（$u=\hat v$ のときは自明）。$u=\bar v^*$ と取る。$\square$
+(trivial when $u=\hat v$). Take $u=\bar v^*$. $\square$
 
-### 補題 7（打ち切りの正しさ）
+### Lemma 7 (correctness of truncation)
 
-$\bar v^*\in C\cup\{v_0\}$ かつ $H$ の下で、打ち切りにより出力された $\hat v_m$ は $\bar p_{\hat v_m}\ge\bar p_{(1)}-\varepsilon$ を満たす。
+If $\bar v^*\in C\cup\{v_0\}$, then under $H$ the output $\hat v_m$ of truncation satisfies $\bar p_{\hat v_m}\ge\bar p_{(1)}-\varepsilon$.
 
-証明：$H$ の下で $v\in C\cup\{v_0\}$ のすべてについて $|\hat q_v(m)-\bar p_v|\le\varepsilon/2$。よって
+Proof: under $H$, $|\hat q_v(m)-\bar p_v|\le\varepsilon/2$ for all $v\in C\cup\{v_0\}$. Hence
 $$\bar p_{\hat v_m}\ge\hat q_{\hat v_m}(m)-\frac\varepsilon2\ge\hat q_{\bar v^*}(m)-\frac\varepsilon2\ge\bar p_{(1)}-\varepsilon.\ \square$$
 
-### 定理
+### Theorem
 
-出力が $\bar p_v\ge\bar p_{(1)}-\varepsilon$ を満たさない確率は $\delta$ 以下。
+The probability that the output does not satisfy $\bar p_v\ge\bar p_{(1)}-\varepsilon$ is at most $\delta$.
 
-証明：手順 1, 2 で終了する場合は補題 4。手順 3 に進んだ場合、補題 5 より、$\bar v^*\in C\cup\{v_0\}$ が成り立つ（$F$ を要するのは $\bar v^*\ne v_0$ かつ $p_{(1)}\ge\varepsilon'$ の場合のみ）か、任意の出力が正しいかのいずれかであり、前者では補題 6, 7 より $G\cap H$ の下で出力は正しい。したがって失敗事象は $F^c$（$p_{(1)}\ge\varepsilon'$ の場合のみ関与）、$G^c$、$H^c$ の和に含まれ、補題 1–3 より確率は $\delta_1+\delta_2+\delta_3=\delta$ 以下。$\square$
+Proof: if the algorithm stops in step 1 or 2, apply Lemma 4. If it proceeds to step 3, by Lemma 5 either $\bar v^*\in C\cup\{v_0\}$ holds ($F$ is needed only when $\bar v^*\ne v_0$ and $p_{(1)}\ge\varepsilon'$) or any output is correct; in the former case, by Lemmas 6 and 7 the output is correct under $G\cap H$. Hence the failure event is contained in the union of $F^c$ (relevant only when $p_{(1)}\ge\varepsilon'$), $G^c$, and $H^c$, and by Lemmas 1–3 its probability is at most $\delta_1+\delta_2+\delta_3=\delta$. $\square$
 
-## 5. サンプル数
+## 5. Number of samples
 
-### 最悪値
+### Worst case
 
-$k+m$。$\varepsilon'=\varepsilon\bar n/n$ なので、$r$ が大きいほど $k,l$ は $n/\bar n$ 倍、$m$ は $(n/\bar n)^2$ 倍に減る。
+$k+m$. Since $\varepsilon'=\varepsilon\bar n/n$, the larger $r$ is, the more $k,l$ shrink by a factor of $n/\bar n$ and $m$ by a factor of $(n/\bar n)^2$.
 
-### 早期停止の保証（適応性）
+### Guarantee of early stopping (adaptivity)
 
-候補集合 $C\cup\{v_0\}$ 内での $\bar a$ の単位の上位 2 値の差を $\bar\Delta$ とおく（要素数 1 なら停止条件は空で直ちに停止する）。$\gamma=\frac{\bar n}{n}\cdot\frac{\max(\varepsilon,\bar\Delta)}4$ とすると、$\bar v^*\in C\cup\{v_0\}$ かつ $G$ の下で、$\rho_t\le\gamma$（すなわち $\bar\rho_t\le\max(\varepsilon,\bar\Delta)/4$）を満たす最初の時刻 $T_0$ までに早期停止する。
+Let $\bar\Delta$ be the gap between the top 2 values within the candidate set $C\cup\{v_0\}$, in the units of $\bar a$ (if the set has 1 element, the stopping condition is vacuous and it stops immediately). With $\gamma=\frac{\bar n}{n}\cdot\frac{\max(\varepsilon,\bar\Delta)}4$, if $\bar v^*\in C\cup\{v_0\}$, then under $G$ the algorithm stops early by the first time $T_0$ at which $\rho_t\le\gamma$ (i.e., $\bar\rho_t\le\max(\varepsilon,\bar\Delta)/4$).
 
-証明：$\bar\rho=\bar\rho_t$ と書く。すべての候補の半径は $\bar\rho$ 以下である。
-$4\bar\rho\le\varepsilon$ の場合、任意の $u\ne\hat v_t$ について
+Proof: write $\bar\rho=\bar\rho_t$. The radius of every candidate is at most $\bar\rho$.
+If $4\bar\rho\le\varepsilon$, then for any $u\ne\hat v_t$,
 $$\hat q_{\hat v_t}(t)-\mathrm{rad}(\hat v_t)\ge\hat q_{\bar v^*}(t)-\bar\rho\ge\bar p_{(1)}-2\bar\rho\ge\bar p_u+2\bar\rho-\varepsilon\ge\hat q_u(t)+\mathrm{rad}(u)-\varepsilon$$
-（3 つ目の不等式は $\bar p_u\le\bar p_{(1)}$ と $4\bar\rho\le\varepsilon$）。
-$\varepsilon<\bar\Delta$ かつ $4\bar\rho\le\bar\Delta$ の場合、$2\bar\rho<\bar\Delta$ より $\hat q_{\bar v^*}(t)\ge\bar p_{(1)}-\bar\rho>\bar p_u+\bar\rho\ge\hat q_u(t)$（$u\ne\bar v^*$）なので $\hat v_t=\bar v^*$。このとき $u\ne\bar v^*$ について
+(the third inequality uses $\bar p_u\le\bar p_{(1)}$ and $4\bar\rho\le\varepsilon$).
+If $\varepsilon<\bar\Delta$ and $4\bar\rho\le\bar\Delta$, then since $2\bar\rho<\bar\Delta$, $\hat q_{\bar v^*}(t)\ge\bar p_{(1)}-\bar\rho>\bar p_u+\bar\rho\ge\hat q_u(t)$ ($u\ne\bar v^*$), so $\hat v_t=\bar v^*$. Then for $u\ne\bar v^*$,
 $$\hat q_{\bar v^*}(t)-\mathrm{rad}(\bar v^*)\ge\bar p_{(1)}-2\bar\rho\ge\bar p_u+\bar\Delta-2\bar\rho\ge\bar p_u+2\bar\rho-\varepsilon\ge\hat q_u(t)+\mathrm{rad}(u)-\varepsilon$$
-（3 つ目の不等式は $4\bar\rho\le\bar\Delta<\bar\Delta+\varepsilon$）。$\square$
+(the third inequality uses $4\bar\rho\le\bar\Delta<\bar\Delta+\varepsilon$). $\square$
 
-$T_0$ の明示的な上界は
+An explicit upper bound on $T_0$ is
 $$T_0\le\max\Big\{1,\ \Big\lceil\frac1{\gamma^2}\ln\frac{4L}{\delta_2\gamma^4}\Big\rceil\Big\}$$
-である（この $t$ で $\ln(4Lt^2/\delta_2)\le2\gamma^2t$ となることは、$A=\ln(4L/\delta_2)$、$\Gamma=\ln(1/\gamma^2)$ とおくと $A+2\Gamma\ge2\ln(A+2\Gamma)$ に帰着し、$x\ge2\ln x$ から従う。$A+2\Gamma\le0$ なら $\rho_1\le\gamma$ で $T_0=1$）。
+(that $\ln(4Lt^2/\delta_2)\le2\gamma^2t$ at this $t$ reduces, with $A=\ln(4L/\delta_2)$ and $\Gamma=\ln(1/\gamma^2)$, to $A+2\Gamma\ge2\ln(A+2\Gamma)$, which follows from $x\ge2\ln x$. If $A+2\Gamma\le0$, then $\rho_1\le\gamma$ and $T_0=1$).
 
-$v_0$ の半径は 0 なので、$v_0$ が明確な最頻値である場合はこの評価より早く止まる（$v_0$ を含む比較では半径が片側にしか現れない）。
+Since the radius of $v_0$ is 0, when $v_0$ is a clear mode the algorithm stops earlier than this bound (in comparisons involving $v_0$, the radius appears on only one side).
 
-### 数値例（$\varepsilon=0.1$、$\delta=0.01$）
+### Numerical example ($\varepsilon=0.1$, $\delta=0.01$)
 
-| | $\varepsilon'$ | $k$ | $l$ | $m$（$L=l$） | 最悪値 $k+m$ |
+| | $\varepsilon'$ | $k$ | $l$ | $m$ ($L=l$) | Worst case $k+m$ |
 |---|---|---|---|---|---|
 | $r=0$ | $0.1$ | $457$ | $20$ | $1{,}879$ | $2{,}336$ |
 | $r=0.3\bar n$ | $0.143$ | $320$ | $14$ | $886$ | $1{,}206$ |
 
-$r=0$ での早期停止の上界 $T_0$：$\bar\Delta\le0.1$ で約 $7{,}500$（打ち切り $m$ が先）、$\bar\Delta=0.5$ で約 $1{,}200$、$\bar\Delta=0.8$ で約 $410$。
+Upper bound $T_0$ on early stopping at $r=0$: about $7{,}500$ for $\bar\Delta\le0.1$ (truncation at $m$ comes first), about $1{,}200$ for $\bar\Delta=0.5$, and about $410$ for $\bar\Delta=0.8$.
 
-- 上の $T_0$ は保証としての上界で、実際の停止はこれより早いことが多い。ただし保証の上で早期停止が打ち切りに勝つのは、差 $\bar\Delta$ が $\varepsilon$ の数倍以上ある場合に限られる。$\bar\Delta\le\varepsilon$ では打ち切りが先に来て、コストは固定サンプル法と同じ。
-- $\rho_t$ の定数は、$\ln t^2$ の代わりに $\ln\ln t$ 型の項を使う信頼区間（law of the iterated logarithm 型の confidence sequence）や、分散を使う empirical Bernstein 型の不等式で改善できる。本書は証明の単純さを優先している。
+- The $T_0$ above is an upper bound as a guarantee, and actual stopping is often earlier. However, in terms of the guarantee, early stopping beats truncation only when the gap $\bar\Delta$ is at least several times $\varepsilon$. For $\bar\Delta\le\varepsilon$, truncation comes first, and the cost is the same as the fixed-sample method.
+- The constant in $\rho_t$ can be improved by confidence intervals that use a $\ln\ln t$-type term instead of $\ln t^2$ (law of the iterated logarithm type confidence sequences) or by empirical Bernstein-type inequalities, which use the variance. This document prioritizes simplicity of the proof.
 
-## 6. 補足
+## 6. Remarks
 
-- $r=0$（何も取り除かれていない）場合：$\varepsilon'=\varepsilon$ で、手順 1 は発動せず、候補集合は $C$ のみとする。手順 2 で $C=\emptyset$ なら $a$ の任意の要素を出力する（補題 4 と同様に、このとき $p_{(1)}<\varepsilon$ か $F^c$ のどちらかである）。
-- 第 1 段のコスト $k$ が $1/\varepsilon'$ のオーダーで済むのは、$v^*$ の出現回数について「期待値の半分以上」という乗法的な条件だけを要求しているためである（1.3）。$1/\varepsilon'^2$ が必要になるのは第 2 段の加法的な精度の判定だけである。
-- 仮想的に戻す方法：$[0,\bar n)$ から一様に添字を引き、$n$ 未満なら $a$ のその要素、$n$ 以上なら $v_0$ を返せば $\bar a$ からの一様復元抽出になり、$r=0$ の場合のアルゴリズムを無変更で使える。ただし既知の $\bar p_{v_0}$ を推定し直すことになり、$m$ も $(\bar n/n)^2$ 倍かかる。実装を変えたくない場合の代替としてのみ意味がある。
-- 出力が満たすのは $\bar p_v\ge\bar p_{(1)}-\varepsilon$ であり、真の最頻値との一致は $\bar\Delta\ge\varepsilon$ のときのみ保証される。厳密な最頻値が必要なら、本アルゴリズムで候補を $C\cup\{v_0\}$ に絞ったあと、$a$ を全走査して $C$ の各値を正確に数え、$r$ と比較すればよい（$C$ が小さいので計数は SIMD 化しやすい）。
+- The case $r=0$ (nothing removed): $\varepsilon'=\varepsilon$, step 1 never fires, and the candidate set is $C$ alone. If $C=\emptyset$ in step 2, output any element of $a$ (as in Lemma 4, in this case either $p_{(1)}<\varepsilon$ or $F^c$).
+- The cost $k$ of stage 1 is only of order $1/\varepsilon'$ because it requires only a multiplicative condition on the number of occurrences of $v^*$, namely "at least half of its expectation" (1.3). $1/\varepsilon'^2$ is needed only for the additive-accuracy decision in stage 2.
+- Virtually restoring the removed values: drawing an index uniformly from $[0,\bar n)$ and returning the element of $a$ at that index if it is less than $n$, or $v_0$ if it is at least $n$, gives uniform sampling with replacement from $\bar a$, so the algorithm for $r=0$ can be used unchanged. However, this re-estimates the already known $\bar p_{v_0}$, and $m$ also grows by a factor of $(\bar n/n)^2$. It is meaningful only as an alternative when one does not want to change the implementation.
+- What the output satisfies is $\bar p_v\ge\bar p_{(1)}-\varepsilon$; agreement with the true mode is guaranteed only when $\bar\Delta\ge\varepsilon$. If the exact mode is needed, narrow the candidates to $C\cup\{v_0\}$ with this algorithm, then scan all of $a$ to count each value of $C$ exactly and compare with $r$ ($C$ is small, so the counting is easy to vectorize with SIMD).

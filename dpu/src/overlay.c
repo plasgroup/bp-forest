@@ -1,4 +1,4 @@
-/* IRAM overlay の常駐ローダ (docs/dpu_iram_overlay.md)。 */
+/* Resident loader of the IRAM overlay (docs/dpu_iram_overlay.md). */
 #include "iram_overlay.h"
 
 #ifdef IRAM_OVERLAY
@@ -12,20 +12,22 @@
 
 BARRIER_INIT(ovl_barrier, NR_TASKLETS);
 
-/* IRAM 窓のバイトアドレス (= 命令インデックス x 8)。常駐 .text の直後。 */
+/* Byte address of the IRAM window (= instruction index x 8), right after the resident .text. */
 extern uint8_t __ovl_window_byte_addr[];
 
-/* 窓に載っているスロット。バイナリのロード直後は何も載っていない。 */
+/* The slot currently in the window. Right after the binary is loaded, nothing is. */
 static uint32_t ovl_idx_loaded_slot = UINT32_MAX;
 
 /*
- * 前後の barrier で、窓の書き換え中はどの tasklet も窓内のコードを実行して
- * いないことを保証する。転送は全 tasklet で手分けする。
+ * The barriers before and after guarantee that no tasklet is executing code
+ * in the window while it is being overwritten. The transfer is split among
+ * all tasklets.
  *
- * ldmai (MRAM -> IRAM の DMA) は 1 命令あたり最大 2048 バイト。転送語数
- * (64-bit 単位、1 + imm + ra[31:24]) は即値を実行時に変えられないため
- * IRAM 側アドレスレジスタの上位バイトに乗せる。MRAM アドレスはリンク時
- * 0x08000000 起点、実行時 0 起点。
+ * ldmai (MRAM -> IRAM DMA) transfers at most 2048 bytes per instruction.
+ * An immediate cannot be changed at run time, so the number of words to
+ * transfer (in 64-bit units, 1 + imm + ra[31:24]) is put in the upper byte
+ * of the IRAM-side address register. MRAM addresses start at 0x08000000 at
+ * link time and at 0 at run time.
  */
 void ovl_load_slot(const uint32_t idx_slot, const uint8_t* const image_lma, const uint32_t nbytes)
 {

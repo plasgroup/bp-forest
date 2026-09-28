@@ -1,53 +1,53 @@
-DPU タスクの入出力仕様
+Input and Output of DPU Tasks
 ===
 
-DPU プログラム (`dpu/src/dpumain.c`) は 1 回の起動で 1 種類のタスクを実行する。
-どのタスクを実行するか、およびその引数は、MRAM ヒープ先頭に置かれた `InputHeader`
-(`common/inc/input_header.h`, 16 バイト固定) で指定し、結果も MRAM に書き戻す。
-この文書は、各タスクの「引数 → 返り値」と、それらの MRAM 上の配置を記述する。
+The DPU program (`dpu/src/dpumain.c`) runs one kind of task per launch.
+The task to run and its arguments are specified by the `InputHeader` placed at the start of the MRAM heap
+(`common/inc/input_header.h`, fixed at 16 bytes), and the results are also written back to MRAM.
+This document describes each task's "arguments → return values" and their layout in MRAM.
 
-## 記法と共通の約束
+## Notation and common conventions
 
-*   `(引数, ...) -> (返り値, ...)` の形で書く。
-    *   引数のうち先頭のスカラ値は `InputHeader` の union メンバとして渡す。
-    *   それに続く配列は**ペイロード**、すなわちヒープ先頭 + `sizeof(InputHeader)` (= 16) から
-        始まる領域に置く。
-    *   返り値の配置はタスクごとに異なる (下記各項を参照)。
-*   `Key` = `key_uint64_t`, `Value` = `value_uint64_t` (`common/inc/workload_types.h`)。
-    `KVPair` / `KeyRange` / `RangeCountQuery` は `common/inc/common.h`。
-*   ほとんどのタスクは cold 木と hot 木の両方を対象とする。クエリ・ペアの配列は
-    **`[cold | hot]` の連続**で渡し、ヘッダで各々の個数を伝える。
-*   タスク ID の一覧は `enum TaskID` (`common/inc/common.h`)。
+*   Tasks are written in the form `(arguments, ...) -> (return values, ...)`.
+    *   The leading scalar arguments are passed as members of the `InputHeader` union.
+    *   The arrays that follow are placed in the **payload**, i.e., the region starting at the heap start +
+        `sizeof(InputHeader)` (= 16).
+    *   The layout of return values differs by task (see each entry below).
+*   `Key` = `key_uint64_t`, `Value` = `value_uint64_t` (`common/inc/workload_types.h`).
+    `KVPair` / `KeyRange` / `RangeCountQuery` are in `common/inc/common.h`.
+*   Most tasks target both the cold tree and the hot tree. Arrays of queries or pairs are passed
+    **contiguously as `[cold | hot]`**, and the header gives the count of each.
+*   The list of task IDs is `enum TaskID` (`common/inc/common.h`).
 
-`InputHeader` の union メンバとタスクの対応:
+Correspondence between `InputHeader` union members and tasks:
 
-| union メンバ | 内容 | 使うタスク |
+| union member | Contents | Used by |
 | --- | --- | --- |
 | `init` | `uint32_t nr_cold_pairs, nr_hot_pairs` | TASK_INIT |
 | `qrys` | `uint32_t nr_cold_qrys, nr_hot_qrys, result_offset` | TASK_GET / PRED / RANGE_COUNT / RANGE_MAX / INSERT / DELETE |
 | `move_hot` | `uint32_t nr_cold_pairs, nr_hot_pairs; bool renew_cold, renew_hot` | TASK_MOVE_HOT |
 | `serialize` | `uint32_t nr_delims, max_nr_delims; bool do_cold, do_hot` | TASK_SERIALIZE |
 
-`qrys.result_offset` は、返り値を書き込む位置をヒープ先頭からのバイトオフセットで表す。
-ホストは全 DPU 中の最大クエリ数 `max_nqrys` を使って
-`sizeof(InputHeader) + sizeof(Query) * max_nqrys` に、クエリ列の後ろに続くもの
-(TASK_DELETE の min-refresh 要求) の最大長を足した値を与える
-(`BPForest::execute_in_dpus`, `bpforest/inc/bpforest.ipp`)。全 DPU で同じ値にすることで、
-結果の一括転送を単一のオフセットからおこなえる。
+`qrys.result_offset` is the position where return values are written, as a byte offset from the heap start.
+Using the maximum query count over all DPUs, `max_nqrys`, the host sets it to
+`sizeof(InputHeader) + sizeof(Query) * max_nqrys` plus the maximum length of whatever follows the query sequence
+(the min-refresh requests of TASK_DELETE)
+(`BPForest::execute_in_dpus`, `bpforest/inc/bpforest.ipp`). Using the same value on all DPUs lets the results
+be transferred in bulk from a single offset.
 
-クエリごとの返り値は `[cold | hot]` の順に置き、**各セクションを 8 バイト境界に切り上げる**
-(1 バイトの返り値を返す TASK_DELETE でのみ効く)。こうすると 2 つの木の結果が
-8 バイト DMA 語を共有しないので、tasklet が互いを気にせず書き出せる。
-生存ペア数のようにクエリと 1 対 1 でない返り値は、その後ろに置く。
+Per-query return values are placed in `[cold | hot]` order, and **each section is rounded up to an 8-byte
+boundary** (this matters only for TASK_DELETE, which returns 1-byte values). This way the results for the two
+trees do not share an 8-byte DMA word, so tasklets can write them out without regard to each other.
+Return values that do not correspond one-to-one to queries, such as live pair counts, are placed after them.
 
-現行プロトコルの最も読みやすい参照実装は `bpforest/inc/fake_dpu.ipp` (fake_dpu ビルド用の
-DPU エミュレータ)。DPU 側の実体は `dpu/src/bplustree.c`。
+The most readable reference implementation of the current protocol is `bpforest/inc/fake_dpu.ipp` (the DPU
+emulator for the fake_dpu build). The actual DPU side is `dpu/src/bplustree.c`.
 
-## 実装済みのタスク
+## Implemented tasks
 
-`dpu/src/dpumain.c` の `switch` に分岐が存在するもの。`SUPPORT_*` マクロ付きのタスクは、
-そのマクロを定義したビルド (CMake の `CMAKE_C_FLAGS` に `-DSUPPORT_GET` などを渡す) でのみ
-DPU バイナリに含まれる。
+These are the tasks that have a branch in the `switch` of `dpu/src/dpumain.c`. Tasks marked with a `SUPPORT_*`
+macro are included in the DPU binary only in builds that define that macro (pass `-DSUPPORT_GET` etc. in
+CMake's `CMAKE_C_FLAGS`).
 
 ### TASK_INIT
 
@@ -55,8 +55,8 @@ DPU バイナリに含まれる。
 (uint32_t nr_cold_pairs, uint32_t nr_hot_pairs, KVPair[nr_cold_pairs + nr_hot_pairs]) -> ()
 ```
 
-キー昇順に整列した `[cold | hot]` のペア列から、cold 木と hot 木をボトムアップ構築する。
-構築アルゴリズムは `docs/tree_initialization.md`。
+Builds the cold tree and the hot tree bottom-up from a `[cold | hot]` pair sequence sorted by key in ascending
+order. The construction algorithm is in `docs/tree_initialization.md`.
 
 ### TASK_GET (`SUPPORT_GET`)
 
@@ -65,7 +65,7 @@ DPU バイナリに含まれる。
  Key[nr_cold_qrys + nr_hot_qrys]) -> Value[nr_cold_qrys + nr_hot_qrys]
 ```
 
-キーが存在しなければ `NOT_FOUND_VALUE` を返す。
+Returns `NOT_FOUND_VALUE` if the key does not exist.
 
 ### TASK_PRED (`SUPPORT_PRED`)
 
@@ -74,11 +74,11 @@ DPU バイナリに含まれる。
  Key[nr_cold_qrys + nr_hot_qrys]) -> KVPair[nr_cold_qrys + nr_hot_qrys]
 ```
 
-クエリキー**未満**で最大のキーを持つペア (strict predecessor) を返す。木の中に
-クエリキー未満のペアが 1 つも無ければ番兵 `{KEY_MIN, NOT_FOUND_VALUE}` を返す。ホストは各パーティションが
-その最小の生存キーから始まるよう保つので、正しく振り分けられたクエリがこの番兵を
-受け取ることはない (`BPForest::locate_pred_partition` のコメント参照)。
-`BPForest::batch_pred` の返り値がキーと値の組なので、DPU も `KVPair` を返す。
+Returns the pair with the largest key **less than** the query key (strict predecessor). If the tree has no
+pair with a key less than the query key, returns the sentinel `{KEY_MIN, NOT_FOUND_VALUE}`. The host keeps each
+partition starting at its smallest live key, so a correctly routed query never receives this sentinel (see the
+comment on `BPForest::locate_pred_partition`).
+The DPU returns a `KVPair` because the return value of `BPForest::batch_pred` is a key-value pair.
 
 ### TASK_RANGE_COUNT (`SUPPORT_RANGE_COUNT`)
 
@@ -87,8 +87,8 @@ DPU バイナリに含まれる。
  RangeCountQuery[nr_cold_qrys + nr_hot_qrys]) -> uint64_t[nr_cold_qrys + nr_hot_qrys]
 ```
 
-`RangeCountQuery = {KeyRange range; Value needle}`。キー範囲 (両端 inclusive) に含まれる
-ペアのうち、値が `needle` に等しいものの個数を返す。
+`RangeCountQuery = {KeyRange range; Value needle}`. Returns the number of pairs in the key range (both ends
+inclusive) whose value equals `needle`.
 
 ### TASK_RANGE_MAX (`SUPPORT_RANGE_MAX`)
 
@@ -97,7 +97,7 @@ DPU バイナリに含まれる。
  KeyRange[nr_cold_qrys + nr_hot_qrys]) -> Value[nr_cold_qrys + nr_hot_qrys]
 ```
 
-キー範囲 (両端 inclusive) 内の値の最大値を返す。範囲内にペアが無ければ `NOT_FOUND_VALUE`。
+Returns the maximum value in the key range (both ends inclusive). `NOT_FOUND_VALUE` if the range has no pairs.
 
 ### TASK_INSERT (`SUPPORT_INSERT`)
 
@@ -106,13 +106,13 @@ DPU バイナリに含まれる。
  KVPair[nr_cold_qrys + nr_hot_qrys]) -> uint32_t[2]
 ```
 
-既存キーなら値を上書き、無ければ挿入する。
+Overwrites the value if the key exists; otherwise inserts it.
 
-挿入クエリのうち何個が新規キーだったかは DPU にしか分からないため、返り値の
-(cold 木の生存ペア数, hot 木の生存ペア数) をホストが受信して `nr_pairs` に反映する。
-本タスクはクエリごとの返り値を持たないので、これが `result_offset` の先頭に来る
-(生存ペア数を返すのは本タスクと TASK_DELETE だけ。他のタスクの後はホストが
-自力で正しい値を計算できる)。
+Only the DPU knows how many of the insert queries had new keys, so the host receives the return value
+(live pair count of the cold tree, live pair count of the hot tree) and reflects it in `nr_pairs`.
+This task has no per-query return values, so this comes at the start of `result_offset`
+(only this task and TASK_DELETE return live pair counts; after other tasks the host can compute the correct
+values on its own).
 
 ### TASK_DELETE (`SUPPORT_DELETE`)
 
@@ -125,28 +125,28 @@ DPU バイナリに含まれる。
     KVPair[nr_cold_refreshes + nr_hot_refreshes])
 ```
 
-キーを木から外す。クエリごとに「削除直前にペアがあったか」を 0/1 で返し、
-同一キーがバッチ内に重複した場合は先頭側の 1 件だけが 1 を返す。設計は
-`docs/parallel_delete.md`。
+Removes keys from the tree. For each query returns 0/1 for "whether the pair existed just before the deletion";
+if the same key appears more than once in a batch, only the first one returns 1. The design is in
+`docs/parallel_delete.md`.
 
-*   引数の `KeyRange[]` (min-refresh 要求) はキー列の直後に置く。各要求は
-    「範囲内 (両端 inclusive) の最小の生きたキー」を尋ねるもので、ホストが
-    パーティションの始端キーを最小の生存キーに保つために使う。
-    全 tasklet の削除完了後に単一 tasklet で処理される。
-*   返り値の配置 (`result_offset` からの相対、各セクション 8 バイト境界):
-    1.  `uint8_t[nr_cold_qrys]`: cold クエリの 0/1 フラグ
-    2.  `uint8_t[nr_hot_qrys]`: hot クエリの 0/1 フラグ
-    3.  `uint32_t[2]`: (cold 木の生存ペア数, hot 木の生存ペア数)
-    4.  `KVPair[]`: min-refresh 応答。見つかれば `{キー, 1}`、範囲内に生きた
-        キーが無ければ `{0, 0}`
-*   生存ペア数は TASK_INSERT と同じ理由 (何個が実際に消えたかは DPU にしか
-    分からない) で返す。全 tasklet の削除完了後に単一 tasklet が書くので、
-    min-refresh 応答と同じタイミングで確定する。
-*   1 バイトフラグの書き出しが 8 バイト DMA 語を tasklet 間で共有しないよう、
-    末尾以外の tasklet のクエリ数は 8 の倍数に切り上げたクオータで分配する。
-*   min-refresh 応答の後ろは DPU 専用の作業領域である (クエリ 1 件あたりの値スロットの
-    アドレス、キー列の複製、tasklet ごとのソートスタック)。ホストは読まないが、
-    MRAM ヒープにはこの分の余地が要る。
+*   The `KeyRange[]` argument (min-refresh requests) is placed right after the key sequence. Each request asks
+    for "the smallest live key in the range (both ends inclusive)", and the host uses it to keep each
+    partition's start key at its smallest live key.
+    It is processed by a single tasklet after all tasklets have finished deleting.
+*   Layout of return values (relative to `result_offset`, each section on an 8-byte boundary):
+    1.  `uint8_t[nr_cold_qrys]`: 0/1 flags of the cold queries
+    2.  `uint8_t[nr_hot_qrys]`: 0/1 flags of the hot queries
+    3.  `uint32_t[2]`: (live pair count of the cold tree, live pair count of the hot tree)
+    4.  `KVPair[]`: min-refresh responses. `{key, 1}` if found, `{0, 0}` if the range has no live
+        key
+*   Live pair counts are returned for the same reason as in TASK_INSERT (only the DPU knows how many pairs
+    were actually removed). A single tasklet writes them after all tasklets have finished deleting, so they
+    are finalized at the same time as the min-refresh responses.
+*   So that writing 1-byte flags does not make tasklets share an 8-byte DMA word, queries are distributed with
+    a quota rounded up to a multiple of 8 for every tasklet except the last.
+*   The area after the min-refresh responses is a DPU-only work area (the address of the value slot for each
+    query, a copy of the key sequence, and a sort stack per tasklet). The host does not read it, but the MRAM
+    heap needs room for it.
 
 ### TASK_SERIALIZE
 
@@ -155,18 +155,20 @@ DPU バイナリに含まれる。
  Key[nr_delims]) -> (uint32_t[nr_delims], KVPair[])
 ```
 
-木の中身を KV ペア列として書き出す。rebalancing でペアを DPU 間で移すときに使う。
+Writes out the contents of the trees as a sequence of KV pairs. Used to move pairs between DPUs during
+rebalancing.
 
-*   引数の `Key[nr_delims]` は cold 領域の切れ目を昇順に並べたもの。ホストは
-    連続する cold partition の境目に置く (= 次の cold partition の始端キー)。
-*   `do_cold` / `do_hot` で書き出す対象を選ぶ (cold+hot / cold のみ / hot のみ の 3 形態)。
-*   返り値の `uint32_t[nr_delims]` (incisions) は、切れ目が書き出した cold ペア配列の何番目に
-    あたるかを示す。`incisions[i]` = 「キーが `delims[i]` **以上**の最初のペアの位置」
-    (= 切れ目より手前のペア数)。**引数の delim 領域を上書きする形で**、ペイロード先頭に書く。
-*   返り値の `KVPair[]` は `[cold | hot]` の連続で、ヒープ先頭 +
-    `sizeof(InputHeader) + sizeof(Key) * max_nr_delims` から始まる。`nr_delims` ではなく
-    DPU 間で共通の `max_nr_delims` を使うことで、ペア配列の開始位置を全 DPU で揃えている。
-    `do_cold=false` のときは cold が 0 個なので hot が先頭から始まる。
+*   The `Key[nr_delims]` argument lists the cut points of the cold region in ascending order. The host places
+    them at the boundaries between consecutive cold partitions (= the start key of the next cold partition).
+*   `do_cold` / `do_hot` select what to write out (three forms: cold+hot / cold only / hot only).
+*   The return value `uint32_t[nr_delims]` (incisions) gives the index in the written cold pair array that
+    each cut point corresponds to. `incisions[i]` = "the position of the first pair whose key is **at least**
+    `delims[i]`" (= the number of pairs before the cut point). It is written at the start of the payload,
+    **overwriting the delim area of the argument**.
+*   The return value `KVPair[]` is contiguous as `[cold | hot]` and starts at the heap start +
+    `sizeof(InputHeader) + sizeof(Key) * max_nr_delims`. Using `max_nr_delims`, which is common across DPUs,
+    instead of `nr_delims` aligns the start of the pair array on all DPUs.
+    When `do_cold=false`, there are 0 cold pairs, so hot starts at the beginning.
 
 ### TASK_MOVE_HOT
 
@@ -175,8 +177,9 @@ DPU バイナリに含まれる。
  KVPair[nr_cold_pairs + nr_hot_pairs]) -> ()
 ```
 
-TASK_SERIALIZE で吸い出したペアを移送先 DPU に流し込む。`renew_*` が真ならその木を
-渡されたペアから作り直し (TASK_INIT と同じ構築)、偽なら既存の木へ upsert する。
+Loads the pairs extracted by TASK_SERIALIZE into the destination DPU. If `renew_*` is true, that tree is rebuilt
+from the given pairs (the same construction as TASK_INIT); if false, the pairs are upserted into the existing
+tree.
 
 ### TASK_NONE
 
@@ -184,35 +187,36 @@ TASK_SERIALIZE で吸い出したペアを移送先 DPU に流し込む。`renew
 () -> ()
 ```
 
-何もしない。ランク単位で DPU を起動する都合上、そのバッチで仕事の無い DPU に割り当てる。
+Does nothing. Because DPUs are launched per rank, this is assigned to DPUs that have no work in the batch.
 
-## 未実装のタスク
+## Unimplemented tasks
 
-`enum TaskID` の TASK_RANGE_MIN (キー範囲内の最小値) と TASK_RANGE_SUM (総和) は CPU
-ベースライン (`cpudb/`) だけが実装しており、DPU 側と `host_app` は対応しない。
-TASK_RANGE_MIN にはかつて DPU 実装 (`SUPPORT_RANGE_MIN`) があったが、`InputHeader` の変更に
-追従しないまま有効化できなくなっていたので削除した。ID だけがあった TASK_SCAN /
-TASK_SUMMARIZE / TASK_EXTRACT / TASK_FLATTEN_HOT / TASK_RESTORE も、実装も利用箇所も
-無いので削除した。
+TASK_RANGE_MIN (minimum value in a key range) and TASK_RANGE_SUM (sum) in `enum TaskID` are implemented only by
+the CPU baseline (`cpudb/`); the DPU side and `host_app` do not support them.
+TASK_RANGE_MIN once had a DPU implementation (`SUPPORT_RANGE_MIN`), but it was not updated for changes to
+`InputHeader` and could no longer be enabled, so it was removed. TASK_SCAN / TASK_SUMMARIZE / TASK_EXTRACT /
+TASK_FLATTEN_HOT / TASK_RESTORE, which existed only as IDs, were also removed, since they had neither an
+implementation nor any use.
 
-## tasklet による並列化の可否
+## Parallelizability with tasklets
 
-現行の各タスクの tasklet 数は `dpu/inc/dpu_params.h` の `TASK_*_NR_TASKLETS` で決まる。
-既定では TASK_GET / TASK_PRED / TASK_INSERT / TASK_DELETE / TASK_RANGE_COUNT /
-TASK_RANGE_MAX と木の構築 (`TREE_CONSTRUCT_NR_TASKLETS`) が `NR_TASKLETS` 並列、
-TASK_SERIALIZE は 1 tasklet に固定されている
-(`_Static_assert(TASK_SERIALIZE_NR_TASKLETS == 1)`)。
+The number of tasklets for each current task is set by `TASK_*_NR_TASKLETS` in `dpu/inc/dpu_params.h`.
+By default, TASK_GET / TASK_PRED / TASK_INSERT / TASK_DELETE / TASK_RANGE_COUNT /
+TASK_RANGE_MAX and tree construction (`TREE_CONSTRUCT_NR_TASKLETS`) run with `NR_TASKLETS` in parallel, and
+TASK_SERIALIZE is fixed at 1 tasklet
+(`_Static_assert(TASK_SERIALIZE_NR_TASKLETS == 1)`).
 
-返り値の個数がクエリごとに 1 つでないタスクは、並列化が難しい。
-先頭以外の tasklet は、自分の結果を返り値配列のどのオフセットから書き始めればいいか分からないため。
-対策は 3 通り考えられる:
+Tasks whose number of return values is not one per query are hard to parallelize,
+because tasklets other than the first do not know at which offset of the return value array to start writing
+their results.
+Three remedies are conceivable:
 
-1.  並列化しない。
-2.  適当な場所に書き込んでおき、あとで詰める。
-3.  適当な場所に書き込んでおき、どんな順番になったかをホストに教えることで、DPU から
-    転送するときに詰める。
+1.  Do not parallelize.
+2.  Write to some arbitrary place and compact afterwards.
+3.  Write to some arbitrary place and tell the host the resulting order, so that the results are compacted
+    when transferred from the DPU.
 
-TASK_SERIALIZE がこの問題を持ち、現状は対策 1 (単一 tasklet) を採っている。
+TASK_SERIALIZE has this problem and currently takes remedy 1 (a single tasklet).
 
-TASK_INSERT はこの問題を持たず (返り値は生存ペア数 1 組だけ)、全 tasklet で並列化
-されている。設計は `docs/parallel_batch_update.md`。
+TASK_INSERT does not have this problem (its return value is just one pair of live pair counts) and is
+parallelized over all tasklets. The design is in `docs/parallel_batch_update.md`.

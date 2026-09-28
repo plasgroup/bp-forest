@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 #
-# DPU プログラムの overlay 対応リンク (CMAKE_C_LINK_EXECUTABLE として
-# 「<ドライバ> <リンク引数...>」の形で呼ばれる)。
+# Overlay-aware link of the DPU program (invoked as CMAKE_C_LINK_EXECUTABLE
+# in the form "<driver> <link args...>").
 #
-# SDK ドライバは常に自前の -T dpu.lds を渡すため、-### の出力からリンク
-# コマンドを抽出し、その dpu.lds から「使う lds」を生成して -T を差し替えて
-# 実行する。生成は 2 段: (1) iram 領域の LENGTH を形式上広げる (lld は
-# overlay の各メンバを VMA が重なっていても累積で数えて偽の容量超過に
-# するため。実容量は overlay_additions.lds の ASSERT で検査する)、
-# (2) overlay の追加定義 (overlay_additions.lds) を連結する。
-# 最後に overlay セグメントを LMA へ移す。
+# The SDK driver always passes its own -T dpu.lds, so this script extracts
+# the link command from the -### output, generates "the lds to use" from that
+# dpu.lds, and runs the command with -T replaced. Generation has two steps:
+# (1) formally widen the LENGTH of the iram region (lld adds up the sizes of
+# all overlay members even though their VMAs overlap, and reports a false
+# overflow; the real capacity is checked by the ASSERTs in
+# overlay_additions.lds), and (2) append the overlay definitions
+# (overlay_additions.lds).
+# Finally, move the overlay segments to their LMA.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)

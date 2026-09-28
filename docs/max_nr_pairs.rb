@@ -1,14 +1,14 @@
-# DPU 1 台の木に入る KV ペア数の上限を見積もる。
+# Estimate the maximum number of KV pairs that fit in the tree of one DPU.
 #
-# 木に使える MRAM の量 (MRAM_FOR_TREE) とノードサイズ (SIZEOF_NODE) を対話的に受け取り、
-# ノード数が MAX_NR_NODES = MRAM_FOR_TREE / SIZEOF_NODE 以下に収まる最大のペア数を
-# 二分探索する。ビルド時の -DMRAM_FOR_TREE / -DSIZEOF_NODE を決めるための見積もり用。
+# Reads the amount of MRAM available for the tree (MRAM_FOR_TREE) and the node size (SIZEOF_NODE)
+# interactively, and binary-searches for the largest number of pairs whose node count fits within
+# MAX_NR_NODES = MRAM_FOR_TREE / SIZEOF_NODE. An estimate for choosing -DMRAM_FOR_TREE / -DSIZEOF_NODE at build time.
 #
-# 見積もりの前提:
-# * ここで求まるのは cold 木と hot 木の**合計**に対する上限。両者は同じノードプール
-#   (dpu/inc/allocator.h の nodes_storage) を共有する。
-# * 根ノードは WRAM 常駐 (dpu/src/bplustree.c の cold_root / hot_root) でプールを消費しない。
-#   この計算は根も数えるので、木 1 本あたり 1 ノード分だけ安全側 (小さめ) に出る。
+# Assumptions of the estimate:
+# * The result is a limit on the **total** of the cold tree and the hot tree. Both share the same node pool
+#   (nodes_storage in dpu/inc/allocator.h).
+# * Root nodes are resident in WRAM (cold_root / hot_root in dpu/src/bplustree.c) and do not consume the pool.
+#   This calculation counts the roots too, so it errs on the safe (smaller) side by one node per tree.
 
 print "MRAMForTree = "
 MRAMForTree = gets.strip.to_i
@@ -18,11 +18,11 @@ SizeOfNode = gets.strip.to_i
 
 MaxNrNodes = MRAMForTree / SizeOfNode
 
-# dpu/inc/bplustree.h の定義と同じ。
-# 葉: values[MaxNrPairs] + right (4B + パディング 4B) + keys[MaxNrPairs] + left (4B + パディング 4B)
+# Same as the definitions in dpu/inc/bplustree.h.
+# Leaf: values[MaxNrPairs] + right (4B + 4B padding) + keys[MaxNrPairs] + left (4B + 4B padding)
 MaxNrPairs = (SizeOfNode - 16) / 16
-# 内部: children[MaxNrChildren] (4B each) + keys[MaxNrChildren - 1] (8B each) を偶数に切り下げ
-# (DEBUG_OCCUPANCY 有効時は numKeys の 4B を引いた (SizeOfNode + 8 - 4) / 12 / 2 * 2)
+# Internal: children[MaxNrChildren] (4B each) + keys[MaxNrChildren - 1] (8B each), rounded down to an even number
+# (with DEBUG_OCCUPANCY enabled, (SizeOfNode + 8 - 4) / 12 / 2 * 2, subtracting the 4B of numKeys)
 MaxNrChildren = (SizeOfNode + 8) / 12 / 2 * 2
 
 def nr_pairs_to_nr_nodes(nr_pairs)
