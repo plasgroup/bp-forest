@@ -283,5 +283,11 @@ Among them:
 | `workload_mgmt/` | reading and writing workload and partition files (header-only) |
 | `tester_host/` | test drivers for individual DPU tasks |
 | `common/`, `util/` | headers shared by the host and the DPUs, and host-side tools |
-| `external/` | bundled third-party code |
+| `external/` | bundled third-party code (with its own license) |
 | `docs/` | design notes, referred to from the source code |
+
+## License
+
+B+-Forest is licensed under the [Creative Commons Attribution 4.0
+International License](LICENSE) (CC BY 4.0). The code under `external/`
+comes with its own license.
