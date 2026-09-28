@@ -31,7 +31,8 @@ the range aggregations count and max.
 * Takato Hideshima, Shigeyuki Sato, and Tomoharu Ugawa. 2026.
   **Spatiotemporal Load Balancing for Near-Memory Accelerated Databases by
   Partial Resharding.** In *Workshop Proceedings of the 55th International
-  Conference on Parallel Processing (ICPP Workshops '26)*. ACM, 75–82.
+  Conference on Parallel Processing (ICPP Workshops '26), SUSTAIN-HPC 2026*.
+  ACM, 75–82.
   <https://doi.org/10.1145/3816891.3834892>
 
 ```bibtex
@@ -58,9 +59,10 @@ the range aggregations count and max.
 }
 ```
 
-The code as evaluated in these papers is tagged `icpp2026-artifact` and
-`sustainhpc2026-artifact`; the `main` branch has been developed further
-since.
+The code as evaluated in these papers is tagged `icpp2026-artifact` (ICPP
+'26; the artifact package is <https://doi.org/10.5281/zenodo.21697637>) and
+`sustainhpc2026-artifact` (SUSTAIN-HPC 2026); the `main` branch has been
+developed further since.
 
 ## Requirements
 
@@ -279,7 +281,6 @@ Among them:
 | `resp_server/` | `resp_server_<variant>`, a server of the Redis protocol (RESP) |
 | `workload_gen/` | `workload_gen`, the generator of data sets and queries |
 | `workload_mgmt/` | reading and writing workload and partition files (header-only) |
-| `cpudb/` | `cpudb`, the driver for a CPU-only database (built when `targets` includes `cpudb`) |
 | `tester_host/` | test drivers for individual DPU tasks |
 | `common/`, `util/` | headers shared by the host and the DPUs, and host-side tools |
 | `external/` | bundled third-party code |
