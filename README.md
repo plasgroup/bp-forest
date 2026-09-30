@@ -184,7 +184,7 @@ runs the queries (`-w`) of one type (`-o`: `get`, `pred`, `insert`,
 | `--query-rate` | issue the queries at this rate (queries per second) instead of in fixed batches; a batch then takes what arrived during the previous one, up to `--batch-size` |
 | `-a` | the balancing parameter α: a DPU holds at most (1 + 1/α) times its fair share of the pairs (default 10) |
 | `--fp-rate` | the per-batch false-positive rate of the overload detection that triggers resharding (default 0.001) |
-| `--incremental`, `--hot-split`, `--hot-cache`, `--dynamic-repartition` | turn the resharding techniques on or off (`=0`/`=1`; all on by default) |
+| `--incremental`, `--hot-split`, `--hot-cache`, `--hot-early-stop`, `--dynamic-repartition` | turn the resharding techniques on or off (`=0`/`=1`; all on by default) |
 | `--partition-from-workload` | compute the initial partitioning from the queries in the given file (default: from the data alone) |
 | `-t` | the number of host threads (default: all) |
 | `-v` | verify every result |

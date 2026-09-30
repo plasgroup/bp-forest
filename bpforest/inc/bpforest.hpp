@@ -94,6 +94,7 @@ struct BPForestParameter {
     bool enable_incremental = true;
     bool enable_hot_split = true;
     bool enable_hot_cache = true;
+    bool enable_hot_early_stop = true;
     // BPForest resolves this spec to a concrete policy at construction using ndpus.
     OverloadThresholdSpec overload_threshold_spec = HighWatermarkRatio{1.05};
     unsigned nr_host_threads = 0;

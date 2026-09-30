@@ -85,6 +85,12 @@ struct BPForestOption {
             "partition's queries pile onto when that keeps the partition from "
             "being split",
             false, true);
+        a.add<bool>("hot-early-stop", 0,
+            "whether a full repartition stops carving hot partitions out of a "
+            "base partition as soon as its cold load meets the goal, leaving "
+            "DPUs without a hot partition; otherwise it carves as many as the "
+            "load of the base partition is worth",
+            false, true);
         add_overload_threshold_options(a);
         a.add<unsigned>("nr-host-threads", 't', "num of threads used in pre/post-processing in B+-Forest", false, 0);
     }
@@ -96,6 +102,7 @@ struct BPForestOption {
         param.enable_incremental = a.get<bool>("incremental");
         param.enable_hot_split = a.get<bool>("hot-split");
         param.enable_hot_cache = a.get<bool>("hot-cache");
+        param.enable_hot_early_stop = a.get<bool>("hot-early-stop");
         param.nr_host_threads = a.get<unsigned>("nr-host-threads");
         param.overload_threshold_spec = parse_overload_threshold_spec(a).value_or(FalsePositiveRate{0.001});
     }

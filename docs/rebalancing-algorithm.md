@@ -74,9 +74,26 @@ hot_npairs       = (cold_npairs + param.balancing - 1) / param.balancing;
 hot_npairs       = (base_npairs + param.balancing - 1) / param.balancing;
 ```
 
-The coefficient $\dfrac{(\alpha+1)^2}{4\alpha}$ of `cold_endpoint_cnt_goal` is the
-smallest coefficient for which, with the selection rule of §4, lowering the cold
-load to the goal never carves out more than $P$ ranges (§3).
+**The rule that stops carving hot ranges** (full path; `param.enable_hot_early_stop`, CLI `--hot-early-stop`):
+
+| `--hot-early-stop` | Rule | Paper |
+|---|---|---|
+| `0` | **Budget**: base partition $b$ of load $L_b$ gets a budget of $n_b = \lfloor L_b \cdot P / Q \rfloor$ hot partitions. Carving goes on until the hot partitions placed (counted in split pieces; §4) reach the budget, or the blocks run out and no cold data is left | The algorithm of §"Query Density-Driven Partitioning" |
+| `1` (default) | **Early stop**: carving stops as soon as the cold load is at most `cold_endpoint_cnt_goal`. The budget is not used up, so DPUs without a hot partition remain, where the incremental path can place hot ranges | The variant for resharding |
+
+The coefficient $\dfrac{(\alpha+1)^2}{4\alpha}$ of `cold_endpoint_cnt_goal` gives the largest
+cold load that can remain when the budget is used up (§3). The early stop is the rule that stops
+as soon as the cold load is at most that maximum. The incremental path always stops at
+`cold_endpoint_cnt_goal`.
+
+The budget is computed by `hot_budget` of `full_repartition_worker`:
+
+```cpp
+hot_budget = cold_endpoint_cnt * nr_base_parts / (nr_queries * W);  // 64 bits, rounded down
+```
+
+`hot_load` is rounded up, so dividing by it could make the budget one smaller.
+`more_hotness` does not apply to the budget.
 
 **Phase 1 and Phase 3 (§6) compare against different units** (incremental path):
 
@@ -118,20 +135,41 @@ See `docs/pairs-range.md` for details. Only their roles in rebalancing are liste
 
 ## 3. Invariants
 
-**Proposition (full path):** when one run of `full_repartition` completes, the total number
-`hot_count` of newly carved hot ranges does not exceed `nr_base_parts` (= $P$).
+**Proposition (full path):** when one run of `full_repartition` completes, under either rule (§1.3)
+
+1. the total number `hot_count` of newly carved hot ranges does not exceed `nr_base_parts` (= $P$)
+2. the cold load left in each base partition is at most the goal $c \cdot Q/P$
+   ($c = (\alpha+1)^2/(4\alpha)$)
 
 **Proof sketch** (`more_hotness = 1`, rounding ignored): let $L_b$ be the cold load of
-base partition $b$, $x_b = L_b / (Q/P)$, $c = (\alpha+1)^2/(4\alpha)$, and $m$ the number of blocks.
-There is one cold range, and every block except the last has at least `hot_npairs` $= \lceil n/\alpha \rceil$
-pairs ($n$ is the number of cold pairs), so $m \le \alpha$. The $k$-th block in descending load order is taken
+base partition $b$, $x_b = L_b / (Q/P)$, and $m$ the number of blocks. A block of load $l$ yields
+at most $\max(1, \lfloor l / \text{hot\_load} \rfloor)$ pieces, which is at most
+$\lfloor l/(Q/P) \rfloor$ if $l \ge Q/P$.
+
+*The count under the early stop.* There is one cold range, and every block except the last has
+at least `hot_npairs` $= \lceil n/\alpha \rceil$ pairs ($n$ is the number of cold pairs), so $m \le \alpha$.
+The $k$-th block in descending load order is taken
 only when the remainder after taking $k - 1$ blocks exceeds the goal $c \cdot Q/P$, and that remainder is at
 most $L_b (m-k+1)/m$, so $k - 1 < \alpha (1 - c/x_b)$. By the AM-GM inequality $x_b + \alpha c / x_b \ge \alpha + 1$,
-$k < x_b$. The same holds when counting split pieces: a block of load $l$ yields
-$\max(1, \lfloor l / \text{hot\_load} \rfloor)$ pieces, which is at most $l/(Q/P)$ if $l \ge Q/P$.
-Blocks with $l < Q/P$ come last in load order, so the same argument can be repeated on them alone,
-with $L_b$ minus the load of the former blocks. Hence base partition $b$ yields at most $x_b$.
-Since $\sum_b L_b \le Q$, the total is at most $P$.
+$k < x_b$. The same holds when counting split pieces: blocks with $l < Q/P$ come last in load order,
+so the same argument can be repeated on them alone, with $L_b$ minus the load of the blocks with
+$l \ge Q/P$. Hence base partition $b$ yields fewer than $x_b$, that is, at most the budget
+$n_b = \lfloor x_b \rfloor$.
+
+*The count under the budget.* The hook receives the next block only while the pieces placed are
+fewer than $n_b$. If the next block becomes a single piece, the count does not exceed $n_b$. If it
+splits into two or more, its load exceeds $2Q/P$, and, as the blocks come in descending load order,
+every block before it has a load of at least $Q/P$. The pieces then total at most
+$\sum \lfloor l/(Q/P) \rfloor \le \lfloor L_b/(Q/P) \rfloor = n_b$.
+
+Under either rule base partition $b$ yields at most $n_b$, and since $\sum_b L_b \le Q$, the total
+is at most $P$ (claim 1).
+
+*The cold load left.* The early stop stops at the goal or below. The budget rule selects the same
+blocks in the same order until the pieces reach $n_b$ or the blocks run out. The early stop places
+at most $n_b$ pieces before it stops, so the budget rule never stops earlier. Hence the cold load
+left is at most the goal (claim 2). A base partition with $n_b = 0$ is not carved, but
+$L_b < Q/P \le c \cdot Q/P$.
 
 **It does not hold on the incremental path:** when existing hot ranges fragment the cold
 data, there are several cold ranges, and the number of blocks grows up to
@@ -149,7 +187,8 @@ There is also no guarantee that the total including existing hot ranges is at mo
   right after the hot pass, also counting the new pieces from splits, if
   `nr_existing_hots + hot_count + nr_new_pieces > nr_base_parts`. The pieces[1..] of a hot split
   are written to `new_hots` only after passing the second check
-- By the proposition above, the full hook never receives 0 (`assert`)
+- By the proposition above, the full hook never receives 0 (`assert`). Under the budget rule,
+  it is also asserted after the selection that the pieces placed are within the budget
 
 ---
 
@@ -164,9 +203,12 @@ and turns blocks into hot ranges in descending order of load.
   rounded up to whole chunks, and the leftover at the end of a range becomes one block as is.
   A block never spans two cold ranges
 - **Selection**: blocks are passed to `hot_hook` in descending order of load, stopping when the hook
-  returns `false`. The hooks of both workers stop when "the cold load has dropped to
+  returns `false`. Unless the hook stops it, the selection goes on until the blocks run out.
+  The incremental hook stops when "the cold load has dropped to
   `cold_endpoint_cnt_goal` or below" or when "the pieces do not fit in the remaining capacity of `new_hots`"
-  (§3)
+  (§3). The full hook follows the rule of §1.3: under the budget it stops when "the hot partitions
+  placed have reached the budget", and under the early stop when "the cold load has dropped to
+  `cold_endpoint_cnt_goal` or below"
 - **Remaining cold data**: the passed blocks are removed from the list. The rest of a range stays in
   its original node; when the removal breaks a range apart, the pieces go into the node returned by
   `new_cold_hook`. The list does not change while the hook is running
@@ -243,14 +285,16 @@ shared counters (`idx_base` / `cold_count` / `hot_count`) of `TmpDataForFullRepa
 `get_next_idx_base`):
 
 - **Base acquisition** (`get_next_idx_base`, under the mutex): for point queries,
-  bases with `routed.cold[idx].nr_qrys <= cold_endpoint_cnt_goal` are skipped
+  bases no hot range is carved from (by the rule of §1.3: a budget of 0, or
+  `routed.cold[idx].nr_qrys <= cold_endpoint_cnt_goal`) are skipped
   here, recording only `nr_pairs` / `cold_loads`. For range queries, the
   fragment count and the endpoint count are different units (§1.3), so they are
   not skipped here; the decision is made after counting endpoints
 - Fix `cold_npairs` and `hot_npairs`
 - **Load estimation** (outside the mutex, in parallel): the approximation of §1.3. The chunk of a
   point query is looked up with `upper_bound` (`lower_bound` for the predecessor family)
-- **Hot selection** (under the mutex; only when `cold_endpoint_cnt > cold_endpoint_cnt_goal`):
+- **Hot selection** (under the mutex; only when the budget is at least 1, or
+  `cold_endpoint_cnt > cold_endpoint_cnt_goal`):
   `find_relatively_hot_ranges` (§4). `carve_new_hots` puts the selected blocks
   into `new_hots`
 - Update `nr_pairs[idx_base]` and `cold_loads[idx_base]`
