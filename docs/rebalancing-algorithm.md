@@ -138,38 +138,45 @@ See `docs/pairs-range.md` for details. Only their roles in rebalancing are liste
 **Proposition (full path):** when one run of `full_repartition` completes, under either rule (§1.3)
 
 1. the total number `hot_count` of newly carved hot ranges does not exceed `nr_base_parts` (= $P$)
-2. the cold load left in each base partition is at most the goal $c \cdot Q/P$
-   ($c = (\alpha+1)^2/(4\alpha)$)
+2. the cold load left in each base partition is at most `cold_endpoint_cnt_goal`
 
-**Proof sketch** (`more_hotness = 1`, rounding ignored): let $L_b$ be the cold load of
-base partition $b$, $x_b = L_b / (Q/P)$, and $m$ the number of blocks. A block of load $l$ yields
-at most $\max(1, \lfloor l / \text{hot\_load} \rfloor)$ pieces, which is at most
-$\lfloor l/(Q/P) \rfloor$ if $l \ge Q/P$.
+**Proof** (in the code's integer arithmetic, for any `more_hotness` $\eta \ge 1$): let $T$ be
+`total_load` ($= Q \cdot W$), $u = T/P$, $L$ the load of base partition $b$ (`cold_endpoint_cnt`
+before the selection), $x = L/u$, and $c = (\alpha+1)^2/(4\alpha)$. The budget is
+$n_b = \lfloor x \rfloor$, the goal is $G = \lfloor \eta c u \rfloor$, and `hot_load` is
+$h = \lceil \eta u \rceil \ge u$. Four facts:
 
-*The count under the early stop.* There is one cold range, and every block except the last has
-at least `hot_npairs` $= \lceil n/\alpha \rceil$ pairs ($n$ is the number of cold pairs), so $m \le \alpha$.
-The $k$-th block in descending load order is taken
-only when the remainder after taking $k - 1$ blocks exceeds the goal $c \cdot Q/P$, and that remainder is at
-most $L_b (m-k+1)/m$, so $k - 1 < \alpha (1 - c/x_b)$. By the AM-GM inequality $x_b + \alpha c / x_b \ge \alpha + 1$,
-$k < x_b$. The same holds when counting split pieces: blocks with $l < Q/P$ come last in load order,
-so the same argument can be repeated on them alone, with $L_b$ minus the load of the blocks with
-$l \ge Q/P$. Hence base partition $b$ yields fewer than $x_b$, that is, at most the budget
-$n_b = \lfloor x_b \rfloor$.
+- (a) the loads of the chunks, and hence of the blocks, sum to $L$
+- (b) there is one cold range, and every block except the last has at least `hot_npairs`
+  $= \lceil n/\alpha \rceil$ pairs ($n$ is the number of cold pairs), so the number $m$ of blocks
+  is at most $\alpha$
+- (c) a block of load $l$ becomes one piece, or, if $l$ exceeds `hot_endpoint_cnt_goal`, at most
+  $\lfloor l/h \rfloor \le \lfloor l/u \rfloor$ pieces; the blocks that may split come first in
+  load order
+- (d) a remainder is an integer, so a remainder above $G$ is above $\eta c u$
+
+*The count under the early stop.* Let $L_H$ be the load of the taken blocks that exceed
+`hot_endpoint_cnt_goal`; by (c) their pieces total at most $L_H/u$. Each other taken block yields
+one piece. The $k$-th of them is taken only when the remainder exceeds $G$, hence $\eta c u$ by (d),
+and that remainder is at most $(L - L_H)(m'-k+1)/m'$, where $m' \le \alpha$ is the number of the
+other blocks; so $k - 1 < \alpha (1 - \eta c/x')$ with $x' = (L - L_H)/u$. By the AM-GM inequality
+$x' + \alpha \eta c/x' \ge x' + \alpha c/x' \ge \alpha + 1$, so $k < x'$. The pieces thus total
+less than $L_H/u + x' = x$, or at most $L_H/u \le x$ when no other block is taken: at most $n_b$.
 
 *The count under the budget.* The hook receives the next block only while the pieces placed are
-fewer than $n_b$. If the next block becomes a single piece, the count does not exceed $n_b$. If it
-splits into two or more, its load exceeds $2Q/P$, and, as the blocks come in descending load order,
-every block before it has a load of at least $Q/P$. The pieces then total at most
-$\sum \lfloor l/(Q/P) \rfloor \le \lfloor L_b/(Q/P) \rfloor = n_b$.
+fewer than $n_b$. If the block becomes one piece, the count does not exceed $n_b$. If it splits, it
+exceeds `hot_endpoint_cnt_goal`, and so does every block before it, being heavier; by (c) and (a)
+the pieces total at most $\sum \lfloor l/u \rfloor \le \lfloor L/u \rfloor = n_b$.
 
-Under either rule base partition $b$ yields at most $n_b$, and since $\sum_b L_b \le Q$, the total
-is at most $P$ (claim 1).
+Under either rule base partition $b$ yields at most $n_b$. An endpoint is counted in at most one
+base partition, so $\sum_b L_b \le T$ and the total is at most $\lfloor \sum_b L_b / u \rfloor \le P$
+(claim 1).
 
-*The cold load left.* The early stop stops at the goal or below. The budget rule selects the same
+*The cold load left.* The early stop stops at $G$ or below. The budget rule selects the same
 blocks in the same order until the pieces reach $n_b$ or the blocks run out. The early stop places
 at most $n_b$ pieces before it stops, so the budget rule never stops earlier. Hence the cold load
-left is at most the goal (claim 2). A base partition with $n_b = 0$ is not carved, but
-$L_b < Q/P \le c \cdot Q/P$.
+left is at most $G$ (claim 2). A base partition with $n_b = 0$ is not carved, but $L < u \le \eta c u$
+and $L$ is an integer, so $L \le G$.
 
 **It does not hold on the incremental path:** when existing hot ranges fragment the cold
 data, there are several cold ranges, and the number of blocks grows up to
@@ -187,8 +194,7 @@ There is also no guarantee that the total including existing hot ranges is at mo
   right after the hot pass, also counting the new pieces from splits, if
   `nr_existing_hots + hot_count + nr_new_pieces > nr_base_parts`. The pieces[1..] of a hot split
   are written to `new_hots` only after passing the second check
-- By the proposition above, the full hook never receives 0 (`assert`). Under the budget rule,
-  it is also asserted after the selection that the pieces placed are within the budget
+- By the proposition above, the full hook never receives 0 (`assert`)
 
 ---
 

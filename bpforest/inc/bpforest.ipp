@@ -2218,15 +2218,13 @@ inline void BPForest::full_repartition_worker(unsigned /* tid */)
     const size_t nr_total_pairs = tmp.nr_total_pairs;
 
     const uint64_t total_load = uint64_t{nr_queries} * (IsPointQuery<Query> ? 1 : 2);
+    assert(total_load != 0);
     const uint32_t hot_load = (param.more_hotness * nr_queries * (IsPointQuery<Query> ? 1 : 2) + nr_base_parts - 1) / nr_base_parts,
                    cold_endpoint_cnt_goal = cold_load_goal(total_load),
                    hot_endpoint_cnt_goal = hot_load_goal(total_load);
 
-    const auto hot_budget = [&](uint32_t load) -> dpu_id_t {
-        if (param.enable_hot_early_stop) {
-            return nr_base_parts;
-        }
-        return load == 0 ? 0 : static_cast<dpu_id_t>(uint64_t{load} * nr_base_parts / total_load);
+    const auto hot_budget = [&](uint32_t load) {
+        return static_cast<dpu_id_t>(uint64_t{load} * nr_base_parts / total_load);
     };
     const auto wants_hot = [&](uint32_t cold_load, dpu_id_t nhots, dpu_id_t budget) {
         return param.enable_hot_early_stop ? cold_load > cold_endpoint_cnt_goal : nhots < budget;
@@ -2330,7 +2328,6 @@ inline void BPForest::full_repartition_worker(unsigned /* tid */)
                     return wants_hot(cold_endpoint_cnt, nhots_carved, budget);
                 },
                 [&]() -> LinkedChunkedPairsRange& { return chunked_cold_ranges[tmp.cold_count++]; });
-            assert(nhots_carved <= budget);
         }
 
         if (partitioning_log && nhots_carved != 0) {
