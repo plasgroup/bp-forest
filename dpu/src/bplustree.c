@@ -4639,12 +4639,12 @@ static void PRED_flush_results_cache(PredWorkspace* wks)
         wks->idx_result_in_cache = 0;
     }
 }
-//! @brief Strict predecessor: the pair with the largest key < `key`.
-//! Internal-node descent uses search_for_pair_index (= #{delim < key}), so we
-//! always descend the rightmost child whose subtree minimum is < key, i.e. the
+//! @brief Predecessor: the pair with the largest key <= `key`.
+//! Internal-node descent uses search_for_child_index (= #{delim <= key}), so we
+//! always descend the rightmost child whose subtree minimum is <= key, i.e. the
 //! child that contains the predecessor.  Reaching a leaf whose keys are all
-//! >= `key` therefore means the descent never left the leftmost child, and the
-//! tree holds no smaller key.  Returns the sentinel {KEY_MIN, NOT_FOUND_VALUE}
+//! > `key` therefore means the descent never left the leftmost child, and the
+//! tree holds no key <= `key`.  Returns the sentinel {KEY_MIN, NOT_FOUND_VALUE}
 //! then, which a correctly routed query never sees
 //! (docs/dpu_task_signature.md, TASK_PRED).
 OVERLAY_LOCAL(OVL_SLOT_QUERY)
@@ -4654,25 +4654,25 @@ static KVPair PRED_search_one(const Node* const root, const uint8_t height, cons
     PredWorkspace* const wks_me = loop_invariant(&workspace.tree.pred[me()]);
 
     if (height == 0) {
-        const uint16_t idx_first_ge = search_for_pair_index(&root->lf.keys[0], root_numKeys, key);
-        if (idx_first_ge == 0) {
+        const uint16_t idx_first_gt = search_for_child_index(&root->lf.keys[0], root_numKeys, key);
+        if (idx_first_gt == 0) {
             return (KVPair){KEY_MIN, NOT_FOUND_VALUE};
         }
-        return (KVPair){root->lf.keys[idx_first_ge - 1], NthValue(root->lf, idx_first_ge - 1)};
+        return (KVPair){root->lf.keys[idx_first_gt - 1], NthValue(root->lf, idx_first_gt - 1)};
     }
 
-    NodeLink link = NthChild(root->inl, search_for_pair_index(&root->inl.keys[0], root_numKeys, key));
+    NodeLink link = NthChild(root->inl, search_for_child_index(&root->inl.keys[0], root_numKeys, key));
     for (uint8_t height_of_linked = height - 1; height_of_linked > 0; height_of_linked--) {
         fetch_internal_filled(&Deref(link.ptr).inl, &wks_me->node_cache.inl, link.numKeys);
-        const uint16_t idx_child = search_for_pair_index(&wks_me->node_cache.inl.keys[0], link.numKeys, key);
+        const uint16_t idx_child = search_for_child_index(&wks_me->node_cache.inl.keys[0], link.numKeys, key);
         link = NthChild(wks_me->node_cache.inl, idx_child);
     }
     fetch_leaf_filled(&Deref(link.ptr).lf, &wks_me->node_cache.lf, link.numKeys);
-    const uint16_t idx_first_ge = search_for_pair_index(&wks_me->node_cache.lf.keys[0], link.numKeys, key);
-    if (idx_first_ge == 0) {
+    const uint16_t idx_first_gt = search_for_child_index(&wks_me->node_cache.lf.keys[0], link.numKeys, key);
+    if (idx_first_gt == 0) {
         return (KVPair){KEY_MIN, NOT_FOUND_VALUE};
     }
-    return (KVPair){wks_me->node_cache.lf.keys[idx_first_ge - 1], NthValue(wks_me->node_cache.lf, idx_first_ge - 1)};
+    return (KVPair){wks_me->node_cache.lf.keys[idx_first_gt - 1], NthValue(wks_me->node_cache.lf, idx_first_gt - 1)};
 }
 OVERLAY_LOCAL(OVL_SLOT_QUERY)
 static void PRED_execute(const Node* const root, const uint8_t height, const uint8_t root_numKeys,

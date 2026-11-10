@@ -630,11 +630,7 @@ inline void BPForest::route_accumulate_impl(unsigned tid)
 template <typename Query, typename Result>
 inline ptrdiff_t BPForest::part_index_of_point_query(const key_uint64_t key) const
 {
-    if constexpr (IsPredecessorQuery<Query, Result>) {
-        return std::lower_bound(parts.begins.begin(), parts.begins.end(), key) - parts.begins.begin() - 1;
-    } else {
-        return std::upper_bound(parts.begins.begin(), parts.begins.end(), key) - parts.begins.begin() - 1;
-    }
+    return std::upper_bound(parts.begins.begin(), parts.begins.end(), key) - parts.begins.begin() - 1;
 }
 template <typename Query, typename Result>
 inline void BPForest::reroute_after_repartition(uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed)
@@ -977,7 +973,7 @@ inline void BPForest::evict_deleted_hot_cache_pairs()
     }
 }
 template <typename Query, typename Result>
-inline std::optional<BPForest::HotCacheCandidate> BPForest::find_hot_cache_candidate(const ChunkedPairsRange& hot, const key_uint64_t hot_max_key, const QueryDataPerRange<Query, Result>& routed, const dpu_id_t dpu) const
+inline std::optional<BPForest::HotCacheCandidate> BPForest::find_hot_cache_candidate(const ChunkedPairsRange& hot, const QueryDataPerRange<Query, Result>& routed, const dpu_id_t dpu) const
 {
     constexpr double delta = 0.01, epsilon = 0.1;
     constexpr unsigned max_nr_candidates = static_cast<unsigned>(2 / epsilon) + 1;
@@ -1064,11 +1060,6 @@ inline std::optional<BPForest::HotCacheCandidate> BPForest::find_hot_cache_candi
                 [](const KVPair& lhs, key_uint64_t rhs) { return lhs.key < rhs; });
             if (pair != hot.PairsRange::end() && pair->key == key) {
                 return HotCacheCandidate{*pair, nr_qrys, true};
-            }
-            if constexpr (IsPredecessorQuery<Query, Result>) {
-                if (key == hot_max_key + 1 && pair != hot.PairsRange::begin()) {
-                    return HotCacheCandidate{KVPair{key, pair[-1].value}, nr_qrys, false};
-                }
             }
         }
         return keep();
@@ -2046,7 +2037,7 @@ inline dpu_id_t BPForest::carve_new_hots(const ChunkedPairsRange& hot, const Key
     return nr_pieces;
 }
 template <typename Query, typename Result>
-inline bool BPForest::relieve_overloaded_hot(const dpu_id_t dpu, const PairsRange& pairs_range, const key_uint64_t hot_max_key, const uint32_t hot_cnt_goal, const QueryDataPerRange<Query, Result>& routed_hot)
+inline bool BPForest::relieve_overloaded_hot(const dpu_id_t dpu, const PairsRange& pairs_range, const uint32_t hot_cnt_goal, const QueryDataPerRange<Query, Result>& routed_hot)
 {
     uint32_t load = routed_hot.nr_qrys;
     if (load <= hot_cnt_goal) {
@@ -2058,7 +2049,7 @@ inline bool BPForest::relieve_overloaded_hot(const dpu_id_t dpu, const PairsRang
     bool cached = false;
     if constexpr (IsPointQuery<Query> && !IsDeleteQuery<Query, Result>) {
         if (param.enable_hot_cache) {
-            const std::optional<HotCacheCandidate> cacheable = find_hot_cache_candidate(ChunkedPairsRange{pairs_range}, hot_max_key, routed_hot, dpu);
+            const std::optional<HotCacheCandidate> cacheable = find_hot_cache_candidate(ChunkedPairsRange{pairs_range}, routed_hot, dpu);
             if (cacheable && (hot_cache_state[dpu] == HotCacheState::Empty || cacheable->pair.key != hot_cache[dpu].key)) {
                 drop_hot_cache_pair(dpu, "replaced");
                 hot_cache[dpu] = cacheable->pair;
@@ -2087,11 +2078,11 @@ inline void BPForest::relieve_overloaded_hots(const dpu_id_t nr_new_hots, const 
     bool cached = false;
     for (dpu_id_t idx_hot = 0; idx_hot < nr_new_hots; idx_hot++) {
         const dpu_id_t idx_dpu = cold_loads[idx_hot].first;
-        cached |= relieve_overloaded_hot(idx_dpu, new_hots[idx_hot].pairs_range, new_hots[idx_hot].key_range.end, hot_cnt_goal, routed.hot[idx_dpu]);
+        cached |= relieve_overloaded_hot(idx_dpu, new_hots[idx_hot].pairs_range, hot_cnt_goal, routed.hot[idx_dpu]);
     }
     for (dpu_id_t idx_dpu = 0; idx_dpu < nr_base_parts; idx_dpu++) {
         if (kept_hot[idx_dpu].active) {
-            cached |= relieve_overloaded_hot(idx_dpu, kept_hot[idx_dpu].pairs_range, kept_hot[idx_dpu].key_range.end, hot_cnt_goal, routed.hot[idx_dpu]);
+            cached |= relieve_overloaded_hot(idx_dpu, kept_hot[idx_dpu].pairs_range, hot_cnt_goal, routed.hot[idx_dpu]);
         }
     }
 
@@ -2273,15 +2264,8 @@ inline void BPForest::full_repartition_worker(unsigned /* tid */)
                 for (const auto& qry_vec : routed.cold[idx_base].qrys) {
                     for (const auto& qry : qry_vec) {
                         const key_uint64_t key = PointQueryToKey<Query>{}(qry);
-                        DataChunkIterator one_after_target_chunk = [&] {
-                            if constexpr (IsPredecessorQuery<Query, Result>) {
-                                return std::lower_bound(left, right, key,
-                                    [](DataChunkIterator& chunk, key_uint64_t key) { return chunk.begin()->key < key; });
-                            } else {
-                                return std::upper_bound(left, right, key,
-                                    [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
-                            }
-                        }();
+                        DataChunkIterator one_after_target_chunk = std::upper_bound(left, right, key,
+                            [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
                         (--one_after_target_chunk)->load()++;
                     }
                 }
@@ -2859,27 +2843,13 @@ inline void BPForest::incremental_repartition_worker_cold([[maybe_unused]] unsig
                 for (const auto& qry_vec : routed.cold[idx_dpu].qrys) {
                     for (const auto& qry : qry_vec) {
                         const key_uint64_t key = PointQueryToKey<Query>{}(qry);
-                        const LinkedChunkedPairsRange* one_after_target_part = [&] {
-                            if constexpr (IsPredecessorQuery<Query, Result>) {
-                                return std::lower_bound(begin_part + 1, end_part, key,
-                                    [](const PairsRange& range, key_uint64_t key) { return range.begin()->key < key; });
-                            } else {
-                                return std::upper_bound(begin_part + 1, end_part, key,
-                                    [](key_uint64_t key, const PairsRange& range) { return key < range.begin()->key; });
-                            }
-                        }();
+                        const LinkedChunkedPairsRange* one_after_target_part = std::upper_bound(begin_part + 1, end_part, key,
+                            [](key_uint64_t key, const PairsRange& range) { return key < range.begin()->key; });
                         const ChunkedPairsRange& part = one_after_target_part[-1];
 
-                        DataChunkIterator one_after_target_chunk = [&] {
-                            const DataChunkIterator left = ++part.begin(), right = part.end();
-                            if constexpr (IsPredecessorQuery<Query, Result>) {
-                                return std::lower_bound(left, right, key,
-                                    [](DataChunkIterator& chunk, key_uint64_t key) { return chunk.begin()->key < key; });
-                            } else {
-                                return std::upper_bound(left, right, key,
-                                    [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
-                            }
-                        }();
+                        const DataChunkIterator left = ++part.begin(), right = part.end();
+                        DataChunkIterator one_after_target_chunk = std::upper_bound(left, right, key,
+                            [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
                         (--one_after_target_chunk)->load()++;
                     }
                 }
@@ -3047,22 +3017,11 @@ inline void BPForest::incremental_repartition_worker_hot([[maybe_unused]] unsign
                 for (const auto& qry_vec : routed.hot[idx_dpu].qrys) {
                     for (const auto& qry : qry_vec) {
                         const key_uint64_t key = PointQueryToKey<Query>{}(qry);
-                        DataChunkIterator one_after_target_chunk = [&] {
-                            if constexpr (IsPredecessorQuery<Query, Result>) {
-                                return std::lower_bound(hot_cpr.begin(), hot_cpr.end(), key,
-                                    [](DataChunkIterator& chunk, key_uint64_t key) { return chunk.begin()->key < key; });
-                            } else {
-                                return std::upper_bound(hot_cpr.begin(), hot_cpr.end(), key,
-                                    [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
-                            }
-                        }();
+                        DataChunkIterator one_after_target_chunk = std::upper_bound(hot_cpr.begin(), hot_cpr.end(), key,
+                            [](key_uint64_t key, DataChunkIterator& chunk) { return key < chunk.begin()->key; });
                         // Relies on the begin key being the smallest live key.
                         // An index of -1 would silently corrupt memory just before the load array.
-                        if constexpr (IsPredecessorQuery<Query, Result>) {
-                            assert(hot_begin_key < key && key - 1 <= hot_max_key);
-                        } else {
-                            assert(hot_begin_key <= key && key <= hot_max_key);
-                        }
+                        assert(hot_begin_key <= key && key <= hot_max_key);
                         assert(one_after_target_chunk != hot_cpr.begin());
                         (--one_after_target_chunk)->load()++;
                     }
@@ -3112,7 +3071,7 @@ inline void BPForest::incremental_repartition_worker_hot([[maybe_unused]] unsign
                 std::optional<HotCacheCandidate> cacheable;
                 if constexpr (IsPointQuery<Query> && !IsDeleteQuery<Query, Result>) {
                     if (param.enable_hot_cache) {
-                        cacheable = find_hot_cache_candidate(hot_cpr, hot_max_key, routed.hot[idx_dpu], idx_dpu);
+                        cacheable = find_hot_cache_candidate(hot_cpr, routed.hot[idx_dpu], idx_dpu);
                     }
                 }
                 std::lock_guard lock{tmp.mutex};

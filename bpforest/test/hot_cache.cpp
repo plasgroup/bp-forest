@@ -47,7 +47,7 @@ struct Oracle {
     void pred(size_t n, const key_uint64_t keys[], KVPair results[]) const
     {
         for (size_t i = 0; i < n; i++) {
-            const auto it = pairs.lower_bound(keys[i]);
+            const auto it = pairs.upper_bound(keys[i]);
             results[i] = it == pairs.begin() ? KVPair{KEY_MIN, NOT_FOUND_VALUE} : KVPair{std::prev(it)->first, std::prev(it)->second};
         }
     }

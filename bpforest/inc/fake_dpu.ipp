@@ -218,12 +218,12 @@ inline void FakeDPU::task_get(const Tree& tree, const uint32_t nr_queries, const
         }
     }
 }
-//! @brief Strict predecessor: the pair with the largest key < the queried key.
+//! @brief Predecessor: the pair with the largest key <= the queried key.
 //! Host-side routing guarantees the predecessor exists in this tree.
 inline void FakeDPU::task_pred(const Tree& tree, const uint32_t nr_queries, const key_uint64_t keys[], KVPair result[])
 {
     for (uint32_t i = 0; i < nr_queries; i++) {
-        auto iter = tree.lower_bound(keys[i]);
+        auto iter = tree.upper_bound(keys[i]);
         if (iter != tree.begin()) {
             iter--;
             result[i] = KVPair{iter->first, iter->second};

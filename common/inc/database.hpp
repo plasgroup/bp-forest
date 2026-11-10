@@ -28,7 +28,7 @@ public:
         value_int64_t results[])
         = 0;
 
-    // Strict predecessor: result[i] = pair with the largest key < keys[i],
+    // Predecessor: result[i] = pair with the largest key <= keys[i],
     // or {KEY_MIN, NOT_FOUND_VALUE} if none.
     virtual void batch_pred(uint64_t n,
         const key_uint64_t keys[],
@@ -160,9 +160,9 @@ public:
         KVPair results[])
     {
         for (size_t i = 0; i < n; i++) {
-            // find(key) = lower_bound = first pair with key >= keys[i];
-            // the strict predecessor is the pair just before it.
-            auto it = find(keys[i]);
+            // the predecessor is the pair just before the first one with key > keys[i]
+            auto it = std::upper_bound(data.begin(), data.end(), keys[i],
+                [](key_uint64_t key, const KVPair& pair) { return key < pair.key; });
             if (it == data.begin())
                 results[i] = KVPair{KEY_MIN, NOT_FOUND_VALUE};
             else

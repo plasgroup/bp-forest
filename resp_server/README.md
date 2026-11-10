@@ -65,7 +65,7 @@ ends.
   execution order of all the commands.
 - `SET` rejects the value 0, which collides with `NOT_FOUND_VALUE` and
   could not be told apart from a miss.
-- `BPF.PRED k` returns the live pair with the largest key less than k. It
+- `BPF.PRED k` returns the live pair with the largest key at most k. It
   never returns a deleted key; nil if there is no such pair.
 - `DBSIZE` returns the total number of live pairs (deleted keys are not
   counted).

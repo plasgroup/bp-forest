@@ -108,8 +108,8 @@ struct BPForest : ParallelManager<BPForest> {
 
     void batch_get(uint32_t nr_queries, const key_uint64_t keys[], value_int64_t result[]);
     //! result[i].value == NOT_FOUND_VALUE means keys[i] has no live (i.e. not
-    //! deleted) strict predecessor; otherwise result[i] is the live pair with
-    //! the largest key < keys[i].
+    //! deleted) predecessor; otherwise result[i] is the live pair with the
+    //! largest key <= keys[i].
     void batch_pred(uint32_t nr_queries, const key_uint64_t keys[], KVPair result[]);
     void batch_insert(uint32_t nr_queries, const KVPair pairs[]);
     //! existed[i] != 0 iff keys[i] was a live (i.e. not deleted) pair just
@@ -494,13 +494,13 @@ private:
     //! sampling of docs/hot_key_finding.md, which takes the pair this DPU has
     //! cached as one of the candidates.
     template <typename Query, typename Result>
-    std::optional<HotCacheCandidate> find_hot_cache_candidate(const ChunkedPairsRange& hot, key_uint64_t hot_max_key, const QueryDataPerRange<Query, Result>& routed, dpu_id_t dpu) const;
+    std::optional<HotCacheCandidate> find_hot_cache_candidate(const ChunkedPairsRange& hot, const QueryDataPerRange<Query, Result>& routed, dpu_id_t dpu) const;
     uint32_t cold_load_goal(uint64_t total_load) const;
     uint32_t hot_load_goal(uint64_t total_load) const;
     dpu_id_t carve_new_hots(const ChunkedPairsRange& hot, const KeyRange& key_range, uint32_t load, dpu_id_t origin,
         dpu_id_t room, uint32_t hot_load, uint32_t load_goal, NewHotRange* out) const;
     template <typename Query, typename Result>
-    bool relieve_overloaded_hot(dpu_id_t dpu, const PairsRange& pairs_range, key_uint64_t hot_max_key, uint32_t hot_cnt_goal, const QueryDataPerRange<Query, Result>& routed_hot);
+    bool relieve_overloaded_hot(dpu_id_t dpu, const PairsRange& pairs_range, uint32_t hot_cnt_goal, const QueryDataPerRange<Query, Result>& routed_hot);
     template <typename Query, typename Result>
     void relieve_overloaded_hots(dpu_id_t nr_new_hots, uint32_t nr_queries, const Query queries[], Result* results, QueryData<Query, Result>& routed);
     void drop_hot_cache_pair(dpu_id_t dpu, const char* reason);

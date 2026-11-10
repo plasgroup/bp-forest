@@ -74,8 +74,8 @@ Returns `NOT_FOUND_VALUE` if the key does not exist.
  Key[nr_cold_qrys + nr_hot_qrys]) -> KVPair[nr_cold_qrys + nr_hot_qrys]
 ```
 
-Returns the pair with the largest key **less than** the query key (strict predecessor). If the tree has no
-pair with a key less than the query key, returns the sentinel `{KEY_MIN, NOT_FOUND_VALUE}`. The host keeps each
+Returns the pair with the largest key **at most** the query key (predecessor). If the tree has no
+pair with a key at most the query key, returns the sentinel `{KEY_MIN, NOT_FOUND_VALUE}`. The host keeps each
 partition starting at its smallest live key, so a correctly routed query never receives this sentinel (see the
 comment on `BPForest::locate_pred_partition`).
 The DPU returns a `KVPair` because the return value of `BPForest::batch_pred` is a key-value pair.
