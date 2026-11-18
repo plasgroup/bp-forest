@@ -18,7 +18,7 @@
 static DEFINE_BITMAP(allocated_bitmap, MAX_NR_NODES);
 static unsigned next_alloc;
 
-__mram_noinit Node nodes_storage[MAX_NR_NODES];
+__mram_noinit __attribute__((aligned(SIZEOF_NODE))) Node nodes_storage[MAX_NR_NODES];
 
 
 static void Allocator_init(const unsigned n)
